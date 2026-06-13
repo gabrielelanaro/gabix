@@ -228,6 +228,49 @@ Virtual memory = the address your code uses is not the address in physical RAM. 
 
 **For mini-os:** we target x86-64 (phil-opp's tutorial ecosystem is x86-64). Even on Apple Silicon, QEMU emulates x86-64 fine for learning.
 
+### Rust targets and `no_std`
+
+**Target** = (architecture + OS + ABI) description Rust compiles *for*. Written as a triple like `arch-vendor-os-abi`:
+
+| Target triple | Means |
+|---|---|
+| `aarch64-apple-darwin` | Apple Silicon Mac on macOS (our host) |
+| `x86_64-unknown-linux-gnu` | Linux on x86-64 |
+| `x86_64-pc-windows-msvc` | Windows |
+| `wasm32-unknown-unknown` | WebAssembly |
+| `x86_64-unknown-none` | x86-64 with **no OS** — bare metal |
+
+Rust ships precompiled libraries for ~80 built-in targets. Our `x86_64-mini-os.json` is a **custom target spec** because we want kernel-specific settings (`panic=abort`, `disable-redzone`). Treat the JSON as boilerplate; field names come from compiler internals.
+
+**Rust's standard library is layered:**
+
+```
+┌──────────────────────────────────────────┐
+│ std         ← File I/O, threads, network,│  needs an OS
+│             mutexes, time, println!      │
+├──────────────────────────────────────────┤
+│ alloc       ← Box, Vec, String, Rc, Arc  │  needs heap allocator, no OS
+├──────────────────────────────────────────┤
+│ core        ← Option, Result, Iterator,  │  no OS, no heap
+│             slices, math, atomics        │
+├──────────────────────────────────────────┤
+│ compiler_builtins  ← memcpy, memset,     │  compiler emits calls to these
+│             integer division, float ops  │
+└──────────────────────────────────────────┘
+```
+
+`#![no_std]` opts out of **`std` only**. You *keep* `core` and `compiler_builtins` — both OS-independent. So in `no_std` code you can still use `Option`, `Result`, `Iterator`, `&[T]`, `&str`, integer math, atomics. You lose: `Vec`/`String`/`Box` (need `alloc` + heap), `File`/threads/`println!` (need OS).
+
+**Why we need `build-std` in `.cargo/config.toml`:**
+
+Rust ships precompiled `core` for built-in targets only. There's no precompiled `core` for our custom `x86_64-mini-os` target. `build-std = ["core", "compiler_builtins"]` tells the compiler to compile these from source for our target on first build (then cached).
+
+**Why `compiler-builtins-mem`:**
+
+When Rust emits code that copies a slice, it calls `memcpy`. Normally the host OS's libc provides `memcpy`. We have no libc. The feature makes `compiler_builtins` provide its own Rust-native `memcpy`/`memset`/`memmove`/`memcmp`.
+
+**Where this comes back later:** Month 2, when we add a heap allocator, we'll add `extern crate alloc;` to bring in `Box`/`Vec`/`String`. Still `no_std`, but more than just `core`.
+
 ## Milestones
 
 A milestone is a "demo-able" checkpoint. Worth a commit + tag + log entry.
