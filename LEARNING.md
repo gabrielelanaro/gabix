@@ -75,6 +75,69 @@ Status legend: `[ ]` not started · `[~]` in progress · `[x]` done
 
 Distilled notes from background reading. Come back here when terms feel fuzzy.
 
+### What a kernel actually is
+
+A kernel is just a program. Same as Chrome, `ls`, any binary — code compiled to bytes. The difference from a normal program isn't *what* it is, it's *what's beneath it*:
+
+- Normal program: code → OS → hardware. The OS provides files, threads, memory.
+- Kernel: code → hardware. Nothing in between. The kernel IS the OS.
+
+When a kernel wants to print to the screen, it can't call `printf` — there's no `printf`. It writes bytes directly to memory addresses wired to hardware (e.g. `0xB8000` for VGA).
+
+### What "compiling a kernel" means
+
+Same as compiling any program. The compiler doesn't know it's a kernel. The difference is which defaults you turn off, because every default assumes an OS exists:
+
+- `#![no_std]` — don't link the standard library (it assumes an OS).
+- `#![no_main]` — don't generate the `main` wrapper (no C runtime to call it).
+- Custom target JSON — produce a binary shaped for a *bootloader* to load, not an OS loader.
+
+Output is still a normal binary file. Different contents and shape; same structure.
+
+### Binary file formats: ELF / PE / Mach-O
+
+Different OSes use different binary formats. Same concept (structured file with code + data + metadata), different layouts. Historical accident — different teams in the 80s/90s.
+
+| OS | Format | Magic signature |
+|---|---|---|
+| Linux, Unix | ELF | `\x7FELF` |
+| Windows | PE (Portable Executable) | `MZ` |
+| macOS | Mach-O | `0xFEEDFACF` (64-bit) |
+
+Magic signatures are how loaders identify formats — the first bytes fingerprint the file. Can't run a Linux binary on Windows directly because the Windows loader can't parse ELF.
+
+For mini-os we use ELF: the `bootloader` crate expects it, and it's the most-documented format for `no_std` Rust.
+
+### Symbol tables
+
+A name → address dictionary inside a binary file. The CPU doesn't need names — only bytes. The table exists for:
+
+- The **linker** — to resolve cross-file references (your code calls `printf`, linker looks it up).
+- **Debuggers** — to translate addresses to names (breakpoints, backtraces).
+- **You** — to read crash reports.
+
+You can strip the symbol table (`strip binary`) and the program runs identically. Proves it's metadata for tools, not for the CPU.
+
+### `_start` and entry points
+
+`_start` is the convention for "the address where execution begins in this binary." Set by the C runtime decades ago; the GNU linker defaults to using it as the entry point.
+
+How it gets used:
+
+1. You write `_start` in code.
+2. Compiler puts it in the symbol table (`#[no_mangle]` stops Rust renaming it).
+3. Linker looks up `_start`, gets its address.
+4. Linker writes that address into the ELF header's entry-point field.
+5. Bootloader reads the ELF header, jumps to the address.
+
+In a normal program the C runtime provides `_start` (does setup, then calls `main`). In a kernel there's no C runtime — you write `_start` yourself. It can't return (return to what?), so its type is `extern "C" fn _start() -> !`.
+
+### The bootloader's job (one sentence)
+
+> Read the kernel file off disk, find where its first instruction is (using whatever format the file is in), load the relevant bytes into RAM, jump there.
+
+The format is just the vocabulary the bootloader uses to find the entry point and figure out which bytes go where in RAM. After the jump, the bootloader is done and the kernel runs.
+
 ### Bootloader vocabulary
 
 | Term | Meaning |
@@ -189,7 +252,7 @@ Most recent entries at the top. One entry per work session.
 - **Next:** (where to pick up next time)
 
 ### 2026-06-13
-- **Done:** Initialized repo, wrote LEARNING.md and CLAUDE.md. Background reading session covered boot flow, CPU modes, paging tables, ARM vs x86. Added distilled reference to "Concepts reference" section.
+- **Done:** Initialized repo, wrote LEARNING.md and CLAUDE.md. Background reading session covered: what a kernel is (just a program with no OS beneath); how compiling a kernel differs from a normal program (`no_std`, `no_main`, custom target); binary file formats (ELF / PE / Mach-O); symbol tables; `_start` and entry points; the bootloader's one-sentence job; boot flow; CPU modes (real/protected/long, rings vs ELs); paging tables with the file-folder analogy; ARM vs x86-64. All distilled into the Concepts reference section.
 - **Status:** All roadmap items still `[ ]`. M0 not started.
-- **Notes:** Starting from phil-opp post 1 (freestanding binary). Don't need to memorize concepts reference — it's there for lookup when terms feel fuzzy.
+- **Notes:** Mental model that ties it all together: a kernel is just a program with no OS beneath it; every config tweak is about telling the compiler "don't assume an OS." Concepts reference is for lookup, not memorization.
 - **Next:** Scaffold Cargo project, install nightly, write freestanding `_start`.
