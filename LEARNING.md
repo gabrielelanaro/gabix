@@ -9,7 +9,7 @@ Approach: follow the "Writing an OS in Rust" tutorial (phil-opp.com) as the spin
 Status legend: `[ ]` not started · `[~]` in progress · `[x]` done
 
 ### Month 1 — Skeleton & boot
-- [ ] 1.1 Freestanding Rust binary, `no_std`, custom panic handler
+- [x] 1.1 Freestanding Rust binary, `no_std`, custom panic handler
 - [ ] 1.2 `bootimage` / `bootloader` crate setup, boot in QEMU
 - [ ] 1.3 VGA text-mode buffer, print "Hello, World"
 - [ ] 1.4 GDT (Global Descriptor Table)
@@ -250,6 +250,14 @@ Most recent entries at the top. One entry per work session.
 - **Status:** (which milestones/checkboxes flipped)
 - **Notes / blockers / surprises:** (anything useful for future-you)
 - **Next:** (where to pick up next time)
+
+### 2026-06-13 (slice 1)
+- **Done:** Scaffolded Cargo project. `cargo build` produces a freestanding x86-64 ELF binary with `_start` symbol at `0x201120`. Hit three snags from recent nightly changes (1.98, 2026-06-13): JSON target specs need `-Zjson-target-spec`, numeric fields must be unquoted, `soft-float` target feature is rejected (deprecated) and removing it requires also removing `-mmx,-sse` because modern `core` needs SSE2 (it's part of the x86_64 ABI).
+- **Status:** Checkbox 1.1 flipped to `[x]`. M0 still in progress.
+- **Notes / blockers / surprises:**
+  - phil-opp's target spec JSON is out of date for current nightly. Modern working spec: unquoted numbers, no `features` line at all.
+  - Apple Silicon host — QEMU not yet installed, only matters for slice 2.
+- **Next:** Slice 2 = add `bootimage` + `bootloader` crates, install QEMU, get it booting (still no printing).
 
 ### 2026-06-13
 - **Done:** Initialized repo, wrote LEARNING.md and CLAUDE.md. Background reading session covered: what a kernel is (just a program with no OS beneath); how compiling a kernel differs from a normal program (`no_std`, `no_main`, custom target); binary file formats (ELF / PE / Mach-O); symbol tables; `_start` and entry points; the bootloader's one-sentence job; boot flow; CPU modes (real/protected/long, rings vs ELs); paging tables with the file-folder analogy; ARM vs x86-64. All distilled into the Concepts reference section.

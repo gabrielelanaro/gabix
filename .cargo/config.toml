@@ -1,0 +1,15 @@
+[unstable]
+# Build the `core` and `compiler_builtins` crates from source for our custom target.
+# Without this, cargo can't find a precompiled `core` for x86_64-mini-os.
+build-std = ["core", "compiler_builtins"]
+
+# Enable memcpy/memset/memcpy implementations from compiler_builtins.
+# (The default compiler_builtins doesn't include them for licensing reasons.)
+build-std-features = ["compiler-builtins-mem"]
+
+# Required by recent nightlies to use a custom JSON target spec file.
+json-target-spec = true
+
+[build]
+# Use our custom target by default so `cargo build` works without `--target`.
+target = "x86_64-mini-os.json"
