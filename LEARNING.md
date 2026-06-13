@@ -10,7 +10,7 @@ Status legend: `[ ]` not started · `[~]` in progress · `[x]` done
 
 ### Month 1 — Skeleton & boot
 - [x] 1.1 Freestanding Rust binary, `no_std`, custom panic handler
-- [ ] 1.2 `bootimage` / `bootloader` crate setup, boot in QEMU
+- [x] 1.2 `bootimage` / `bootloader` crate setup, boot in QEMU
 - [ ] 1.3 VGA text-mode buffer, print "Hello, World"
 - [ ] 1.4 GDT (Global Descriptor Table)
 - [ ] 1.5 IDT + interrupt handlers
@@ -293,6 +293,12 @@ Most recent entries at the top. One entry per work session.
 - **Status:** (which milestones/checkboxes flipped)
 - **Notes / blockers / surprises:** (anything useful for future-you)
 - **Next:** (where to pick up next time)
+
+### 2026-06-13 (slice 2)
+- **Done:** Booting in QEMU. Installed QEMU 11.0.1 (`brew install qemu`) and `bootimage` 0.10.4 (`cargo install bootimage`). Added `bootloader = "0.9"` to Cargo.toml and configured `bootimage runner` in `.cargo/config.toml`. `cargo run` builds a 51KB bootable disk image (`bootimage-mini-os.bin`) and launches QEMU. Black screen = success — SeaBIOS → bootloader crate → our `_start` → `loop {}`.
+- **Status:** Checkbox 1.2 flipped to `[x]`. M0 not yet (need VGA + "Hello, World" in 1.3).
+- **Notes / blockers / surprises:** None. `bootloader 0.9.34` + `bootimage 0.10.4` work fine with current nightly.
+- **Next:** Slice 3 = VGA text-mode buffer + "Hello, World". This is milestone M0.
 
 ### 2026-06-13 (slice 1)
 - **Done:** Scaffolded Cargo project. `cargo build` produces a freestanding x86-64 ELF binary with `_start` symbol at `0x201120`. Hit three snags from recent nightly changes (1.98, 2026-06-13): JSON target specs need `-Zjson-target-spec`, numeric fields must be unquoted, `soft-float` target feature is rejected (deprecated) and removing it requires also removing `-mmx,-sse` because modern `core` needs SSE2 (it's part of the x86_64 ABI).

@@ -13,3 +13,9 @@ json-target-spec = true
 [build]
 # Use our custom target by default so `cargo build` works without `--target`.
 target = "x86_64-mini-os.json"
+
+[target.'cfg(target_os = "none")']
+# When `cargo run` is invoked for a no-OS target, run the binary through
+# `bootimage runner`, which packages the kernel into a bootable image
+# and launches it in QEMU.
+runner = "bootimage runner"
