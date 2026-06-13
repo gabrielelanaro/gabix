@@ -1,0 +1,415 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>GDT in Plain English — mini-os</title>
+<style>
+  :root {
+    --kernel: #1e3a8a;
+    --user: #15803d;
+    --code: #6d28d9;
+    --data: #c2410c;
+    --stack: #be185d;
+    --bg: #fafafa;
+    --note: #fef3c7;
+    --border: #d1d5db;
+    --muted: #6b7280;
+  }
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    max-width: 980px;
+    margin: 0 auto;
+    padding: 2rem 1.5rem 4rem;
+    line-height: 1.55;
+    color: #111827;
+    background: var(--bg);
+  }
+  h1 { font-size: 2rem; margin-bottom: 0.25rem; }
+  h2 {
+    font-size: 1.35rem;
+    margin-top: 2.5rem;
+    margin-bottom: 0.75rem;
+    padding-bottom: 0.3rem;
+    border-bottom: 2px solid var(--border);
+  }
+  h3 { font-size: 1.05rem; margin-top: 1.5rem; margin-bottom: 0.5rem; color: var(--kernel); }
+  p { margin: 0.6rem 0; }
+  .lede { font-size: 1.1rem; color: #374151; margin-bottom: 1.5rem; }
+  .qa { font-weight: 600; color: var(--kernel); margin-top: 1.5rem; }
+  code, .mono { font-family: "SF Mono", Menlo, Consolas, monospace; font-size: 0.92em; background: #f3f4f6; padding: 0.1em 0.35em; border-radius: 3px; }
+  pre { background: #1f2937; color: #e5e7eb; padding: 0.85rem 1rem; border-radius: 6px; overflow-x: auto; font-size: 0.85rem; }
+  pre code { background: transparent; padding: 0; color: inherit; }
+  .callout {
+    background: var(--note);
+    border-left: 4px solid #f59e0b;
+    padding: 0.6rem 1rem;
+    margin: 1rem 0;
+    border-radius: 0 4px 4px 0;
+  }
+  .analogy {
+    background: #eff6ff;
+    border-left: 4px solid var(--kernel);
+    padding: 0.6rem 1rem;
+    margin: 1rem 0;
+    border-radius: 0 4px 4px 0;
+  }
+
+  /* Diagrams */
+  .diagram {
+    background: white;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1.25rem;
+    margin: 1rem 0;
+    text-align: center;
+  }
+  .diagram-caption { font-size: 0.85rem; color: var(--muted); margin-top: 0.5rem; font-style: italic; }
+
+  .cpu-ram-row { display: flex; justify-content: center; gap: 3rem; align-items: center; flex-wrap: wrap; }
+  .chip {
+    border: 2px solid #111827;
+    border-radius: 8px;
+    padding: 1rem;
+    min-width: 200px;
+    background: #f9fafb;
+  }
+  .chip-title { font-weight: 700; text-align: center; margin-bottom: 0.75rem; }
+  .reg {
+    background: white;
+    border: 1px solid var(--border);
+    padding: 0.4rem 0.6rem;
+    margin: 0.25rem 0;
+    font-family: monospace;
+    font-size: 0.9rem;
+    text-align: left;
+    border-radius: 3px;
+    display: flex;
+    justify-content: space-between;
+  }
+  .reg .label { font-weight: 700; color: var(--kernel); }
+  .arrow-down { font-size: 1.5rem; color: var(--muted); margin: 0.5rem 0; }
+  .arrow-right { font-size: 1.5rem; color: var(--muted); padding: 0 1rem; }
+
+  /* GDT entry visualization */
+  .gdt-list {
+    border: 2px solid var(--kernel);
+    border-radius: 6px;
+    background: white;
+    padding: 0.5rem;
+    display: inline-block;
+    min-width: 380px;
+    text-align: left;
+  }
+  .gdt-entry {
+    display: flex;
+    align-items: center;
+    padding: 0.4rem 0.6rem;
+    margin: 0.2rem 0;
+    border-radius: 4px;
+    font-family: monospace;
+    font-size: 0.85rem;
+  }
+  .gdt-entry .idx { width: 40px; font-weight: 700; color: var(--muted); }
+  .gdt-entry .name { flex: 1; }
+  .gdt-entry.null { background: #f3f4f6; color: var(--muted); }
+  .gdt-entry.code { background: #ede9fe; border-left: 3px solid var(--code); }
+  .gdt-entry.data { background: #ffedd5; border-left: 3px solid var(--data); }
+  .gdt-entry.user-code { background: #ede9fe; border-left: 3px solid var(--user); }
+  .gdt-entry.user-data { background: #ffedd5; border-left: 3px solid var(--user); }
+
+  /* Permission chips */
+  .perm-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 0.75rem;
+    margin: 1rem 0;
+  }
+  .perm {
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 0.75rem;
+    background: white;
+  }
+  .perm .name { font-weight: 700; color: var(--kernel); margin-bottom: 0.25rem; }
+  .perm .desc { font-size: 0.88rem; color: #4b5563; }
+
+  /* Step-by-step */
+  .steps { counter-reset: step; margin: 1rem 0; }
+  .step {
+    position: relative;
+    padding: 0.65rem 0.65rem 0.65rem 2.75rem;
+    margin: 0.4rem 0;
+    background: white;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+  }
+  .step::before {
+    counter-increment: step;
+    content: counter(step);
+    position: absolute;
+    left: 0.65rem;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 1.75rem;
+    height: 1.75rem;
+    background: var(--kernel);
+    color: white;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: 700;
+    font-size: 0.9rem;
+  }
+  .step code { font-size: 0.85rem; }
+
+  /* Tables */
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 1rem 0;
+    font-size: 0.92rem;
+  }
+  th, td {
+    text-align: left;
+    padding: 0.5rem 0.75rem;
+    border-bottom: 1px solid var(--border);
+  }
+  th { background: #f3f4f6; font-weight: 600; }
+  td code { font-size: 0.85rem; }
+
+  /* Segment registers */
+  .seg-regs { display: flex; justify-content: center; gap: 0.5rem; flex-wrap: wrap; margin: 1rem 0; }
+  .seg-reg {
+    border: 2px solid var(--code);
+    background: white;
+    padding: 0.5rem 0.75rem;
+    border-radius: 6px;
+    font-family: monospace;
+    min-width: 80px;
+    text-align: center;
+  }
+  .seg-reg .name { font-weight: 700; color: var(--code); }
+  .seg-reg .use { font-size: 0.75rem; color: var(--muted); margin-top: 0.25rem; }
+
+  /* Big picture flow */
+  .flow {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.5rem;
+    margin: 1rem 0;
+  }
+  .flow-box {
+    padding: 0.6rem 1rem;
+    border-radius: 6px;
+    background: white;
+    border: 1px solid var(--border);
+    font-family: monospace;
+    font-size: 0.9rem;
+    min-width: 280px;
+    text-align: center;
+  }
+  .flow-arrow { font-size: 1.25rem; color: var(--muted); }
+
+  footer {
+    margin-top: 3rem;
+    padding-top: 1.5rem;
+    border-top: 1px solid var(--border);
+    color: var(--muted);
+    font-size: 0.85rem;
+  }
+</style>
+</head>
+<body>
+
+<h1>The GDT, in Plain English</h1>
+<p class="lede">
+A small list that lives in RAM. The CPU reads it to know
+<em>"what memory regions exist, and who is allowed to touch each one."</em>
+Everything else in this document is just unpacking that one sentence.
+</p>
+
+<h2>Quick answers first</h2>
+
+<p class="qa">Is this a CPU feature?</p>
+<p>Yes — it's hardware. The CPU chip itself has a tiny storage slot called <code>GDTR</code> (the "GDT Register") that holds the address where the GDT lives in RAM. On every relevant operation, the CPU walks over to that RAM address and reads entries.</p>
+
+<p class="qa">What is a "memory segment"?</p>
+<p>A named region of memory with rules attached. For example: <em>"the bytes from address 0 to 0xFFFF are <strong>code</strong>, executable but not writable, only the kernel can touch them."</em> That whole description is one "segment."</p>
+
+<p class="qa">What are "permissions" here?</p>
+<p>Three flavors of rule, all enforced by the CPU in hardware:</p>
+<ul>
+  <li><strong>Access type</strong> — read? write? execute?</li>
+  <li><strong>Privilege tier</strong> — kernel-only, or anyone (including user programs)?</li>
+  <li><strong>Presence</strong> — is this entry even real, or just empty space?</li>
+</ul>
+
+<p class="qa">Which permissions exist exactly?</p>
+<p>The full list (each is one bit in a GDT entry):</p>
+
+<div class="perm-grid">
+  <div class="perm"><div class="name">Readable</div><div class="desc">CPU allows reads from this region. (Code segments can be marked non-readable in theory, but in practice code is always readable.)</div></div>
+  <div class="perm"><div class="name">Writable</div><div class="desc">CPU allows writes. Code is never writable; data is.</div></div>
+  <div class="perm"><div class="name">Executable</div><div class="desc">CPU will fetch instructions from this region. Only code is executable.</div></div>
+  <div class="perm"><div class="name">Privilege tier (DPL)</div><div class="desc">0 = kernel only. 3 = anyone. (1 and 2 exist but aren't used in practice.)</div></div>
+  <div class="perm"><div class="name">Present (P)</div><div class="desc">If 0, this entry is unused. CPU will fault if anyone tries to use it.</div></div>
+  <div class="perm"><div class="name">Accessed (A)</div><div class="desc">CPU sets this to 1 the first time the segment is used. OSes use it to track which segments are hot.</div></div>
+  <div class="perm"><div class="name">Type</div><div class="desc">Is this a code segment, a data segment, or a system segment (like a TSS)?</div></div>
+  <div class="perm"><div class="name">Direction / Conforming</div><div class="desc">Obscure bits that control how segments behave across privilege changes. We can ignore them.</div></div>
+</div>
+
+<h2>Picture 1 — where the GDT lives</h2>
+
+<div class="diagram">
+  <div class="cpu-ram-row">
+    <div class="chip">
+      <div class="chip-title">CPU chip</div>
+      <div class="reg"><span class="label">GDTR</span><span>0x_A000</span></div>
+      <div class="reg"><span class="label">CS</span><span>0x08</span></div>
+      <div class="reg"><span class="label">DS</span><span>0x10</span></div>
+      <div class="reg"><span class="label">SS</span><span>0x10</span></div>
+      <div style="font-size: 0.75rem; color: var(--muted); margin-top: 0.5rem; text-align: center;">+ more registers<br>for doing actual work</div>
+    </div>
+    <div class="arrow-right">→ reads →</div>
+    <div class="chip">
+      <div class="chip-title">RAM (the GDT)</div>
+      <div style="border: 1px dashed var(--border); padding: 0.5rem; border-radius: 4px; background: white;">
+        <div style="font-family: monospace; font-size: 0.85rem; text-align: left;">
+          0xA000: <span style="color: var(--muted);">[ null — empty ]</span><br>
+          0xA008: <span style="color: var(--code);">[ code, ring 0 ]</span><br>
+          0xA010: <span style="color: var(--data);">[ data, ring 0 ]</span><br>
+          0xA018: <span style="color: var(--muted);">[ ... ]</span>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="diagram-caption">
+    The CPU's <code>GDTR</code> register points to where the GDT lives in RAM. The CPU reads entries from that location whenever it needs to check what a segment allows.
+  </div>
+</div>
+
+<div class="analogy">
+  <strong>Analogy:</strong> imagine a building with a security desk. The desk has a binder (the GDT) listing every room and its rules: <em>"Room 101 — staff only. Room 102 — public. Room 103 — storage, no entry."</em> Every visitor (every memory access) is checked against the binder by the security guard (the CPU). The guard's location register (GDTR) just says which binder to use.
+</div>
+
+<h2>What's actually in a GDT? (our kernel's GDT)</h2>
+
+<div class="diagram">
+  <div class="gdt-list">
+    <div class="gdt-entry null"><span class="idx">#0</span><span class="name">null — required to be all zeros (CPU quirk)</span></div>
+    <div class="gdt-entry code"><span class="idx">#1</span><span class="name">kernel code: execute + read, ring 0</span></div>
+    <div class="gdt-entry data"><span class="idx">#2</span><span class="name">kernel data: read + write, ring 0</span></div>
+    <div class="gdt-entry null"><span class="idx">#3</span><span class="name">(unused for now)</span></div>
+    <div class="gdt-entry user-code"><span class="idx">#4</span><span class="name">user code: execute + read, ring 3 <em>(later)</em></span></div>
+    <div class="gdt-entry user-data"><span class="idx">#5</span><span class="name">user data: read + write, ring 3 <em>(later)</em></span></div>
+  </div>
+  <div class="diagram-caption">
+    A GDT is just an array of these entries. Index times 8 = byte offset in the array. Entry #1 starts at byte 0x08, entry #2 at byte 0x10, etc.
+  </div>
+</div>
+
+<h2>What is a "segment register"? Why are there several?</h2>
+
+<p>The CPU has 6 tiny storage slots called <strong>segment registers</strong>. Each one is meant to point at a specific <em>kind</em> of memory access:</p>
+
+<div class="seg-regs">
+  <div class="seg-reg"><div class="name">CS</div><div class="use">Code — currently running instructions</div></div>
+  <div class="seg-reg"><div class="name">DS</div><div class="use">Data — default for memory reads/writes</div></div>
+  <div class="seg-reg"><div class="name">SS</div><div class="use">Stack — push/pop and stack pointer</div></div>
+  <div class="seg-reg"><div class="name">ES</div><div class="use">Extra (mostly unused today)</div></div>
+  <div class="seg-reg"><div class="name">FS</div><div class="use">Linux/Windows: per-CPU data</div></div>
+  <div class="seg-reg"><div class="name">GS</div><div class="use">thread-local / per-CPU data</div></div>
+</div>
+
+<p>The value inside each register is a 16-bit number that <em>selects</em> an entry in the GDT. So <code>CS = 0x08</code> means "use GDT entry #1 for all code accesses."</p>
+
+<h2>What happens when you "load a segment register"?</h2>
+
+<p>Say the kernel runs this assembly instruction:</p>
+<pre><code>mov ds, 0x10   ; "load the value 0x10 into the DS register"</code></pre>
+
+<p>The CPU does <strong>much more than just store 0x10</strong>. Here's the full sequence:</p>
+
+<div class="steps">
+  <div class="step">Read the value being loaded: <code>0x10</code></div>
+  <div class="step">Strip off the bottom 3 bits (they encode privilege + which table): <code>0x10 &gt;&gt; 3 = 2</code></div>
+  <div class="step">Use <code>2</code> as an index into the GDT — read entry #2 (kernel data)</div>
+  <div class="step">Check the entry's permissions against the current privilege level. If not allowed → <strong>general protection fault</strong> (CPU exception → kernel panic if unhandled)</div>
+  <div class="step">Cache that entry's rules inside the CPU (in a hidden "descriptor cache"). From now on, every memory access via DS uses those rules <em>automatically</em> — without re-reading the GDT.</div>
+  <div class="step">Store <code>0x10</code> in the visible part of DS so the next reload sees the same value</div>
+</div>
+
+<div class="callout">
+  <strong>The key idea:</strong> loading a segment register isn't just "store this number." It's "look up this entry in the GDT, validate it, and from now on use its rules for this kind of memory access." The CPU caches the rules so it doesn't have to walk to RAM every time.
+</div>
+
+<h2>Putting it together — the whole loop</h2>
+
+<div class="flow">
+  <div class="flow-box">1. Kernel builds a GDT in RAM at some address (say <code>0xA000</code>)</div>
+  <div class="flow-arrow">↓</div>
+  <div class="flow-box">2. Kernel runs <code>lgdt</code> instruction: "GDTR, point at 0xA000"</div>
+  <div class="flow-arrow">↓</div>
+  <div class="flow-box">3. Kernel runs <code>mov cs, 0x08</code>, <code>mov ds, 0x10</code>, etc.</div>
+  <div class="flow-arrow">↓</div>
+  <div class="flow-box">4. CPU reads GDT entries #1 and #2, caches their rules</div>
+  <div class="flow-arrow">↓</div>
+  <div class="flow-box">5. From now on, every code/data/stack access uses those rules automatically</div>
+</div>
+
+<h2>Why do we even need this in 64-bit mode?</h2>
+
+<p>Short version: <strong>history</strong>. We're paying for a design choice made in 1982.</p>
+
+<p>Back then, the 80286 needed a way to enforce memory protection. They invented segmentation: divide memory into named chunks, each with rules. The GDT held those rules.</p>
+
+<p>In 1985, the 386 added <strong>paging</strong>, which is a much better way to do memory protection. Segmentation became redundant.</p>
+
+<p>In 2000, AMD designed the 64-bit extension (AMD64 / x86-64) and basically said: <em>"segmentation is broken, we're making all segments flat — base address 0, no size limit, just privilege bits and type."</em></p>
+
+<p>So in 64-bit mode, the GDT's original job (memory layout) is <strong>gone</strong>. Paging does that. The GDT survives because:</p>
+
+<ol>
+  <li>The CPU still <em>requires</em> segment registers to be loaded with valid GDT entries for code/data/stack — even if all segments are flat.</li>
+  <li>Privilege levels (kernel vs user) are stored in GDT entries. You can't say "I'm in ring 0" without a GDT entry that says so.</li>
+  <li>The TSS (Task State Segment), which we'll need for interrupt stack switching later, lives in the GDT.</li>
+</ol>
+
+<div class="analogy">
+  <strong>Analogy:</strong> imagine a building from 1982 where every door had a keycard reader that checked a printed binder of rules. In 2000 they renovated: now there's a digital access system (paging). But the old binder (GDT) is still required at the front desk, mostly ignored except for "is this person staff or public." Removing it would break too much existing infrastructure.
+</div>
+
+<h2>What this means for our kernel</h2>
+
+<p>We need to:</p>
+
+<ol>
+  <li>Add the <code>x86_64</code> crate (a Rust wrapper for hardware data structures)</li>
+  <li>Build a tiny GDT in memory: <code>[null, kernel_code, kernel_data]</code></li>
+  <li>Run the <code>lgdt</code> instruction to tell the CPU where it is</li>
+  <li>Reload <code>CS</code>, <code>DS</code>, <code>SS</code>, etc. so the CPU picks up our new entries</li>
+</ol>
+
+<p>That's it. The result is invisible — no change on screen. The kernel just keeps running. But now we own the GDT, which we need before interrupts (M1 continues), syscalls (M4), and user-mode (M4).</p>
+
+<h2>Recap in one breath</h2>
+
+<div class="callout">
+  <strong>GDT</strong> = a small array of entries in RAM.<br>
+  Each entry says <em>"here's a memory region, here's what kind (code/data), here's its privilege tier, here's whether it's present."</em><br>
+  The CPU has a register (<strong>GDTR</strong>) pointing at this array.<br>
+  The CPU has 6 <strong>segment registers</strong> (CS, DS, SS, ES, FS, GS) that each pick an entry from the array.<br>
+  When you load a segment register, the CPU fetches the entry, validates it, and caches its rules.<br>
+  In 64-bit mode, segments are flat — the GDT exists mainly for privilege levels and as a place to find the TSS.<br>
+  Our kernel needs its own GDT before it can do interrupts or syscalls.
+</div>
+
+<footer>
+  mini-os learning aid · open this file in any browser · refer back any time the GDT feels fuzzy.
+</footer>
+
+</body>
+</html>

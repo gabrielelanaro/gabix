@@ -138,6 +138,33 @@ In a normal program the C runtime provides `_start` (does setup, then calls `mai
 
 The format is just the vocabulary the bootloader uses to find the entry point and figure out which bytes go where in RAM. After the jump, the bootloader is done and the kernel runs.
 
+### The Intel SDM (Software Developer's Manual)
+
+The source of truth for x86-64. Multi-volume PDF (~5000 pages) published by Intel documenting every register, instruction, data structure, and rule the CPU enforces. Use it as a reference, not a tutorial — search by section number when you need an exact bit layout or semantics.
+
+**Landing page:** https://www.intel.com/sdm
+
+**Volumes that matter for OS work:**
+
+| Vol | Title | When to open |
+|---|---|---|
+| 1 | Basic Architecture | background reading — registers, modes, data types |
+| 2 | Instruction Set Reference | looking up a specific instruction's exact semantics |
+| 3 | System Programming Guide | **the OS bible** — GDT, IDT, paging, exceptions, multitasking |
+| 4 | Model-Specific Registers | per-CPU MSR reference (model-dependent) |
+| 5 | Architecture Extensions | rarely (SGX, TSX, etc.) |
+
+For mini-os, **Volume 3** is what we'll open ~90% of the time. Key sections we'll hit:
+
+- §3.4 — Segment descriptors (GDT entry layout) — **M1 GDT slice**
+- §6 — Exception and interrupt handling (IDT, fault types) — **M1 IDT slice**
+- §4 — Paging (page tables, PTE bits) — **M2**
+- §7 — Task management (TSS) — partial, **M1**
+
+**Alternative for 64-bit stuff:** AMD64 Architecture Programmer's Manual, Volume 2 (System Programming). Often clearer because AMD designed the 64-bit extension. https://developer.amd.com/resources/developer-guides-manuals/
+
+**How to use it:** Ctrl-F the PDF by section number. The bit-field diagrams are the gold standard — they're literally what hardware implements. When a tutorial disagrees with the SDM, the SDM wins.
+
 ### Bootloader vocabulary
 
 | Term | Meaning |
