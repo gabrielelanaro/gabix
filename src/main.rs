@@ -1,31 +1,24 @@
 #![no_std] // Don't link the Rust standard library.
 #![no_main] // Don't use the normal Rust entry point chain.
 
-use core::panic::PanicInfo;
-use core::ptr;
+mod vga_buffer;
 
-/// This function is called on panic. We have no std to print or unwind,
-/// so the only thing we can do is halt forever.
+use core::panic::PanicInfo;
+
+/// Called on panic. We have no stack unwinding, so we just halt.
+/// Printing the panic info would risk deadlock if the panic happened
+/// while WRITER was held; we'll address that in a later slice.
 #[panic_handler]
 fn panic(_info: &PanicInfo) -> ! {
     loop {}
 }
 
 /// The kernel entry point. The bootloader jumps here after switching
-/// to long mode and setting up paging. The `#[no_mangle]` attribute
-/// prevents Rust from renaming the symbol, so the linker can find it
-/// by its exact name `_start`. The `extern "C"` makes the calling
-/// convention C-compatible (required by the boot protocol). The
-/// `-> !` return type means it never returns.
+/// to long mode and setting up paging.
 #[no_mangle]
 pub extern "C" fn _start() -> ! {
-    let vga = 0xb8000 as *mut u8;
-    let s = b"Hello, World!";
-    for (i, &byte) in s.iter().enumerate() {
-        unsafe {
-            ptr::write_volatile(vga.add(i * 2), byte);
-            ptr::write_volatile(vga.add(i * 2 + 1), 0x0a);
-        }
-    }
+    println!("Hello, World{}", "!");
+    println!("Welcome to mini-os: a Linux-like kernel in Rust.");
+
     loop {}
 }

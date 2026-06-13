@@ -294,6 +294,15 @@ Most recent entries at the top. One entry per work session.
 - **Notes / blockers / surprises:** (anything useful for future-you)
 - **Next:** (where to pick up next time)
 
+### 2026-06-13 (slice 4) — Writer abstraction
+- **Done:** Moved VGA buffer code into `src/vga_buffer.rs` as a typed module. Added `Color`/`ColorCode`/`ScreenChar`/`Buffer`/`Writer` types, scrolling, newline handling, `fmt::Write` impl, global `WRITER` guarded by a spin `Mutex`, and `print!`/`println!` macros. `_start` now calls `println!` instead of hand-rolling pointer writes.
+- **Status:** No new roadmap items flipped (this is a refactor of 1.3, not a new milestone). Still at M0.
+- **Notes / blockers / surprises:**
+  - Dropped the `volatile` crate — its current API requires `T: Deref` for `.write()`/`.read()` on `Volatile<T>`, which doesn't make sense for our `ScreenChar`. Switched to `core::ptr::write_volatile`/`read_volatile` directly.
+  - `lazy_static!` is needed because recent Rust const evaluation rejects `&mut *(0xb8000 as *mut Buffer)` — the raw integer "has no provenance." lazy_static defers construction to first use, sidestepping the check.
+  - `spin::Mutex` works in `no_std` because it uses a spinlock instead of OS-level mutex primitives.
+- **Next:** M1 = interrupts (1.4 GDT, 1.5 IDT, 1.6 hardware interrupts, 1.7 panic with stack trace).
+
 ### 2026-06-13 (slice 3) — MILESTONE M0
 - **Done:** Milestone M0 reached. Wrote to the VGA text buffer at `0xB8000` (25 rows × 80 cols × 2 bytes per cell). First iteration used naive `*vga.add(N) = ...` pointer writes — visible "Hello, World!" but fragile (compiler could elide "dead" writes since we never read them). Fixed by switching to `core::ptr::write_volatile`, which tells LLVM the writes have side effects and must not be optimized away.
 - **Status:** Checkbox 1.3 flipped to `[x]`. **M0 reached** (boots in QEMU + prints to screen). Tagged `m0-hello-world`.
