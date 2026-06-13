@@ -2,6 +2,7 @@
 #![no_main] // Don't use the normal Rust entry point chain.
 
 use core::panic::PanicInfo;
+use core::ptr;
 
 /// This function is called on panic. We have no std to print or unwind,
 /// so the only thing we can do is halt forever.
@@ -18,7 +19,13 @@ fn panic(_info: &PanicInfo) -> ! {
 /// `-> !` return type means it never returns.
 #[no_mangle]
 pub extern "C" fn _start() -> ! {
-    // For now, the kernel just halts. Slice 2 will add booting,
-    // slice 3 will add VGA + printing "Hello, World".
+    let vga = 0xb8000 as *mut u8;
+    let s = b"Hello, World!";
+    for (i, &byte) in s.iter().enumerate() {
+        unsafe {
+            ptr::write_volatile(vga.add(i * 2), byte);
+            ptr::write_volatile(vga.add(i * 2 + 1), 0x0a);
+        }
+    }
     loop {}
 }

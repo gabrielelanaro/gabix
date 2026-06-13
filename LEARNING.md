@@ -11,7 +11,7 @@ Status legend: `[ ]` not started · `[~]` in progress · `[x]` done
 ### Month 1 — Skeleton & boot
 - [x] 1.1 Freestanding Rust binary, `no_std`, custom panic handler
 - [x] 1.2 `bootimage` / `bootloader` crate setup, boot in QEMU
-- [ ] 1.3 VGA text-mode buffer, print "Hello, World"
+- [x] 1.3 VGA text-mode buffer, print "Hello, World"
 - [ ] 1.4 GDT (Global Descriptor Table)
 - [ ] 1.5 IDT + interrupt handlers
 - [ ] 1.6 Hardware interrupts: PIC/APIC timer
@@ -293,6 +293,15 @@ Most recent entries at the top. One entry per work session.
 - **Status:** (which milestones/checkboxes flipped)
 - **Notes / blockers / surprises:** (anything useful for future-you)
 - **Next:** (where to pick up next time)
+
+### 2026-06-13 (slice 3) — MILESTONE M0
+- **Done:** Milestone M0 reached. Wrote to the VGA text buffer at `0xB8000` (25 rows × 80 cols × 2 bytes per cell). First iteration used naive `*vga.add(N) = ...` pointer writes — visible "Hello, World!" but fragile (compiler could elide "dead" writes since we never read them). Fixed by switching to `core::ptr::write_volatile`, which tells LLVM the writes have side effects and must not be optimized away.
+- **Status:** Checkbox 1.3 flipped to `[x]`. **M0 reached** (boots in QEMU + prints to screen). Tagged `m0-hello-world`.
+- **Notes / blockers / surprises:**
+  - VGA buffer at `0xB8000` is just memory-mapped I/O. Each cell = 2 bytes (ASCII + color attribute). No syscalls, no `printf` — just write bytes to a magic address.
+  - Color byte: high 4 bits = bg, low 4 bits = fg. `0x0a` = light green on black.
+  - `volatile` is for telling the compiler "this memory access has side effects" — needed for all MMIO. Will become important again when we touch APIC, NIC, disk controllers.
+- **Next:** Build a proper `Writer` struct (volatile crate, ScreenChar/Buffer types, `fmt::Write` impl so we can use `write!` macro) before adding interrupts in M1.
 
 ### 2026-06-13 (slice 2)
 - **Done:** Booting in QEMU. Installed QEMU 11.0.1 (`brew install qemu`) and `bootimage` 0.10.4 (`cargo install bootimage`). Added `bootloader = "0.9"` to Cargo.toml and configured `bootimage runner` in `.cargo/config.toml`. `cargo run` builds a 51KB bootable disk image (`bootimage-mini-os.bin`) and launches QEMU. Black screen = success — SeaBIOS → bootloader crate → our `_start` → `loop {}`.
