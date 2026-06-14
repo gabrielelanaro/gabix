@@ -5,6 +5,7 @@ mod vga_buffer;
 mod gdt;
 mod interrupts;
 mod pic;
+mod pit;
 
 use core::panic::PanicInfo;
 
@@ -23,6 +24,7 @@ pub extern "C" fn _start() -> ! {
     gdt::init();
     interrupts::init();
     pic::init();
+    pit::set_frequency(2); // 2 Hz = one tick every 500ms (visible but not overwhelming)
     println!("Hello, World{}", "!");
     println!("Welcome to mini-os: a Linux-like kernel in Rust.");
 

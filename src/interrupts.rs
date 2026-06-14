@@ -5,17 +5,26 @@ use core::arch::naked_asm;
 use lazy_static::lazy_static;
 use x86_64::structures::idt::{HandlerFunc, InterruptDescriptorTable, InterruptStackFrame};
 
+/// Vector number for the timer (PIC IRQ 0, mapped to vector 0x20 = 32).
+/// Matches `crate::pic::PIC_1_OFFSET`.
+const TIMER_VECTOR: u8 = 0x20;
+
 lazy_static! {
     /// The kernel's IDT. Add handlers here as we implement them.
     static ref IDT: InterruptDescriptorTable = {
         let mut idt = InterruptDescriptorTable::new();
-        // Cast the naked wrapper to the typed HandlerFunc. The CPU only
+        // Cast each naked wrapper to the typed HandlerFunc. The CPU only
         // stores the function address in the IDT — Rust's ABI distinctions
-        // don't matter at the hardware level. Our wrapper is naked (no
+        // don't matter at the hardware level. Our wrappers are naked (no
         // Rust-generated prologue), so there's no actual ABI mismatch.
-        let handler: HandlerFunc =
+        let bp: HandlerFunc =
             unsafe { core::mem::transmute(breakpoint_wrapper as unsafe extern "C" fn()) };
-        idt.breakpoint.set_handler_fn(handler);
+        idt.breakpoint.set_handler_fn(bp);
+
+        let timer: HandlerFunc =
+            unsafe { core::mem::transmute(timer_wrapper as unsafe extern "C" fn()) };
+        idt[TIMER_VECTOR].set_handler_fn(timer);
+
         idt
     };
 }
@@ -65,4 +74,30 @@ unsafe extern "C" fn breakpoint_wrapper() {
 /// guaranteed 16-byte stack alignment on entry.
 extern "C" fn breakpoint_inner(stack_frame: &InterruptStackFrame) {
     println!("EXCEPTION: BREAKPOINT\n{:#?}", stack_frame);
+}
+
+/// Naked wrapper for the timer interrupt (vector 0x20 / PIC IRQ 0).
+/// Same pattern as breakpoint_wrapper: realign stack, call inner, return.
+#[unsafe(naked)]
+unsafe extern "C" fn timer_wrapper() {
+    naked_asm!(
+        "sub rsp, 8",
+        "lea rdi, [rsp + 8]",
+        "call {inner}",
+        "add rsp, 8",
+        "iretq",
+        inner = sym timer_inner,
+    );
+}
+
+/// The actual timer handler. Prints "tick" and sends EOI to the PIC so
+/// the next tick can fire. Without the EOI, the PIC would never deliver
+/// another timer interrupt.
+extern "C" fn timer_inner(_stack_frame: &InterruptStackFrame) {
+    println!("tick");
+    unsafe {
+        crate::pic::PICS
+            .lock()
+            .notify_end_of_interrupt(TIMER_VECTOR);
+    }
 }
