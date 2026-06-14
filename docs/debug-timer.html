@@ -1,0 +1,416 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Debugging the Timer — mini-os</title>
+<style>
+  :root {
+    --bg: #fafafa;
+    --border: #d1d5db;
+    --muted: #6b7280;
+    --cpu: #1e3a8a;
+    --panic: #dc2626;
+    --ok: #16a34a;
+    --warn: #ea580c;
+    --note: #fef3c7;
+    --terminal-bg: #1f2937;
+    --terminal-fg: #e5e7eb;
+    --terminal-comment: #94a3b8;
+  }
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    max-width: 1080px;
+    margin: 0 auto;
+    padding: 2rem 1.5rem 4rem;
+    line-height: 1.55;
+    color: #111827;
+    background: var(--bg);
+  }
+  h1 { font-size: 2rem; margin-bottom: 0.25rem; }
+  h2 {
+    font-size: 1.3rem;
+    margin-top: 2.5rem;
+    margin-bottom: 0.5rem;
+    padding-bottom: 0.3rem;
+    border-bottom: 2px solid var(--border);
+  }
+  h3 { font-size: 1.05rem; margin-top: 1.5rem; margin-bottom: 0.5rem; color: var(--cpu); }
+  p { margin: 0.6rem 0; }
+  .lede { font-size: 1.1rem; color: #374151; }
+  code, .mono {
+    font-family: "SF Mono", Menlo, Consolas, monospace;
+    font-size: 0.92em;
+    background: #f3f4f6;
+    padding: 0.1em 0.35em;
+    border-radius: 3px;
+  }
+  pre {
+    background: var(--terminal-bg);
+    color: var(--terminal-fg);
+    padding: 0.85rem 1rem;
+    border-radius: 6px;
+    overflow-x: auto;
+    font-size: 0.82rem;
+    line-height: 1.45;
+  }
+  pre code { background: transparent; padding: 0; color: inherit; }
+  pre .c { color: var(--terminal-comment); font-style: italic; }
+  pre .hi { color: #fde047; font-weight: 600; }
+  pre .ok { color: #86efac; }
+  pre .bad { color: #fca5a5; }
+  pre .warn { color: #fdba74; }
+
+  .callout {
+    background: var(--note);
+    border-left: 4px solid #f59e0b;
+    padding: 0.6rem 1rem;
+    margin: 1rem 0;
+    border-radius: 0 4px 4px 0;
+  }
+  .insight {
+    background: #eff6ff;
+    border-left: 4px solid var(--cpu);
+    padding: 0.6rem 1rem;
+    margin: 1rem 0;
+    border-radius: 0 4px 4px 0;
+  }
+
+  /* Step indicators */
+  .step {
+    display: flex;
+    align-items: flex-start;
+    margin: 1.25rem 0;
+    padding: 1rem;
+    background: white;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+  }
+  .step-num {
+    flex-shrink: 0;
+    width: 2.25rem;
+    height: 2.25rem;
+    background: var(--cpu);
+    color: white;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: 700;
+    font-size: 1rem;
+    margin-right: 1rem;
+  }
+  .step-num.bug { background: var(--panic); }
+  .step-num.fix { background: var(--ok); }
+  .step-body { flex: 1; }
+  .step-body h3 { margin-top: 0; }
+
+  /* Code comparison */
+  .compare {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 1rem;
+    margin: 1rem 0;
+  }
+  .compare-col h4 {
+    margin: 0 0 0.4rem 0;
+    font-size: 0.9rem;
+    color: var(--muted);
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+  .compare-col.bad h4 { color: var(--panic); }
+  .compare-col.good h4 { color: var(--ok); }
+
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 1rem 0;
+    font-size: 0.92rem;
+  }
+  th, td {
+    padding: 0.5rem 0.75rem;
+    border-bottom: 1px solid var(--border);
+    text-align: left;
+  }
+  th { background: #f3f4f6; font-weight: 600; }
+
+  /* Tool list */
+  .tools {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+    gap: 0.75rem;
+    margin: 1rem 0;
+  }
+  .tool {
+    background: white;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 0.75rem;
+    border-left: 4px solid var(--cpu);
+  }
+  .tool .cmd { font-family: monospace; font-size: 0.85rem; color: var(--cpu); font-weight: 600; }
+  .tool .what { font-size: 0.85rem; margin-top: 0.25rem; color: #4b5563; }
+
+  footer {
+    margin-top: 3rem;
+    padding-top: 1.5rem;
+    border-top: 1px solid var(--border);
+    color: var(--muted);
+    font-size: 0.85rem;
+  }
+</style>
+</head>
+<body>
+
+<h1>Debugging the Timer Interrupt</h1>
+<p class="lede">
+A walkthrough of how I found and fixed two real bugs that prevented timer interrupts from firing. Each bug needed a different debugging technique. Both techniques are reusable for any future kernel debugging.
+</p>
+
+<h2>The setup</h2>
+
+<p>After wiring up the PIC + PIT + IDT + handler for the timer interrupt, I expected to see <code>tick #N</code> printed once per second. Instead: black screen. No output, no ticks.</p>
+
+<p>I had to figure out which of many possible failure modes was happening:</p>
+<ul>
+  <li>Did the kernel even boot?</li>
+  <li>Did it panic during init?</li>
+  <li>Are interrupts being delivered?</li>
+  <li>Is the handler running?</li>
+  <li>Is the screen rendering correctly?</li>
+</ul>
+
+<p>Two bugs were stacked on top of each other. Here's how I found each one.</p>
+
+<h2>Bug #1: PIC mask (timer was masked)</h2>
+
+<div class="step">
+  <div class="step-num bug">1</div>
+  <div class="step-body">
+    <h3>Symptom: ticks don't fire after <code>enable()</code></h3>
+    <p>First hypothesis: I'd read the pic8259 source and saw this:</p>
+    <pre><code><span class="c">// in pic8259::initialize()</span>
+<span class="c">// Save our original interrupt masks, because I'm too lazy to</span>
+<span class="c">// figure out reasonable values. We'll restore these when we're done.</span>
+<span class="hi">let saved_masks = self.read_masks();</span>
+<span class="c">// ... initialization sequence ...</span>
+<span class="hi">self.write_masks(saved_masks[0], saved_masks[1])</span></code></pre>
+    <p>The library <em>saves</em> whatever mask state the firmware left and <em>restores</em> it after init. In QEMU, the BIOS leaves everything masked. So <code>initialize()</code> was "done" but the timer was still masked → no interrupts delivered.</p>
+  </div>
+</div>
+
+<div class="step">
+  <div class="step-num fix">2</div>
+  <div class="step-body">
+    <h3>Fix: explicitly unmask IRQ 0</h3>
+    <p>After <code>initialize()</code>, write the masks ourselves:</p>
+    <pre><code>pub fn init() {
+    unsafe {
+        let mut pics = PICS.lock();
+        pics.initialize();
+        <span class="hi">pics.write_masks(0xFE, 0xFF);</span>
+    }
+}</code></pre>
+    <p><code>0xFE</code> in binary is <code>11111110</code>. Bit 0 = 0 means "IRQ 0 (timer) UNMASKED." All other bits = 1 means "every other IRQ masked." Slave mask <code>0xFF</code> = all masked.</p>
+  </div>
+</div>
+
+<h2>Bug #2: panic in <code>set_frequency(2)</code></h2>
+
+<p>After fixing the mask, still black screen. Time to actually look inside the running kernel.</p>
+
+<div class="step">
+  <div class="step-num">3</div>
+  <div class="step-body">
+    <h3>Tool: QEMU monitor via Unix socket</h3>
+    <p>Run QEMU with <code>-display none</code> and a monitor socket, then send commands via <code>nc -U</code>:</p>
+    <pre><code>qemu-system-x86_64 -drive format=raw,file=.../mini-os.bin \
+  -display none \
+  -monitor unix:/tmp/qm.sock,server,nowait &amp;
+
+sleep 4  <span class="c"># let kernel boot</span>
+
+<span class="c"># Dump first 32 bytes of VGA memory</span>
+echo <span class="hi">"xp /32bx 0xb8000"</span> | nc -U /tmp/qm.sock
+
+<span class="c"># Print CPU registers (look at RIP)</span>
+echo <span class="hi">"info registers"</span> | nc -U /tmp/qm.sock</code></pre>
+    <p>The monitor doesn't need screen-recording permission (unlike macOS screencapture) and lets us inspect any memory or register directly.</p>
+  </div>
+</div>
+
+<div class="step">
+  <div class="step-num">4</div>
+  <div class="step-body">
+    <h3>Found: VGA buffer was all zeros</h3>
+    <p>The <code>xp /32bx 0xb8000</code> command returned:</p>
+    <pre><code>000b8000: 0x00 0x00 0x00 0x00 0x00 0x00 0x00 0x00
+000b8008: 0x00 0x00 0x00 0x00 0x00 0x00 0x00 0x00
+...</code></pre>
+    <p>Not even <code>[boot] gdt...</code> was printed. So the kernel was hanging or panicking before any <code>println!</code> actually wrote.</p>
+  </div>
+</div>
+
+<div class="step">
+  <div class="step-num">5</div>
+  <div class="step-body">
+    <h3>Found: RIP pointed at <code>jmp -2</code> (infinite loop)</h3>
+    <p><code>info registers</code> showed:</p>
+    <pre><code>RIP=<span class="hi">0000000000206c15</span></code></pre>
+    <p>Disassemble around that address:</p>
+    <pre><code>0x00206c15:  eb fe    jmp      0x206c15   <span class="bad"># jmp -2 = infinite loop on itself</span></code></pre>
+    <p>Look up the symbol with <code>nm</code>:</p>
+    <pre><code>$ nm mini-os | sort | awk '$1 &lt;= "0000000000206c15" {last=$0} END {print last}'
+0000000000206c10 t <span class="hi">rust_begin_unwind</span></code></pre>
+    <p><strong>The kernel was panicking.</strong> The infinite loop is the default panic handler doing <code>loop {}</code>.</p>
+  </div>
+</div>
+
+<div class="step">
+  <div class="step-num">6</div>
+  <div class="step-body">
+    <h3>Walk the stack to find who panicked</h3>
+    <p>Dump the kernel stack with <code>x /20gx $rsp</code>. The non-zero values are return addresses:</p>
+    <pre><code>0x...1f80: ... 0x000000000020dc14   <span class="c"># panic fmt helper</span>
+0x...1f90: ... 0x000000000021b468
+0x...1fa0: ... 0x00000000002017ee
+0x...1fc0: ... 0x000000000020778e   <span class="c"># in pit::set_frequency</span>
+0x...1fe0: ... <span class="hi">0x0000000000206caa</span>   <span class="c"># return addr from set_frequency call</span>
+0x...1ff0: <span class="ok">0x0000000000206c20</span>       <span class="c"># _start</span></code></pre>
+    <p>The call chain (top = innermost):</p>
+    <pre><code>_start (0x206c20)
+  ↓ calls at 0x206ca5
+pit::set_frequency (0x207730)
+  ↓ panics
+rust_begin_unwind (0x206c15)
+  ↓ loops forever
+<span class="bad">stuck</span></code></pre>
+    <p>So <strong><code>pit::set_frequency</code> was the source of the panic.</strong></p>
+  </div>
+</div>
+
+<div class="step">
+  <div class="step-num bug">7</div>
+  <div class="step-body">
+    <h3>The panic: divisor overflow</h3>
+    <p>Look at the source of <code>set_frequency</code>:</p>
+    <pre><code>pub fn set_frequency(frequency_hz: u32) {
+    let divisor = BASE_FREQUENCY_HZ / frequency_hz;
+    <span class="hi">assert!(divisor &lt; 0x10000, "frequency too low — divisor doesn't fit in 16 bits");</span>
+    ...
+}</code></pre>
+    <p>For <code>frequency_hz = 2</code>: <code>divisor = 1193182 / 2 = 596591</code>. That's way bigger than <code>0x10000</code> (65535). <strong>Assert fails → panic.</strong></p>
+    <p>Physical reason: the PIT divisor is a 16-bit register. Max value 65535. The PIT's base clock is ~1.193 MHz, so the minimum programmable frequency is <code>1193182 / 65535 ≈ 18.2 Hz</code>. You literally cannot ask for 2 Hz.</p>
+  </div>
+</div>
+
+<div class="step">
+  <div class="step-num fix">8</div>
+  <div class="step-body">
+    <h3>Fix: 100 Hz + throttle the printing</h3>
+    <p>Use a realistic frequency (100 Hz is Linux's default), then throttle the visible output:</p>
+    <pre><code><span class="c">// In _start:</span>
+pit::set_frequency(<span class="ok">100</span>);
+
+<span class="c">// In interrupts.rs:</span>
+static TICKS: AtomicUsize = AtomicUsize::new(0);
+
+extern "C" fn timer_inner(_sf: &amp;InterruptStackFrame) {
+    let count = TICKS.fetch_add(1, Ordering::SeqCst) + 1;
+    <span class="hi">if count % 100 == 0 {</span>
+        println!("tick #{}", count);
+    }
+    unsafe { crate::pic::PICS.lock().notify_end_of_interrupt(0x20); }
+}</code></pre>
+    <p>Result: timer fires 100×/sec (good for scheduling), but we only see <code>tick #100</code>, <code>tick #200</code>, etc. — once per second.</p>
+  </div>
+</div>
+
+<h2>Bug #3 (gotcha): stale bootimage</h2>
+
+<p>After applying both fixes, the screen was STILL black. VGA dump showed all zeros.</p>
+
+<div class="callout">
+  <strong>The trap:</strong> <code>cargo build</code> rebuilds the kernel ELF, but the bootable disk image (<code>bootimage-mini-os.bin</code>) is built by the <code>bootimage</code> tool. If you only ran <code>cargo build</code>, QEMU is booting the <em>old</em> kernel.
+</div>
+
+<p>Fix: always run <code>cargo run</code> (which triggers bootimage) or <code>cargo bootimage</code> explicitly after code changes. Don't trust <code>cargo build</code> alone when running in QEMU.</p>
+
+<h2>The debugging toolkit, summarized</h2>
+
+<div class="tools">
+  <div class="tool">
+    <div class="cmd">echo "xp /Nbx ADDR" | nc -U /tmp/qm.sock</div>
+    <div class="what">Dump N bytes of physical memory at ADDR. Use 0xb8000 for VGA, 0x21d7f0 for IDT, etc.</div>
+  </div>
+  <div class="tool">
+    <div class="cmd">echo "info registers" | nc -U /tmp/qm.sock</div>
+    <div class="what">Print all CPU registers. RIP tells you what's executing; RSP where the stack is.</div>
+  </div>
+  <div class="tool">
+    <div class="cmd">echo "x /20i ADDR" | nc -U /tmp/qm.sock</div>
+    <div class="what">Disassemble 20 instructions starting at ADDR. Lets you see what the CPU is actually running.</div>
+  </div>
+  <div class="tool">
+    <div class="cmd">echo "x /20gx $rsp" | nc -U /tmp/qm.sock</div>
+    <div class="what">Dump 20 8-byte values from the stack. Non-zero values are usually return addresses — walk them to get a backtrace.</div>
+  </div>
+  <div class="tool">
+    <div class="cmd">nm mini-os | sort | awk '$1 &lt;= ADDR {last=$0} END {print last}'</div>
+    <div class="what">Look up which function contains a hex address. Walks sorted symbol table, returns the most recent function whose address ≤ target.</div>
+  </div>
+  <div class="tool">
+    <div class="cmd">objdump -d mini-os | grep -A 20 "FN_NAME:"</div>
+    <div class="what">Disassemble a specific function by name. Useful to verify what the compiler generated.</div>
+  </div>
+  <div class="tool">
+    <div class="cmd">cargo bootimage</div>
+    <div class="what">Rebuild the bootable disk image. <strong>Must run this</strong> (or cargo run) after code changes; cargo build alone leaves a stale .bin.</div>
+  </div>
+  <div class="tool">
+    <div class="cmd">qemu ... -d int -D qemu.log</div>
+    <div class="what">Log every interrupt/exception to a file. Useful for tracing fault cascades.</div>
+  </div>
+</div>
+
+<h2>The mental flowchart</h2>
+
+<pre><code>Kernel doesn't print what I expect
+    ↓
+Dump VGA at 0xb8000
+    ├─&gt; Has text?  → writer is fine, problem is elsewhere
+    └─&gt; All zeros? → kernel isn't writing
+         ↓
+         Check RIP via monitor
+            ├─&gt; RIP in real code? → kernel running, look at what it's doing
+            └─&gt; RIP at <code>eb fe</code> (jmp -2)? → stuck in panic handler
+                 ↓
+                 Walk stack (x /20gx $rsp)
+                    ↓
+                    Decode return addresses via nm
+                       ↓
+                       Find which function panicked
+                          ↓
+                          Read its source — usually obvious why</code></pre>
+
+<h2>Lessons</h2>
+
+<div class="insight">
+  <ol style="margin: 0.4rem 0; padding-left: 1.2rem;">
+    <li><strong>Read the source of your dependencies.</strong> The pic8259 mask behavior was a 4-line comment in its source. Saved hours of guessing.</li>
+    <li><strong>QEMU monitor is your GDB.</strong> It's available even when GDB isn't set up. Can inspect any memory or register, disassemble, walk stacks.</li>
+    <li><strong>Panic handler with <code>loop {}</code> is a black hole.</strong> It hides the panic. We had to read RIP and the stack to figure out it was a panic at all.</li>
+    <li><strong>Know your hardware's constraints.</strong> PIT max divisor 65535 isn't a software choice — it's a 16-bit register. The error message tells you only if you ask.</li>
+    <li><strong>Rebuild via the right tool.</strong> <code>cargo build</code> ≠ <code>cargo bootimage</code>. One of them gives you a stale binary.</li>
+    <li><strong>Debug method &gt; guess-and-check.</strong> Five minutes of inspection (VGA dump, RIP, stack) saved an hour of trial-and-error.</li>
+  </ol>
+</div>
+
+<footer>
+  mini-os learning aid · debugging the timer, in pictures · open in any browser
+</footer>
+
+</body>
+</html>
