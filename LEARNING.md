@@ -12,7 +12,7 @@ Status legend: `[ ]` not started · `[~]` in progress · `[x]` done
 - [x] 1.1 Freestanding Rust binary, `no_std`, custom panic handler
 - [x] 1.2 `bootimage` / `bootloader` crate setup, boot in QEMU
 - [x] 1.3 VGA text-mode buffer, print "Hello, World"
-- [ ] 1.4 GDT (Global Descriptor Table)
+- [x] 1.4 GDT (Global Descriptor Table)
 - [ ] 1.5 IDT + interrupt handlers
 - [ ] 1.6 Hardware interrupts: PIC/APIC timer
 - [ ] 1.7 Panic with stack trace
@@ -360,6 +360,16 @@ Most recent entries at the top. One entry per work session.
 - **Status:** (which milestones/checkboxes flipped)
 - **Notes / blockers / surprises:** (anything useful for future-you)
 - **Next:** (where to pick up next time)
+
+### 2026-06-14 (slice 5) — GDT
+- **Done:** Installed our own GDT. Added `x86_64 = "0.15"` crate. Created `src/gdt.rs` with a `lazy_static!` GDT containing null + kernel code + kernel data segments, and an `init()` that calls `load()` then reloads CS/DS/SS/ES/FS/GS. Called `gdt::init()` from `_start` before the `println!`s.
+- **Status:** Checkbox 1.4 flipped to `[x]`. Still at M0 (interrupts need 1.5–1.7).
+- **Notes / blockers / surprises:**
+  - `x86_64` 0.15 renamed `add_entry` → `append` (older phil-opp blog uses `add_entry`).
+  - `CS::set_reg` is special vs other segment registers — can't `mov` to CS, needs an internal far-return trick. The crate handles it; caller API is the same.
+  - Swapping GDT is invisible: bootloader's GDT had the same "kernel code + data, ring 0" rules we install. Visible behavior identical (same `Hello, World!`). Only "proof" of correctness is no triple fault.
+  - Key conceptual breakthrough: in long mode, segments are *permission envelopes over the entire address space*, not specific memory ranges. Base/limit fields in the GDT entry exist but are ignored.
+- **Next:** 1.5 IDT — Interrupt Descriptor Table. Tells the CPU "when exception/interrupt N fires, call this handler." First slice where we actually handle CPU exceptions.
 
 ### 2026-06-13 (slice 4) — Writer abstraction
 - **Done:** Moved VGA buffer code into `src/vga_buffer.rs` as a typed module. Added `Color`/`ColorCode`/`ScreenChar`/`Buffer`/`Writer` types, scrolling, newline handling, `fmt::Write` impl, global `WRITER` guarded by a spin `Mutex`, and `print!`/`println!` macros. `_start` now calls `println!` instead of hand-rolling pointer writes.

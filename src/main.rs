@@ -2,6 +2,7 @@
 #![no_main] // Don't use the normal Rust entry point chain.
 
 mod vga_buffer;
+mod gdt;
 
 use core::panic::PanicInfo;
 
@@ -17,6 +18,7 @@ fn panic(_info: &PanicInfo) -> ! {
 /// to long mode and setting up paging.
 #[no_mangle]
 pub extern "C" fn _start() -> ! {
+    gdt::init();
     println!("Hello, World{}", "!");
     println!("Welcome to mini-os: a Linux-like kernel in Rust.");
 
