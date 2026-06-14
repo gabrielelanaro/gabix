@@ -223,6 +223,147 @@ The address is **not hardcoded** — it adapts to whatever the firmware reports.
 
 Our `bootloader = "0.9"` crate does all this. We can read the chosen address via `BootInfo::stack_top` if we change `_start` to accept it. For now we just inherit RSP and don't query it.
 
+### I/O ports (separate address space)
+
+x86 has **two** address spaces for talking to hardware:
+
+| Address space | Range | Access | Examples |
+|---|---|---|---|
+| Memory | 0 to 2⁶⁴-1 | Normal pointer (`mov`) | VGA buffer at `0xB8000` |
+| I/O ports | 0 to 65535 | Special `in`/`out` instructions | PIT at `0x40`, PIC at `0x20`, keyboard at `0x60` |
+
+These are **different namespaces**. Port `0x40` and memory address `0x40` are unrelated.
+
+In Rust, the `x86_64` crate's `Port<T>` type wraps `in`/`out`:
+```rust
+let mut port: Port<u8> = Port::new(0x40);
+unsafe { port.write(0x36); }  // emits `out dx, al`
+```
+
+**Why two spaces:** historical. Intel 8086 (1978) had separate I/O instructions. Most modern architectures (ARM, RISC-V) have only memory-mapped I/O. x86 kept ports for backward compat. Newer devices (PCIe, NVMe, USB) use memory-mapped I/O exclusively; legacy stuff (PIT, PIC, PS/2) still uses ports.
+
+**Analogy:** building with elevators (memory) and a mailroom with PO boxes (ports). Different numbering, different staff.
+
+### Interrupts and the IDT
+
+**Interrupt** = "pause this code, run a handler, resume where you left off." The whole OS is built on this primitive.
+
+Three types:
+- **Hardware interrupt** — device signals the CPU (timer tick, key press, disk done)
+- **CPU exception** — CPU detected an error (divide by zero, page fault, invalid opcode)
+- **Software interrupt** — your code asked for one (`int3` breakpoint, `int 0x80` old syscall)
+
+All three go through the **IDT (Interrupt Descriptor Table)**: an array of 256 entries in RAM. The CPU has a register `IDTR` pointing to it.
+
+Each IDT entry has:
+- **Handler address** (where to jump)
+- **Segment selector** (which GDT entry to load into CS — usually our kernel code segment)
+- **IST index** (optional alternate stack for critical faults)
+- **Type** (interrupt gate vs trap gate)
+- **DPL** (minimum privilege to invoke via `int N`)
+
+**The 256 vectors:**
+- 0–31: CPU exceptions, fixed by Intel (0=divide error, 3=breakpoint, 8=double fault, 13=GP, 14=page fault, etc.)
+- 32–255: user-defined (hardware IRQs, software interrupts like syscalls)
+
+**What happens when interrupt N fires:**
+1. CPU finishes the current instruction
+2. CPU pushes the interrupt frame onto the stack: RIP, CS, RFLAGS, RSP, SS (40 bytes total — *not* a multiple of 16, hence the alignment bug)
+3. CPU looks up IDT[N], loads the handler's segment + address
+4. CPU jumps to the handler
+5. Handler runs, returns via `iretq` (pops the frame, resumes)
+
+**The `extern "x86-interrupt"` ABI on current nightly has an alignment bug** — its prologue uses `movaps` to save XMM registers, which requires 16-byte stack alignment, but the CPU delivers an 8-mod-16-aligned stack. Workaround: use a `#[unsafe(naked)] unsafe extern "C" fn` wrapper that manually realigns the stack before calling a normal Rust function. See `src/interrupts.rs` (`breakpoint_wrapper`, `timer_wrapper`) and `docs/alignment-crash.html` for the full story.
+
+### Hardware interrupts: PIC + EOI + IF
+
+**PIC (Programmable Interrupt Controller)** — Intel 8259 chip. Sits between devices and the CPU. Many input wires (one per device), one output wire to the CPU. When a device fires, the PIC signals the CPU and tells it which IRQ.
+
+Two PICs chained (master + slave) = 15 usable IRQs:
+- IRQ 0: timer (PIT channel 0)
+- IRQ 1: keyboard
+- IRQ 6: floppy
+- IRQ 14/15: disk controllers
+- etc.
+
+**Remapping the PIC:** by default the PIC maps IRQs 0–15 to CPU vectors 8–15, which conflict with exceptions. We remap to vectors 32–47 at boot. The `pic8259` crate does this via `initialize()`.
+
+**EOI (End Of Interrupt):** after handling a hardware interrupt, we *must* tell the PIC "I'm done, send the next one." Forget this and the PIC never delivers another interrupt from that source. Common gotcha. Send via `PICS.lock().notify_end_of_interrupt(vector)`.
+
+**IF (Interrupt Flag):** a bit in RFLAGS. When 0, the CPU ignores maskable hardware interrupts (timer, keyboard). When 1, it handles them. Exceptions always fire regardless of IF.
+
+Default after boot: IF=0. We enable as the last step of init via `x86_64::instructions::interrupts::enable()`. Order matters: set up all handlers, configure PIC and devices, *then* enable IF. Otherwise an interrupt fires before the handler is ready → triple fault.
+
+**pic8259 gotcha:** `ChainedPics::initialize()` *saves and restores* whatever mask state the firmware left. In QEMU that means everything masked. Must explicitly `write_masks(0xFE, 0xFF)` after to unmask IRQ 0 (timer). Pattern: bit N of mask byte = 1 means "IRQ N masked."
+
+### The 8253 PIT (Programmable Interval Timer)
+
+Intel 8253 chip. Has **3 channels** (independent timers) in one chip + a shared command register:
+
+| Port | Channel | Connected to |
+|---|---|---|
+| `0x40` | 0 | **IRQ 0** (the timer interrupt we use) |
+| `0x41` | 1 | DRAM refresh on original PC (unused) |
+| `0x42` | 2 | PC speaker (system beeps) |
+| `0x43` | Command | Shared — configures any channel |
+
+**Base clock:** ~1.193182 MHz. Divided by a **16-bit divisor** (1–65535) to get the output frequency. So:
+- Max frequency: ~1.193 MHz (divisor = 1)
+- Min frequency: ~18.2 Hz (divisor = 65535)
+
+**You cannot ask for less than 18.2 Hz.** Asking for 2 Hz panics (divisor doesn't fit in 16 bits). Discovered the hard way.
+
+**Programming sequence:**
+1. Write command byte to `0x43`: `0x36` = channel 0, lo+hi access, mode 2 (rate generator), binary
+2. Write divisor low byte to `0x40`
+3. Write divisor high byte to `0x40`
+
+That's it. The PIT starts firing immediately at the configured frequency. Output goes through the PIC to CPU vector 0x20.
+
+### Debugging the kernel
+
+Bare-metal kernels are hard to debug because there's no `printf`, no GDB by default, no logs. Here's the toolkit that works:
+
+**QEMU monitor via Unix socket** (most useful):
+```
+qemu-system-x86_64 -drive format=raw,file=...bin \
+  -display none \
+  -monitor unix:/tmp/qm.sock,server,nowait &
+
+sleep 4
+echo "CMD" | nc -U /tmp/qm.sock
+```
+
+Useful monitor commands:
+- `xp /Nbx ADDR` — dump N bytes of physical memory (e.g. `0xb8000` for VGA)
+- `info registers` — CPU state (look at RIP, RSP)
+- `x /Ni ADDR` — disassemble N instructions
+- `x /Ngx $rsp` — dump stack values (find return addresses for backtraces)
+
+**Symbol lookup** — convert a hex address to a function name:
+```bash
+nm mini-os | sort | awk '$1 <= ADDR {last=$0} END {print last}'
+```
+
+**Disassemble a function:**
+```bash
+objdump -d mini-os | grep -A 20 "FN_NAME:"
+```
+
+**Key facts:**
+- Panic handler with `loop {}` is a black hole. If RIP points at `eb fe` (`jmp -2`), the kernel panicked. Find `rust_begin_unwind` in `nm` output.
+- Walk the stack via `x /20gx $rsp`. Non-zero values are usually return addresses. Decode each with `nm` to get a backtrace.
+- **`cargo build` does NOT rebuild the bootable `.bin` file.** Always use `cargo run` or `cargo bootimage`. A stale `.bin` looks identical to "my code doesn't work" — easy to waste an hour here.
+
+**Mental flowchart for "kernel doesn't print what I expect":**
+1. Dump VGA at `0xb8000` via monitor.
+2. Has text? → writer works, problem is elsewhere.
+3. All zeros? → kernel isn't writing.
+4. Check RIP. If `eb fe` → kernel panicked.
+5. Walk stack via `x /20gx $rsp`. Decode return addresses via `nm`.
+6. Find the panicking function. Read its source — usually obvious why.
+7. If RIP is elsewhere (in your code), disassemble and figure out what it's doing.
+
 ### CPU modes — why the weird names
 
 The names come from different eras by different teams, so there's no consistent scheme.
