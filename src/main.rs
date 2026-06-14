@@ -3,6 +3,7 @@
 
 mod vga_buffer;
 mod gdt;
+mod interrupts;
 
 use core::panic::PanicInfo;
 
@@ -19,6 +20,7 @@ fn panic(_info: &PanicInfo) -> ! {
 #[no_mangle]
 pub extern "C" fn _start() -> ! {
     gdt::init();
+    interrupts::init();
     println!("Hello, World{}", "!");
     println!("Welcome to mini-os: a Linux-like kernel in Rust.");
 
