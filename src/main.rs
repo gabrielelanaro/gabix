@@ -1,4 +1,3 @@
-#![feature(abi_x86_interrupt)]
 #![no_std] // Don't link the Rust standard library.
 #![no_main] // Don't use the normal Rust entry point chain.
 

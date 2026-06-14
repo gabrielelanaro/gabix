@@ -199,6 +199,30 @@ For mini-os, **Volume 3** is what we'll open ~90% of the time. Key sections we'l
 
 In a **micro VM** (e.g. Firecracker), the VMM skips firmware AND bootloader: it directly loads the kernel into guest RAM, sets the initial CPU state to "long mode, paging on, RIP at kernel entry" via the KVM API. The kernel wakes up thinking a bootloader just handed off — but none of the legacy dance happened. Real parallel: Linux's `kexec()` syscall.
 
+### What is the stack, really?
+
+The stack is just regular RAM. The CPU doesn't own any "stack memory" — it has a register (RSP) that holds the address of the current stack top. Push/pop, call/ret, iretq all read/write at [RSP] like any other memory access.
+
+- The "stack" is purely a software convention enforced by the calling convention. The hardware just provides RSP + push/pop instructions.
+- The stack grows **down** (toward lower addresses). `push` decreases RSP; `pop` increases it.
+- Size is not fixed — it's "as big as the free memory below RSP." Overflow walks into other data → corruption.
+
+There's one CPU-controlled exception: the **IST (Interrupt Stack Table)**, part of the TSS, holds up to 7 alternate stack addresses for critical interrupts where the current stack might be corrupt (e.g., double fault). We don't use IST yet.
+
+### How the bootloader picks the stack address
+
+There's a contract: by the time the bootloader jumps to `_start`, RSP must point at a valid stack. The bootloader honors this by:
+
+1. Querying the firmware (BIOS INT 0x15 / UEFI `GetMemoryMap`) for a memory map.
+2. Finding a free region of the right size (~64 KB typically).
+3. Mapping it into the kernel's virtual address space (high-half: `0x10000...` virtual → physical RAM).
+4. Setting RSP to the **top** of that region (stack grows down).
+5. Jumping to `_start`.
+
+The address is **not hardcoded** — it adapts to whatever the firmware reports. This is why QEMU on any host works without changes.
+
+Our `bootloader = "0.9"` crate does all this. We can read the chosen address via `BootInfo::stack_top` if we change `_start` to accept it. For now we just inherit RSP and don't query it.
+
 ### CPU modes — why the weird names
 
 The names come from different eras by different teams, so there's no consistent scheme.
@@ -360,6 +384,15 @@ Most recent entries at the top. One entry per work session.
 - **Status:** (which milestones/checkboxes flipped)
 - **Notes / blockers / surprises:** (anything useful for future-you)
 - **Next:** (where to pick up next time)
+
+### 2026-06-14 (slice 7) — Alignment fix (naked asm wrapper)
+- **Done:** Fixed the `movaps` alignment fault that prevented interrupt handlers from doing real work. Replaced `extern "x86-interrupt" fn` with a `#[unsafe(naked)] unsafe extern "C" fn` wrapper that uses `naked_asm!` to: `sub rsp, 8` (realign to 16), `lea rdi, [rsp+8]` (pass `&InterruptStackFrame`), `call {inner}`, `add rsp, 8` (undo), `iretq`. The inner function is plain `extern "C" fn` — can use any registers, format strings, println!, etc.
+- **Status:** Verified: `int3` now fires, handler prints `EXCEPTION: BREAKPOINT` + the InterruptStackFrame dump, then execution resumes with "It did not crash!". The `extern "x86-interrupt"` ABI is no longer used anywhere — removed `#![feature(abi_x86_interrupt)]` from main.rs.
+- **Notes / blockers / surprises:**
+  - Recent Rust changes: `#[naked]` is now `#[unsafe(naked)]`; naked functions must use `naked_asm!` not `asm!`.
+  - The wrapper doesn't preserve caller-saved registers (rax, rcx, rdx, rsi, rdi, r8–r11). Fine for `int3` (interrupted code doesn't care), but needs fixing before production handlers like page fault.
+  - Casting the naked wrapper to `HandlerFunc` requires `core::mem::transmute` — the IDT API only accepts the typed `HandlerFunc`. The CPU doesn't care about ABI distinctions, only the address.
+- **Next:** 1.6 hardware interrupts (timer). The handler pattern is now reusable for any IDT entry.
 
 ### 2026-06-14 (slice 6) — IDT + breakpoint handler (with detour)
 - **Done:** Created `src/interrupts.rs` with a lazy_static IDT and an `init()` that loads it via `lidt`. Registered a breakpoint (#BP) handler for vector 3. Triggered it from `_start` via `x86_64::instructions::interrupts::int3()` to verify the IDT works end-to-end.
