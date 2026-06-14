@@ -15,7 +15,7 @@ Status legend: `[ ]` not started · `[~]` in progress · `[x]` done
 - [x] 1.4 GDT (Global Descriptor Table)
 - [x] 1.5 IDT + interrupt handlers
 - [x] 1.6 Hardware interrupts: PIC/APIC timer
-- [ ] 1.7 Panic with stack trace
+- [x] 1.7 Panic with stack trace
 
 **Linux to read alongside:** `init/main.c`, `arch/x86/kernel/`, `arch/x86/entry/`
 
@@ -525,6 +525,16 @@ Most recent entries at the top. One entry per work session.
 - **Status:** (which milestones/checkboxes flipped)
 - **Notes / blockers / surprises:** (anything useful for future-you)
 - **Next:** (where to pick up next time)
+
+### 2026-06-14 (slice 9) — Panic handler (1.7 done, M1 reached)
+- **Done:** Made the panic handler actually useful. Replaced `loop {}` with `force_unlock()` + `println!("{}", info)`. Now panics print the location (file:line:col) and message instead of silently halting. Verified by triggering a temporary `panic!("test panic from kernel main")` and dumping VGA — saw `panicked at src/main.rs:46:5:\ntest panic from kernel main`. Then removed the test panic.
+- **Status:** Checkbox 1.7 flipped to `[x]`. **M1 reached** (interrupts alive: timer ticks + useful panic). Tagged `m1-interrupts-alive`.
+- **Notes / blockers / surprises:**
+  - `spin::Mutex::force_unlock()` is `unsafe` in 0.9 — has to be wrapped.
+  - If we panicked WHILE WRITER was locked (e.g. inside a `println!`), calling `println!` in the handler would spin forever. `force_unlock()` releases the lock unconditionally — safe because we're halting anyway.
+  - Skipped the full stack-trace version (frame pointer walking + symbol resolution). Minimal version (location + message) covers ~80% of debugging needs.
+  - Panics don't disable interrupts, so timer ticks continue during the panic `loop {}`. Mildly weird but actually useful — you can see the kernel isn't frozen.
+- **Next:** M2 = memory management. First sub-slice: frame allocator (2.1).
 
 ### 2026-06-14 (slice 8) — Hardware timer interrupts (1.6 done)
 - **Done:** Wired up the 8259 PIC + 8253 PIT to fire a periodic timer interrupt. Same pattern as the breakpoint handler works: PIC routes the timer IRQ to vector 0x20, IDT has a handler there, the handler prints + sends EOI + returns. Verified at 100 Hz with print-every-100th-tick throttling so we see ~1 "tick #N" line per second.

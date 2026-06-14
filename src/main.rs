@@ -9,11 +9,17 @@ mod pit;
 
 use core::panic::PanicInfo;
 
-/// Called on panic. We have no stack unwinding, so we just halt.
-/// Printing the panic info would risk deadlock if the panic happened
-/// while WRITER was held; we'll address that in a later slice.
+/// Called on panic. Prints the panic message and location, then halts.
+///
+/// If we panicked while WRITER was locked (e.g., during a println! call),
+/// the spinlock would deadlock. We avoid this by force_unlocking WRITER
+/// before printing — we're about to halt anyway, so safety doesn't matter.
 #[panic_handler]
-fn panic(_info: &PanicInfo) -> ! {
+fn panic(info: &PanicInfo) -> ! {
+    unsafe {
+        vga_buffer::WRITER.force_unlock();
+    }
+    println!("{}", info);
     loop {}
 }
 
