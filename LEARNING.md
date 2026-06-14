@@ -211,6 +211,46 @@ On boot, the bootloader walks the CPU through these in order: real → protected
 
 x86 has rings 0 (kernel) and 3 (user). ARM has **Exception Levels** instead: EL0 (user), EL1 (kernel), EL2 (hypervisor), EL3 (TrustZone secure monitor). Same idea, different jargon.
 
+### Segments and the GDT (long mode)
+
+**Mental model:** in 64-bit long mode, a "segment" is a *permission envelope over the entire address space*, not a pointer to a specific memory location. All segments cover 0 to 2⁶⁴-1. They differ only in permissions (executable? writable?) and privilege tier (ring 0 / ring 3).
+
+So asking "where is the segment?" doesn't have a specific answer — the segment IS everywhere. The segment is a *rule*, not a *thing*.
+
+**Why it's weird (the history):**
+
+- **16-bit real mode (1978):** segments were actual memory ranges. CPU computed `physical = segment_base × 16 + offset`. You switched segments to access different memory.
+- **32-bit protected mode (1985):** same idea, with paging layered on.
+- **64-bit long mode (AMD64, 2000):** AMD said "this is stupid, all segments are flat now." The GDT entry *format* still has base/limit fields (for backward compat), but the CPU **ignores them** in long mode. Only the permission bits matter.
+
+**What's actually in a long-mode GDT entry (8 bytes):**
+
+| Field | Long-mode behavior |
+|---|---|
+| Base (32 bits, split across the entry) | Ignored — treated as 0 |
+| Limit (20 bits, split across the entry) | Ignored — treated as "full address space" |
+| Type | Code (exec/read) or data (read/write) |
+| S | 1 = code/data, 0 = system (TSS, etc.) |
+| DPL | Privilege tier (0 = kernel, 3 = user) |
+| P | Present — does this entry exist |
+| L | 1 = 64-bit code segment |
+
+**So what distinguishes our two kernel segments?**
+
+Both cover all of memory. They differ only in:
+- Kernel code segment: executable + read, ring 0
+- Kernel data segment: read + write, ring 0
+
+**Where the kernel code physically lives:** wherever the bootloader loaded it (typically `0x100000`, 1MB physical). The segment doesn't describe that location — it describes the *permissions* for whatever location the CPU happens to be executing.
+
+**Why install our own GDT (when the bootloader already has one):**
+
+1. The bootloader's GDT is in memory we don't own. Eventually we'll use that RAM for heap or page tables and the CPU will read garbage.
+2. We need to add entries later (TSS in the IDT slice, user segments in the syscall slice). Can't add to the bootloader's GDT.
+3. Explicit contract with the CPU: these segments exist, nothing else.
+
+Right now, swapping bootloader's GDT for ours is invisible — same rules, same behavior. We do it for forward-looking reasons.
+
 ### Paging tables
 
 Virtual memory = the address your code uses is not the address in physical RAM. The CPU translates on every memory access. The translation rules live in **page tables**.
