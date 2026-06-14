@@ -1,0 +1,664 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Interrupts, in Pictures — mini-os</title>
+<style>
+  :root {
+    --bg: #fafafa;
+    --border: #d1d5db;
+    --muted: #6b7280;
+    --cpu: #1e3a8a;
+    --pic: #7c3aed;
+    --device: #0891b2;
+    --signal: #ea580c;
+    --stack: #16a34a;
+    --idt: #ca8a04;
+    --kernel: #be185d;
+  }
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    max-width: 1080px;
+    margin: 0 auto;
+    padding: 2rem 1.5rem 4rem;
+    line-height: 1.55;
+    color: #111827;
+    background: var(--bg);
+  }
+  h1 { font-size: 2rem; margin-bottom: 0.25rem; }
+  h2 {
+    font-size: 1.35rem;
+    margin-top: 2.5rem;
+    margin-bottom: 0.75rem;
+    padding-bottom: 0.3rem;
+    border-bottom: 2px solid var(--border);
+  }
+  h3 { font-size: 1.05rem; margin-top: 1.5rem; margin-bottom: 0.5rem; color: var(--cpu); }
+  p { margin: 0.6rem 0; }
+  .lede { font-size: 1.1rem; color: #374151; }
+  code, .mono {
+    font-family: "SF Mono", Menlo, Consolas, monospace;
+    font-size: 0.92em;
+    background: #f3f4f6;
+    padding: 0.1em 0.35em;
+    border-radius: 3px;
+  }
+  pre {
+    background: #1f2937;
+    color: #e5e7eb;
+    padding: 0.85rem 1rem;
+    border-radius: 6px;
+    overflow-x: auto;
+    font-size: 0.85rem;
+  }
+  pre code { background: transparent; padding: 0; color: inherit; }
+
+  .callout {
+    background: #fef3c7;
+    border-left: 4px solid #f59e0b;
+    padding: 0.6rem 1rem;
+    margin: 1rem 0;
+    border-radius: 0 4px 4px 0;
+  }
+  .linux-example {
+    background: #fce7f3;
+    border-left: 4px solid var(--kernel);
+    padding: 0.6rem 1rem;
+    margin: 1rem 0;
+    border-radius: 0 4px 4px 0;
+  }
+
+  /* === Cards for the three interrupt types === */
+  .type-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    gap: 1rem;
+    margin: 1.25rem 0;
+  }
+  .type-card {
+    background: white;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1rem;
+    border-top: 4px solid var(--device);
+  }
+  .type-card.hardware { border-top-color: var(--device); }
+  .type-card.exception { border-top-color: var(--signal); }
+  .type-card.software { border-top-color: var(--pic); }
+  .type-card h4 { margin: 0 0 0.4rem 0; font-size: 1rem; }
+  .type-card .icon { font-size: 1.4rem; margin-bottom: 0.4rem; }
+  .type-card ul { margin: 0.4rem 0; padding-left: 1.2rem; }
+  .type-card li { font-size: 0.9rem; margin: 0.2rem 0; }
+
+  /* === Big animated diagram === */
+  .stage {
+    background: white;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1.5rem;
+    margin: 1.25rem 0;
+  }
+  .stage-row {
+    display: grid;
+    grid-template-columns: 1fr 2fr 1fr;
+    gap: 1rem;
+    align-items: center;
+    margin-bottom: 1rem;
+  }
+  .device-col, .pic-col, .cpu-col {
+    text-align: center;
+    padding: 0.5rem;
+  }
+  .device-col { color: var(--device); }
+  .pic-col { color: var(--pic); }
+  .cpu-col { color: var(--cpu); }
+
+  .box {
+    border: 2px solid currentColor;
+    border-radius: 6px;
+    padding: 0.6rem;
+    margin: 0.3rem auto;
+    max-width: 150px;
+    background: white;
+    font-weight: 600;
+    font-size: 0.9rem;
+  }
+  .arrow {
+    font-size: 1.6rem;
+    color: var(--muted);
+    margin: 0.4rem 0;
+    text-align: center;
+  }
+
+  /* The signal animation along the path device → pic → cpu */
+  .signal-path {
+    position: relative;
+    height: 4px;
+    background: #e5e7eb;
+    border-radius: 2px;
+    margin: 1rem 0;
+  }
+  .signal-pulse {
+    position: absolute;
+    width: 16px;
+    height: 16px;
+    background: var(--signal);
+    border-radius: 50%;
+    top: -6px;
+    left: 0;
+    animation: signal-travel 4s linear infinite;
+    box-shadow: 0 0 12px var(--signal);
+  }
+  @keyframes signal-travel {
+    0%   { left: 0%;   opacity: 0; }
+    10%  { opacity: 1; }
+    90%  { opacity: 1; }
+    100% { left: 100%; opacity: 0; }
+  }
+
+  /* Animated CPU instruction stream */
+  .cpu-execution {
+    background: #f9fafb;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 0.75rem;
+    font-family: monospace;
+    font-size: 0.85rem;
+    margin: 0.75rem 0;
+    min-height: 130px;
+  }
+  .instr {
+    padding: 0.2rem 0.5rem;
+    margin: 0.15rem 0;
+    border-radius: 3px;
+    transition: background 0.3s;
+  }
+  .instr.running { background: #dbeafe; color: var(--cpu); font-weight: 600; animation: pulse 1s ease-in-out infinite; }
+  .instr.paused { background: #fee2e2; color: var(--signal); }
+  @keyframes pulse {
+    0%, 100% { background: #dbeafe; }
+    50% { background: #93c5fd; }
+  }
+
+  /* The step labels */
+  .step-display {
+    background: #1e3a8a;
+    color: white;
+    padding: 0.6rem 1rem;
+    border-radius: 6px;
+    font-weight: 600;
+    text-align: center;
+    margin: 0.75rem 0;
+    transition: background 0.4s;
+  }
+  .step-display.step-1 { background: var(--device); }
+  .step-display.step-2 { background: var(--signal); }
+  .step-display.step-3 { background: var(--pic); }
+  .step-display.step-4 { background: var(--cpu); }
+  .step-display.step-5 { background: var(--stack); }
+  .step-display.step-6 { background: var(--idt); }
+  .step-display.step-7 { background: var(--kernel); }
+
+  /* Rotating steps using CSS animation cycle */
+  .step-cycle {
+    animation: step-rotate 12s steps(1) infinite;
+  }
+  @keyframes step-rotate {
+    0%   { background: var(--cpu); }
+    14%  { background: var(--device); }
+    28%  { background: var(--pic); }
+    42%  { background: var(--signal); }
+    57%  { background: var(--stack); }
+    71%  { background: var(--idt); }
+    85%  { background: var(--kernel); }
+    100% { background: var(--cpu); }
+  }
+
+  /* PIC diagram */
+  .pic-diagram {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 0.5rem;
+    margin: 1rem 0;
+    align-items: center;
+  }
+  .pic-cell {
+    padding: 0.5rem;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    text-align: center;
+    background: white;
+    font-size: 0.85rem;
+  }
+  .pic-cell.device { color: var(--device); border-color: var(--device); }
+  .pic-cell.pic { color: var(--pic); border-color: var(--pic); background: #faf5ff; }
+  .pic-cell.cpu { color: var(--cpu); border-color: var(--cpu); }
+
+  /* Mapping table */
+  .mapping-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 1rem 0;
+    font-size: 0.9rem;
+  }
+  .mapping-table th, .mapping-table td {
+    padding: 0.5rem 0.75rem;
+    border-bottom: 1px solid var(--border);
+    text-align: left;
+  }
+  .mapping-table th { background: #f3f4f6; font-weight: 600; }
+  .mapping-table tr.conflict { background: #fee2e2; }
+  .mapping-table tr.remap { background: #dcfce7; }
+
+  /* Linux scenario walk-throughs */
+  .scenario {
+    background: white;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1rem;
+    margin: 1rem 0;
+  }
+  .scenario h4 {
+    margin: 0 0 0.5rem 0;
+    color: var(--kernel);
+    font-size: 1rem;
+  }
+  .scenario-step {
+    padding: 0.4rem 0.6rem;
+    margin: 0.25rem 0;
+    background: #fdf2f8;
+    border-left: 3px solid var(--kernel);
+    border-radius: 0 4px 4px 0;
+    font-size: 0.9rem;
+  }
+  .scenario-step code { font-size: 0.85rem; }
+
+  footer {
+    margin-top: 3rem;
+    padding-top: 1.5rem;
+    border-top: 1px solid var(--border);
+    color: var(--muted);
+    font-size: 0.85rem;
+  }
+</style>
+</head>
+<body>
+
+<h1>Interrupts, in Pictures</h1>
+<p class="lede">
+An interrupt is just a way to make the CPU pause what it's doing, run some other code, then resume. The whole OS is built on this primitive. Let me show you.
+</p>
+
+<h2>1. The basic idea</h2>
+
+<p>Without interrupts, the CPU just runs your code top-to-bottom. If it wants to react to anything external (key press, timer tick, disk finishing), it has to keep checking "did it happen? did it happen?" — wasteful.</p>
+
+<p>Interrupts flip this around. <strong>The CPU runs your code, and when something happens, the device pokes the CPU. The CPU stops, runs a handler, then resumes your code as if nothing happened.</strong></p>
+
+<div class="callout">
+  <strong>Analogy:</strong> you're reading a book. Without interrupts, you'd have to check the door every 30 seconds "did the pizza arrive?" With a doorbell (an interrupt), the doorbell rings when the pizza arrives, you put a bookmark in, answer the door, come back, resume reading.
+</div>
+
+<h2>2. The three types of interrupts</h2>
+
+<div class="type-grid">
+  <div class="type-card hardware">
+    <div class="icon">⏰</div>
+    <h4>Hardware interrupts</h4>
+    <p style="font-size: 0.9rem; margin: 0;">A device somewhere sent an electrical signal. CPU must respond.</p>
+    <ul>
+      <li>Timer tick (every 10ms)</li>
+      <li>Key pressed on keyboard</li>
+      <li>Network packet arrived</li>
+      <li>Disk finished a read</li>
+    </ul>
+  </div>
+  <div class="type-card exception">
+    <div class="icon">💥</div>
+    <h4>CPU exceptions</h4>
+    <p style="font-size: 0.9rem; margin: 0;">CPU tried to do something and couldn't. Must report it.</p>
+    <ul>
+      <li>Divide by zero</li>
+      <li>Page fault (memory not mapped)</li>
+      <li>Invalid opcode</li>
+      <li>General protection fault</li>
+    </ul>
+  </div>
+  <div class="type-card software">
+    <div class="icon">📞</div>
+    <h4>Software interrupts (intentional)</h4>
+    <p style="font-size: 0.9rem; margin: 0;">Your code asked for one explicitly via <code>int N</code>.</p>
+    <ul>
+      <li><code>int3</code> — breakpoint (debug)</li>
+      <li><code>int 0x80</code> — old Linux syscall</li>
+      <li>(Modern Linux uses <code>syscall</code> instruction instead)</li>
+    </ul>
+  </div>
+</div>
+
+<p>All three go through the same IDT (Interrupt Descriptor Table). The CPU doesn't distinguish — interrupt N fires → look up IDT[N] → jump to handler.</p>
+
+<h2>3. What happens when an interrupt fires (animated)</h2>
+
+<p>This is the heart of it. The diagram below shows a timer interrupt arriving while the CPU is running user code. It loops through 7 stages.</p>
+
+<div class="stage">
+  <div class="step-display" id="step-label">
+    Step 1: CPU is running user code at instruction X
+  </div>
+
+  <div class="stage-row">
+    <div class="device-col">
+      <div style="font-size: 0.8rem; color: var(--muted);">Devices</div>
+      <div class="box">⏰ Timer</div>
+      <div class="box">⌨️ Keyboard</div>
+      <div class="box">💾 Disk</div>
+    </div>
+    <div class="pic-col">
+      <div style="font-size: 0.8rem; color: var(--muted);">PIC (interrupt router)</div>
+      <div class="box">8259 PIC</div>
+      <div style="font-size: 0.75rem; color: var(--muted); margin-top: 0.3rem;">
+        "Which device fired?"<br>
+        "Looks up vector 32"
+      </div>
+    </div>
+    <div class="cpu-col">
+      <div style="font-size: 0.8rem; color: var(--muted);">CPU</div>
+      <div class="box">CPU</div>
+      <div style="font-size: 0.75rem; color: var(--muted); margin-top: 0.3rem;">
+        RSP, RIP, IDTR<br>
+        Look up IDT[32]
+      </div>
+    </div>
+  </div>
+
+  <div class="signal-path">
+    <div class="signal-pulse"></div>
+  </div>
+  <div style="text-align: center; font-size: 0.8rem; color: var(--muted); margin-top: -0.5rem;">
+    electrical signal flows: device → PIC → CPU
+  </div>
+
+  <div class="cpu-execution">
+    <div style="font-size: 0.8rem; color: var(--muted); margin-bottom: 0.4rem;">CPU instruction stream:</div>
+    <div class="instr" id="instr-x-2">instruction X-2</div>
+    <div class="instr" id="instr-x-1">instruction X-1</div>
+    <div class="instr running" id="instr-x">instruction X ← CPU is here</div>
+    <div class="instr" id="instr-handler" style="background: #fef3c7;">[interrupt fires — handler runs]</div>
+    <div class="instr paused" id="instr-x-1-resume">instruction X+1 ← resume here</div>
+    <div class="instr" id="instr-x-2-next">instruction X+2</div>
+  </div>
+</div>
+
+<p>The orange dot flowing left-to-right along the bar is the interrupt signal traveling from device to CPU. The colored step label cycles through the 7 stages:</p>
+
+<ol>
+  <li><strong style="color: var(--cpu);">CPU running user code</strong> at instruction X</li>
+  <li><strong style="color: var(--device);">Device fires</strong> — timer sends electrical signal</li>
+  <li><strong style="color: var(--pic);">PIC routes it</strong> — looks up which IRQ, maps to vector 32</li>
+  <li><strong style="color: var(--signal);">CPU notified</strong> — finishes current instruction, prepares to switch</li>
+  <li><strong style="color: var(--stack);">CPU saves state</strong> — pushes RIP, RSP, RFLAGS, CS, SS onto the kernel stack</li>
+  <li><strong style="color: var(--idt);">CPU looks up IDT[32]</strong> — gets handler address, jumps there</li>
+  <li><strong style="color: var(--kernel);">Handler runs</strong> — does its work (e.g., print "tick"), sends EOI, runs <code>iretq</code> to resume</li>
+</ol>
+
+<p>After <code>iretq</code>, the CPU pops the saved state and continues at instruction X+1. The interrupted code has no idea anything happened.</p>
+
+<h2>4. The PIC: why it exists</h2>
+
+<p>Modern CPUs have one interrupt pin. But you have many devices (timer, keyboard, mouse, disk, NIC, USB, ...). They can't all share one wire.</p>
+
+<p>So the <strong>PIC (Programmable Interrupt Controller)</strong> sits between devices and the CPU. It has many input wires (one per device) and one output wire to the CPU. When any device fires, the PIC signals the CPU and tells it which device.</p>
+
+<div class="pic-diagram">
+  <div class="pic-cell device">⏰ Timer<br><small>IRQ 0</small></div>
+  <div class="pic-cell pic" rowspan="3">8259 PIC<br><small>"which IRQ fired?"</small></div>
+  <div class="pic-cell cpu">CPU<br><small>one interrupt pin</small></div>
+</div>
+<div class="pic-diagram">
+  <div class="pic-cell device">⌨️ Keyboard<br><small>IRQ 1</small></div>
+  <div class="pic-cell cpu">↘</div>
+  <div class="pic-cell cpu">↑</div>
+</div>
+<div class="pic-diagram">
+  <div class="pic-cell device">💾 Disk IRQ 14</div>
+  <div class="pic-cell pic">→</div>
+  <div class="pic-cell cpu">→</div>
+</div>
+
+<div class="callout">
+  <strong>Modern reality:</strong> the 8259 PIC is from 1980s. Modern systems use <strong>APIC</strong> (Advanced PIC) — many more inputs, distributed across CPU cores. But the 8259 still works in QEMU and is much simpler to learn. We'll use it for mini-os.
+</div>
+
+<h2>5. The remap problem (and why we need to fix it)</h2>
+
+<p>The PIC maps its IRQs to CPU interrupt vectors. By default, it uses vectors 8-15. But the CPU already uses 0-31 for exceptions:</p>
+
+<table class="mapping-table">
+  <tr><th>CPU vector</th><th>Used for</th></tr>
+  <tr><td>0-7</td><td>CPU exceptions (divide error, invalid opcode, etc.)</td></tr>
+  <tr class="conflict"><td>8-15</td><td>⚠️ CONFLICT — CPU exceptions here (double fault, page fault, etc.) AND default PIC mapping</td></tr>
+  <tr class="remap"><td>16-31</td><td>More CPU exceptions (x87 error, machine check, etc.)</td></tr>
+  <tr class="remap"><td>32-47</td><td>✓ Free — where we remap the PIC</td></tr>
+</table>
+
+<p>If we left the default, the timer (IRQ 0) would fire CPU vector 8 — which is double fault. The kernel would think the CPU is double-faulting every 10ms. Bad.</p>
+
+<p>The fix is to "remap the PIC" by sending it initialization commands that say "use vectors 32-47 instead of 8-15." Then:</p>
+
+<ul>
+  <li>Timer IRQ 0 → vector 32</li>
+  <li>Keyboard IRQ 1 → vector 33</li>
+  <li>...etc.</li>
+</ul>
+
+<h2>6. EOI: End Of Interrupt (the acknowledgement)</h2>
+
+<p>When an interrupt fires, the PIC marks that IRQ as "in progress" and won't deliver another from the same source until you tell it "I'm done."</p>
+
+<p>This is the <strong>EOI (End Of Interrupt)</strong> signal. Our handler must send EOI to the PIC after handling the interrupt, or the PIC will sit silently forever waiting.</p>
+
+<div class="callout">
+  <strong>Common gotcha:</strong> forget EOI → timer fires once, then never again. You see one "tick" then nothing. Always send EOI at the end of every hardware interrupt handler.
+</div>
+
+<h2>7. Interrupt Flag (IF): the master switch</h2>
+
+<p>The CPU has a flag in RFLAGS called <strong>IF (Interrupt Flag)</strong>. When it's 0, the CPU ignores all hardware interrupts (timer, keyboard, etc.). When it's 1, it handles them.</p>
+
+<p>By default after boot, IF=0. So even with a perfect IDT, PIC, and timer set up, nothing will fire until we explicitly enable interrupts.</p>
+
+<table style="width: 100%; border-collapse: collapse; margin: 1rem 0; font-size: 0.9rem;">
+  <tr style="background: #f3f4f6;">
+    <th style="padding: 0.5rem;">IF value</th>
+    <th>Hardware interrupts</th>
+    <th>CPU exceptions</th>
+  </tr>
+  <tr><td style="padding: 0.5rem;"><code>IF = 0</code> (default after boot)</td><td>Ignored</td><td>Still fire (you can't ignore a divide-by-zero)</td></tr>
+  <tr><td style="padding: 0.5rem;"><code>IF = 1</code> (we enable in <code>_start</code>)</td><td>Fire normally</td><td>Still fire</td></tr>
+</table>
+
+<p>So the sequence is: set everything up <em>first</em>, then enable interrupts last. Otherwise you'd get an interrupt before the handler is ready → triple fault.</p>
+
+<h2>8. Real examples: how Linux uses interrupts</h2>
+
+<p>Same mechanism, scaled up. Concrete scenarios:</p>
+
+<div class="scenario">
+  <h4>📋 Scenario 1: Pressing a key</h4>
+  <div class="scenario-step">1. Keyboard controller sends electrical signal on IRQ 1</div>
+  <div class="scenario-step">2. PIC notifies CPU; CPU looks up IDT[33] (33 = 32 + 1, the remapped IRQ 1)</div>
+  <div class="scenario-step">3. CPU jumps to Linux's <code>i8042_interrupt</code> handler in <code>drivers/input/serio/i8042.c</code></div>
+  <div class="scenario-step">4. Handler reads the scan code from keyboard port, decodes it</div>
+  <div class="scenario-step">5. Passes it to input subsystem → tty layer → shell sees the character</div>
+  <div class="scenario-step">6. Sends EOI to PIC, returns via <code>iretq</code></div>
+  <div class="scenario-step">7. Your terminal now shows the letter you typed</div>
+</div>
+
+<div class="scenario">
+  <h4>⏱️ Scenario 2: Timer tick (every ~1ms in Linux)</h4>
+  <div class="scenario-step">1. APIC timer (modern) or PIT (old) fires — IRQ 0 → vector 32</div>
+  <div class="scenario-step">2. CPU jumps to <code>smp_apic_timer_interrupt</code> in <code>arch/x86/kernel/apic/apic.c</code></div>
+  <div class="scenario-step">3. Calls <code>scheduler_tick()</code> in <code>kernel/sched/core.c</code></div>
+  <div class="scenario-step">4. Scheduler checks: has the current task used up its time slice?</div>
+  <div class="scenario-step">5. If yes, sets <code>TIF_NEED_RESCHED</code> flag</div>
+  <div class="scenario-step">6. On return to user mode, kernel calls <code>schedule()</code> → switches to next task</div>
+  <div class="scenario-step">7. This is how <strong>multitasking</strong> works — the timer forces periodic task switches</div>
+</div>
+
+<div class="scenario">
+  <h4>💾 Scenario 3: Disk read completes</h4>
+  <div class="scenario-step">1. Your program calls <code>read()</code> → kernel starts disk I/O → puts your process to sleep</div>
+  <div class="scenario-step">2. Disk reads the data into kernel buffer</div>
+  <div class="scenario-step">3. Disk controller fires interrupt when done</div>
+  <div class="scenario-step">4. CPU jumps to disk driver's interrupt handler (e.g., NVMe IRQ handler)</div>
+  <div class="scenario-step">5. Handler marks your process as "ready to run," wakes it up</div>
+  <div class="scenario-step">6. Eventually scheduler picks your process, it resumes <code>read()</code> with the data</div>
+  <div class="scenario-step">7. This is how <strong>blocking I/O</strong> works — the kernel sleeps you, an interrupt wakes you</div>
+</div>
+
+<div class="scenario">
+  <h4>📄 Scenario 4: Page fault (this is an exception, not a hardware interrupt)</h4>
+  <div class="scenario-step">1. Process accesses memory address that isn't currently mapped</div>
+  <div class="scenario-step">2. CPU raises exception #14 → vector 14 → IDT[14]</div>
+  <div class="scenario-step">3. CPU jumps to <code>page_fault</code> in <code>arch/x86/entry/entry_64.S</code></div>
+  <div class="scenario-step">4. Calls <code>do_page_fault</code> in <code>arch/x86/mm/fault.c</code></div>
+  <div class="scenario-step">5. Looks up the faulting address in process's VMAs (virtual memory areas)</div>
+  <div class="scenario-step">6. If valid but not yet loaded: read from disk, map the page, resume → "demand paging"</div>
+  <div class="scenario-step">7. If invalid: send SIGSEGV to process</div>
+</div>
+
+<h2>9. Our mini-os plan for 1.6</h2>
+
+<p>Putting it all together, here's what we'll do:</p>
+
+<ol>
+  <li><strong>Remap the PIC</strong> — change IRQ vectors from 8-15 to 32-47. New <code>src/pic.rs</code> module.</li>
+  <li><strong>Add timer handler at IDT[32]</strong> — uses the naked wrapper pattern from slice 7. Prints "tick" + sends EOI.</li>
+  <li><strong>Configure the PIT</strong> — program the timer chip to fire at 100 Hz (every 10ms).</li>
+  <li><strong>Enable interrupts</strong> — set IF=1. Until this, hardware interrupts are ignored.</li>
+</ol>
+
+<p>After step 4, the kernel will print "tick" 100 times per second. We'll see it scrolling on the screen.</p>
+
+<div class="callout">
+  <strong>Pattern recognition:</strong> notice that Linux's flow (device → PIC → IDT → handler → EOI → resume) is <em>exactly</em> what we're about to build. Same hardware, same mechanism, just smaller scale. Linux has thousands of interrupt handlers and a sophisticated scheduler; we'll have one handler that prints "tick." But the skeleton is identical.
+</div>
+
+<h2>10. Mental model summary</h2>
+
+<div class="callout">
+  <ul style="margin: 0.4rem 0; padding-left: 1.2rem;">
+    <li><strong>Interrupt = "pause and call this function."</strong> The CPU does it automatically when notified.</li>
+    <li><strong>PIC</strong> routes device signals to the CPU's single interrupt pin.</li>
+    <li><strong>Vector</strong> = IDT entry number. PIC maps IRQs to vectors (default 8-15, we remap to 32-47).</li>
+    <li><strong>EOI</strong> tells the PIC "I'm done, send the next one." Forget it = no more interrupts from that device.</li>
+    <li><strong>IF</strong> is the master switch. Off by default; we enable it as the last step.</li>
+    <li><strong>Linux does the same thing</strong> — same primitives, same flow, scaled up to thousands of devices and handlers.</li>
+  </ul>
+</div>
+
+<footer>
+  mini-os learning aid · interrupts, in pictures · open in any browser
+</footer>
+
+<script>
+(function () {
+  const steps = [
+    {
+      text: "Step 1 — CPU is running user code at instruction X",
+      color: "#1e3a8a", // cpu
+      activeInstr: "instr-x",
+      highlight: null,
+    },
+    {
+      text: "Step 2 — Timer device fires an electrical signal",
+      color: "#0891b2", // device
+      activeInstr: "instr-x",
+      highlight: "device",
+    },
+    {
+      text: "Step 3 — PIC routes the signal: vector 32 to the CPU",
+      color: "#7c3aed", // pic
+      activeInstr: "instr-x",
+      highlight: "pic",
+    },
+    {
+      text: "Step 4 — CPU notified, finishes the current instruction",
+      color: "#ea580c", // signal
+      activeInstr: "instr-x",
+      highlight: "cpu",
+    },
+    {
+      text: "Step 5 — CPU pushes RIP/RSP/RFLAGS/CS/SS onto the kernel stack",
+      color: "#16a34a", // stack
+      activeInstr: "instr-handler",
+      highlight: "cpu",
+    },
+    {
+      text: "Step 6 — CPU looks up IDT[32], jumps to the handler address",
+      color: "#ca8a04", // idt
+      activeInstr: "instr-handler",
+      highlight: "cpu",
+    },
+    {
+      text: "Step 7 — Handler runs, sends EOI, returns via iretq → resume at X+1",
+      color: "#be185d", // kernel
+      activeInstr: "instr-x-1-resume",
+      highlight: "cpu",
+    },
+  ];
+
+  const label = document.getElementById("step-label");
+  const instrs = document.querySelectorAll(".cpu-execution .instr");
+
+  // Highlight targets in the device/pic/cpu row
+  const deviceBoxes = document.querySelectorAll(".device-col .box");
+  const picBoxes = document.querySelectorAll(".pic-col .box");
+  const cpuBoxes = document.querySelectorAll(".cpu-col .box");
+
+  let i = 0;
+  function tick() {
+    const step = steps[i];
+    label.textContent = step.text;
+    label.style.background = step.color;
+
+    // Reset instruction highlighting
+    instrs.forEach((el) => {
+      el.classList.remove("running", "paused");
+      el.style.background = "";
+      el.style.color = "";
+    });
+    const active = document.getElementById(step.activeInstr);
+    if (active) {
+      active.style.background = step.color + "33"; // 20% alpha
+      active.style.color = step.color;
+      active.style.fontWeight = "700";
+    }
+
+    // Reset and apply component highlight
+    [...deviceBoxes, ...picBoxes, ...cpuBoxes].forEach((el) => {
+      el.style.transform = "scale(1)";
+      el.style.boxShadow = "none";
+      el.style.opacity = "0.6";
+    });
+    let targets = [];
+    if (step.highlight === "device") targets = deviceBoxes;
+    if (step.highlight === "pic") targets = picBoxes;
+    if (step.highlight === "cpu") targets = cpuBoxes;
+    targets.forEach((el) => {
+      el.style.transform = "scale(1.08)";
+      el.style.boxShadow = "0 0 0 4px " + step.color + "44";
+      el.style.opacity = "1";
+    });
+
+    i = (i + 1) % steps.length;
+  }
+  tick();
+  setInterval(tick, 1700);
+})();
+</script>
+
+</body>
+</html>

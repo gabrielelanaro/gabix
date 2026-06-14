@@ -385,6 +385,14 @@ Most recent entries at the top. One entry per work session.
 - **Notes / blockers / surprises:** (anything useful for future-you)
 - **Next:** (where to pick up next time)
 
+### 2026-06-14 (slice 8, step 1 of 4) — PIC setup
+- **Done:** Created `src/pic.rs` with a `ChainedPics` static (master offset 0x20, slave offset 0x28) and `init()` that calls `PICS.lock().initialize()`. Called `pic::init()` from `_start` after `interrupts::init()`. No behavior change yet — PIC is initialized but no interrupts fire (IF=0 still).
+- **Status:** First sub-step of 1.6 (hardware interrupts). Three more steps to go: timer handler, PIT config, enable interrupts.
+- **Notes / blockers / surprises:**
+  - `ChainedPics` was removed from `x86_64` (used to be in `x86_64::structures::pic`). It's now in the separate `pic8259 = "0.10"` crate (no underscore in name).
+  - pic8259 0.10.4 pulls in `x86_64 = "0.14"` as a transitive dep — now we have two x86_64 versions in the tree. Not a problem because pic8259's public API doesn't expose x86_64 types.
+- **Next:** Step 2 = add timer handler at IDT[0x20] using the naked wrapper pattern from slice 7.
+
 ### 2026-06-14 (slice 7) — Alignment fix (naked asm wrapper)
 - **Done:** Fixed the `movaps` alignment fault that prevented interrupt handlers from doing real work. Replaced `extern "x86-interrupt" fn` with a `#[unsafe(naked)] unsafe extern "C" fn` wrapper that uses `naked_asm!` to: `sub rsp, 8` (realign to 16), `lea rdi, [rsp+8]` (pass `&InterruptStackFrame`), `call {inner}`, `add rsp, 8` (undo), `iretq`. The inner function is plain `extern "C" fn` — can use any registers, format strings, println!, etc.
 - **Status:** Verified: `int3` now fires, handler prints `EXCEPTION: BREAKPOINT` + the InterruptStackFrame dump, then execution resumes with "It did not crash!". The `extern "x86-interrupt"` ABI is no longer used anywhere — removed `#![feature(abi_x86_interrupt)]` from main.rs.
