@@ -14,7 +14,7 @@ Status legend: `[ ]` not started · `[~]` in progress · `[x]` done
 - [x] 1.3 VGA text-mode buffer, print "Hello, World"
 - [x] 1.4 GDT (Global Descriptor Table)
 - [x] 1.5 IDT + interrupt handlers
-- [ ] 1.6 Hardware interrupts: PIC/APIC timer
+- [x] 1.6 Hardware interrupts: PIC/APIC timer
 - [ ] 1.7 Panic with stack trace
 
 **Linux to read alongside:** `init/main.c`, `arch/x86/kernel/`, `arch/x86/entry/`
@@ -384,6 +384,17 @@ Most recent entries at the top. One entry per work session.
 - **Status:** (which milestones/checkboxes flipped)
 - **Notes / blockers / surprises:** (anything useful for future-you)
 - **Next:** (where to pick up next time)
+
+### 2026-06-14 (slice 8) — Hardware timer interrupts (1.6 done)
+- **Done:** Wired up the 8259 PIC + 8253 PIT to fire a periodic timer interrupt. Same pattern as the breakpoint handler works: PIC routes the timer IRQ to vector 0x20, IDT has a handler there, the handler prints + sends EOI + returns. Verified at 100 Hz with print-every-100th-tick throttling so we see ~1 "tick #N" line per second.
+- **Status:** Checkbox 1.6 flipped to `[x]`. M1 almost done — only 1.7 (panic stack trace) left.
+- **Notes / blockers / surprises (lots of detours here):**
+  - pic8259 crate: ChainedPics was removed from x86_64 crate; now in separate `pic8259 = "0.10"` crate (no underscore). It pulls in x86_64 0.14 as transitive dep (we use 0.15) — works fine because pic8259 doesn't expose x86_64 types in its public API.
+  - **Critical:** `pic8259::ChainedPics::initialize()` saves and restores whatever mask state the firmware left (everything masked in QEMU). Must explicitly call `write_masks(0xFE, 0xFF)` after to unmask the timer IRQ 0.
+  - **Bug 1:** First attempt with `pit::set_frequency(2)` panicked — divisor (596591) doesn't fit in 16 bits. PIT divisor max is 65535, so minimum frequency is ~18.2 Hz. Fixed by using 100 Hz + atomic tick counter that only prints every 100th tick (~1/sec visible).
+  - **Bug 2:** Bootimage is built by `bootimage` tool, NOT `cargo build`. Stale `.bin` file looks identical to "kernel doesn't print." Always use `cargo run` or `cargo bootimage` to repackage after code changes.
+  - Debugging tip that worked: use QEMU monitor via Unix socket (`-monitor unix:/tmp/qm.sock,server,nowait`) + `nc -U` to send `xp /Nbx 0xb8000` to dump VGA buffer, and `info registers` to get RIP. Also `objdump -d` on the kernel binary + `nm | sort` to decode return addresses on the panic stack.
+- **Next:** 1.7 panic stack trace. Then M1 milestone reached.
 
 ### 2026-06-14 (slice 8, step 1 of 4) — PIC setup
 - **Done:** Created `src/pic.rs` with a `ChainedPics` static (master offset 0x20, slave offset 0x28) and `init()` that calls `PICS.lock().initialize()`. Called `pic::init()` from `_start` after `interrupts::init()`. No behavior change yet — PIC is initialized but no interrupts fire (IF=0 still).

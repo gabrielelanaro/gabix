@@ -25,12 +25,21 @@ pub static PICS: Mutex<ChainedPics> = Mutex::new(unsafe {
     ChainedPics::new(PIC_1_OFFSET, PIC_2_OFFSET)
 });
 
-/// Initialize the PICs with our remapped offsets.
+/// Initialize the PICs with our remapped offsets and unmask the timer.
+///
+/// `initialize()` saves and restores whatever mask state the firmware left
+/// (typically everything masked in QEMU). So we explicitly unmask only the
+/// timer (master PIC IRQ 0) after initialize.
 ///
 /// Must be called before any hardware interrupts can fire.
-/// After this, all IRQs are masked — we'll unmask them per-source.
 pub fn init() {
     unsafe {
-        PICS.lock().initialize();
+        let mut pics = PICS.lock();
+        pics.initialize();
+        // Bit N of mask = 1 means "IRQ N masked". 0xFE = 0b11111110:
+        //   bit 0 = 0 → master IRQ 0 (timer) UNMASKED
+        //   bits 1-7 = 1 → all other master IRQs masked
+        // Slave mask 0xFF: all slave IRQs masked (no devices yet).
+        pics.write_masks(0xFE, 0xFF);
     }
 }

@@ -2,8 +2,13 @@
 
 use crate::println;
 use core::arch::naked_asm;
+use core::sync::atomic::{AtomicUsize, Ordering};
 use lazy_static::lazy_static;
 use x86_64::structures::idt::{HandlerFunc, InterruptDescriptorTable, InterruptStackFrame};
+
+/// Total number of timer ticks since boot. The handler increments this
+/// every tick; we print only every 100th (once per second at 100 Hz).
+static TICKS: AtomicUsize = AtomicUsize::new(0);
 
 /// Vector number for the timer (PIC IRQ 0, mapped to vector 0x20 = 32).
 /// Matches `crate::pic::PIC_1_OFFSET`.
@@ -94,7 +99,11 @@ unsafe extern "C" fn timer_wrapper() {
 /// the next tick can fire. Without the EOI, the PIC would never deliver
 /// another timer interrupt.
 extern "C" fn timer_inner(_stack_frame: &InterruptStackFrame) {
-    println!("tick");
+    // Increment tick count, print only every 100th tick (~1/sec at 100 Hz).
+    let count = TICKS.fetch_add(1, Ordering::SeqCst) + 1;
+    if count % 100 == 0 {
+        println!("tick #{}", count);
+    }
     unsafe {
         crate::pic::PICS
             .lock()

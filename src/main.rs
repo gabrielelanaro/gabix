@@ -21,19 +21,20 @@ fn panic(_info: &PanicInfo) -> ! {
 /// to long mode and setting up paging.
 #[no_mangle]
 pub extern "C" fn _start() -> ! {
+    println!("[boot] gdt...");
     gdt::init();
+    println!("[boot] idt...");
     interrupts::init();
+    println!("[boot] pic...");
     pic::init();
-    pit::set_frequency(2); // 2 Hz = one tick every 500ms (visible but not overwhelming)
+    println!("[boot] pit...");
+    pit::set_frequency(100); // 100 Hz = Linux default; handler throttles to ~1 print/sec
+    println!("[boot] hello");
     println!("Hello, World{}", "!");
-    println!("Welcome to mini-os: a Linux-like kernel in Rust.");
 
-    // Trigger a breakpoint exception to verify the IDT works.
-    // If the IDT is correctly set up, our breakpoint_handler runs,
-    // prints the stack frame, then execution resumes here.
-    // If not, the CPU triple-faults and QEMU reboots.
-    x86_64::instructions::interrupts::int3();
+    println!("[boot] enabling interrupts");
+    x86_64::instructions::interrupts::enable();
+    println!("[boot] entering main loop");
 
-    println!("It did not crash!");
     loop {}
 }
