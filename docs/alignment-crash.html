@@ -1,0 +1,405 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>The Alignment Crash — mini-os</title>
+<style>
+  :root {
+    --bg: #fafafa;
+    --border: #d1d5db;
+    --muted: #6b7280;
+    --aligned: #16a34a;        /* 16-aligned: green */
+    --misaligned: #dc2626;     /* 8-aligned only: red */
+    --cpu-pushed: #3b82f6;     /* CPU's interrupt frame: blue */
+    --handler-pushed: #a855f7; /* Handler's register saves: purple */
+    --scratch: #f59e0b;        /* scratch space: amber */
+    --note: #fef3c7;
+  }
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    max-width: 980px;
+    margin: 0 auto;
+    padding: 2rem 1.5rem 4rem;
+    line-height: 1.55;
+    color: #111827;
+    background: var(--bg);
+  }
+  h1 { font-size: 1.9rem; margin-bottom: 0.25rem; }
+  h2 {
+    font-size: 1.25rem;
+    margin-top: 2.25rem;
+    margin-bottom: 0.5rem;
+    padding-bottom: 0.3rem;
+    border-bottom: 2px solid var(--border);
+  }
+  h3 { font-size: 1rem; margin-top: 1.25rem; margin-bottom: 0.4rem; color: #1e3a8a; }
+  p { margin: 0.55rem 0; }
+  .lede { font-size: 1.1rem; color: #374151; }
+  code, .mono {
+    font-family: "SF Mono", Menlo, Consolas, monospace;
+    font-size: 0.92em;
+    background: #f3f4f6;
+    padding: 0.1em 0.35em;
+    border-radius: 3px;
+  }
+  pre {
+    background: #1f2937;
+    color: #e5e7eb;
+    padding: 0.85rem 1rem;
+    border-radius: 6px;
+    overflow-x: auto;
+    font-size: 0.85rem;
+  }
+  pre code { background: transparent; padding: 0; color: inherit; }
+
+  .callout {
+    background: var(--note);
+    border-left: 4px solid #f59e0b;
+    padding: 0.6rem 1rem;
+    margin: 1rem 0;
+    border-radius: 0 4px 4px 0;
+  }
+  .analogy {
+    background: #eff6ff;
+    border-left: 4px solid #1e3a8a;
+    padding: 0.6rem 1rem;
+    margin: 1rem 0;
+    border-radius: 0 4px 4px 0;
+  }
+
+  /* Stack visualization */
+  .stack-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 1.5rem;
+    margin: 1.25rem 0;
+    align-items: start;
+  }
+  .stack-explanation { padding-top: 0.5rem; }
+  .stack-explanation h3 { margin-top: 0; }
+  .stack-explanation p { font-size: 0.92rem; }
+
+  .stack {
+    background: white;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 0.5rem;
+    width: 100%;
+    max-width: 320px;
+  }
+  .stack-title {
+    text-align: center;
+    font-size: 0.85rem;
+    color: var(--muted);
+    margin-bottom: 0.5rem;
+    font-style: italic;
+  }
+  .cell {
+    padding: 0.4rem 0.6rem;
+    margin: 0.15rem 0;
+    border-radius: 3px;
+    font-family: monospace;
+    font-size: 0.82rem;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+  .cell.empty {
+    background: #f9fafb;
+    color: var(--muted);
+    border: 1px dashed var(--border);
+  }
+  .cell.cpu {
+    background: #dbeafe;
+    border-left: 3px solid var(--cpu-pushed);
+    color: #1e3a8a;
+  }
+  .cell.handler {
+    background: #f3e8ff;
+    border-left: 3px solid var(--handler-pushed);
+    color: #6b21a8;
+  }
+  .cell .label { font-weight: 600; }
+  .cell .addr { font-size: 0.75rem; color: var(--muted); }
+
+  .sp-indicator {
+    text-align: right;
+    font-family: monospace;
+    font-size: 0.85rem;
+    margin-top: 0.25rem;
+    padding: 0.25rem 0.5rem;
+    background: #fef3c7;
+    border-left: 3px solid #f59e0b;
+    border-radius: 3px;
+  }
+  .sp-indicator .label { font-weight: 700; }
+  .sp-indicator .aligned { color: var(--aligned); font-weight: 700; }
+  .sp-indicator .misaligned { color: var(--misaligned); font-weight: 700; }
+
+  /* Step indicator */
+  .step-marker {
+    display: inline-block;
+    width: 1.75rem;
+    height: 1.75rem;
+    background: #1e3a8a;
+    color: white;
+    border-radius: 50%;
+    text-align: center;
+    line-height: 1.75rem;
+    font-weight: 700;
+    font-size: 0.9rem;
+    margin-right: 0.5rem;
+  }
+
+  /* The fault diagram */
+  .fault-diagram {
+    background: white;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1rem;
+    margin: 1rem 0;
+  }
+  .fault-target {
+    text-align: center;
+    padding: 0.75rem;
+    margin: 0.5rem 0;
+    border-radius: 4px;
+    font-family: monospace;
+    font-size: 0.9rem;
+  }
+  .fault-target.ok { background: #dcfce7; color: #166534; border: 1px solid #16a34a; }
+  .fault-target.bad { background: #fee2e2; color: #991b1b; border: 1px solid #dc2626; }
+
+  /* Cascade */
+  .cascade {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    margin: 1rem 0;
+  }
+  .cascade-step {
+    padding: 0.6rem 0.9rem;
+    background: white;
+    border-left: 3px solid var(--misaligned);
+    border-radius: 0 4px 4px 0;
+    font-size: 0.92rem;
+  }
+  .cascade-step.final { background: #fee2e2; border-left-color: #7f1d1d; font-weight: 600; }
+  .cascade-arrow { text-align: center; color: var(--muted); font-size: 1.2rem; }
+
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 1rem 0;
+    font-size: 0.92rem;
+  }
+  th, td {
+    text-align: left;
+    padding: 0.5rem 0.75rem;
+    border-bottom: 1px solid var(--border);
+  }
+  th { background: #f3f4f6; font-weight: 600; }
+  td code { font-size: 0.85rem; }
+
+  footer {
+    margin-top: 3rem;
+    padding-top: 1.5rem;
+    border-top: 1px solid var(--border);
+    color: var(--muted);
+    font-size: 0.85rem;
+  }
+</style>
+</head>
+<body>
+
+<h1>The Alignment Crash, in Pictures</h1>
+<p class="lede">
+Our breakpoint handler kept crashing. The reason: a chain of small alignment problems that ended with one instruction refusing to run. Here's the whole story, visually.
+</p>
+
+<h2>What "aligned" means (1-minute intro)</h2>
+
+<p>Memory addresses are just numbers. Sometimes an instruction demands that an address be a multiple of some power of 2 — like 16. We call that <strong>"16-byte aligned."</strong></p>
+
+<table>
+  <tr><th>Address ends in…</th><th>Aligned to 16?</th><th>Why</th></tr>
+  <tr><td><code>...0</code></td><td style="color: var(--aligned); font-weight: 700;">✓ yes</td><td>0 is divisible by 16</td></tr>
+  <tr><td><code>...8</code></td><td style="color: var(--misaligned); font-weight: 700;">✗ no</td><td>8 is not divisible by 16</td></tr>
+  <tr><td><code>...0</code></td><td style="color: var(--aligned); font-weight: 700;">✓ yes</td><td>(e.g. 0x...40 = 64 = 16×4)</td></tr>
+  <tr><td><code>...8</code></td><td style="color: var(--misaligned); font-weight: 700;">✗ no</td><td>(e.g. 0x...78 = 120 = 16×7.5)</td></tr>
+</table>
+
+<p>Quick check: if the last hex digit is <code>0</code>, you're 16-aligned. If it's <code>8</code>, you're <em>almost</em> aligned (8-aligned only). Anything else and you're not even 8-aligned.</p>
+
+<div class="analogy">
+  <strong>Analogy:</strong> imagine a ruler with centimeter marks. <em>"16-aligned"</em> means your measurement lands exactly on a centimeter mark — not 7mm in, not 13mm in. Some instructions demand exact centimeter marks. If your measurement is "between marks," they refuse.
+</div>
+
+<h2>The story, in five steps</h2>
+
+<h3><span class="step-marker">1</span>Before <code>int3</code> fires — stack is 16-aligned</h3>
+
+<p>The stack pointer (<code>RSP</code>) is at <code>0x...fe8</code> when our kernel calls <code>int3</code>. Wait, <code>...8</code> — that's 8-aligned, not 16-aligned! So actually we're starting <em>misaligned</em>.</p>
+
+<p>(That's normal — the kernel's calling convention says "stack is 16-aligned at function call entry." <code>int3</code> isn't a function call, so that rule didn't apply.)</p>
+
+<h3><span class="step-marker">2</span>CPU pushes the interrupt frame — <em>now</em> it's 16-aligned</h3>
+
+<div class="stack-row">
+  <div class="stack">
+    <div class="stack-title">Stack after CPU pushes interrupt frame</div>
+    <div class="cell cpu"><span class="label">RIP</span><span class="addr">return address</span></div>
+    <div class="cell cpu"><span class="label">CS</span><span class="addr">code segment</span></div>
+    <div class="cell cpu"><span class="label">RFLAGS</span><span class="addr">CPU flags</span></div>
+    <div class="cell cpu"><span class="label">RSP</span><span class="addr">old stack pointer</span></div>
+    <div class="cell cpu"><span class="label">SS</span><span class="addr">old stack segment</span></div>
+    <div class="sp-indicator">
+      <span class="label">RSP =</span> <code>0x...fc0</code>
+      <span class="aligned">✓ 16-aligned</span>
+    </div>
+  </div>
+  <div class="stack-explanation">
+    <p>The CPU pushed 5 things (40 bytes total). That's an even multiple of 8 but <em>not</em> of 16. So the alignment flipped from <code>...8</code> to <code>...0</code> — by luck, we're now 16-aligned.</p>
+    <p>This is the stack our handler sees when it starts running.</p>
+  </div>
+</div>
+
+<h3><span class="step-marker">3</span>Handler pushes 9 registers — misaligned again</h3>
+
+<div class="stack-row">
+  <div class="stack">
+    <div class="stack-title">Stack after handler pushes 9 registers</div>
+    <div class="cell handler"><span class="label">rax</span><span class="addr">8 bytes</span></div>
+    <div class="cell handler"><span class="label">r11</span><span class="addr">8 bytes</span></div>
+    <div class="cell handler"><span class="label">r10</span><span class="addr">8 bytes</span></div>
+    <div class="cell handler"><span class="label">r9</span><span class="addr">8 bytes</span></div>
+    <div class="cell handler"><span class="label">r8</span><span class="addr">8 bytes</span></div>
+    <div class="cell handler"><span class="label">rdi</span><span class="addr">8 bytes</span></div>
+    <div class="cell handler"><span class="label">rsi</span><span class="addr">8 bytes</span></div>
+    <div class="cell handler"><span class="label">rdx</span><span class="addr">8 bytes</span></div>
+    <div class="cell handler"><span class="label">rcx</span><span class="addr">8 bytes</span></div>
+    <div class="sp-indicator">
+      <span class="label">RSP =</span> <code>0x...f78</code>
+      <span class="misaligned">✗ only 8-aligned</span>
+    </div>
+  </div>
+  <div class="stack-explanation">
+    <p>The compiler-generated prologue saves 9 registers. Each push is 8 bytes, so each one <em>flips</em> the alignment (0 → 8 → 0 → 8 ...).</p>
+    <p>Nine pushes = odd number, so we ended on <code>...8</code>. Now misaligned.</p>
+    <p>If the prologue had pushed an <em>even</em> number of registers, we'd be fine. But it didn't.</p>
+  </div>
+</div>
+
+<h3><span class="step-marker">4</span>Handler subtracts <code>0x130</code> — doesn't help</h3>
+
+<div class="stack-row">
+  <div class="stack">
+    <div class="stack-title">Stack after <code>sub $0x130, %rsp</code></div>
+    <div class="cell empty"><span class="label">0x120 bytes of scratch space</span></div>
+    <div class="cell empty"><span class="label">(for saving more stuff)</span></div>
+    <div class="cell empty"><span class="label">↓</span></div>
+    <div class="cell empty"><span class="label">0x130 bytes total</span></div>
+    <div class="sp-indicator">
+      <span class="label">RSP =</span> <code>0x...e48</code>
+      <span class="misaligned">✗ still 8-aligned</span>
+    </div>
+  </div>
+  <div class="stack-explanation">
+    <p><code>0x130</code> in decimal is <strong>304</strong>. 304 ÷ 16 = 19. So 304 <em>is</em> a multiple of 16.</p>
+    <p>Subtracting a multiple of 16 <strong>preserves</strong> alignment. If we were misaligned at <code>...8</code>, we stay at <code>...8</code>.</p>
+    <p>The compiler should have subtracted <code>0x138</code> (304 + 8 = 312) to add the extra 8 bytes needed to realign. It didn't.</p>
+  </div>
+</div>
+
+<h3><span class="step-marker">5</span>The crash: <code>movaps</code> demands 16-alignment</h3>
+
+<p>The handler now wants to save <strong>16-byte-wide registers</strong> (called <code>xmm</code>) to the scratch space it just reserved. It uses an instruction called <code>movaps</code> — but <code>movaps</code> has a strict rule:</p>
+
+<div class="callout">
+  <strong><code>movaps</code> rule:</strong> the destination address <em>must</em> be 16-aligned. No exceptions. If it isn't, the CPU raises a General Protection Fault.
+</div>
+
+<div class="fault-diagram">
+  <div class="fault-target bad">
+    <strong><code>movaps %xmm15, 0x120(%rsp)</code></strong><br>
+    Destination: <code>RSP + 0x120</code> = <code>0x...e48 + 0x120</code> = <code>0x...f68</code><br>
+    Ends in <code>8</code> → <strong>NOT 16-aligned</strong> → <strong>FAULT</strong>
+  </div>
+</div>
+
+<p>The instruction faults. The handler hasn't even done anything useful yet — the crash happens in the prologue, before our actual code runs.</p>
+
+<h2>The cascade — why a single misalignment became a reboot</h2>
+
+<p>One fault isn't a reboot. The CPU tries to handle the fault by calling another handler. But that handler isn't installed either, so it faults too. Eventually:</p>
+
+<div class="cascade">
+  <div class="cascade-step">
+    <strong>1. <code>movaps</code> faults</strong> → General Protection Fault (#GP)
+  </div>
+  <div class="cascade-arrow">↓ CPU tries to call GP handler, but we didn't register one</div>
+  <div class="cascade-step">
+    <strong>2. Double Fault (#DF)</strong> → "an exception happened while handling another exception"
+  </div>
+  <div class="cascade-arrow">↓ CPU tries to call double-fault handler, but we didn't register one either</div>
+  <div class="cascade-step">
+    <strong>3. Triple Fault</strong> → CPU gives up. The only thing it can do is reset.
+  </div>
+  <div class="cascade-arrow">↓ CPU resets → SeaBIOS → bootloader → our kernel → <code>int3</code> → #1 again</div>
+  <div class="cascade-step final">
+    <strong>4. Reboot loop.</strong> This is what you saw.
+  </div>
+</div>
+
+<div class="callout">
+  <strong>Key insight:</strong> a single fault is fine — the kernel handles it. A double fault is also fine — if you have a double-fault handler. A <em>triple</em> fault is unrecoverable: the CPU physically can't continue, so it resets the machine.
+</div>
+
+<h2>The fix we applied</h2>
+
+<p>We made the breakpoint handler <strong>empty</strong>:</p>
+
+<pre><code>extern "x86-interrupt" fn breakpoint_handler(_stack_frame: InterruptStackFrame) {
+    // Empty for now
+}</code></pre>
+
+<p>The compiler looks at this and says "function does nothing, doesn't use any wide registers." So it skips the entire prologue — no register saves, no <code>movaps</code>, no fault. The compiled handler is literally one instruction:</p>
+
+<pre><code>2066d0:  iretq   ← just return from the interrupt</code></pre>
+
+<p>No prologue, no problem. The handler runs, returns, execution continues. That's why <code>"It did not crash!"</code> shows up on screen.</p>
+
+<h2>The "real" fix (future)</h2>
+
+<p>The empty handler is a workaround. We'd like our handler to actually do something — like print the exception info. But any non-trivial work (especially formatting with <code>{:#?}</code>) triggers the compiler to save <code>xmm</code> registers, and we're back to the alignment problem.</p>
+
+<p>Real fixes (pick one, eventually):</p>
+
+<ol>
+  <li><strong>Stack realignment stub.</strong> Write a small assembly wrapper that aligns the stack before calling the Rust handler. Most production Rust kernels do this.</li>
+  <li><strong>Wait for the Rust compiler.</strong> The <code>extern "x86-interrupt"</code> ABI is supposed to handle this automatically; it's a known bug.</li>
+  <li><strong>Disable SSE for handlers.</strong> Tell the compiler "don't use wide registers here." Tricky in current Rust — needs per-function target features.</li>
+  <li><strong>Use naked assembly.</strong> Write the entire handler in assembly. Maximum control, maximum tedium.</li>
+</ol>
+
+<p>For now, the empty handler proves the IDT mechanism works end-to-end. The breakpoint fires, our handler is called, <code>iretq</code> returns, execution continues. That was the goal of this slice.</p>
+
+<h2>What we learned (mentally)</h2>
+
+<div class="callout">
+  <ul style="margin: 0.4rem 0; padding-left: 1.2rem;">
+    <li>The CPU delivers interrupt handlers a stack that <em>might</em> be misaligned by 8.</li>
+    <li>Some instructions (like <code>movaps</code>) demand exact 16-byte alignment. No slack.</li>
+    <li>If an instruction can't run, the CPU raises a fault. Faults on faults on faults = triple fault = reboot.</li>
+    <li>The empty-handler trick sidesteps the issue by avoiding the prologue entirely.</li>
+    <li>Real kernels either realign the stack manually or wait for the compiler to do it right.</li>
+  </ul>
+</div>
+
+<footer>
+  mini-os learning aid · the alignment crash, in pictures
+</footer>
+
+</body>
+</html>

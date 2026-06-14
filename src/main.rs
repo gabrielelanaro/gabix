@@ -1,3 +1,4 @@
+#![feature(abi_x86_interrupt)]
 #![no_std] // Don't link the Rust standard library.
 #![no_main] // Don't use the normal Rust entry point chain.
 
@@ -24,5 +25,12 @@ pub extern "C" fn _start() -> ! {
     println!("Hello, World{}", "!");
     println!("Welcome to mini-os: a Linux-like kernel in Rust.");
 
+    // Trigger a breakpoint exception to verify the IDT works.
+    // If the IDT is correctly set up, our breakpoint_handler runs,
+    // prints the stack frame, then execution resumes here.
+    // If not, the CPU triple-faults and QEMU reboots.
+    x86_64::instructions::interrupts::int3();
+
+    println!("It did not crash!");
     loop {}
 }

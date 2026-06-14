@@ -13,7 +13,7 @@ Status legend: `[ ]` not started · `[~]` in progress · `[x]` done
 - [x] 1.2 `bootimage` / `bootloader` crate setup, boot in QEMU
 - [x] 1.3 VGA text-mode buffer, print "Hello, World"
 - [x] 1.4 GDT (Global Descriptor Table)
-- [ ] 1.5 IDT + interrupt handlers
+- [x] 1.5 IDT + interrupt handlers
 - [ ] 1.6 Hardware interrupts: PIC/APIC timer
 - [ ] 1.7 Panic with stack trace
 
@@ -360,6 +360,16 @@ Most recent entries at the top. One entry per work session.
 - **Status:** (which milestones/checkboxes flipped)
 - **Notes / blockers / surprises:** (anything useful for future-you)
 - **Next:** (where to pick up next time)
+
+### 2026-06-14 (slice 6) — IDT + breakpoint handler (with detour)
+- **Done:** Created `src/interrupts.rs` with a lazy_static IDT and an `init()` that loads it via `lidt`. Registered a breakpoint (#BP) handler for vector 3. Triggered it from `_start` via `x86_64::instructions::interrupts::int3()` to verify the IDT works end-to-end.
+- **Status:** Checkbox 1.5 flipped to `[x]`. M1 partially in progress (1.6 hardware interrupts and 1.7 panic stack trace still pending).
+- **Notes / blockers / surprises:**
+  - Needed `#![feature(abi_x86_interrupt)]` at the top of main.rs — the `extern "x86-interrupt"` ABI is unstable.
+  - **Big detour:** first version with `println!` inside the handler triple-faulted. Diagnosed via QEMU logging (`qemu-system-x86_64 ... -d int -D qemu.log`). The `extern "x86-interrupt"` ABI on current Rust nightly generates a prologue that saves XMM registers via `movaps`, which requires 16-byte stack alignment. The CPU delivers interrupt handlers an 8-byte-aligned stack (after pushing the 40-byte interrupt frame), and the compiler's prologue doesn't realign. So `movaps` faults → #GP → no GP handler → #DF → no DF handler → triple fault → reboot loop.
+  - **Workaround for now:** handler is empty (just `iretq`). No prologue, no XMM save, no fault. The IDT mechanism works (verified: `int3` fires, handler runs, `iretq` returns, "It did not crash!" prints).
+  - **Future fix:** write a naked-asm wrapper that realigns the stack before calling the actual Rust handler. Standard pattern in production Rust kernels. Will be needed before handlers can print (page fault in M2, etc.). Wrote up the full diagnosis in `docs/alignment-crash.html`.
+- **Next:** Either fix the alignment so handlers can print, or proceed to 1.6 (timer interrupts) with empty handlers for now.
 
 ### 2026-06-14 (slice 5) — GDT
 - **Done:** Installed our own GDT. Added `x86_64 = "0.15"` crate. Created `src/gdt.rs` with a `lazy_static!` GDT containing null + kernel code + kernel data segments, and an `init()` that calls `load()` then reloads CS/DS/SS/ES/FS/GS. Called `gdt::init()` from `_start` before the `println!`s.
