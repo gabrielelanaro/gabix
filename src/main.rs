@@ -7,6 +7,7 @@ mod gdt;
 mod interrupts;
 mod pic;
 mod pit;
+mod frame_allocator;
 
 use bootloader::BootInfo;
 use core::panic::PanicInfo;
@@ -55,6 +56,35 @@ pub extern "C" fn _start(boot_info: &'static BootInfo) -> ! {
             region.region_type,
         );
     }
+
+    println!("[boot] frame allocator...");
+    frame_allocator::init(&boot_info.memory_map);
+
+    // Sanity test: allocate three frames, free the middle one, allocate
+    // again — the new allocation should reuse the freed frame (lowest free
+    // frame wins in a linear scan).
+    println!("[test] frame allocator reuse check");
+    let a = frame_allocator::allocate();
+    let b = frame_allocator::allocate();
+    let c = frame_allocator::allocate();
+    println!("[test]   allocated a={:?}, b={:?}, c={:?}", a, b, c);
+    println!("[test]   {} frames free after 3 allocations", frame_allocator::frames_free());
+
+    if let Some(f) = b {
+        frame_allocator::deallocate(f);
+        println!("[test]   freed b={:?}", f);
+    }
+    let d = frame_allocator::allocate();
+    println!("[test]   allocated d={:?} (should equal previous b)", d);
+
+    if let Some(f) = a {
+        frame_allocator::deallocate(f);
+        println!("[test]   freed a={:?}", f);
+    }
+    let e = frame_allocator::allocate();
+    println!("[test]   allocated e={:?} (should equal previous a)", e);
+
+    println!("[test]   {} frames free after test", frame_allocator::frames_free());
 
     println!("[boot] enabling interrupts");
     x86_64::instructions::interrupts::enable();

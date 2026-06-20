@@ -1,0 +1,538 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Frame Allocator — mini-os</title>
+<style>
+  :root {
+    --kernel: #1e3a8a;
+    --free:   #15803d;   /* green */
+    --used:   #b91c1c;   /* red */
+    --resv:   #6b7280;   /* gray */
+    --bitmap: #be185d;   /* magenta */
+    --bg: #fafafa;
+    --note: #fef3c7;
+    --analogy-bg: #eff6ff;
+    --callout-bg: #fef3c7;
+    --border: #d1d5db;
+    --muted: #6b7280;
+  }
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    max-width: 980px;
+    margin: 0 auto;
+    padding: 2rem 1.5rem 4rem;
+    line-height: 1.55;
+    color: #111827;
+    background: var(--bg);
+  }
+  h1 { font-size: 2rem; margin-bottom: 0.25rem; }
+  h2 {
+    font-size: 1.35rem;
+    margin-top: 2.5rem;
+    margin-bottom: 0.75rem;
+    padding-bottom: 0.3rem;
+    border-bottom: 2px solid var(--border);
+  }
+  h3 { font-size: 1.05rem; margin-top: 1.5rem; margin-bottom: 0.5rem; color: var(--kernel); }
+  p { margin: 0.6rem 0; }
+  .lede { font-size: 1.1rem; color: #374151; margin-bottom: 1.5rem; }
+  code, .mono { font-family: "SF Mono", Menlo, Consolas, monospace; font-size: 0.92em; background: #f3f4f6; padding: 0.1em 0.35em; border-radius: 3px; }
+  pre { background: #1f2937; color: #e5e7eb; padding: 0.85rem 1rem; border-radius: 6px; overflow-x: auto; font-size: 0.85rem; }
+  pre code { background: transparent; padding: 0; color: inherit; }
+  .callout {
+    background: var(--callout-bg);
+    border-left: 4px solid #f59e0b;
+    padding: 0.6rem 1rem;
+    margin: 1rem 0;
+    border-radius: 0 4px 4px 0;
+  }
+  .analogy {
+    background: var(--analogy-bg);
+    border-left: 4px solid var(--kernel);
+    padding: 0.6rem 1rem;
+    margin: 1rem 0;
+    border-radius: 0 4px 4px 0;
+  }
+  .diagram {
+    background: white;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1.25rem;
+    margin: 1rem 0;
+    text-align: center;
+  }
+  .diagram-caption { font-size: 0.85rem; color: var(--muted); margin-top: 0.5rem; font-style: italic; }
+  button {
+    background: var(--kernel);
+    color: white;
+    border: none;
+    padding: 0.5rem 1rem;
+    border-radius: 4px;
+    font-size: 0.95rem;
+    cursor: pointer;
+    margin: 0.25rem;
+  }
+  button:hover { background: #1e40af; }
+  button.secondary { background: #6b7280; }
+  button.secondary:hover { background: #4b5563; }
+  input[type="number"] {
+    width: 5rem;
+    padding: 0.3rem 0.5rem;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    font-family: "SF Mono", Menlo, monospace;
+    font-size: 0.9rem;
+  }
+
+  /* The frame grid */
+  .frame-grid {
+    display: grid;
+    grid-template-columns: repeat(16, 1fr);
+    gap: 4px;
+    margin: 1rem auto;
+    max-width: 700px;
+  }
+  .frame {
+    aspect-ratio: 1;
+    border-radius: 3px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.7rem;
+    font-family: "SF Mono", Menlo, monospace;
+    color: white;
+    cursor: pointer;
+    transition: transform 0.1s;
+    user-select: none;
+  }
+  .frame.free { background: var(--free); }
+  .frame.used { background: var(--used); }
+  .frame.resv { background: var(--resv); cursor: not-allowed; }
+  .frame.bitmap { background: var(--bitmap); cursor: not-allowed; }
+  .frame.highlight { transform: scale(1.2); outline: 2px solid #111827; z-index: 1; }
+
+  /* Bit row under frames */
+  .bit-row {
+    display: flex;
+    justify-content: center;
+    gap: 4px;
+    margin: 0.5rem auto;
+    font-family: "SF Mono", Menlo, monospace;
+    font-size: 1.1rem;
+  }
+  .bit {
+    width: 32px;
+    height: 32px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: #f3f4f6;
+    border-radius: 3px;
+    transition: background 0.2s;
+  }
+  .bit.one { background: #fecaca; color: var(--used); }
+  .bit.zero { background: #d1fae5; color: var(--free); }
+
+  /* Memory map strip */
+  .mem-map { display: flex; flex-direction: column; gap: 4px; margin: 1rem auto; max-width: 600px; }
+  .mem-region {
+    padding: 0.4rem 0.8rem;
+    border-radius: 4px;
+    color: white;
+    font-family: "SF Mono", Menlo, monospace;
+    font-size: 0.85rem;
+    display: flex;
+    justify-content: space-between;
+  }
+  .mem-region.Usable { background: var(--free); }
+  .mem-region.Reserved { background: var(--resv); }
+  .mem-region.Kernel { background: var(--used); }
+  .mem-region.Bootloader { background: #c2410c; }
+  .mem-region.PageTable { background: #6d28d9; }
+  .mem-region.BootInfo { background: var(--bitmap); }
+  .mem-region.KernelStack { background: #be185d; }
+  .mem-region.FrameZero { background: #1f2937; }
+
+  .legend {
+    display: flex;
+    gap: 1rem;
+    justify-content: center;
+    flex-wrap: wrap;
+    margin: 1rem 0;
+    font-size: 0.85rem;
+  }
+  .legend-item { display: flex; align-items: center; gap: 0.4rem; }
+  .legend-swatch { width: 1rem; height: 1rem; border-radius: 3px; }
+
+  .stat-bar {
+    background: #f3f4f6;
+    border-radius: 4px;
+    padding: 0.5rem 1rem;
+    margin: 0.5rem 0;
+    font-family: "SF Mono", Menlo, monospace;
+    font-size: 0.9rem;
+  }
+  .log {
+    background: #1f2937;
+    color: #e5e7eb;
+    padding: 0.6rem 1rem;
+    border-radius: 4px;
+    font-family: "SF Mono", Menlo, monospace;
+    font-size: 0.85rem;
+    height: 120px;
+    overflow-y: auto;
+    text-align: left;
+    margin: 0.5rem 0;
+  }
+  table { border-collapse: collapse; margin: 1rem 0; }
+  th, td { border: 1px solid var(--border); padding: 0.5rem 0.8rem; text-align: left; font-size: 0.92rem; }
+  th { background: #f3f4f6; }
+</style>
+</head>
+<body>
+
+<h1>Frame Allocator</h1>
+<p class="lede">
+The first piece of memory management: a way to track which 4&nbsp;KB chunks of physical RAM are free,
+hand them out on request, and take them back when returned. Without this, we can't allocate page tables,
+build a heap, or do anything else that needs fresh memory.
+</p>
+
+<div class="callout">
+<strong>The job, in one sentence:</strong> given a list of physical memory regions (from the bootloader),
+maintain a fast lookup of "is frame <code>N</code> free?" and answer <code>allocate()</code> / <code>deallocate()</code> requests.
+</div>
+
+<h2>1. The hotel analogy</h2>
+<p>
+Think of physical RAM as a hotel with thousands of identical rooms. Each room is the same size
+(4&nbsp;KB), each has a number, and at any moment each is either occupied or vacant. The front desk
+needs a system that can:
+</p>
+<ul>
+  <li><strong>Check in a guest:</strong> find an empty room, mark it occupied, hand over the key.</li>
+  <li><strong>Check out:</strong> take the key back, mark the room vacant.</li>
+  <li><strong>Report vacancy:</strong> how many rooms are still free?</li>
+</ul>
+<p>
+Click the buttons to play with a 32-room hotel. "Allocate" finds the first vacant room and occupies it.
+"Free #N" returns a specific room.
+</p>
+
+<div class="diagram">
+  <div id="hotel-grid" class="frame-grid"></div>
+  <div class="legend">
+    <div class="legend-item"><div class="legend-swatch" style="background: var(--free)"></div> free</div>
+    <div class="legend-item"><div class="legend-swatch" style="background: var(--used)"></div> used</div>
+  </div>
+  <div class="stat-bar" id="hotel-stat">32 rooms total, 32 free, 0 used</div>
+  <div>
+    <button onclick="hotelAllocate()">Allocate (find first free)</button>
+    <input id="hotel-free-n" type="number" min="0" max="31" value="0">
+    <button class="secondary" onclick="hotelFree()">Free #N</button>
+    <button class="secondary" onclick="hotelReset()">Reset</button>
+  </div>
+  <div class="log" id="hotel-log"></div>
+  <div class="diagram-caption">32 frames. Allocate scans for the first green one and turns it red. The address of frame N is <code>N × 4096</code>.</div>
+</div>
+
+<h2>2. From rooms to bits</h2>
+<p>
+We don't need to track each room with a full byte — a single bit is enough
+(1 = occupied, 0 = vacant). String the bits together and you get a packed array: the <strong>bitmap</strong>.
+</p>
+
+<div class="diagram">
+  <div id="bit-grid" class="frame-grid"></div>
+  <div id="bit-row" class="bit-row"></div>
+  <div class="diagram-caption">
+    Each frame above corresponds to one bit below. The bitmap is just <code>num_frames / 8</code> bytes
+    packed in memory — for 32 frames, that's 4 bytes.
+  </div>
+</div>
+
+<p>Hover over a frame above to highlight its bit. The translation between frame numbers and physical
+addresses is trivial:</p>
+<pre><code>frame_number    = physical_address / 4096
+physical_address = frame_number * 4096</code></pre>
+<p>That's it. No metadata, no header, no per-frame bookkeeping. The position of the bit IS the bookkeeping.</p>
+
+<h2>3. Bootstrapping the bitmap from the memory map</h2>
+<p>
+At boot we don't yet know which frames are free — but the bootloader just handed us a memory map
+that says, region by region, what kind each chunk of RAM is. The initialization is one loop:
+</p>
+<pre><code>// Start: every bit = 1 (assume allocated). We'll clear bits for Usable regions.
+for bit in bitmap.iter_mut(): bit = 1;
+
+for region in memory_map:
+    if region.kind == Usable:
+        for frame in region.range:
+            bitmap[frame.number] = 0;   // mark free
+    // all other kinds stay 1 (Kernel, Reserved, PageTable, ...)</code></pre>
+
+<p>Visually, our QEMU memory map turns into a bitmap like this:</p>
+
+<div class="diagram">
+  <div class="mem-map">
+    <div class="mem-region FrameZero"><span>0x00000000 → 0x00001000</span><span>FrameZero</span></div>
+    <div class="mem-region PageTable"><span>0x00001000 → 0x00005000</span><span>PageTable</span></div>
+    <div class="mem-region Bootloader"><span>0x00005000 → 0x00015000</span><span>Bootloader</span></div>
+    <div class="mem-region BootInfo"><span>0x00015000 → 0x00016000</span><span>BootInfo</span></div>
+    <div class="mem-region Kernel"><span>0x00016000 → 0x00019000</span><span>Kernel</span></div>
+    <div class="mem-region KernelStack"><span>0x00019000 → 0x0009f000</span><span>KernelStack</span></div>
+    <div class="mem-region Reserved"><span>0x0009f000 → 0x000a0000</span><span>Reserved</span></div>
+    <div class="mem-region Reserved"><span>0x000f0000 → 0x00100000</span><span>Reserved</span></div>
+    <div class="mem-region KernelStack"><span>0x00100000 → 0x0027a000</span><span>KernelStack</span></div>
+    <div class="mem-region Usable"><span>0x0027a000 → 0x00400000</span><span>Usable</span></div>
+    <div class="mem-region Kernel"><span>0x00400000 → 0x00435000</span><span>Kernel</span></div>
+    <div class="mem-region PageTable"><span>0x00435000 → 0x0043d000</span><span>PageTable</span></div>
+    <div class="mem-region Usable"><span>0x0043d000 → 0x07fe0000</span><span>Usable</span></div>
+    <div class="mem-region Reserved"><span>0x07fe0000 → 0x08000000</span><span>Reserved</span></div>
+  </div>
+  <button onclick="runInitAnimation()">Run init animation</button>
+  <div id="init-grid" class="frame-grid"></div>
+  <div class="diagram-caption">
+    Bitmap bits after init. Green = bit 0 (frame is free, region was <code>Usable</code>). Other colors = bit 1 (frame is allocated, region was something else).
+  </div>
+</div>
+
+<h2>4. The chicken-and-egg: where does the bitmap itself live?</h2>
+
+<div class="analogy">
+<strong>Puzzle:</strong> to allocate frames, we need a bitmap. To store the bitmap, we need a frame.
+Which comes first?
+</div>
+
+<p>
+Answer: the bitmap is small enough that we can either reserve space for it <em>statically</em>
+(a fixed-size global buffer compiled into the kernel image), or grab the first few frames of the
+first <code>Usable</code> region <em>before</em> we start the normal allocator and use those as bitmap storage.
+</p>
+
+<p>The math for our QEMU memory map:</p>
+<pre><code>num_frames ≈ (128 MB) / 4 KB ≈ 32,000 frames
+bitmap_size = 32,000 bits / 8 = 4,000 bytes ≈ 1 frame
+
+So the bitmap fits in ONE 4 KB frame.</code></pre>
+
+<p>
+For real machines with gigabytes of RAM, the bitmap gets proportionally bigger — 32 GB of RAM
+would need 1 MB of bitmap. Still small in absolute terms, but enough that Linux picks a different
+data structure (the <strong>buddy allocator</strong>) to avoid both the storage cost and the "scan a
+million bits to find a free one" cost.
+</p>
+
+<h2>5. Bitmap vs. buddy</h2>
+
+<table>
+  <tr><th></th><th>Bitmap</th><th>Buddy (what Linux uses)</th></tr>
+  <tr><td>Data structure</td><td>Array of bits</td><td>Binary tree of free lists, one per power-of-two size</td></tr>
+  <tr><td>Allocate one frame</td><td>Linear scan for first 0 bit</td><td>Pop head of the order-0 free list — O(1)</td></tr>
+  <tr><td>Allocate N contiguous frames</td><td>Linear scan for N consecutive 0 bits</td><td>Walk to the right order list, split if needed — O(log N)</td></tr>
+  <tr><td>Free a frame</td><td>Set bit to 0 — O(1)</td><td>Set bit, then try to merge with neighbor ("buddy") into a bigger block — O(log N)</td></tr>
+  <tr><td>Storage overhead</td><td>1 bit per frame (≈ 0.003%)</td><td>~10 bytes per frame for free list nodes (≈ 0.25%)</td></tr>
+  <tr><td>Implementation</td><td>~50 lines</td><td>~500 lines</td></tr>
+  <tr><td>Fragmentation behavior</td><td>Doesn't merge, but doesn't fragment either</td><td>Aggressively merges, but can fail on odd-sized requests</td></tr>
+</table>
+
+<div class="callout">
+<strong>Why we pick bitmap for mini-os:</strong> simplicity. We have 32,000 frames — even a linear scan
+takes microseconds. Buddy's strengths (fast allocation, merging) only matter when you have millions
+of frames and many concurrent allocators. For learning the <em>concept</em> of physical-frame management,
+the bitmap is the right tool.
+</div>
+
+<h2>6. The interface we'll implement</h2>
+
+<pre><code>pub struct FrameAllocator {
+    bitmap: [u8; ...],   // 1 bit per frame
+    num_frames: usize,
+}
+
+impl FrameAllocator {
+    pub fn init(memory_map: &MemoryMap) -> Self;
+    pub fn allocate(&mut self) -> Option&lt;u64&gt;;        // returns frame number, or None if out
+    pub fn deallocate(&mut self, frame_number: u64);
+    pub fn frames_free(&self) -> usize;
+}</code></pre>
+
+<p>
+That's the whole API. <code>allocate</code> returns an <code>Option</code> because the day we run out
+of physical RAM, we want it to fail visibly, not silently corrupt memory.
+</p>
+
+<h2>7. Recap</h2>
+
+<ul>
+  <li><strong>Frame</strong> = 4 KB chunk of physical RAM. <strong>Page</strong> = the same chunk when seen through virtual memory. Same size, different perspective.</li>
+  <li>A <strong>bitmap allocator</strong> uses 1 bit per frame. 0 = free, 1 = allocated.</li>
+  <li>The bitmap is <strong>initialized from the bootloader's memory map</strong> — every <code>Usable</code> region's frames become 0, everything else stays 1.</li>
+  <li><strong>Allocation</strong> = linear scan for the first 0 bit. <strong>Deallocation</strong> = flip the bit.</li>
+  <li>For ~128 MB of RAM (QEMU), the bitmap itself is ~4 KB — fits in one frame.</li>
+  <li>Linux uses a <strong>buddy allocator</strong> instead, because it scales better to gigabytes of RAM and supports merging adjacent free regions.</li>
+</ul>
+
+<p style="margin-top: 2rem; color: var(--muted); font-size: 0.85rem; text-align: center;">
+  Next: implement <code>src/frame_allocator.rs</code> using this design.
+</p>
+
+<script>
+// === Hotel analogy ===
+const HOTEL_SIZE = 32;
+let hotelRooms = new Array(HOTEL_SIZE).fill(0); // 0 = free, 1 = used
+
+function renderHotel() {
+  const grid = document.getElementById('hotel-grid');
+  grid.innerHTML = '';
+  hotelRooms.forEach((state, i) => {
+    const div = document.createElement('div');
+    div.className = 'frame ' + (state ? 'used' : 'free');
+    div.textContent = i;
+    div.onclick = () => hotelToggle(i);
+    grid.appendChild(div);
+  });
+  const free = hotelRooms.filter(s => s === 0).length;
+  document.getElementById('hotel-stat').textContent =
+    `${HOTEL_SIZE} rooms total, ${free} free, ${HOTEL_SIZE - free} used`;
+}
+
+function hotelLog(msg) {
+  const log = document.getElementById('hotel-log');
+  log.innerHTML += msg + '<br>';
+  log.scrollTop = log.scrollHeight;
+}
+
+function hotelAllocate() {
+  // Linear scan for first free frame — same as our Rust will do.
+  for (let i = 0; i < HOTEL_SIZE; i++) {
+    if (hotelRooms[i] === 0) {
+      hotelRooms[i] = 1;
+      hotelLog(`→ allocate(): returned frame ${i} (addr 0x${(i * 4096).toString(16)})`);
+      renderHotel();
+      return;
+    }
+  }
+  hotelLog(`→ allocate(): OUT OF MEMORY (all 32 frames used)`);
+}
+
+function hotelFree() {
+  const n = parseInt(document.getElementById('hotel-free-n').value);
+  if (n < 0 || n >= HOTEL_SIZE) {
+    hotelLog(`→ free(${n}): out of range`);
+    return;
+  }
+  if (hotelRooms[n] === 0) {
+    hotelLog(`→ free(${n}): already free, no-op`);
+    return;
+  }
+  hotelRooms[n] = 0;
+  hotelLog(`→ free(${n}): frame returned to pool`);
+  renderHotel();
+}
+
+function hotelToggle(i) {
+  hotelRooms[i] = hotelRooms[i] ? 0 : 1;
+  hotelLog(`→ manual toggle of frame ${i}`);
+  renderHotel();
+}
+
+function hotelReset() {
+  hotelRooms = new Array(HOTEL_SIZE).fill(0);
+  document.getElementById('hotel-log').innerHTML = '';
+  hotelLog('→ reset');
+  renderHotel();
+}
+
+// === Bit-frame correspondence ===
+function renderBitDemo() {
+  const grid = document.getElementById('bit-grid');
+  const row  = document.getElementById('bit-row');
+  grid.innerHTML = '';
+  row.innerHTML  = '';
+  // Show only 16 frames in this demo for clarity.
+  for (let i = 0; i < 16; i++) {
+    const state = Math.random() < 0.5 ? 1 : 0;
+    const frame = document.createElement('div');
+    frame.className = 'frame ' + (state ? 'used' : 'free');
+    frame.textContent = i;
+    frame.onmouseenter = () => highlightBit(i);
+    frame.onmouseleave = () => highlightBit(-1);
+    frame.dataset.bit = state;
+    grid.appendChild(frame);
+
+    const bit = document.createElement('div');
+    bit.className = 'bit ' + (state ? 'one' : 'zero');
+    bit.textContent = state;
+    bit.id = 'bit-' + i;
+    row.appendChild(bit);
+  }
+}
+
+function highlightBit(i) {
+  for (let j = 0; j < 16; j++) {
+    document.getElementById('bit-' + j).style.outline = '';
+  }
+  if (i >= 0) {
+    document.getElementById('bit-' + i).style.outline = '2px solid #111827';
+  }
+}
+
+// === Memory map → bitmap init animation ===
+// Simulate a small slice of our actual memory map, simplified to ~30 frames.
+const INIT_REGIONS = [
+  { start: 0,  end: 1,  kind: 'resv',  label: 'FrameZero' },
+  { start: 1,  end: 2,  kind: 'resv',  label: 'PageTable' },
+  { start: 2,  end: 6,  kind: 'resv',  label: 'Bootloader' },
+  { start: 6,  end: 7,  kind: 'bitmap',label: 'BootInfo' },
+  { start: 7,  end: 9,  kind: 'resv',  label: 'Kernel' },
+  { start: 9,  end: 18, kind: 'resv',  label: 'KernelStack' },
+  { start: 18, end: 22, kind: 'resv',  label: 'Reserved' },
+  { start: 22, end: 32, kind: 'free',  label: 'Usable' },
+];
+
+function renderInit() {
+  const grid = document.getElementById('init-grid');
+  grid.innerHTML = '';
+  INIT_REGIONS.forEach((r, ri) => {
+    for (let i = r.start; i < r.end; i++) {
+      const div = document.createElement('div');
+      div.className = 'frame resv';  // all start as "allocated" (1)
+      div.textContent = i;
+      div.id = 'init-' + i;
+      grid.appendChild(div);
+    }
+  });
+}
+
+function runInitAnimation() {
+  renderInit();
+  // Now walk regions, clear bits for Usable
+  let delay = 100;
+  INIT_REGIONS.forEach(r => {
+    setTimeout(() => {
+      for (let i = r.start; i < r.end; i++) {
+        const cell = document.getElementById('init-' + i);
+        if (r.kind === 'free') {
+          cell.className = 'frame free';
+        } else if (r.kind === 'bitmap') {
+          cell.className = 'frame bitmap';
+        } else {
+          cell.className = 'frame resv';
+        }
+      }
+    }, delay);
+    delay += 250;
+  });
+}
+
+// === Initial render ===
+renderHotel();
+renderBitDemo();
+renderInit();
+</script>
+
+</body>
+</html>
