@@ -90,15 +90,19 @@ pub extern "C" fn _start(boot_info: &'static BootInfo) -> ! {
 
         let s: alloc::string::String = alloc::string::String::from("hello heap");
         println!("[test]   String = {:?} (len {})", s, s.len());
-
-        // All three dropped at end of scope. (Bump allocator doesn't actually
-        // reclaim, but the dealloc calls are still made.)
     }
-    println!(
-        "[test]   heap: {} bytes allocated, {} bytes free",
-        allocator::ALLOCATOR.bytes_allocated(),
-        allocator::ALLOCATOR.bytes_free(),
-    );
+
+    // Free-reuse test: allocate 20,000 Boxes in a loop, dropping each.
+    // Total bytes if not freed: 20000 × 8 = 160 KB > our 100 KB heap.
+    // Bump allocator would panic around iteration 12,800. The linked-list
+    // allocator reuses freed blocks, so this completes cleanly.
+    println!("[test] free-reuse loop (20000 Boxes, would crash bump allocator)");
+    let mut total: u64 = 0;
+    for i in 0..20_000u64 {
+        let b: alloc::boxed::Box<u64> = alloc::boxed::Box::new(i);
+        total = total.wrapping_add(*b);
+    }
+    println!("[test]   completed; sum (mod 2^64) = {}", total);
 
     // Sanity test: allocate three frames, free the middle one, allocate
     // again — the new allocation should reuse the freed frame (lowest free

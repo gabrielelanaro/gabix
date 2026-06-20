@@ -88,7 +88,9 @@ fn init_heap(mapper: &mut OffsetPageTable) {
     // SAFETY: the heap range is now mapped and writable, and we're not
     // using it for anything else.
     unsafe {
-        ALLOCATOR.init(heap_start.as_u64() as usize, HEAP_SIZE as usize);
+        ALLOCATOR
+            .lock()
+            .init(heap_start.as_u64() as *mut u8, HEAP_SIZE as usize);
     }
     println!("[mem] heap initialized: {} bytes", HEAP_SIZE);
 }
