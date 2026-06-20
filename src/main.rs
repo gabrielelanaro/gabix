@@ -1,5 +1,10 @@
 #![no_std] // Don't link the Rust standard library.
 #![no_main] // Don't use the normal Rust entry point chain.
+#![feature(alloc_error_handler)] // Required for `#[alloc_error_handler]` on nightly.
+
+// Pull in `alloc` (Box, Vec, String, ...) — it's not included automatically
+// in `no_std` crates. Requires our `#[global_allocator]` to be wired up.
+extern crate alloc;
 
 mod vga_buffer;
 mod serial;
@@ -9,8 +14,10 @@ mod pic;
 mod pit;
 mod frame_allocator;
 mod memory;
+mod allocator;
 
 use bootloader::BootInfo;
+use core::alloc::Layout;
 use core::panic::PanicInfo;
 
 /// Called on panic. Prints the panic message and location, then halts.
@@ -26,6 +33,13 @@ fn panic(info: &PanicInfo) -> ! {
     }
     println!("{}", info);
     loop {}
+}
+
+/// Called when the global allocator can't satisfy a request (out of memory).
+/// The default behavior loops forever silently — we'd rather see why.
+#[alloc_error_handler]
+fn alloc_error(layout: Layout) -> ! {
+    panic!("allocation failed: size={}, align={}", layout.size(), layout.align());
 }
 
 /// The kernel entry point. The bootloader jumps here after switching
@@ -63,6 +77,28 @@ pub extern "C" fn _start(boot_info: &'static BootInfo) -> ! {
 
     println!("[boot] memory mapper...");
     memory::init(boot_info);
+
+    // Sanity test: Box::new goes through our #[global_allocator].
+    // If the heap isn't set up correctly, this calls alloc_error_handler.
+    println!("[test] heap allocator (Box, Vec, String)");
+    {
+        let x: alloc::boxed::Box<u32> = alloc::boxed::Box::new(42);
+        println!("[test]   Box<u32> = {}, at {:p}", *x, &*x);
+
+        let v: alloc::vec::Vec<u8> = alloc::vec![1u8, 2, 3, 4, 5];
+        println!("[test]   Vec<u8> len {} = {:?}", v.len(), &v[..]);
+
+        let s: alloc::string::String = alloc::string::String::from("hello heap");
+        println!("[test]   String = {:?} (len {})", s, s.len());
+
+        // All three dropped at end of scope. (Bump allocator doesn't actually
+        // reclaim, but the dealloc calls are still made.)
+    }
+    println!(
+        "[test]   heap: {} bytes allocated, {} bytes free",
+        allocator::ALLOCATOR.bytes_allocated(),
+        allocator::ALLOCATOR.bytes_free(),
+    );
 
     // Sanity test: allocate three frames, free the middle one, allocate
     // again — the new allocation should reuse the freed frame (lowest free

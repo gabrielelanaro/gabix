@@ -1,0 +1,560 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Heap Allocator — mini-os</title>
+<style>
+  :root {
+    --kernel: #1e3a8a;
+    --heap-bg: #f3f4f6;
+    --alloc: #be185d;
+    --free: #15803d;
+    --header: #6b7280;
+    --bg: #fafafa;
+    --border: #d1d5db;
+    --muted: #6b7280;
+    --note: #fef3c7;
+  }
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    max-width: 1020px;
+    margin: 0 auto;
+    padding: 2rem 1.5rem 4rem;
+    line-height: 1.55;
+    color: #111827;
+    background: var(--bg);
+  }
+  h1 { font-size: 2rem; margin-bottom: 0.25rem; }
+  h2 {
+    font-size: 1.35rem;
+    margin-top: 2.5rem;
+    margin-bottom: 0.75rem;
+    padding-bottom: 0.3rem;
+    border-bottom: 2px solid var(--border);
+  }
+  h3 { font-size: 1.05rem; margin-top: 1.5rem; margin-bottom: 0.5rem; color: var(--kernel); }
+  p { margin: 0.6rem 0; }
+  .lede { font-size: 1.1rem; color: #374151; margin-bottom: 1.5rem; }
+  code, .mono { font-family: "SF Mono", Menlo, Consolas, monospace; font-size: 0.92em; background: #f3f4f6; padding: 0.1em 0.35em; border-radius: 3px; }
+  pre { background: #1f2937; color: #e5e7eb; padding: 0.85rem 1rem; border-radius: 6px; overflow-x: auto; font-size: 0.85rem; }
+  pre code { background: transparent; padding: 0; color: inherit; }
+  .callout {
+    background: var(--note);
+    border-left: 4px solid #f59e0b;
+    padding: 0.6rem 1rem;
+    margin: 1rem 0;
+    border-radius: 0 4px 4px 0;
+  }
+  .diagram {
+    background: white;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1.25rem;
+    margin: 1rem 0;
+  }
+  .diagram-caption { font-size: 0.85rem; color: var(--muted); margin-top: 0.5rem; font-style: italic; text-align: center; }
+  button {
+    background: var(--kernel);
+    color: white;
+    border: none;
+    padding: 0.4rem 0.9rem;
+    border-radius: 4px;
+    font-size: 0.92rem;
+    cursor: pointer;
+    margin: 0.2rem 0.2rem 0.2rem 0;
+  }
+  button:hover { background: #1e40af; }
+  button.secondary { background: #6b7280; }
+  button.secondary:hover { background: #4b5563; }
+  button:disabled { background: #d1d5db; cursor: not-allowed; }
+  input[type="number"] {
+    width: 5rem;
+    padding: 0.3rem 0.5rem;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    font-family: "SF Mono", Menlo, monospace;
+    font-size: 0.9rem;
+  }
+
+  /* Heap visualization */
+  .heap-bar {
+    background: var(--heap-bg);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    height: 70px;
+    margin: 1rem 0;
+    display: flex;
+    overflow: hidden;
+    position: relative;
+  }
+  .heap-block {
+    height: 100%;
+    border-right: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    color: white;
+    font-family: "SF Mono", Menlo, monospace;
+    font-size: 0.7rem;
+    padding: 0.2rem;
+    text-align: center;
+    overflow: hidden;
+    position: relative;
+  }
+  .heap-block.used { background: var(--alloc); }
+  .heap-block.free { background: var(--free); }
+  .heap-block.header { background: var(--header); }
+  .heap-block.pointer {
+    position: absolute;
+    top: -20px;
+    width: 0; height: 0;
+    border-left: 6px solid transparent;
+    border-right: 6px solid transparent;
+    border-top: 8px solid var(--kernel);
+  }
+  .pointer-label {
+    font-family: "SF Mono", Menlo, monospace;
+    font-size: 0.75rem;
+    color: var(--kernel);
+    margin-bottom: 0.3rem;
+  }
+
+  .legend {
+    display: flex;
+    gap: 1rem;
+    justify-content: center;
+    flex-wrap: wrap;
+    margin: 0.75rem 0;
+    font-size: 0.85rem;
+  }
+  .legend-item { display: flex; align-items: center; gap: 0.4rem; }
+  .legend-swatch { width: 1rem; height: 1rem; border-radius: 3px; }
+
+  .stat-bar {
+    background: #f3f4f6;
+    border-radius: 4px;
+    padding: 0.5rem 1rem;
+    margin: 0.5rem 0;
+    font-family: "SF Mono", Menlo, monospace;
+    font-size: 0.9rem;
+  }
+  .log {
+    background: #1f2937;
+    color: #e5e7eb;
+    padding: 0.6rem 1rem;
+    border-radius: 4px;
+    font-family: "SF Mono", Menlo, monospace;
+    font-size: 0.82rem;
+    height: 100px;
+    overflow-y: auto;
+    text-align: left;
+    margin: 0.5rem 0;
+  }
+
+  table { border-collapse: collapse; margin: 1rem 0; width: 100%; }
+  th, td { border: 1px solid var(--border); padding: 0.5rem 0.7rem; text-align: left; font-size: 0.92rem; }
+  th { background: #f3f4f6; }
+</style>
+</head>
+<body>
+
+<h1>Heap Allocator</h1>
+<p class="lede">
+We can hand out 4&nbsp;KB frames, but kernel code often needs 32-byte structs or growable buffers.
+The heap allocator subdivides a large virtual region into small chunks on demand, so
+<code>Box::new</code>, <code>Vec</code>, and <code>String</code> work in the kernel.
+</p>
+
+<div class="callout">
+<strong>The job, in one sentence:</strong> given a request for <code>N</code> bytes aligned to <code>M</code>,
+return a pointer into a big region of pre-mapped memory; later, accept that pointer back and mark the
+chunk as free for reuse.
+</div>
+
+<h2>1. The problem we're solving</h2>
+<p>
+The frame allocator (slice 2.1) hands out 4&nbsp;KB chunks. That's great for page tables — they're
+exactly 4&nbsp;KB. But it's terrible for everyday allocations:
+</p>
+<ul>
+  <li><code>Box::new(5u32)</code> needs 4 bytes — would burn 4&nbsp;KB on it.</li>
+  <li><code>vec![1, 2, 3]</code> needs 24 bytes — would burn 4&nbsp;KB.</li>
+  <li>Worst case: thousands of small allocations, each in their own 4&nbsp;KB page. The frame allocator
+      would be empty in seconds.</li>
+</ul>
+<p>
+We need a finer-grained layer on top. That layer is the <strong>heap</strong>.
+</p>
+
+<h2>2. Where the heap lives</h2>
+<p>
+The heap is just a virtual address range we set aside — say <code>0x_4444_4444_0000</code> for 100&nbsp;KB.
+We use our page-table mapper (slice 2.2) to map that range to physical frames. Then the heap allocator
+subdivides the inside of that range.
+</p>
+
+<div class="diagram">
+  <div style="font-family: 'SF Mono', Menlo, monospace; font-size: 0.85rem; padding: 0.3rem;">
+    <strong>virtual address space</strong>
+    <div style="margin: 0.5rem 0; padding: 0.4rem; background: #f3f4f6; border-radius: 3px;">
+      0x4444_4444_0000 ┬───────────────────┬  ← heap start
+                       │  Box<u32>         │   ~4 bytes
+                       │  Vec<u8> buffer   │   ~64 bytes
+                       │  String header    │   ~24 bytes
+                       │  ...              │
+                       │  (free)           │   ← allocator's "next" pointer
+                       │  ...              │
+      0x4444_4444_0000 ┴───────────────────┴  ← heap end (100 KB later)
+                       +  0x20000
+    </div>
+  </div>
+  <div class="diagram-caption">
+    The heap is just a region. The allocator decides which bytes go to which allocation inside it.
+  </div>
+</div>
+
+<h2>3. Strategy 1: Bump allocator (the dumbest thing that works)</h2>
+<p>
+A bump allocator is one pointer (<code>next</code>) and a record of the heap's start and end. To
+allocate N bytes: return <code>next</code>, then move <code>next</code> forward by N. To free:
+<strong>do nothing</strong>. That's the whole allocator.
+</p>
+
+<div class="diagram">
+  <div class="pointer-label">next →</div>
+  <div id="bump-bar" class="heap-bar"></div>
+  <div class="legend">
+    <div class="legend-item"><div class="legend-swatch" style="background: var(--alloc)"></div> allocated</div>
+    <div class="legend-item"><div class="legend-swatch" style="background: var(--free)"></div> free</div>
+  </div>
+  <div class="stat-bar" id="bump-stat">100 bytes total, 0 used, 100 free</div>
+  <div>
+    <button onclick="bumpAlloc()">alloc 16 bytes</button>
+    <button onclick="bumpAllocBig()">alloc 32 bytes</button>
+    <button class="secondary" onclick="bumpFree()">free last (does nothing)</button>
+    <button class="secondary" onclick="bumpReset()">reset</button>
+  </div>
+  <div class="log" id="bump-log"></div>
+  <div class="diagram-caption">
+    Try it. Notice that "free" is a no-op — once bytes are claimed, they're gone forever. Run out of
+    space and the next allocation fails. This is why bump allocators are only useful for short-lived
+    programs or for arenas that get wholesale-reset.
+  </div>
+</div>
+
+<h2>4. Strategy 2: Linked-list allocator (frees actually work)</h2>
+<p>
+A linked-list allocator keeps a list of <strong>free blocks</strong>. Each block has a header (size +
+"free"/"used" flag) and the free ones are linked together. To allocate N bytes: walk the list, find a
+free block that fits, split it if it's much bigger than N, mark the chosen block as used. To free:
+mark the block as free, optionally merge with adjacent free blocks.
+</p>
+
+<div class="diagram">
+  <div id="ll-bar" class="heap-bar"></div>
+  <div class="legend">
+    <div class="legend-item"><div class="legend-swatch" style="background: var(--alloc)"></div> allocated</div>
+    <div class="legend-item"><div class="legend-swatch" style="background: var(--free)"></div> free</div>
+    <div class="legend-item"><div class="legend-swatch" style="background: var(--header)"></div> header (size+flag)</div>
+  </div>
+  <div class="stat-bar" id="ll-stat">100 bytes total, 0 used, 100 free</div>
+  <div>
+    alloc <input id="ll-size" type="number" value="16" min="1" max="80"> bytes
+    <button onclick="llAlloc()">allocate</button>
+    free #<input id="ll-block" type="number" value="0" min="0">
+    <button class="secondary" onclick="llFree()">free</button>
+    <button class="secondary" onclick="llReset()">reset</button>
+  </div>
+  <div class="log" id="ll-log"></div>
+  <div class="diagram-caption">
+    Allocate a few, then free some in the middle — watch free blocks appear. Allocating again can
+    reuse them. But notice the holes that don't get fully filled: that's fragmentation.
+  </div>
+</div>
+
+<h2>5. Fragmentation</h2>
+<p>
+The long-term failure mode of any heap allocator. After many allocate/free cycles in random orders,
+the heap becomes Swiss cheese: lots of small free blocks scattered between used blocks. The total
+free bytes might be plenty, but no single block is big enough to satisfy a new allocation.
+</p>
+
+<div class="diagram">
+  <div class="heap-bar">
+    <div class="heap-block used" style="flex: 20;">A</div>
+    <div class="heap-block free" style="flex: 5;"></div>
+    <div class="heap-block used" style="flex: 15;">B</div>
+    <div class="heap-block free" style="flex: 8;"></div>
+    <div class="heap-block used" style="flex: 10;">C</div>
+    <div class="heap-block free" style="flex: 7;"></div>
+    <div class="heap-block used" style="flex: 18;">D</div>
+    <div class="heap-block free" style="flex: 17;"></div>
+  </div>
+  <div class="diagram-caption">
+    37 bytes free total, but the largest single free block is 17 bytes. A 20-byte allocation would fail
+    here even though 37 > 20.
+  </div>
+</div>
+
+<p>
+Three flavors of fragmentation:
+</p>
+<ul>
+  <li><strong>External fragmentation:</strong> the picture above — free space is scattered, can't fit a big request.</li>
+  <li><strong>Internal fragmentation:</strong> allocator rounds up to fit a block size. Asking for 17 bytes, getting a 32-byte block — 15 bytes wasted inside the block.</li>
+  <li><strong>Slab decay:</strong> if you allocate/free the same size class repeatedly, then suddenly need a different size, the cached slabs for the first size don't help.</li>
+</ul>
+
+<p>Allocators fight fragmentation with:</p>
+<ul>
+  <li><strong>Coalescing:</strong> when you free a block, merge it with adjacent free neighbors.</li>
+  <li><strong>Best-fit / first-fit / next-fit:</strong> different heuristics for picking which free block to use.</li>
+  <li><strong>Slab allocation:</strong> pre-allocated pools per size class. Common objects (inodes, task_structs) get their own pool, eliminating fragmentation for them.</li>
+  <li><strong>Compaction:</strong> move live objects to consolidate free space. Requires updating all pointers — feasible only with runtime support (GC). Not used in kernel allocators.</li>
+</ul>
+
+<h2>6. The Rust API: <code>GlobalAlloc</code></h2>
+<p>
+Rust exposes a single trait with two methods. Implement it on a struct, mark that struct with
+<code>#[global_allocator]</code>, and every <code>Box</code>/<code>Vec</code>/<code>String</code> in
+the kernel routes through your code.
+</p>
+
+<pre><code>use core::alloc::{GlobalAlloc, Layout};
+
+struct MyAllocator { /* ... */ }
+
+unsafe impl GlobalAlloc for MyAllocator {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        // Return a pointer to `layout.size()` bytes, aligned to `layout.align()`.
+        // Return null if you can't satisfy the request.
+        todo!()
+    }
+
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        // Free the allocation previously returned by alloc().
+        todo!()
+    }
+}
+
+#[global_allocator]
+static ALLOCATOR: MyAllocator = MyAllocator { /* ... */ };</code></pre>
+
+<p>
+After that, this just works:
+</p>
+
+<pre><code>let x: Box&lt;u32&gt; = Box::new(42);              // calls ALLOCATOR.alloc(Layout::new::<u32>())
+let v: Vec&lt;u8&gt; = vec![1, 2, 3, 4, 5];      // calls alloc(5-byte layout), then later dealloc
+let s = String::from("hello");              // same pattern
+drop(x);                                     // calls ALLOCATOR.dealloc(...)</code></pre>
+
+<h2>7. Comparison to other allocators</h2>
+
+<table>
+  <tr><th>Allocator</th><th>Where</th><th>Strategy</th><th>Notes</th></tr>
+  <tr><td><code>malloc</code>/<code>free</code></td><td>C user space</td><td>varies (ptmalloc, jemalloc, mimalloc)</td><td>Process-owned heap; backed by <code>mmap</code>/<code>sbrk</code> syscalls</td></tr>
+  <tr><td><code>kmalloc</code>/<code>kfree</code></td><td>Linux kernel</td><td>slab/slub/slob</td><td>Size-classed pools; very fast for common sizes</td></tr>
+  <tr><td><code>linked_list_allocator</code></td><td>Our kernel (probably)</td><td>Linked list of free blocks</td><td>The crate we'll likely use after our own bump allocator</td></tr>
+  <tr><td><code>bump_allocator</code></td><td>Our kernel (first)</td><td>One pointer, never frees</td><td>Educational; we'll write it ourselves to learn</td></tr>
+</table>
+
+<h2>8. Recap</h2>
+<ul>
+  <li>The heap is a virtual region we subdivide for small allocations.</li>
+  <li><strong>Bump allocator</strong>: one pointer, never frees. Simplest possible.</li>
+  <li><strong>Linked-list allocator</strong>: free blocks linked, can free and reuse. Realistic.</li>
+  <li>Fragmentation is the long-term enemy; coalescing, slab pools, and good fit-heuristics fight it.</li>
+  <li>Rust's <code>#[global_allocator]</code> on a <code>GlobalAlloc</code> impl hooks our allocator
+      into every <code>Box</code>/<code>Vec</code>/<code>String</code> in the kernel.</li>
+  <li>Linux uses the slab allocator (one flavor of it) for the same job; we'll start simpler.</li>
+</ul>
+
+<p style="margin-top: 2rem; color: var(--muted); font-size: 0.85rem; text-align: center;">
+  Next: implement <code>src/allocator.rs</code> — bump first, then upgrade.
+</p>
+
+<script>
+// === Bump allocator demo ===
+const BUMP_SIZE = 100;
+let bumpNext = 0;
+let bumpAllocs = []; // {start, size, label}
+
+function renderBump() {
+  const bar = document.getElementById('bump-bar');
+  bar.innerHTML = '';
+  for (let i = 0; i < BUMP_SIZE; i++) {
+    const block = document.createElement('div');
+    block.className = 'heap-block';
+    block.style.flex = '1';
+    let used = false;
+    let label = '';
+    for (const a of bumpAllocs) {
+      if (i >= a.start && i < a.start + a.size) {
+        used = true;
+        label = a.label;
+        break;
+      }
+    }
+    block.classList.add(used ? 'used' : 'free');
+    block.textContent = used ? label : '';
+    bar.appendChild(block);
+  }
+  // Add "next" pointer marker
+  if (bumpNext > 0 && bumpNext < BUMP_SIZE) {
+    const nextBlock = bar.children[bumpNext];
+    if (nextBlock) {
+      const arrow = document.createElement('div');
+      arrow.className = 'pointer';
+      arrow.style.left = '50%';
+      nextBlock.appendChild(arrow);
+    }
+  }
+  const used = bumpNext;
+  const free = BUMP_SIZE - bumpNext;
+  document.getElementById('bump-stat').textContent = `${BUMP_SIZE} bytes total, ${used} used, ${free} free`;
+}
+
+function bumpLog(msg) {
+  const log = document.getElementById('bump-log');
+  log.innerHTML += msg + '<br>';
+  log.scrollTop = log.scrollHeight;
+}
+
+let bumpCounter = 0;
+function bumpAllocN(n) {
+  if (bumpNext + n > BUMP_SIZE) {
+    bumpLog(`× alloc(${n}): out of memory (only ${BUMP_SIZE - bumpNext} bytes left)`);
+    return;
+  }
+  const label = String.fromCharCode(65 + (bumpCounter++ % 26));
+  bumpAllocs.push({ start: bumpNext, size: n, label });
+  bumpLog(`→ alloc(${n}): block ${label} at byte ${bumpNext}, next=${bumpNext + n}`);
+  bumpNext += n;
+  renderBump();
+}
+
+function bumpAlloc() { bumpAllocN(16); }
+function bumpAllocBig() { bumpAllocN(32); }
+function bumpFree() { bumpLog('× free(): NO-OP in bump allocator (bytes are gone forever)'); }
+function bumpReset() {
+  bumpNext = 0;
+  bumpAllocs = [];
+  bumpCounter = 0;
+  document.getElementById('bump-log').innerHTML = '';
+  bumpLog('→ reset');
+  renderBump();
+}
+
+// === Linked-list allocator demo ===
+const LL_SIZE = 100;
+let llBlocks = [{ start: 0, size: LL_SIZE, free: true }]; // single big free block initially
+let llCounter = 0;
+
+function renderLL() {
+  const bar = document.getElementById('ll-bar');
+  bar.innerHTML = '';
+  llBlocks.forEach((b, i) => {
+    // Header block (4 bytes wide visually)
+    const header = document.createElement('div');
+    header.className = 'heap-block header';
+    header.style.flex = '3';
+    header.textContent = b.free ? 'F' : 'U';
+    header.title = `block ${i}: ${b.size}b, ${b.free ? 'free' : 'used'}`;
+    bar.appendChild(header);
+    // Data block
+    const data = document.createElement('div');
+    data.className = 'heap-block ' + (b.free ? 'free' : 'used');
+    data.style.flex = Math.max(1, b.size - 3);
+    data.textContent = b.free ? '' : (b.label || '');
+    bar.appendChild(data);
+  });
+  const used = llBlocks.filter(b => !b.free).reduce((s, b) => s + b.size, 0);
+  const free = llBlocks.filter(b => b.free).reduce((s, b) => s + b.size, 0);
+  document.getElementById('ll-stat').textContent = `${LL_SIZE} bytes total, ${used} used, ${free} free`;
+}
+
+function llLog(msg) {
+  const log = document.getElementById('ll-log');
+  log.innerHTML += msg + '<br>';
+  log.scrollTop = log.scrollHeight;
+}
+
+function llAlloc() {
+  const size = parseInt(document.getElementById('ll-size').value);
+  if (!size || size <= 0) return;
+  // First-fit search
+  for (let i = 0; i < llBlocks.length; i++) {
+    const b = llBlocks[i];
+    if (b.free && b.size >= size) {
+      const label = String.fromCharCode(65 + (llCounter++ % 26));
+      if (b.size > size + 4) {
+        // Split: take the front, leave the back free
+        const rest = { start: b.start + size, size: b.size - size, free: true };
+        b.size = size;
+        b.free = false;
+        b.label = label;
+        llBlocks.splice(i + 1, 0, rest);
+        llLog(`→ alloc(${size}): block ${label} (split, leaving ${rest.size}b free)`);
+      } else {
+        // Use the whole block (internal fragmentation)
+        b.free = false;
+        b.label = label;
+        llLog(`→ alloc(${size}): block ${label} (whole ${b.size}b block, ${b.size - size}b wasted)`);
+      }
+      renderLL();
+      return;
+    }
+  }
+  llLog(`× alloc(${size}): no block fits (fragmented?)`);
+}
+
+function llFree() {
+  const n = parseInt(document.getElementById('ll-block').value);
+  // Count used blocks; free the n-th
+  let usedIdx = 0;
+  for (let i = 0; i < llBlocks.length; i++) {
+    if (!llBlocks[i].free) {
+      if (usedIdx === n) {
+        const b = llBlocks[i];
+        llLog(`→ free(): block ${b.label} (${b.size}b) returned to free list`);
+        b.free = true;
+        b.label = '';
+        // Coalesce with next if free
+        if (i + 1 < llBlocks.length && llBlocks[i + 1].free) {
+          b.size += llBlocks[i + 1].size;
+          llBlocks.splice(i + 1, 1);
+          llLog(`  merged with next, now ${b.size}b`);
+        }
+        // Coalesce with prev if free
+        if (i > 0 && llBlocks[i - 1].free) {
+          llBlocks[i - 1].size += b.size;
+          llBlocks.splice(i, 1);
+          llLog(`  merged with prev, now ${llBlocks[i - 1].size}b`);
+        }
+        renderLL();
+        return;
+      }
+      usedIdx++;
+    }
+  }
+  llLog(`× free(${n}): no such used block index`);
+}
+
+function llReset() {
+  llBlocks = [{ start: 0, size: LL_SIZE, free: true }];
+  llCounter = 0;
+  document.getElementById('ll-log').innerHTML = '';
+  llLog('→ reset');
+  renderLL();
+}
+
+// === Initial render ===
+renderBump();
+renderLL();
+</script>
+
+</body>
+</html>

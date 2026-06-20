@@ -13,14 +13,24 @@ use bootloader::bootinfo::BootInfo;
 use x86_64::{
     registers::control::Cr3,
     structures::paging::{
-        FrameAllocator, Mapper, OffsetPageTable, Page, PageTable, PhysFrame,
+        FrameAllocator, Mapper, OffsetPageTable, Page, PageTable, PageTableFlags, PhysFrame,
         Size4KiB, Translate,
     },
     PhysAddr, VirtAddr,
 };
 
+/// Virtual address where our heap begins. Picked to be far from everything
+/// else (kernel image, stacks, physical-memory offset mapping).
+const HEAP_START: u64 = 0x4444_4444_0000;
+
+/// Heap size in bytes. 100 KB is plenty for early kernel Box/Vec usage.
+/// Bump allocator wastes everything it touches, so we'd want to bump this
+/// once we switch to a freeing allocator.
+const HEAP_SIZE: u64 = 100 * 1024;
+
 /// Initialize the mapper from the active CR3 and the bootloader's physical
-/// memory offset, then run sanity checks (translate + a fresh map).
+/// memory offset, run sanity checks (translate + a fresh map), then set up
+/// the heap.
 pub fn init(boot_info: &'static BootInfo) {
     let phys_offset = VirtAddr::new(boot_info.physical_memory_offset);
     // SAFETY: the bootloader's physical_memory_offset mapping covers all of
@@ -34,7 +44,58 @@ pub fn init(boot_info: &'static BootInfo) {
     );
 
     translate_tests(&mapper);
-    test_map(&mut mapper);
+    init_heap(&mut mapper);
+}
+
+/// Map the heap region (`HEAP_START` to `HEAP_START + HEAP_SIZE`) to fresh
+/// physical frames, then tell our `BumpAllocator` about it.
+fn init_heap(mapper: &mut OffsetPageTable) {
+    use crate::allocator::ALLOCATOR;
+
+    let heap_start = VirtAddr::new(HEAP_START);
+    let heap_end = heap_end();
+    let start_page = Page::containing_address(heap_start);
+    let end_page = Page::containing_address(heap_end - 1u64);
+
+    let mut frame_allocator = BitmapFrameAllocator;
+
+    println!(
+        "[mem] mapping heap: {:?} - {:?} ({} pages)",
+        heap_start,
+        heap_end,
+        Page::range_inclusive(start_page, end_page).count(),
+    );
+
+    for page in Page::range_inclusive(start_page, end_page) {
+        let frame = frame_allocator
+            .allocate_frame()
+            .expect("out of frames while mapping heap");
+        // SAFETY: the page is currently unmapped (we just picked this range
+        // out of thin air) and the frame is freshly allocated (not in use).
+        unsafe {
+            mapper
+                .map_to(
+                    page,
+                    frame,
+                    PageTableFlags::PRESENT | PageTableFlags::WRITABLE,
+                    &mut frame_allocator,
+                )
+                .expect("map_to failed during heap setup")
+                .flush();
+        }
+    }
+
+    // SAFETY: the heap range is now mapped and writable, and we're not
+    // using it for anything else.
+    unsafe {
+        ALLOCATOR.init(heap_start.as_u64() as usize, HEAP_SIZE as usize);
+    }
+    println!("[mem] heap initialized: {} bytes", HEAP_SIZE);
+}
+
+/// Compute the virtual address one past the end of the heap.
+fn heap_end() -> VirtAddr {
+    VirtAddr::new(HEAP_START) + HEAP_SIZE
 }
 
 /// Run translate_addr on a handful of known addresses to verify the mapper.
@@ -50,53 +111,6 @@ fn translate_tests(mapper: &OffsetPageTable) {
     for (vaddr, label) in tests {
         let phys = mapper.translate_addr(VirtAddr::new(vaddr));
         println!("[mem]   virt 0x{:>16x}  {:<32} -> {:?}", vaddr, label, phys);
-    }
-}
-
-/// Create a brand-new mapping end-to-end: allocate a frame, map an unmapped
-/// virtual page to it, flush the TLB, then verify by translating + writing.
-fn test_map(mapper: &mut OffsetPageTable) {
-    let page = Page::containing_address(VirtAddr::new(0xdead_0000));
-    let mut allocator = BitmapFrameAllocator;
-
-    // Confirm the page is currently unmapped (sanity check before mapping).
-    let before = mapper.translate_addr(page.start_address());
-    println!("[mem] test_map: before mapping, {:?} -> {:?}", page.start_address(), before);
-
-    // Allocate a physical frame and map it.
-    let frame = allocator.allocate_frame().expect("out of frames");
-    let flags = x86_64::structures::paging::PageTableFlags::PRESENT
-        | x86_64::structures::paging::PageTableFlags::WRITABLE;
-
-    // SAFETY: the page was previously unmapped (verified above), so we're not
-    // aliasing an existing mapping. The new mapping points at a freshly-
-    // allocated frame, not at any in-use memory.
-    unsafe {
-        mapper
-            .map_to(page, frame, flags, &mut allocator)
-            .expect("map_to failed")
-            .flush();
-    }
-
-    let after = mapper.translate_addr(page.start_address());
-    println!(
-        "[mem] test_map: after mapping,  {:?} -> {:?} (frame {:?})",
-        page.start_address(),
-        after,
-        frame,
-    );
-
-    // Write to the freshly-mapped page (would have faulted before).
-    unsafe {
-        let ptr: *mut u64 = page.start_address().as_mut_ptr();
-        ptr.write_volatile(0xDEAD_BEEF_CAFE);
-        let read_back = ptr.read_volatile();
-        println!(
-            "[mem] test_map: wrote 0x{:x}, read back 0x{:x} {}",
-            0xDEAD_BEEF_CAFE_u64,
-            read_back,
-            if read_back == 0xDEAD_BEEF_CAFE { "✓" } else { "✗ MISMATCH" },
-        );
     }
 }
 
