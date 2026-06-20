@@ -20,7 +20,7 @@ Status legend: `[ ]` not started · `[~]` in progress · `[x]` done
 **Linux to read alongside:** `init/main.c`, `arch/x86/kernel/`, `arch/x86/entry/`
 
 ### Month 2 — Memory management
-- [ ] 2.1 Frame allocator (bitmap or buddy-lite)
+- [x] 2.1 Frame allocator (bitmap or buddy-lite)
 - [ ] 2.2 4-level paging, map kernel higher-half
 - [ ] 2.3 Heap allocator (`linked_list_allocator` then roll your own)
 - [ ] 2.4 `Box` / `Vec` / `String` working in kernel
@@ -525,6 +525,26 @@ Most recent entries at the top. One entry per work session.
 - **Status:** (which milestones/checkboxes flipped)
 - **Notes / blockers / surprises:** (anything useful for future-you)
 - **Next:** (where to pick up next time)
+
+### 2026-06-20 (slice 1) — Read memory map + serial output (start of M2)
+- **Done:** Added a tiny 16550 UART driver (`src/serial.rs`) that mirrors all `println!` output to COM1, so kernel logs can be captured outside QEMU's scrolling VGA window. Changed `_start` to accept `&'static BootInfo`, iterate `boot_info.memory_map`, and print every region. The bootloader tags regions as `Usable`/`Kernel`/`KernelStack`/`PageTable`/`Bootloader`/`BootInfo`/`Reserved`/`FrameZero`/ACPI variants — so we already know which "Usable" frames are actually free, no manual subtraction needed.
+- **Status:** Prep slice for 2.1. No checkbox flipped yet — this gave us the input data for the frame allocator.
+- **Notes / blockers / surprises:**
+  - `bootloader 0.9.34`: `MemoryRegion` fields are `range` (a `FrameRange` of `start_frame_number`/`end_frame_number`, exclusive) and `region_type` (`MemoryRegionType` enum with 15 variants). Not `start`/`end`/`kind` like the older API I half-remembered.
+  - VGA writes don't go to QEMU stdout — only serial does. Need to write to COM1 (port `0x3F8`) and launch QEMU with `-serial stdio -display none` to capture in a file.
+  - Our 16550 driver skips init (baud rate, FIFO, status checks) because QEMU's emulated UART is instantaneous — wouldn't work on real hardware.
+  - Updated panic handler to also `force_unlock` the serial Mutex (same deadlock risk as VGA).
+- **Next:** Build the frame allocator (2.1 proper).
+
+### 2026-06-20 (slice 2) — Bitmap frame allocator (2.1 done)
+- **Done:** Wrote `src/frame_allocator.rs`: a bitmap allocator (1 bit per frame, linear scan for first 0 bit). Init walks the memory map and clears bits only for `Usable` regions. Public API: `init()`, `allocate() -> Option<u64>`, `deallocate(frame)`, `frames_free()`. Sanity-tested in `_start`: allocate 3 frames, free the middle, allocate again — the new allocation reuses the freed frame (linear scan finds lowest-numbered free first). Math checks: 32031 free → 32028 after 3 allocs → 32028 at end (3 frames still held). Built `docs/frame-allocator.html` with interactive demos of all this.
+- **Status:** Checkbox 2.1 flipped to `[x]`.
+- **Notes / blockers / surprises:**
+  - Bug + happy incident: first version computed `max_frame` across ALL memory regions. The giant Reserved MMIO region at `0xfd00000000–0x10000000000` made `end_frame_number` = 268,435,456 (1 TB of "frames"), which blew `MAX_FRAMES`. Fixed by scanning only `Usable` regions to size the bitmap. The bug also stress-tested the panic handler — it printed exactly the line and message needed to fix it. Win for slice 9's work.
+  - First 3 frames handed out: 638, 639, 640. Frame 638 = `0x27E000` = start of first Usable region. Linear scan picks the lowest free, as designed.
+  - Bitmap sized for `MAX_FRAMES = 131,072` (512 MB max physical RAM). For our 128 MB QEMU default, only ~4 KB of the 16 KB bitmap is actually used.
+  - `bootloader::bootinfo` — no underscore in the path, despite the file being `bootinfo/memory_map.rs`. (`bootloader::boot_info` doesn't exist.)
+- **Next:** 2.2 — 4-level paging. Map the kernel to a higher-half virtual address (currently it's identity-mapped by the bootloader).
 
 ### 2026-06-14 (slice 9) — Panic handler (1.7 done, M1 reached)
 - **Done:** Made the panic handler actually useful. Replaced `loop {}` with `force_unlock()` + `println!("{}", info)`. Now panics print the location (file:line:col) and message instead of silently halting. Verified by triggering a temporary `panic!("test panic from kernel main")` and dumping VGA — saw `panicked at src/main.rs:46:5:\ntest panic from kernel main`. Then removed the test panic.
