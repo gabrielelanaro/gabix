@@ -21,10 +21,10 @@ Status legend: `[ ]` not started · `[~]` in progress · `[x]` done
 
 ### Month 2 — Memory management
 - [x] 2.1 Frame allocator (bitmap or buddy-lite)
-- [ ] 2.2 4-level paging, map kernel higher-half
-- [ ] 2.3 Heap allocator (`linked_list_allocator` then roll your own)
-- [ ] 2.4 `Box` / `Vec` / `String` working in kernel
-- [ ] 2.5 `mapper` API for arbitrary virtual→physical mapping
+- [x] 2.2 4-level paging, map kernel higher-half
+- [x] 2.3 Heap allocator (`linked_list_allocator` then roll your own)
+- [x] 2.4 `Box` / `Vec` / `String` working in kernel
+- [x] 2.5 `mapper` API for arbitrary virtual→physical mapping
 
 **Linux to read alongside:** `mm/page_alloc.c` (buddy allocator), `mm/memory.c`, `include/linux/mm.h`
 
@@ -525,6 +525,23 @@ Most recent entries at the top. One entry per work session.
 - **Status:** (which milestones/checkboxes flipped)
 - **Notes / blockers / surprises:** (anything useful for future-you)
 - **Next:** (where to pick up next time)
+
+### 2026-06-20 (slices 3–7) — Paging, heap, mapper API (2.2 / 2.3 / 2.4 / 2.5 done, M2 reached)
+- **Done:** Took M2 from "we have a frame allocator" all the way to "kernel can `Box::new`, grow `Vec`, build `String`, and the mapper is a global API any module can call." Five slices:
+    - **2.2a** — wrapped `x86_64`'s `OffsetPageTable`, read CR3 + `BootInfo.physical_memory_offset`, ran translate sanity check.
+    - **2.2b** — implemented `FrameAllocator<Size4KiB>` adapter around our bitmap, called `mapper.map_to()` end-to-end, verified with a write to the new mapping.
+    - **2.3** — wrote a bump allocator by hand (one pointer, never frees), registered as `#[global_allocator]`, demonstrated `Box::new(42)` + `Vec` + `String`.
+    - **2.3b** — swapped bump for the `linked_list_allocator` crate. Proved frees work by running a 20,000-iteration `Box` loop (would have crashed bump around iteration 12,800).
+    - **2.5** — extracted the mapper from a local in `memory::init` to a `lazy_static Mutex<Option<OffsetPageTable>>` behind `memory::translate()` / `memory::map_to()`. Internal callers (init_heap) now go through the public API.
+- **Status:** Checkboxes 2.2, 2.3, 2.4, 2.5 flipped to `[x]`. **M2 reached** (memory alive: frames + paging + heap + Box/Vec/String + global mapper API).
+- **Notes / blockers / surprises:**
+  - Bootloader 0.9 default does NOT identity-map everything. First translate test crashed silently on `translate_addr(0x207EC0)` because the relevant PT frame wasn't reachable. Enabling `map_physical_memory` feature gives a high virtual offset where all physical RAM is mapped; that fixed it. `phys_offset = 0x18000000000` on QEMU default.
+  - Bootloader maps the kernel at virtual 0x200000+ (its link address) but loads it at physical 0x400000+. Translation: `_start` at virtual 0x207EC0 → physical 0x407EC0.
+  - `x86_64` 0.15 quirks: `FrameAllocator::allocate` was renamed to `allocate_frame`. `map_to` is `unsafe` (caller must guarantee no aliasing). `MapToError` is at `paging::mapper::MapToError`, not re-exported at the `paging` level.
+  - `extern crate alloc` needs `alloc` added to `.cargo/config.toml`'s `build-std` list, plus `#![feature(alloc_error_handler)]` for the `#[alloc_error_handler]` attribute.
+  - `linked_list_allocator::LockedHeap::init` takes `(*mut u8, usize)`, not `(usize, usize)`. Easy to get wrong.
+  - For lazy_static of a value that needs `BootInfo` to construct: store as `Mutex<Option<T>>` and fill from `init()`. Awkward but works.
+- **Next:** Tag `m2-memory-alive`. Then M3 — processes & scheduling. First sub-slice likely 3.1 (`Task` struct: saved register context, kernel stack, state).
 
 ### 2026-06-20 (slice 1) — Read memory map + serial output (start of M2)
 - **Done:** Added a tiny 16550 UART driver (`src/serial.rs`) that mirrors all `println!` output to COM1, so kernel logs can be captured outside QEMU's scrolling VGA window. Changed `_start` to accept `&'static BootInfo`, iterate `boot_info.memory_map`, and print every region. The bootloader tags regions as `Usable`/`Kernel`/`KernelStack`/`PageTable`/`Bootloader`/`BootInfo`/`Reserved`/`FrameZero`/ACPI variants — so we already know which "Usable" frames are actually free, no manual subtraction needed.
