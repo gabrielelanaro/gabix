@@ -8,6 +8,7 @@ mod interrupts;
 mod pic;
 mod pit;
 mod frame_allocator;
+mod memory;
 
 use bootloader::BootInfo;
 use core::panic::PanicInfo;
@@ -59,6 +60,9 @@ pub extern "C" fn _start(boot_info: &'static BootInfo) -> ! {
 
     println!("[boot] frame allocator...");
     frame_allocator::init(&boot_info.memory_map);
+
+    println!("[boot] memory mapper...");
+    memory::init(boot_info);
 
     // Sanity test: allocate three frames, free the middle one, allocate
     // again — the new allocation should reuse the freed frame (lowest free
