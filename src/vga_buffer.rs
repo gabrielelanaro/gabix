@@ -168,10 +168,13 @@ lazy_static! {
 
 /// Hidden helper used by the `print!` and `println!` macros.
 /// Locks the global WRITER and forwards the format args.
+///
+/// Also mirrors to the serial port so output can be captured outside QEMU.
 #[doc(hidden)]
 pub fn _print(args: fmt::Arguments) {
     use core::fmt::Write;
     WRITER.lock().write_fmt(args).unwrap();
+    crate::serial::SERIAL1.lock().write_fmt(args).unwrap();
 }
 
 /// Print without a trailing newline. Locks WRITER, formats, writes.
