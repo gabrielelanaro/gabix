@@ -29,7 +29,7 @@ Status legend: `[ ]` not started · `[~]` in progress · `[x]` done
 **Linux to read alongside:** `mm/page_alloc.c` (buddy allocator), `mm/memory.c`, `include/linux/mm.h`
 
 ### Month 3 — Processes & scheduling
-- [ ] 3.1 `Task` struct (context, kernel stack, state)
+- [x] 3.1 `Task` struct (context, kernel stack, state)
 - [ ] 3.2 Context switch routine (save/restore registers)
 - [ ] 3.3 Cooperative scheduler round-robin
 - [ ] 3.4 Preemptive scheduling via timer interrupt
@@ -525,6 +525,17 @@ Most recent entries at the top. One entry per work session.
 - **Status:** (which milestones/checkboxes flipped)
 - **Notes / blockers / surprises:** (anything useful for future-you)
 - **Next:** (where to pick up next time)
+
+### 2026-06-21 (slice 1) — Task struct + constructor (3.1 done, M3 started)
+- **Done:** First slice of M3. Socratic walkthrough of: what state a paused task needs to save (RIP, RSP, callee-saved registers — caller-saved are preserved by the calling convention), where that state lives (registers on the paused task's own stack, with `TaskContext = { rsp }` as the bookmark), how big each stack should be (64 KB — Linux uses 16 KB kernel stacks, bumped up from 8 KB after deep-call-chain overflows), where stack RAM comes from (frame allocator, not heap — keeps kernel stacks out of heap, like Linux's vmalloc variant). Built `docs/context-switch.html` — animated step-by-step visualization of the 5-step switch algorithm (push regs → save RSP → load new RSP → pop regs → ret). Then wrote `src/task.rs`: `TaskState` enum (Ready/Running/Blocked/Dead), `TaskContext { rsp: u64 }`, `Task { id, name, state, context, stack_top }`, and `Task::new(id, name, entry_fn)` which allocates 16 frames via the existing frame allocator, maps them into a fresh virtual range starting at `0x5000_0000_0000`, and pre-populates the top of the stack with faked saved state (entry_fn addr + zeros for RBX/RBP/R12-R15) so the same context-switch routine that resumes old tasks can also start a brand-new one.
+- **Status:** Checkbox 3.1 flipped to `[x]`. M3 in progress.
+- **Notes / blockers / surprises:**
+    - **Frame accounting surprise:** creating one 16-page task ate 19 frames, not 16. The extra 3 are the intermediate page tables (PDPT, PD, PT) that `map_to` allocates on the first walk through a fresh virtual range. The PML4 entry already existed because of our heap mapping, but everything below had to be created. Fixed the misleading "expected 16" test message.
+    - Used `core::ptr::write_volatile` to fake the initial stack state. The compiler can't see that the context-switch routine (yet to be written) will later read those bytes, so without `volatile` it could legally elide the writes as "dead."
+    - Stack alignment: `init_rsp = stack_top - 56` is 8 mod 16. After `ret` pops 8 bytes, RSP becomes 0 mod 16. Slightly off from the strict ABI expectation (RSP should be 8 mod 16 at function entry) but doesn't matter until the entry function calls another function. Will revisit if it bites in 3.2.
+    - `entry_fn` is `unsafe extern "C" fn()` because the context switch will `ret` into it like a normal function call. The `unsafe` signals "caller must ensure the CPU is in a sane state."
+    - Worker task is created but never scheduled in this slice (no scheduler yet — comes in 3.3). Just verifying the data structures and constructor work.
+- **Next:** 3.2 — context switch routine. The 20 lines of assembly that actually do the swap (push callee-saved regs, save RSP, load new RSP, pop callee-saved regs, ret). Will live alongside `Task::new` in `src/task.rs` or in a new `src/context.rs`.
 
 ### 2026-06-20 (slices 3–7) — Paging, heap, mapper API (2.2 / 2.3 / 2.4 / 2.5 done, M2 reached)
 - **Done:** Took M2 from "we have a frame allocator" all the way to "kernel can `Box::new`, grow `Vec`, build `String`, and the mapper is a global API any module can call." Five slices:

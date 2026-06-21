@@ -15,6 +15,7 @@ mod pit;
 mod frame_allocator;
 mod memory;
 mod allocator;
+mod task;
 
 use bootloader::BootInfo;
 use core::alloc::Layout;
@@ -78,6 +79,25 @@ pub extern "C" fn _start(boot_info: &'static BootInfo) -> ! {
     println!("[boot] memory mapper...");
     memory::init(boot_info);
 
+    // Sanity test: create a task and verify Task::new works. We allocate
+    // 16 frames for its stack (64 KB / 4 KB), map them into a fresh
+    // virtual range, and pre-populate the stack with faked saved state.
+    // The task isn't scheduled yet — just constructed.
+    //
+    // Frame accounting: 16 for the stack pages + ~3 for the intermediate
+    // page tables (PDPT/PD/PT) that map_to creates on the first walk
+    // through this fresh virtual range.
+    println!("[test] task creation (3.1)");
+    let frames_before = frame_allocator::frames_free();
+    let _worker = task::Task::new(1, "worker", worker_entry);
+    let frames_after = frame_allocator::frames_free();
+    println!(
+        "[test]   frames free: {} -> {} (delta {}; 16 stack + ~3 page tables)",
+        frames_before,
+        frames_after,
+        frames_before - frames_after
+    );
+
     // Sanity test: Box::new goes through our #[global_allocator].
     // If the heap isn't set up correctly, this calls alloc_error_handler.
     println!("[test] heap allocator (Box, Vec, String)");
@@ -134,5 +154,13 @@ pub extern "C" fn _start(boot_info: &'static BootInfo) -> ! {
     x86_64::instructions::interrupts::enable();
     println!("[boot] entering main loop");
 
+    loop {}
+}
+
+/// Example task entry function. Used to verify `Task::new` works — the
+/// task is created but never actually scheduled in this slice (3.1).
+/// Scheduling arrives in 3.3.
+unsafe extern "C" fn worker_entry() {
+    println!("[worker] running!");
     loop {}
 }
