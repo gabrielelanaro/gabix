@@ -61,6 +61,10 @@ pub struct Task {
     /// Virtual address of the very top of this task's stack. Kept so we
     /// can free the stack frames later when the task exits.
     pub stack_top: u64,
+    /// The user-provided entry function. Not called directly — `switch`
+    /// jumps into `trampoline`, which looks this up and calls it after
+    /// enabling interrupts. See `trampoline` for why.
+    pub entry_fn: unsafe extern "C" fn(),
 }
 
 impl Task {
@@ -116,13 +120,16 @@ impl Task {
         let init_rsp = stack_top - 56;
         let base_ptr = init_rsp as *mut u64;
         unsafe {
-            core::ptr::write_volatile(base_ptr.add(0), 0); // saved R15
-            core::ptr::write_volatile(base_ptr.add(1), 0); // saved R14
-            core::ptr::write_volatile(base_ptr.add(2), 0); // saved R13
-            core::ptr::write_volatile(base_ptr.add(3), 0); // saved R12
-            core::ptr::write_volatile(base_ptr.add(4), 0); // saved RBP
-            core::ptr::write_volatile(base_ptr.add(5), 0); // saved RBX
-            core::ptr::write_volatile(base_ptr.add(6), entry_fn as u64); // RIP (popped by ret)
+            core::ptr::write_volatile(base_ptr.add(0), 0);               // saved R15
+            core::ptr::write_volatile(base_ptr.add(1), 0);               // saved R14
+            core::ptr::write_volatile(base_ptr.add(2), 0);               // saved R13
+            core::ptr::write_volatile(base_ptr.add(3), 0);               // saved R12
+            core::ptr::write_volatile(base_ptr.add(4), 0);               // saved RBP
+            core::ptr::write_volatile(base_ptr.add(5), 0);               // saved RBX
+            // Note: switch's `ret` lands in `trampoline`, not the user's
+            // entry_fn directly. The trampoline enables interrupts then
+            // looks up entry_fn from this task's struct.
+            core::ptr::write_volatile(base_ptr.add(6), trampoline as *const () as u64); // RIP -> trampoline
         }
 
         println!(
@@ -142,8 +149,49 @@ impl Task {
             state: TaskState::Ready,
             context: TaskContext { rsp: init_rsp },
             stack_top,
+            entry_fn,
         }
     }
+}
+
+// ============================================================
+// Trampoline (slice 3.4)
+// ============================================================
+
+/// Trampoline function that every brand-new task enters via `switch`'s
+/// `ret` instruction.
+///
+/// Why this exists (the alternative was to put `sti` directly inside
+/// `switch` right before `ret`). The trampoline approach keeps `switch`
+/// minimal — pure register swap, no interrupt flag management. The
+/// trampoline is also the natural extension point later for things like
+/// enabling floating-point state or handling task exit.
+///
+/// What it does (in order):
+///   1. Look up this task's user-provided `entry_fn` from SCHEDULER.
+///      Done with interrupts still disabled (the state we entered with).
+///   2. Enable interrupts (`sti`). This is the boundary between
+///      "scheduler world" (IF=0) and "task world" (IF=1).
+///   3. Call the user's `entry_fn`. If it returns, panic (later we'll
+///      mark the task Dead instead).
+unsafe extern "C" fn trampoline() {
+    // Look up our entry function. We're definitely the current task
+    // (switch just made us so), and interrupts are disabled so the
+    // timer can't preempt us mid-lookup.
+    let entry_fn = {
+        let sched = SCHEDULER.lock();
+        sched.tasks[sched.current].entry_fn
+    };
+
+    // Now flip interrupts on — we're entering task world.
+    x86_64::instructions::interrupts::enable();
+
+    // Call the user's entry function. It typically loops forever.
+    entry_fn();
+
+    // If it returned, the task is done. For now, panic. Later we'll
+    // mark the task Dead and exit cleanly.
+    panic!("task entry_fn returned");
 }
 
 // ============================================================
@@ -254,7 +302,9 @@ lazy_static! {
 ///
 /// The main task has no allocated stack of its own — it uses whatever
 /// stack the bootloader set up. Its `context.rsp` starts at 0 and gets
-/// filled in by `switch()` the first time main yields.
+/// filled in by `switch()` the first time main yields. The `entry_fn`
+/// field is never used because main never goes through the trampoline
+/// (it's already running when init_main is called).
 pub fn init_main() {
     let mut sched = SCHEDULER.lock();
     sched.tasks.push(Box::new(Task {
@@ -263,9 +313,17 @@ pub fn init_main() {
         state: TaskState::Running,
         context: TaskContext { rsp: 0 },
         stack_top: 0,
+        entry_fn: main_never_called,
     }));
     sched.current = 0;
     println!("[sched] main task registered (id=0)");
+}
+
+/// Placeholder entry function for the main task. Never actually called
+/// — main is already running by the time it's registered. The field
+/// needs *something* to satisfy the struct.
+unsafe extern "C" fn main_never_called() {
+    panic!("main_never_called: should never run");
 }
 
 /// Spawn a new task. Allocates its stack, fakes its initial state, and
@@ -278,35 +336,60 @@ pub fn spawn(name: &'static str, entry_fn: unsafe extern "C" fn()) -> u64 {
     id
 }
 
-/// Cooperatively yield the CPU to the next task. Round-robin: advances
-/// to `(current + 1) % tasks.len()`.
+/// Yield the CPU to the next task. Round-robin: advances to
+/// `(current + 1) % tasks.len()`.
+///
+/// Used both for cooperative yields (a task calls this directly) and
+/// preemptive yields (the timer interrupt handler calls this on the
+/// current task's behalf). Same code path, same `switch`.
+///
+/// **Re-entrancy safety:** we disable interrupts at the top and restore
+/// them at the end. Without this, if `yield_now` was running with
+/// interrupts enabled and the timer fired again mid-switch, the handler
+/// would call `yield_now` again and try to lock SCHEDULER → deadlock.
+/// Disabling interrupts makes the whole pick-and-switch atomic with
+/// respect to other timer-driven yields.
 ///
 /// Locks the scheduler only long enough to pick the next task and grab
 /// raw pointers to the two contexts. The lock is dropped *before* the
 /// switch, so we never hold it across a context switch (which would
 /// deadlock the system — the other task couldn't lock it either).
 pub fn yield_now() {
-    // Take the lock, pick the next task, get raw pointers, drop the lock.
-    let (old_ptr, new_ptr, new_name) = {
+    // Disable interrupts for the duration. Remember whether they were
+    // on so we can restore the original state on the way out.
+    let was_enabled = x86_64::instructions::interrupts::are_enabled();
+    if was_enabled {
+        x86_64::instructions::interrupts::disable();
+    }
+
+    // Pick the next task and grab raw pointers to both contexts.
+    let switch_result: Option<(*mut TaskContext, *const TaskContext)> = {
         let mut sched = SCHEDULER.lock();
         if sched.tasks.len() < 2 {
-            return; // nothing to switch to
+            None // nothing to switch to
+        } else {
+            let old_index = sched.current;
+            let new_index = (sched.current + 1) % sched.tasks.len();
+            sched.tasks[old_index].state = TaskState::Ready;
+            sched.tasks[new_index].state = TaskState::Running;
+            sched.current = new_index;
+            let old_ptr = &mut sched.tasks[old_index].context as *mut TaskContext;
+            let new_ptr = &sched.tasks[new_index].context as *const TaskContext;
+            Some((old_ptr, new_ptr))
         }
-        let old_index = sched.current;
-        let new_index = (sched.current + 1) % sched.tasks.len();
-        sched.tasks[old_index].state = TaskState::Ready;
-        sched.tasks[new_index].state = TaskState::Running;
-        sched.current = new_index;
-        // Raw pointers escape the borrow; memory stays valid because
-        // tasks are Box'd (stable addresses) and we're single-CPU
-        // cooperative (no other code touches TASKS during the switch).
-        let old_ptr = &mut sched.tasks[old_index].context as *mut TaskContext;
-        let new_ptr = &sched.tasks[new_index].context as *const TaskContext;
-        let new_name = sched.tasks[new_index].name;
-        (old_ptr, new_ptr, new_name)
     };
-    println!("[sched] yielding to \"{}\"", new_name);
-    // SAFETY: pointers are valid (Box'd tasks), new context has either
-    // valid saved state or faked initial state, no concurrent access.
-    unsafe { switch(old_ptr, new_ptr); }
+
+    if let Some((old_ptr, new_ptr)) = switch_result {
+        // SAFETY: pointers are valid (Box'd tasks), new context has
+        // either valid saved state or faked initial state, interrupts
+        // are disabled so no concurrent access.
+        unsafe { switch(old_ptr, new_ptr); }
+    }
+
+    // We're back (either we switched away and have now been switched
+    // back to, or we never switched because there was nothing to do).
+    // Restore IF to its original state.
+    if was_enabled {
+        x86_64::instructions::interrupts::enable();
+    }
 }

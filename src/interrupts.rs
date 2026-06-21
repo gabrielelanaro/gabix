@@ -82,31 +82,88 @@ extern "C" fn breakpoint_inner(stack_frame: &InterruptStackFrame) {
 }
 
 /// Naked wrapper for the timer interrupt (vector 0x20 / PIC IRQ 0).
-/// Same pattern as breakpoint_wrapper: realign stack, call inner, return.
+///
+/// Unlike `breakpoint_wrapper`, this one saves *all* general-purpose
+/// registers (not just realigns the stack). This is critical because
+/// the handler calls `task::yield_now()` which switches to another task.
+/// The interrupted code could be using any register at the moment of
+/// preemption — if we only saved callee-saved registers (as `switch`
+/// does), the interrupted code would see its caller-saved registers
+/// (RAX, RCX, RDX, RSI, RDI, R8-R11) clobbered when it eventually
+/// resumes.
+///
+/// Stack layout on entry (the CPU has already pushed the 40-byte
+/// interrupt frame): RIP, CS, RFLAGS, RSP, SS.
+///
+/// After our 15 pushes (120 bytes), total offset from the original
+/// pre-interrupt RSP is 40 + 120 = 160 bytes, which is a multiple of
+/// 16 — so RSP ends up 16-aligned for the `call`.
 #[unsafe(naked)]
 unsafe extern "C" fn timer_wrapper() {
     naked_asm!(
-        "sub rsp, 8",
-        "lea rdi, [rsp + 8]",
+        // Push all 15 general-purpose registers (in any order, as long
+        // as we pop in the reverse order below).
+        "push rax",
+        "push rbx",
+        "push rcx",
+        "push rdx",
+        "push rsi",
+        "push rdi",
+        "push rbp",
+        "push r8",
+        "push r9",
+        "push r10",
+        "push r11",
+        "push r12",
+        "push r13",
+        "push r14",
+        "push r15",
+        // RSP is now 16-aligned (40-byte CPU frame + 120 bytes of our pushes).
         "call {inner}",
-        "add rsp, 8",
+        // Restore all 15 registers in reverse order.
+        "pop r15",
+        "pop r14",
+        "pop r13",
+        "pop r12",
+        "pop r11",
+        "pop r10",
+        "pop r9",
+        "pop r8",
+        "pop rbp",
+        "pop rdi",
+        "pop rsi",
+        "pop rdx",
+        "pop rcx",
+        "pop rbx",
+        "pop rax",
+        // iretq pops the 5-word interrupt frame the CPU pushed.
         "iretq",
         inner = sym timer_inner,
     );
 }
 
-/// The actual timer handler. Prints "tick" and sends EOI to the PIC so
-/// the next tick can fire. Without the EOI, the PIC would never deliver
-/// another timer interrupt.
-extern "C" fn timer_inner(_stack_frame: &InterruptStackFrame) {
-    // Increment tick count, print only every 100th tick (~1/sec at 100 Hz).
+/// The actual timer handler. Prints "tick" occasionally, sends EOI to
+/// the PIC so the next tick can fire, then preempts the current task
+/// by calling `yield_now()`. The EOI must come *before* the yield —
+/// otherwise the next tick stays queued in the PIC and we never
+/// preempt again.
+///
+/// Because the wrapper saved all GP registers, this function (and
+/// anything it calls, including `yield_now` → `switch`) can freely
+/// clobber any register. The wrapper restores them on the way out.
+extern "C" fn timer_inner() {
     let count = TICKS.fetch_add(1, Ordering::SeqCst) + 1;
     if count % 100 == 0 {
         println!("tick #{}", count);
     }
+    // Send EOI before preempting so the next tick can fire.
     unsafe {
         crate::pic::PICS
             .lock()
             .notify_end_of_interrupt(TIMER_VECTOR);
     }
+    // Preempt: switch to the next task. When we eventually get switched
+    // back to, we resume here, then iretq returns to wherever the
+    // interrupted task was.
+    crate::task::yield_now();
 }

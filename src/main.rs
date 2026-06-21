@@ -20,6 +20,7 @@ mod task;
 use bootloader::BootInfo;
 use core::alloc::Layout;
 use core::panic::PanicInfo;
+use core::sync::atomic::{AtomicU64, Ordering};
 
 /// Called on panic. Prints the panic message and location, then halts.
 ///
@@ -79,18 +80,16 @@ pub extern "C" fn _start(boot_info: &'static BootInfo) -> ! {
     println!("[boot] memory mapper...");
     memory::init(boot_info);
 
-    // M3 slice 3.2: cooperative scheduling round trip.
-    //   1. Register main as id=0 in the scheduler.
-    //   2. Spawn worker as id=1.
-    //   3. yield_now() switches main → worker.
-    //   4. Worker prints, then yields back.
-    //   5. Main resumes — we should see "back in main".
-    println!("[test] cooperative yield round trip (3.2)");
+    // M3 slice 3.4: preemptive scheduling setup.
+    //   1. Register main as id=0.
+    //   2. Spawn two workers that loop forever incrementing counters.
+    //   3. (After the rest of init) enable interrupts and let the timer
+    //      preempt everyone fairly. Workers never call yield_now — the
+    //      only way they trade places with main is via the timer.
+    println!("[test] spawning workers for preemptive scheduling (3.4)");
     task::init_main();
-    task::spawn("worker", worker_entry);
-    println!("[main] about to yield to worker...");
-    task::yield_now();
-    println!("[main] back in main after yield");
+    task::spawn("worker_a", worker_a_entry);
+    task::spawn("worker_b", worker_b_entry);
 
     // Sanity test: Box::new goes through our #[global_allocator].
     // If the heap isn't set up correctly, this calls alloc_error_handler.
@@ -146,17 +145,48 @@ pub extern "C" fn _start(boot_info: &'static BootInfo) -> ! {
 
     println!("[boot] enabling interrupts");
     x86_64::instructions::interrupts::enable();
-    println!("[boot] entering main loop");
+    println!(
+        "[boot] COUNTER_A at {:p}, initial = {}",
+        &COUNTER_A,
+        COUNTER_A.load(Ordering::Relaxed)
+    );
+    println!("[boot] entering main monitoring loop");
 
-    loop {}
+    // Monitoring loop: periodically print the worker counters. If both
+    // counters are increasing, it means both workers got CPU time —
+    // which can only happen via preemption (they never yield on their own).
+    let mut last_total_millions: u64 = 0;
+    let mut loop_count = 0u64;
+    loop {
+        let a = COUNTER_A.load(Ordering::Relaxed);
+        let b = COUNTER_B.load(Ordering::Relaxed);
+        let total_millions = (a.saturating_add(b)) / 1_000_000;
+        if total_millions > last_total_millions || loop_count % 5_000_000 == 0 {
+            println!("[main] iter={} counters: a={}, b={}", loop_count, a, b);
+            last_total_millions = total_millions;
+        }
+        loop_count += 1;
+    }
 }
 
-/// Example task entry function. Called by the scheduler when the worker
-/// task first runs. Prints a message, then yields back to main. In real
-/// use this would loop forever doing work, but for the round-trip test
-/// we just yield once.
-unsafe extern "C" fn worker_entry() {
-    println!("[worker] running! yielding back...");
-    task::yield_now();
-    println!("[worker] resumed again — exiting");
+/// Counter incremented by worker_a every loop iteration. Atomic so it's
+/// safe to read from main while worker_a writes (no Mutex needed).
+static COUNTER_A: AtomicU64 = AtomicU64::new(0);
+
+/// Counter incremented by worker_b.
+static COUNTER_B: AtomicU64 = AtomicU64::new(0);
+
+/// Worker A entry function. Loops forever incrementing a counter. Never
+/// calls yield_now — any context switching here is the timer's doing.
+unsafe extern "C" fn worker_a_entry() {
+    loop {
+        COUNTER_A.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+/// Worker B entry function. Same as A but for a separate counter.
+unsafe extern "C" fn worker_b_entry() {
+    loop {
+        COUNTER_B.fetch_add(1, Ordering::Relaxed);
+    }
 }
