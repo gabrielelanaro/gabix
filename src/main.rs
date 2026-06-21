@@ -79,24 +79,18 @@ pub extern "C" fn _start(boot_info: &'static BootInfo) -> ! {
     println!("[boot] memory mapper...");
     memory::init(boot_info);
 
-    // Sanity test: create a task and verify Task::new works. We allocate
-    // 16 frames for its stack (64 KB / 4 KB), map them into a fresh
-    // virtual range, and pre-populate the stack with faked saved state.
-    // The task isn't scheduled yet — just constructed.
-    //
-    // Frame accounting: 16 for the stack pages + ~3 for the intermediate
-    // page tables (PDPT/PD/PT) that map_to creates on the first walk
-    // through this fresh virtual range.
-    println!("[test] task creation (3.1)");
-    let frames_before = frame_allocator::frames_free();
-    let _worker = task::Task::new(1, "worker", worker_entry);
-    let frames_after = frame_allocator::frames_free();
-    println!(
-        "[test]   frames free: {} -> {} (delta {}; 16 stack + ~3 page tables)",
-        frames_before,
-        frames_after,
-        frames_before - frames_after
-    );
+    // M3 slice 3.2: cooperative scheduling round trip.
+    //   1. Register main as id=0 in the scheduler.
+    //   2. Spawn worker as id=1.
+    //   3. yield_now() switches main → worker.
+    //   4. Worker prints, then yields back.
+    //   5. Main resumes — we should see "back in main".
+    println!("[test] cooperative yield round trip (3.2)");
+    task::init_main();
+    task::spawn("worker", worker_entry);
+    println!("[main] about to yield to worker...");
+    task::yield_now();
+    println!("[main] back in main after yield");
 
     // Sanity test: Box::new goes through our #[global_allocator].
     // If the heap isn't set up correctly, this calls alloc_error_handler.
@@ -157,10 +151,12 @@ pub extern "C" fn _start(boot_info: &'static BootInfo) -> ! {
     loop {}
 }
 
-/// Example task entry function. Used to verify `Task::new` works — the
-/// task is created but never actually scheduled in this slice (3.1).
-/// Scheduling arrives in 3.3.
+/// Example task entry function. Called by the scheduler when the worker
+/// task first runs. Prints a message, then yields back to main. In real
+/// use this would loop forever doing work, but for the round-trip test
+/// we just yield once.
 unsafe extern "C" fn worker_entry() {
-    println!("[worker] running!");
-    loop {}
+    println!("[worker] running! yielding back...");
+    task::yield_now();
+    println!("[worker] resumed again — exiting");
 }

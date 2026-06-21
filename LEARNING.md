@@ -30,8 +30,8 @@ Status legend: `[ ]` not started · `[~]` in progress · `[x]` done
 
 ### Month 3 — Processes & scheduling
 - [x] 3.1 `Task` struct (context, kernel stack, state)
-- [ ] 3.2 Context switch routine (save/restore registers)
-- [ ] 3.3 Cooperative scheduler round-robin
+- [x] 3.2 Context switch routine (save/restore registers)
+- [x] 3.3 Cooperative scheduler round-robin
 - [ ] 3.4 Preemptive scheduling via timer interrupt
 - [ ] 3.5 Kernel threads (idle task, demo workers)
 - [ ] 3.6 User/kernel mode ring transition (TSS, `syscall`/`sysret`)
@@ -525,6 +525,20 @@ Most recent entries at the top. One entry per work session.
 - **Status:** (which milestones/checkboxes flipped)
 - **Notes / blockers / surprises:** (anything useful for future-you)
 - **Next:** (where to pick up next time)
+
+### 2026-06-21 (slice 2) — Context switch + cooperative scheduler (3.2 / 3.3 done, real multitasking works)
+- **Done:** Wrote `switch()`: a `#[unsafe(naked)] unsafe extern "C" fn` with 14 lines of inline asm. Pushes RBX/RBP/R12-R15 onto the current stack (the 6 callee-saved registers; caller-saved are preserved by the calling convention so they don't need manual save), saves the current RSP into the old TaskContext, loads the new TaskContext's RSP into the CPU, pops the 6 registers off the new stack, then `ret` (which pops the new task's saved RIP — for a paused task, that's where it was when it yielded; for a brand-new task, that's its entry function address). Naked function because a normal Rust prologue/epilogue would mess up the careful stack layout. Then built a minimal round-robin scheduler on top: `Scheduler { tasks: Vec<Box<Task>>, current: usize }` behind a `Mutex`, with `init_main()`, `spawn()`, and `yield_now()`. `yield_now` locks only long enough to pick the next task and grab raw pointers; drops the lock before calling `switch` so we never hold it across a context switch (would deadlock). Round-trip test in `_start`: init_main, spawn worker, yield from main → worker runs, prints, yields back → main resumes. **It worked first try.** Heap, frame allocator, and timer tests all continued passing after the round trip.
+- **Status:** Checkboxes 3.2 and 3.3 flipped to `[x]`. M3 half-done.
+- **Notes / blockers / surprises:**
+    - `#[unsafe(naked)]` is the modern Rust syntax (was `#[naked]` until recently). Project already used it in `src/interrupts.rs` for the IDT wrappers, so the pattern was familiar.
+    - `core::arch::naked_asm!` (not `asm!`) is required inside naked functions.
+    - `extern "C"` on x86-64 Linux is the System V AMD64 ABI: first two args in RDI and RSI, referenced directly in the asm.
+    - Push order is the reverse of pop order so the last-pushed register (R15) ends up at the lowest address — matching the faked initial state layout from `Task::new` (entry_fn at top, R15 at the bottom where RSP starts).
+    - `Scheduler.tasks: Vec<Box<Task>>` — Box ensures Task addresses are stable across Vec reallocation. Critical because we take raw pointers into the tasks for `switch`.
+    - Main task is special: registered with `context.rsp = 0` (gets filled in by switch on first yield) and `stack_top = 0` (uses the bootloader's stack, not one we allocated).
+    - Worker is left suspended forever after yielding back to main, because main never yields again. In a real OS the worker would loop or exit; for the round-trip test it's fine.
+    - No compile errors at all on the first try. The visual / Socratic prep paid off — the algorithm was clear before any code was written.
+- **Next:** 3.4 — preemptive scheduling via timer interrupt. Hook `yield_now` into the timer handler so switches happen automatically every N ticks, even if a task never yields. Then 3.5 (kernel threads: idle task + workers that do real work).
 
 ### 2026-06-21 (slice 1) — Task struct + constructor (3.1 done, M3 started)
 - **Done:** First slice of M3. Socratic walkthrough of: what state a paused task needs to save (RIP, RSP, callee-saved registers — caller-saved are preserved by the calling convention), where that state lives (registers on the paused task's own stack, with `TaskContext = { rsp }` as the bookmark), how big each stack should be (64 KB — Linux uses 16 KB kernel stacks, bumped up from 8 KB after deep-call-chain overflows), where stack RAM comes from (frame allocator, not heap — keeps kernel stacks out of heap, like Linux's vmalloc variant). Built `docs/context-switch.html` — animated step-by-step visualization of the 5-step switch algorithm (push regs → save RSP → load new RSP → pop regs → ret). Then wrote `src/task.rs`: `TaskState` enum (Ready/Running/Blocked/Dead), `TaskContext { rsp: u64 }`, `Task { id, name, state, context, stack_top }`, and `Task::new(id, name, entry_fn)` which allocates 16 frames via the existing frame allocator, maps them into a fresh virtual range starting at `0x5000_0000_0000`, and pre-populates the top of the stack with faked saved state (entry_fn addr + zeros for RBX/RBP/R12-R15) so the same context-switch routine that resumes old tasks can also start a brand-new one.

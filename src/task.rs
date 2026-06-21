@@ -1,15 +1,20 @@
-//! Task abstraction: data structures + constructor.
+//! Task abstraction: data structures + constructor + context switch.
 //!
-//! This slice (3.1) defines `Task`, `TaskState`, `TaskContext`, and
-//! `Task::new`. Context switching (3.2) and the scheduler (3.3) come
-//! next — for now we just need to be able to *create* a task.
+//! - Slice 3.1: `Task`, `TaskState`, `TaskContext`, `Task::new`.
+//! - Slice 3.2: `switch()` (the actual register swap) and a minimal
+//!   cooperative scheduler (`spawn`, `yield_now`).
 //!
 //! See `docs/context-switch.html` for the visual walkthrough of how
-//! the saved state works.
+//! the saved state and the switch work.
 
 use crate::frame_allocator;
 use crate::memory;
 use crate::println;
+use alloc::boxed::Box;
+use alloc::vec::Vec;
+use core::arch::naked_asm;
+use lazy_static::lazy_static;
+use spin::Mutex;
 use x86_64::structures::paging::PageTableFlags;
 use x86_64::{PhysAddr, VirtAddr};
 
@@ -139,4 +144,169 @@ impl Task {
             stack_top,
         }
     }
+}
+
+// ============================================================
+// Context switch (slice 3.2)
+// ============================================================
+
+/// Switch from one task's saved context to another.
+///
+/// This is the heart of multitasking. It's the routine that physically
+/// pauses the calling task and resumes another. See `docs/context-switch.html`
+/// for the step-by-step animation.
+///
+/// What it does (in order):
+///   1. Push the 6 callee-saved registers onto the *current* stack
+///      (RBX, RBP, R12-R15). Caller-saved registers don't need saving
+///      because the calling convention already preserves them across
+///      function calls.
+///   2. Save the current RSP into `old.rsp`. This is the bookmark that
+///      lets us find this task's saved state later.
+///   3. Load `new.rsp` into the CPU's RSP. **This is the switch.** The
+///      CPU is now operating on the new task's stack.
+///   4. Pop the 6 callee-saved registers from the new stack.
+///   5. `ret` pops the top of the new stack into RIP — jumping to
+///      wherever the new task was paused (or, for a brand-new task,
+///      to its entry function address).
+///
+/// # Why naked?
+/// A normal Rust function has a prologue (push rbp; mov rbp, rsp; sub rsp, N)
+/// and an epilogue. Those add extra stuff to the stack that would mess up
+/// our careful layout. `#[unsafe(naked)]` means: no prologue, no epilogue,
+/// just the asm we write. The function is effectively a thin wrapper around
+/// the asm block.
+///
+/// # Calling convention
+/// `extern "C"` on x86-64 is the System V AMD64 ABI: first arg in RDI,
+/// second in RSI. We reference them directly in the asm.
+///
+/// # Safety
+/// Caller must guarantee:
+/// - `old` and `new` point to valid `TaskContext` structs
+/// - `new.rsp` points to a stack with valid saved state (either from a
+///   previous switch, or faked at `Task::new` time)
+/// - No concurrent access to either context during the switch
+#[unsafe(naked)]
+pub unsafe extern "C" fn switch(old: *mut TaskContext, new: *const TaskContext) {
+    naked_asm!(
+        // Step 1: push callee-saved registers onto the current stack.
+        // Push order is the reverse of pop order so that the last-pushed
+        // register (R15) ends up at the lowest address — matching the
+        // faked initial state layout in Task::new.
+        "push rbx",
+        "push rbp",
+        "push r12",
+        "push r13",
+        "push r14",
+        "push r15",
+        // Step 2: save current RSP into old.context.rsp.
+        // rdi = old (first arg per System V AMD64 ABI).
+        "mov [rdi], rsp",
+        // Step 3: load new.context.rsp into CPU's RSP.
+        // rsi = new (second arg).
+        // **This is the switch moment.**
+        "mov rsp, [rsi]",
+        // Step 4: pop callee-saved registers from the new stack.
+        "pop r15",
+        "pop r14",
+        "pop r13",
+        "pop r12",
+        "pop rbp",
+        "pop rbx",
+        // Step 5: ret pops the top of the new stack into RIP.
+        // For a paused task: returns to wherever it was when it last yielded.
+        // For a brand-new task: jumps to its entry function.
+        "ret",
+    );
+}
+
+// ============================================================
+// Cooperative scheduler (slice 3.2 / 3.3)
+// ============================================================
+
+/// The scheduler state. Round-robin: each yield advances to the next task
+/// in the list, wrapping around.
+struct Scheduler {
+    /// All tasks, including the main task at index 0. Boxed so the Task
+    /// addresses are stable even if the Vec reallocates.
+    tasks: Vec<Box<Task>>,
+    /// Index into `tasks` of the currently-running task.
+    current: usize,
+}
+
+impl Scheduler {
+    const fn new() -> Self {
+        Scheduler {
+            tasks: Vec::new(),
+            current: 0,
+        }
+    }
+}
+
+lazy_static! {
+    static ref SCHEDULER: Mutex<Scheduler> = Mutex::new(Scheduler::new());
+}
+
+/// Register the currently-running code as the "main" task (id 0) and
+/// add it to the scheduler. Must be called once, from main, before any
+/// `yield_now()`.
+///
+/// The main task has no allocated stack of its own — it uses whatever
+/// stack the bootloader set up. Its `context.rsp` starts at 0 and gets
+/// filled in by `switch()` the first time main yields.
+pub fn init_main() {
+    let mut sched = SCHEDULER.lock();
+    sched.tasks.push(Box::new(Task {
+        id: 0,
+        name: "main",
+        state: TaskState::Running,
+        context: TaskContext { rsp: 0 },
+        stack_top: 0,
+    }));
+    sched.current = 0;
+    println!("[sched] main task registered (id=0)");
+}
+
+/// Spawn a new task. Allocates its stack, fakes its initial state, and
+/// adds it to the scheduler. Returns the task's id.
+pub fn spawn(name: &'static str, entry_fn: unsafe extern "C" fn()) -> u64 {
+    let mut sched = SCHEDULER.lock();
+    let id = sched.tasks.len() as u64;
+    sched.tasks.push(Box::new(Task::new(id, name, entry_fn)));
+    println!("[sched] spawned \"{}\" (id={}), {} tasks total", name, id, sched.tasks.len());
+    id
+}
+
+/// Cooperatively yield the CPU to the next task. Round-robin: advances
+/// to `(current + 1) % tasks.len()`.
+///
+/// Locks the scheduler only long enough to pick the next task and grab
+/// raw pointers to the two contexts. The lock is dropped *before* the
+/// switch, so we never hold it across a context switch (which would
+/// deadlock the system — the other task couldn't lock it either).
+pub fn yield_now() {
+    // Take the lock, pick the next task, get raw pointers, drop the lock.
+    let (old_ptr, new_ptr, new_name) = {
+        let mut sched = SCHEDULER.lock();
+        if sched.tasks.len() < 2 {
+            return; // nothing to switch to
+        }
+        let old_index = sched.current;
+        let new_index = (sched.current + 1) % sched.tasks.len();
+        sched.tasks[old_index].state = TaskState::Ready;
+        sched.tasks[new_index].state = TaskState::Running;
+        sched.current = new_index;
+        // Raw pointers escape the borrow; memory stays valid because
+        // tasks are Box'd (stable addresses) and we're single-CPU
+        // cooperative (no other code touches TASKS during the switch).
+        let old_ptr = &mut sched.tasks[old_index].context as *mut TaskContext;
+        let new_ptr = &sched.tasks[new_index].context as *const TaskContext;
+        let new_name = sched.tasks[new_index].name;
+        (old_ptr, new_ptr, new_name)
+    };
+    println!("[sched] yielding to \"{}\"", new_name);
+    // SAFETY: pointers are valid (Box'd tasks), new context has either
+    // valid saved state or faked initial state, no concurrent access.
+    unsafe { switch(old_ptr, new_ptr); }
 }
