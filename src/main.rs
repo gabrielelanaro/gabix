@@ -80,16 +80,20 @@ pub extern "C" fn _start(boot_info: &'static BootInfo) -> ! {
     println!("[boot] memory mapper...");
     memory::init(boot_info);
 
-    // M3 slice 3.4: preemptive scheduling setup.
+    // M3 slice 3.4 + 3.5: preemptive scheduling with an idle task.
     //   1. Register main as id=0.
     //   2. Spawn two workers that loop forever incrementing counters.
-    //   3. (After the rest of init) enable interrupts and let the timer
+    //   3. Spawn an idle task that halts in a loop — the kernel idle
+    //      pattern. Demonstrates hlt for power saving and the concept
+    //      of a "do nothing" task that runs when its turn comes.
+    //   4. (After the rest of init) enable interrupts and let the timer
     //      preempt everyone fairly. Workers never call yield_now — the
-    //      only way they trade places with main is via the timer.
-    println!("[test] spawning workers for preemptive scheduling (3.4)");
+    //      only way they trade places is via the timer.
+    println!("[test] spawning tasks for preemptive scheduling (3.4 / 3.5)");
     task::init_main();
     task::spawn("worker_a", worker_a_entry);
     task::spawn("worker_b", worker_b_entry);
+    task::spawn("idle", idle_entry);
 
     // Sanity test: Box::new goes through our #[global_allocator].
     // If the heap isn't set up correctly, this calls alloc_error_handler.
@@ -145,27 +149,27 @@ pub extern "C" fn _start(boot_info: &'static BootInfo) -> ! {
 
     println!("[boot] enabling interrupts");
     x86_64::instructions::interrupts::enable();
-    println!(
-        "[boot] COUNTER_A at {:p}, initial = {}",
-        &COUNTER_A,
-        COUNTER_A.load(Ordering::Relaxed)
-    );
-    println!("[boot] entering main monitoring loop");
+    println!("[boot] entering main monitoring loop (hlt-based)");
 
-    // Monitoring loop: periodically print the worker counters. If both
-    // counters are increasing, it means both workers got CPU time —
-    // which can only happen via preemption (they never yield on their own).
-    let mut last_total_millions: u64 = 0;
-    let mut loop_count = 0u64;
+    // Monitoring loop: print all four task counters once per second
+    // (every 100 timer ticks), then halt until the next interrupt.
+    // Using hlt instead of a busy-loop saves host CPU in QEMU and
+    // would save real power on bare metal.
+    let mut last_printed_second: usize = 0;
     loop {
-        let a = COUNTER_A.load(Ordering::Relaxed);
-        let b = COUNTER_B.load(Ordering::Relaxed);
-        let total_millions = (a.saturating_add(b)) / 1_000_000;
-        if total_millions > last_total_millions || loop_count % 5_000_000 == 0 {
-            println!("[main] iter={} counters: a={}, b={}", loop_count, a, b);
-            last_total_millions = total_millions;
+        let ticks = interrupts::TICKS.load(Ordering::Relaxed);
+        let current_second = ticks / 100;
+        if current_second > last_printed_second {
+            last_printed_second = current_second;
+            println!(
+                "[main] tick={} a={} b={} idle={}",
+                ticks,
+                COUNTER_A.load(Ordering::Relaxed),
+                COUNTER_B.load(Ordering::Relaxed),
+                COUNTER_IDLE.load(Ordering::Relaxed),
+            );
         }
-        loop_count += 1;
+        x86_64::instructions::hlt();
     }
 }
 
@@ -175,6 +179,10 @@ static COUNTER_A: AtomicU64 = AtomicU64::new(0);
 
 /// Counter incremented by worker_b.
 static COUNTER_B: AtomicU64 = AtomicU64::new(0);
+
+/// Counter incremented by the idle task once per hlt wake-up. Lets us
+/// see how often the idle task actually gets scheduled.
+static COUNTER_IDLE: AtomicU64 = AtomicU64::new(0);
 
 /// Worker A entry function. Loops forever incrementing a counter. Never
 /// calls yield_now — any context switching here is the timer's doing.
@@ -188,5 +196,19 @@ unsafe extern "C" fn worker_a_entry() {
 unsafe extern "C" fn worker_b_entry() {
     loop {
         COUNTER_B.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+/// Idle task entry function. The classic kernel idle pattern: halt in
+/// a loop, waking only when an interrupt fires. Each wake-up increments
+/// the idle counter so we can see how often it gets scheduled.
+///
+/// On real hardware this drops the CPU into a low-power state when
+/// there's nothing useful to do. In QEMU it lets the emulated CPU rest
+/// so QEMU itself uses less host CPU (no busy-loop burning a host core).
+unsafe extern "C" fn idle_entry() {
+    loop {
+        COUNTER_IDLE.fetch_add(1, Ordering::Relaxed);
+        x86_64::instructions::hlt();
     }
 }

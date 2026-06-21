@@ -7,8 +7,9 @@ use lazy_static::lazy_static;
 use x86_64::structures::idt::{HandlerFunc, InterruptDescriptorTable, InterruptStackFrame};
 
 /// Total number of timer ticks since boot. The handler increments this
-/// every tick; we print only every 100th (once per second at 100 Hz).
-static TICKS: AtomicUsize = AtomicUsize::new(0);
+/// every tick. Public so other modules (e.g. main's monitoring loop)
+/// can read it for periodic actions.
+pub static TICKS: AtomicUsize = AtomicUsize::new(0);
 
 /// Vector number for the timer (PIC IRQ 0, mapped to vector 0x20 = 32).
 /// Matches `crate::pic::PIC_1_OFFSET`.

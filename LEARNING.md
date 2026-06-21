@@ -33,7 +33,7 @@ Status legend: `[ ]` not started · `[~]` in progress · `[x]` done
 - [x] 3.2 Context switch routine (save/restore registers)
 - [x] 3.3 Cooperative scheduler round-robin
 - [x] 3.4 Preemptive scheduling via timer interrupt
-- [ ] 3.5 Kernel threads (idle task, demo workers)
+- [x] 3.5 Kernel threads (idle task, demo workers)
 - [ ] 3.6 User/kernel mode ring transition (TSS, `syscall`/`sysret`)
 
 **Linux to read alongside:** `include/linux/sched.h` (`task_struct`), `kernel/sched/fair.c` (CFS), `arch/x86/entry/entry_64.S`
@@ -525,6 +525,17 @@ Most recent entries at the top. One entry per work session.
 - **Status:** (which milestones/checkboxes flipped)
 - **Notes / blockers / surprises:** (anything useful for future-you)
 - **Next:** (where to pick up next time)
+
+### 2026-06-21 (slice 4) — Idle task + hlt (3.5 done)
+- **Done:** Added a fourth task — the **idle task** — that demonstrates the canonical kernel idle pattern: `loop { increment_counter; hlt(); }`. The `hlt` instruction halts the CPU until the next interrupt, dropping into a low-power state on real hardware and (more visibly for us) letting QEMU's emulated CPU rest so it doesn't burn a host core busy-spinning. Also rewrote main's monitoring loop to be hlt-based: print all four counters (workers + idle) once per second, then `hlt` until the next tick. Replaced the debug-y `iter=…` output with a clean `tick=N a=… b=… idle=…` line per second. Made `interrupts::TICKS` public so main can read the tick count.
+- **Status:** Checkbox 3.5 flipped to `[x]`. 5 of 6 M3 items done.
+- **Notes / blockers / surprises:**
+    - With 4 tasks round-robin (main, worker_a, worker_b, idle), each gets exactly 25% of CPU time. Confirmed by idle counter: at tick 100, idle=25 (one increment per scheduling slice). At tick 200, idle=50. Linear growth = fair scheduling.
+    - Workers increment ~5.6M times per 100 ticks (per second of wall time). At 25% CPU per worker, that's ~22M ops/sec when running. Reasonable for QEMU emulating x86_64 on Apple Silicon.
+    - The idle task getting equal time isn't optimal — in real kernels the scheduler skips idle unless nothing else is ready. We left it in round-robin for simplicity. Could add a "is_idle" flag and have yield_now skip idle when other tasks are runnable, but not needed for the demo.
+    - Main now uses hlt between prints, so QEMU's host CPU usage is much lower (no busy-loop). On a real laptop, the previous version would have burned a core spinning; this version lets the host CPU rest.
+    - Cleaned up the verbose `iter=N` debug output from 3.4 — was useful for diagnosing the caller-saved register bug, no longer needed.
+- **Next:** 3.6 — ring transition (kernel ↔ user mode). Adds user-mode segments to the GDT, sets up the TSS (Task State Segment), implements `syscall`/`sysret`, and runs our first piece of code at ring 3 (user mode). This is the doorway to M4 (syscalls, VFS, IPC).
 
 ### 2026-06-21 (slice 3) — Preemptive scheduling via timer (3.4 done)
 - **Done:** Made the timer interrupt handler call `yield_now()` after sending End-Of-Interrupt, so the scheduler preempts the current task every 10ms automatically — no cooperative yields needed. Added a `trampoline()` function: brand-new tasks start via the trampoline instead of going directly to their entry function. The trampoline enables interrupts as its first action, bridging "scheduler world" (IF=0) and "task world" (IF=1). Considered the alternative of putting `sti` directly inside `switch` asm before `ret` — decided on the trampoline for separation of concerns (switch stays minimal) and future extension (per-task FPU state, exit handling). Modified `yield_now` to disable interrupts at the top and restore them on exit, preventing re-entrant timer interrupts from deadlocking on SCHEDULER's Mutex. Updated `Task::new` to set the faked RIP to `trampoline` instead of the user's entry_fn directly, and added `entry_fn` as a field on Task so the trampoline can look it up via `SCHEDULER.current`.
