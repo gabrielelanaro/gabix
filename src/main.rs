@@ -16,6 +16,7 @@ mod frame_allocator;
 mod memory;
 mod allocator;
 mod task;
+mod user;
 
 use bootloader::BootInfo;
 use core::alloc::Layout;
@@ -81,19 +82,11 @@ pub extern "C" fn _start(boot_info: &'static BootInfo) -> ! {
     memory::init(boot_info);
 
     // M3 slice 3.4 + 3.5: preemptive scheduling with an idle task.
-    //   1. Register main as id=0.
-    //   2. Spawn two workers that loop forever incrementing counters.
-    //   3. Spawn an idle task that halts in a loop — the kernel idle
-    //      pattern. Demonstrates hlt for power saving and the concept
-    //      of a "do nothing" task that runs when its turn comes.
-    //   4. (After the rest of init) enable interrupts and let the timer
-    //      preempt everyone fairly. Workers never call yield_now — the
-    //      only way they trade places is via the timer.
-    println!("[test] spawning tasks for preemptive scheduling (3.4 / 3.5)");
+    // For slice 3.6.b (ring transition test) we don't spawn workers —
+    // we want a clean isolation of the user-mode test. main will call
+    // enter_user_mode directly.
+    println!("[test] registering main task only (3.6.b isolation)");
     task::init_main();
-    task::spawn("worker_a", worker_a_entry);
-    task::spawn("worker_b", worker_b_entry);
-    task::spawn("idle", idle_entry);
 
     // Sanity test: Box::new goes through our #[global_allocator].
     // If the heap isn't set up correctly, this calls alloc_error_handler.
@@ -149,28 +142,11 @@ pub extern "C" fn _start(boot_info: &'static BootInfo) -> ! {
 
     println!("[boot] enabling interrupts");
     x86_64::instructions::interrupts::enable();
-    println!("[boot] entering main monitoring loop (hlt-based)");
 
-    // Monitoring loop: print all four task counters once per second
-    // (every 100 timer ticks), then halt until the next interrupt.
-    // Using hlt instead of a busy-loop saves host CPU in QEMU and
-    // would save real power on bare metal.
-    let mut last_printed_second: usize = 0;
-    loop {
-        let ticks = interrupts::TICKS.load(Ordering::Relaxed);
-        let current_second = ticks / 100;
-        if current_second > last_printed_second {
-            last_printed_second = current_second;
-            println!(
-                "[main] tick={} a={} b={} idle={}",
-                ticks,
-                COUNTER_A.load(Ordering::Relaxed),
-                COUNTER_B.load(Ordering::Relaxed),
-                COUNTER_IDLE.load(Ordering::Relaxed),
-            );
-        }
-        x86_64::instructions::hlt();
-    }
+    // M3 slice 3.6.b: jump to user mode. main does NOT return from this
+    // call — enter_user_mode is `-> !` because iretq transfers control
+    // to user code, which runs until it page-faults.
+    user::enter_user_mode();
 }
 
 /// Counter incremented by worker_a every loop iteration. Atomic so it's

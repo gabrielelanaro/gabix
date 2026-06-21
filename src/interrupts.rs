@@ -4,7 +4,10 @@ use crate::println;
 use core::arch::naked_asm;
 use core::sync::atomic::{AtomicUsize, Ordering};
 use lazy_static::lazy_static;
-use x86_64::structures::idt::{HandlerFunc, InterruptDescriptorTable, InterruptStackFrame};
+use x86_64::structures::idt::{
+    HandlerFunc, InterruptDescriptorTable, InterruptStackFrame, PageFaultErrorCode,
+    PageFaultHandlerFunc,
+};
 
 /// Total number of timer ticks since boot. The handler increments this
 /// every tick. Public so other modules (e.g. main's monitoring loop)
@@ -30,6 +33,16 @@ lazy_static! {
         let timer: HandlerFunc =
             unsafe { core::mem::transmute(timer_wrapper as unsafe extern "C" fn()) };
         idt[TIMER_VECTOR].set_handler_fn(timer);
+
+        // Page fault handler (vector 14). Different signature: has an
+        // error code pushed by the CPU. The wrapper extracts both the
+        // stack frame and the error code and passes them to the inner.
+        // The transmute target type must match what set_handler_fn
+        // expects: specifically PageFaultHandlerFunc (which is
+        // extern "x86-interrupt" fn(&InterruptStackFrame, PageFaultErrorCode)).
+        let pf: PageFaultHandlerFunc =
+            unsafe { core::mem::transmute(page_fault_wrapper as unsafe extern "C" fn()) };
+        idt.page_fault.set_handler_fn(pf);
 
         idt
     };
@@ -167,4 +180,67 @@ extern "C" fn timer_inner() {
     // back to, we resume here, then iretq returns to wherever the
     // interrupted task was.
     crate::task::yield_now();
+}
+
+/// Naked wrapper for the page fault handler (vector 14).
+///
+/// Unlike breakpoint/timer, page fault pushes an error code onto the
+/// stack before the interrupt frame. The wrapper must read both the
+/// error code (at [rsp]) and pass a pointer to the interrupt frame
+/// ([rsp+8] onwards).
+///
+/// Stack on entry (RSP points here):
+///   [rsp]      error_code   ← pushed by CPU
+///   [rsp+8]    RIP          ← start of InterruptStackFrame
+///   [rsp+16]   CS
+///   [rsp+24]   RFLAGS
+///   [rsp+32]   RSP_old
+///   [rsp+40]   SS_old
+#[unsafe(naked)]
+unsafe extern "C" fn page_fault_wrapper() {
+    naked_asm!(
+        "sub rsp, 8",                // Realign to 16 bytes
+        "lea rdi, [rsp + 16]",       // rdi = &InterruptStackFrame (skip error_code + padding)
+        "mov rsi, [rsp + 8]",        // rsi = error_code
+        "call {inner}",
+        "add rsp, 8",                // Undo realignment
+        "add rsp, 8",                // Skip error_code (CPU pushed it; iretq doesn't pop it)
+        "iretq",
+        inner = sym page_fault_inner,
+    );
+}
+
+/// The actual page fault handler. Prints the faulting address (from CR2),
+/// decodes the error code bits, and shows what the user program wrote to
+/// its own memory before faulting. Then halts — we don't yet have a way
+/// to cleanly kill a user program (that's M4 fork/wait territory).
+extern "C" fn page_fault_inner(stack_frame: &InterruptStackFrame, error_code: u64) {
+    use x86_64::registers::control::Cr2;
+
+    let cr2 = Cr2::read();
+
+    println!("\nEXCEPTION: PAGE FAULT");
+    println!("  tried to access: {:?}", cr2);
+    println!(
+        "  error code: {:#b}  (P={}, W/R={}, U/S={}, RSVD={})",
+        error_code,
+        error_code & 1,                          // bit 0: page present?
+        (error_code >> 1) & 1,                   // bit 1: write vs read
+        (error_code >> 2) & 1,                   // bit 2: user vs supervisor
+        (error_code >> 3) & 1,                   // bit 3: reserved bits violation
+    );
+
+    // Read what the user wrote to its own memory (kernel can access any
+    // mapped memory). The user program writes 0xDEADBEEF to 0x7000_0000
+    // before triggering the fault — proves user code actually ran.
+    let user_magic_addr = 0x7000_0000usize as *const u64;
+    let user_magic = unsafe { core::ptr::read_volatile(user_magic_addr) };
+    println!("  user wrote to its memory at 0x7000_0000: 0x{:x}", user_magic);
+
+    println!("\n{:#?}", stack_frame);
+
+    println!("\n[page_fault] halting — no clean way to kill user program yet");
+    loop {
+        x86_64::instructions::hlt();
+    }
 }
