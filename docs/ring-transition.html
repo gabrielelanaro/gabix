@@ -1,0 +1,626 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Ring Transition — kernel ↔ user mode</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    background: #1a1a1a;
+    color: #e8e8e8;
+    margin: 0;
+    padding: 24px;
+    line-height: 1.5;
+  }
+  h1 { margin-top: 0; font-size: 24px; color: #fff; }
+  h2 { font-size: 14px; margin: 0 0 8px 0; color: #ccc; text-transform: uppercase; letter-spacing: 0.5px; }
+  h3 { font-size: 12px; margin: 0 0 6px 0; color: #999; text-transform: uppercase; letter-spacing: 0.5px; }
+  p { color: #bbb; }
+
+  .controls {
+    display: flex; gap: 12px; align-items: center;
+    background: #2a2a2a; padding: 12px 16px; border-radius: 8px;
+    margin: 16px 0; border: 1px solid #3a3a3a;
+  }
+  button {
+    background: #0a84ff; color: white; border: none;
+    padding: 8px 16px; border-radius: 6px; cursor: pointer;
+    font-size: 14px; font-weight: 500; transition: background 0.15s;
+  }
+  button:hover:not(:disabled) { background: #0071e3; }
+  button:disabled { background: #444; color: #888; cursor: not-allowed; }
+  button.secondary { background: #555; }
+  button.secondary:hover:not(:disabled) { background: #666; }
+  #stepLabel { font-family: monospace; color: #0a84ff; font-size: 14px; min-width: 200px; text-align: center; }
+
+  .step-desc {
+    background: #2a2a2a; padding: 14px 18px; border-radius: 8px;
+    border-left: 3px solid #0a84ff; margin-bottom: 24px; min-height: 80px;
+  }
+  .step-desc strong { color: #fff; }
+  .step-desc code { background: #1a1a1a; padding: 2px 6px; border-radius: 3px; font-size: 13px; color: #4ee; }
+
+  .layout {
+    display: grid;
+    grid-template-columns: 1fr 280px 1fr;
+    gap: 20px;
+    align-items: start;
+  }
+  .panel {
+    background: #2a2a2a; border: 1px solid #3a3a3a; border-radius: 10px;
+    padding: 16px;
+  }
+  .panel.kernel { border-top: 4px solid #4a9eff; }
+  .panel.cpu { border-top: 4px solid #ff9800; }
+  .panel.user { border-top: 4px solid #4caf50; }
+
+  .reg-row {
+    display: flex; justify-content: space-between;
+    padding: 5px 10px; margin: 2px 0;
+    background: #1f1f1f; border-radius: 3px;
+    font-family: monospace; font-size: 12px;
+    transition: all 0.4s;
+  }
+  .reg-row .name { color: #888; }
+  .reg-row .val { color: #fb0; }
+  .reg-row.highlighted {
+    background: #4a9eff33; box-shadow: 0 0 0 1px #4a9eff;
+  }
+  .reg-row.highlighted .val { color: #fff; font-weight: bold; }
+  .reg-row.cpl-ring0 .val { color: #4a9eff; font-weight: bold; }
+  .reg-row.cpl-ring3 .val { color: #4caf50; font-weight: bold; }
+
+  .stack {
+    background: #1a1a1a; border-radius: 6px;
+    padding: 8px; margin-top: 8px;
+    font-family: monospace; font-size: 11px;
+  }
+  .stack-header {
+    color: #888; font-size: 10px; text-align: center;
+    padding-bottom: 6px; border-bottom: 1px solid #333; margin-bottom: 6px;
+  }
+  .stack-cell {
+    background: #2a2a2a; padding: 4px 8px; margin: 2px 0; border-radius: 3px;
+    display: flex; justify-content: space-between; color: #ccc;
+    transition: all 0.4s;
+  }
+  .stack-cell .label { color: #888; }
+  .stack-cell .value { color: #4ee; }
+  .stack-cell.empty { background: transparent; color: #444; border: 1px dashed #333; }
+  .stack-cell.new { background: #4caf5044; border: 1px solid #4caf50; animation: pulse 0.6s; }
+  .stack-cell.popped { opacity: 0.25; text-decoration: line-through; }
+  @keyframes pulse {
+    0%, 100% { transform: scale(1); }
+    50% { transform: scale(1.05); }
+  }
+  .rsp-pointer {
+    color: #fb0; font-size: 11px; text-align: right;
+    padding: 2px 4px; margin: 2px 0; font-weight: bold; font-family: monospace;
+  }
+
+  .reference-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+    margin-top: 24px;
+  }
+  .ref-panel {
+    background: #2a2a2a; border: 1px solid #3a3a3a; border-radius: 8px;
+    padding: 14px;
+  }
+  .ref-panel h2 { margin-bottom: 12px; }
+  .ref-row {
+    display: flex; justify-content: space-between;
+    padding: 4px 8px; margin: 2px 0;
+    background: #1f1f1f; border-radius: 3px;
+    font-family: monospace; font-size: 11px;
+  }
+  .ref-row.new-entry {
+    background: #4caf5033; border: 1px solid #4caf50;
+  }
+  .ref-row .name { color: #aaa; }
+  .ref-row .value { color: #4ee; }
+  .ref-row .note { color: #888; font-style: italic; font-size: 10px; }
+
+  .footer-note {
+    color: #666; font-size: 12px; margin-top: 16px; font-style: italic;
+  }
+
+  .badge {
+    display: inline-block; font-size: 11px; padding: 2px 8px;
+    border-radius: 10px; font-weight: 600; text-transform: uppercase;
+  }
+  .badge-ring0 { background: #4a9eff22; color: #4a9eff; border: 1px solid #4a9eff; }
+  .badge-ring3 { background: #4caf5022; color: #4caf50; border: 1px solid #4caf50; }
+</style>
+</head>
+<body>
+
+<h1>Ring Transition — kernel ↔ user mode</h1>
+
+<p>Below: the kernel (ring 0) wants to start a user program (ring 3) for the first time. The mechanism is <code style="background:#1a1a1a;padding:2px 6px;border-radius:3px;color:#4ee">iretq</code>. Later steps show what happens when an interrupt fires while running user code — the CPU uses the TSS to find its way back to the kernel stack.</p>
+
+<div class="controls">
+  <button id="prev" class="secondary">← Prev</button>
+  <span id="stepLabel">Step 0 / 10</span>
+  <button id="next">Next →</button>
+  <button id="reset" class="secondary">Reset</button>
+</div>
+
+<div class="step-desc" id="stepDesc"></div>
+
+<div class="layout">
+
+  <!-- Kernel panel -->
+  <div class="panel kernel">
+    <h2>Kernel (ring 0) <span class="badge badge-ring0" id="kernelBadge">ACTIVE</span></h2>
+
+    <h3>Kernel stack</h3>
+    <div class="stack" id="kernelStack">
+      <div class="stack-header">kernel stack range</div>
+    </div>
+
+    <div style="margin-top:14px">
+      <h3>User program (loaded by kernel)</h3>
+      <div class="reg-row"><span class="name">code @ virt</span><span class="val" id="userCodeAddr">—</span></div>
+      <div class="reg-row"><span class="name">stack range</span><span class="val" id="userStackRange">—</span></div>
+    </div>
+  </div>
+
+  <!-- CPU panel -->
+  <div class="panel cpu">
+    <h2>CPU registers</h2>
+    <div class="reg-row cpl-ring0" id="reg-cpl"><span class="name">CPL</span><span class="val">0 (kernel)</span></div>
+    <div class="reg-row" id="reg-cs"><span class="name">CS</span><span class="val">0x08 (kernel code)</span></div>
+    <div class="reg-row" id="reg-rip"><span class="name">RIP</span><span class="val">0xffff_ffff_8000_0000</span></div>
+    <div class="reg-row" id="reg-rsp"><span class="name">RSP</span><span class="val">0xffff_ffff_8001_0000</span></div>
+    <div class="reg-row" id="reg-ss"><span class="name">SS</span><span class="val">0x10 (kernel data)</span></div>
+    <div class="reg-row" id="reg-rflags"><span class="name">RFLAGS</span><span class="val">0x0000_0000_0000_0002</span></div>
+
+    <div style="margin-top:14px;font-size:11px;color:#888;text-align:center">
+      CPL = Current Privilege Level (bottom 2 bits of CS)<br>
+      CS = code segment selector (which GDT entry)<br>
+      RIP = instruction pointer (where we're executing)<br>
+      RSP = stack pointer<br>
+      SS = stack segment selector
+    </div>
+  </div>
+
+  <!-- User panel -->
+  <div class="panel user">
+    <h2>User program (ring 3) <span class="badge badge-ring3" id="userBadge">DORMANT</span></h2>
+
+    <h3>User code (in memory)</h3>
+    <div class="stack" id="userCode">
+      <div class="stack-header">user code page</div>
+      <div class="stack-cell" id="userCodeCell"><span class="label">0x4000_0000:</span><span class="value">—</span></div>
+    </div>
+
+    <h3>User stack</h3>
+    <div class="stack" id="userStack">
+      <div class="stack-header">user stack range</div>
+    </div>
+  </div>
+
+</div>
+
+<div class="reference-grid">
+
+  <div class="ref-panel">
+    <h2>GDT (Global Descriptor Table) — what we'll add</h2>
+    <div class="ref-row"><span class="name">0x00 null</span><span class="note">required first entry</span></div>
+    <div class="ref-row"><span class="name">0x08 kernel code</span><span class="note">ring 0, exec</span></div>
+    <div class="ref-row"><span class="name">0x10 kernel data</span><span class="note">ring 0, rw</span></div>
+    <div class="ref-row new-entry"><span class="name">0x18 user code</span><span class="note">ring 3, exec ← NEW</span></div>
+    <div class="ref-row new-entry"><span class="name">0x20 user data</span><span class="note">ring 3, rw ← NEW</span></div>
+    <div class="ref-row new-entry"><span class="name">0x28 TSS</span><span class="note">system segment ← NEW</span></div>
+    <p style="font-size:11px;color:#888;margin-top:8px">
+      The CS value encodes both the index and the ring: <code>CS = index × 16 + ring</code>.
+      So kernel CS = 0x08 (index 1, ring 0), user CS = 0x1B (index 3, ring 3).
+    </p>
+  </div>
+
+  <div class="ref-panel">
+    <h2>TSS (Task State Segment)</h2>
+    <div class="ref-row"><span class="name">RSP0</span><span class="value" id="tssRsp0">0xffff_ffff_8001_0000</span></div>
+    <div class="ref-row"><span class="name">IST1–7</span><span class="value">0 (unused)</span></div>
+    <div class="ref-row"><span class="name">IOPB offset</span><span class="value">0 (no I/O bitmap)</span></div>
+    <p style="font-size:11px;color:#888;margin-top:8px">
+      The TSS is a CPU structure that tells the CPU <em>where the kernel stack is</em>.
+      When an interrupt fires while running user code (CPL=3), the CPU reads
+      <code>RSP0</code> from the TSS and switches to that stack before running
+      the handler. Without this, the kernel would have no stack to use.
+    </p>
+  </div>
+
+</div>
+
+<div class="footer-note">
+  Real kernel pattern: <code>iretq</code> for the first kernel → user transition, <code>syscall</code>/<code>sysret</code> for the hot path (frequent syscalls), <code>iretq</code> for returning from hardware interrupts.
+</div>
+
+<script>
+// ============================================================
+// State machine for the ring transition visualization
+// ============================================================
+
+const steps = [
+  {
+    label: "Step 0 / 10 — Initial state",
+    desc: "<strong>Initial state.</strong> The kernel is running at ring 0 on the kernel stack. We've decided to start a user program. Memory for the user code and user stack has already been allocated and mapped with U/S=1 (user accessible). The TSS is loaded — its <code>RSP0</code> field points at the kernel stack, so the CPU knows where to come back to.",
+    state: "initial"
+  },
+  {
+    label: "Step 1 / 10 — Push SS and RSP",
+    desc: "<strong>Kernel pushes the user's SS and RSP onto its own stack.</strong> These tell <code>iretq</code> what stack to switch to. <code>SS = 0x20 | 3 = 0x23</code> (user data segment, ring 3) and <code>RSP = 0x0000_7000_FFF0</code> (top of user stack). The kernel stack now has 16 bytes used at the top.",
+    state: "push_ss_rsp"
+  },
+  {
+    label: "Step 2 / 10 — Push RFLAGS, CS, RIP",
+    desc: "<strong>Kernel pushes RFLAGS, CS, RIP.</strong> RFLAGS is the interrupt-enable state we want for user code (0x202 means IF=1 plus reserved bit 1). CS = <code>0x18 | 3 = 0x1B</code> (user code segment, ring 3). RIP = <code>0x0000_0000_4000_0000</code> — the user program's entry point. The kernel stack now has 40 bytes used: this layout is the 'iret frame'.",
+    state: "push_rflags_cs_rip"
+  },
+  {
+    label: "Step 3 / 10 — Execute iretq",
+    desc: "<strong>The kernel executes <code>iretq</code>.</strong> This single instruction does a lot. It pops the top 5 values from the kernel stack into RIP, CS, RFLAGS, RSP, SS — and detects that the target CS has a different ring than the current one (target is ring 3, current is ring 0). This privilege change triggers the <em>full</em> iretq semantics, not just the simple 'pop and jump' version.",
+    state: "execute_iretq"
+  },
+  {
+    label: "Step 4 / 10 — CPU switches stacks",
+    desc: "<strong>CPU switches RSP and SS to the user values.</strong> Because the target ring is 3 (different from current 0), the CPU loads SS:RSP from the iret frame — not from the kernel stack. Now <code>RSP = 0x0000_7000_FFF0</code> and <code>SS = 0x23</code>. The kernel stack is left untouched in RAM; we'll come back to it when an interrupt fires.",
+    state: "switch_stack"
+  },
+  {
+    label: "Step 5 / 10 — CPL becomes 3",
+    desc: "<strong>CPU loads CS:RIP and sets CPL = 3.</strong> The bottom 2 bits of CS (0x1B = 0b11011, bottom 2 bits = 0b11 = 3) become the new CPL. The CPU jumps to <code>RIP = 0x0000_0000_4000_0000</code>. We're now executing user code at ring 3.",
+    state: "cpl_becomes_3"
+  },
+  {
+    label: "Step 6 / 10 — User code runs",
+    desc: "<strong>User code runs.</strong> The user program executes its first instruction. Memory accesses go through the page tables, which check U/S bits — kernel pages have U/S=0, so if the user tries to read kernel memory, the CPU generates a Page Fault. Privileged instructions like <code>hlt</code> or <code>cli</code> would trigger a General Protection Fault.",
+    state: "user_running"
+  },
+  {
+    label: "Step 7 / 10 — Interrupt fires (e.g. timer)",
+    desc: "<strong>Timer fires while user code is running.</strong> The CPU needs to switch back to ring 0 to run the timer handler. But it can't use the user's stack — the user's stack is untrusted and might be tiny or corrupted. The CPU needs the kernel stack.",
+    state: "interrupt_fires"
+  },
+  {
+    label: "Step 8 / 10 — CPU reads TSS",
+    desc: "<strong>CPU reads <code>RSP0</code> from the TSS.</strong> This is the saved kernel stack pointer. The CPU switches RSP to this value (leaving the user stack untouched). The kernel stack now becomes active.",
+    state: "read_tss"
+  },
+  {
+    label: "Step 9 / 10 — CPU pushes user state, CPL=0",
+    desc: "<strong>CPU pushes the user's SS, RSP, RFLAGS, CS, RIP onto the kernel stack.</strong> This is the same iret frame layout — saving the user's state so it can be restored later. Then the CPU loads the handler's CS:RIP from the IDT (CPL becomes 0) and jumps to the timer handler. We're back in kernel mode.",
+    state: "push_user_state"
+  },
+  {
+    label: "Step 10 / 10 — Handler runs, returns via iretq",
+    desc: "<strong>The timer handler runs.</strong> When it's done, it executes <code>iretq</code>. Because the saved CS in the iret frame is ring 3, the CPU does the full ring-transition version: switches SS:RSP back to the user values, sets CPL=3, jumps to the saved RIP. The user program resumes exactly where it was, never knowing it was preempted. Symmetric to steps 3–5.",
+    state: "handler_returns"
+  }
+];
+
+let currentStep = 0;
+
+// Constants for our story
+const USER_CODE_ADDR   = 0x0000_0000_4000_0000;
+const USER_STACK_TOP   = 0x0000_0000_7001_0000;
+const USER_RSP_INITIAL = 0x0000_0000_7000_FFF0;
+const KERNEL_RSP       = 0xffff_ffff_8001_0000;
+const KERNEL_RSP_AFTER_IRET_FRAME = 0xffff_ffff_8000_0FF8 - 32; // 40 bytes used
+
+const CS_KERNEL = 0x08;
+const CS_USER   = 0x1B;
+const SS_KERNEL = 0x10;
+const SS_USER   = 0x23;
+const RFLAGS_USER = 0x202;
+
+// ============================================================
+// Render functions
+// ============================================================
+
+function setReg(elemId, value, highlight) {
+  const elem = document.getElementById(elemId);
+  elem.querySelector('.val').textContent = value;
+  if (highlight) elem.classList.add('highlighted');
+  else elem.classList.remove('highlighted');
+}
+
+function setCPL(value) {
+  const elem = document.getElementById('reg-cpl');
+  elem.querySelector('.val').textContent = value;
+  elem.classList.remove('cpl-ring0', 'cpl-ring3');
+  if (value.startsWith('0')) elem.classList.add('cpl-ring0');
+  else elem.classList.add('cpl-ring3');
+}
+
+function setBadge(badgeId, text, klass) {
+  const elem = document.getElementById(badgeId);
+  elem.textContent = text;
+  elem.className = 'badge ' + klass;
+}
+
+function renderKernelStack(stateName) {
+  const elem = document.getElementById('kernelStack');
+  const header = elem.querySelector('.stack-header');
+  elem.innerHTML = '';
+  elem.appendChild(header);
+
+  // Always-present lower stack content
+  const lowerCells = [
+    { label: "0xffff_ffff_8000_0FE0", value: "(handler frame data)", cls: "" },
+    { label: "0xffff_ffff_8000_0FD8", value: "(local vars)", cls: "" },
+  ];
+
+  // The iret frame is built up in steps 1-2, used in step 3, then later filled
+  // again by CPU in step 9.
+  const iretCells = [];
+
+  // Default: show empty cells where iret frame will go
+  let iretFrameBuilt = false;
+  let iretFrameUsedUp = false;
+  let iretFrameRefilled = false;
+
+  if (stateName === "push_ss_rsp" || stateName === "push_rflags_cs_rip") {
+    iretFrameBuilt = (stateName === "push_rflags_cs_rip");
+    iretCells.push({ label: "0xffff_ffff_8000_0FF8", value: iretFrameBuilt ? "RIP = 0x4000_0000" : "(empty)", cls: iretFrameBuilt ? "new" : "empty" });
+    iretCells.push({ label: "0xffff_ffff_8000_1000", value: iretFrameBuilt ? "CS = 0x1B" : "(empty)", cls: iretFrameBuilt ? "new" : "empty" });
+    iretCells.push({ label: "0xffff_ffff_8000_1008", value: iretFrameBuilt ? "RFLAGS = 0x202" : "(empty)", cls: iretFrameBuilt ? "new" : "empty" });
+    iretCells.push({ label: "0xffff_ffff_8000_1010", value: "RSP = 0x7000_FFF0", cls: "new" });
+    iretCells.push({ label: "0xffff_ffff_8000_1018", value: "SS = 0x23", cls: "new" });
+  } else if (stateName === "execute_iretq" || stateName === "switch_stack" ||
+             stateName === "cpl_becomes_3" || stateName === "user_running") {
+    // Iret frame has been popped — kernel stack is "empty" at top
+    iretCells.push({ label: "0xffff_ffff_8000_0FF8", value: "(iret frame popped)", cls: "popped" });
+    iretCells.push({ label: "0xffff_ffff_8000_1000", value: "(iret frame popped)", cls: "popped" });
+    iretCells.push({ label: "0xffff_ffff_8000_1008", value: "(iret frame popped)", cls: "popped" });
+    iretCells.push({ label: "0xffff_ffff_8000_1010", value: "(iret frame popped)", cls: "popped" });
+    iretCells.push({ label: "0xffff_ffff_8000_1018", value: "(iret frame popped)", cls: "popped" });
+  } else if (stateName === "interrupt_fires") {
+    iretCells.push({ label: "0xffff_ffff_8000_0FF8", value: "(empty)", cls: "empty" });
+    iretCells.push({ label: "0xffff_ffff_8000_1000", value: "(empty)", cls: "empty" });
+    iretCells.push({ label: "0xffff_ffff_8000_1008", value: "(empty)", cls: "empty" });
+    iretCells.push({ label: "0xffff_ffff_8000_1010", value: "(empty)", cls: "empty" });
+    iretCells.push({ label: "0xffff_ffff_8000_1018", value: "(empty)", cls: "empty" });
+  } else if (stateName === "read_tss" || stateName === "push_user_state" || stateName === "handler_returns") {
+    // CPU has pushed user state back onto kernel stack
+    iretCells.push({ label: "0xffff_ffff_8000_0FF8", value: "RIP = (user RIP)", cls: stateName === "push_user_state" ? "new" : "" });
+    iretCells.push({ label: "0xffff_ffff_8000_1000", value: "CS = 0x1B", cls: stateName === "push_user_state" ? "new" : "" });
+    iretCells.push({ label: "0xffff_ffff_8000_1008", value: "RFLAGS = (user flags)", cls: stateName === "push_user_state" ? "new" : "" });
+    iretCells.push({ label: "0xffff_ffff_8000_1010", value: "RSP = (user RSP)", cls: stateName === "push_user_state" ? "new" : "" });
+    iretCells.push({ label: "0xffff_ffff_8000_1018", value: "SS = 0x23", cls: stateName === "push_user_state" ? "new" : "" });
+  } else {
+    // initial state — kernel stack is mostly empty
+    iretCells.push({ label: "0xffff_ffff_8000_0FF8", value: "(empty)", cls: "empty" });
+    iretCells.push({ label: "0xffff_ffff_8000_1000", value: "(empty)", cls: "empty" });
+  }
+
+  // Render: top of stack first (higher addr), going down
+  // Iret frame cells are at 0xFF8-0x1018 (40 bytes)
+  for (const cell of iretCells) {
+    const div = document.createElement('div');
+    div.className = 'stack-cell ' + cell.cls;
+    div.innerHTML = `<span class="label">${cell.label}</span><span class="value">${cell.value}</span>`;
+    elem.appendChild(div);
+  }
+
+  // RSP pointer
+  let rspLabel = "";
+  if (stateName === "initial") rspLabel = "↑ kernel RSP";
+  else if (stateName === "push_ss_rsp") rspLabel = "↑ kernel RSP (just pushed SS, RSP)";
+  else if (stateName === "push_rflags_cs_rip") rspLabel = "↑ kernel RSP (iret frame complete)";
+  else if (stateName === "execute_iretq") rspLabel = "↑ about to pop";
+  else if (stateName === "switch_stack" || stateName === "cpl_becomes_3" || stateName === "user_running") rspLabel = "↑ kernel RSP (frozen)";
+  else if (stateName === "interrupt_fires") rspLabel = "";
+  else if (stateName === "read_tss") rspLabel = "↑ CPU loaded RSP0";
+  else if (stateName === "push_user_state") rspLabel = "↑ kernel RSP (after push)";
+  else if (stateName === "handler_returns") rspLabel = "↑ handler's RSP";
+
+  if (rspLabel) {
+    const p = document.createElement('div');
+    p.className = 'rsp-pointer';
+    p.textContent = rspLabel;
+    elem.appendChild(p);
+  }
+
+  for (const cell of lowerCells) {
+    const div = document.createElement('div');
+    div.className = 'stack-cell ' + cell.cls;
+    div.innerHTML = `<span class="label">${cell.label}</span><span class="value">${cell.value}</span>`;
+    elem.appendChild(div);
+  }
+}
+
+function renderUserStack(stateName) {
+  const elem = document.getElementById('userStack');
+  const header = elem.querySelector('.stack-header');
+  elem.innerHTML = '';
+  elem.appendChild(header);
+  header.textContent = `range [0x7000_0000, 0x7001_0000)`;
+
+  // User stack starts empty, becomes active after step 4
+  const isActive = ["switch_stack", "cpl_becomes_3", "user_running", "interrupt_fires"].includes(stateName);
+  const cells = [
+    { label: "0x0000_0000_7000_FFF8", value: isActive ? "(user pushed data)" : "(empty)", cls: isActive ? "" : "empty" },
+    { label: "0x0000_0000_7000_FFF0", value: "(initial RSP)", cls: isActive ? "" : "empty" },
+  ];
+  for (const cell of cells) {
+    const div = document.createElement('div');
+    div.className = 'stack-cell ' + cell.cls;
+    div.innerHTML = `<span class="label">${cell.label}</span><span class="value">${cell.value}</span>`;
+    elem.appendChild(div);
+  }
+
+  // RSP indicator
+  if (isActive) {
+    const p = document.createElement('div');
+    p.className = 'rsp-pointer';
+    p.textContent = "↑ user RSP";
+    elem.appendChild(p);
+  }
+}
+
+function renderUserCode(stateName) {
+  const cell = document.getElementById('userCodeCell');
+  const running = ["cpl_becomes_3", "user_running", "interrupt_fires"].includes(stateName);
+  if (running) {
+    cell.innerHTML = '<span class="label">0x4000_0000:</span><span class="value">user code (executing)</span>';
+    cell.style.background = '#4caf5033';
+  } else if (stateName === "switch_stack" || stateName === "execute_iretq") {
+    cell.innerHTML = '<span class="label">0x4000_0000:</span><span class="value">user code (about to run)</span>';
+  } else {
+    cell.innerHTML = '<span class="label">0x4000_0000:</span><span class="value">user code (loaded, dormant)</span>';
+    cell.style.background = '#2a2a2a';
+  }
+}
+
+function renderState(stateName) {
+  // Defaults
+  const cpu = {
+    cpl:   "0 (kernel)",
+    cs:    `0x${CS_KERNEL.toString(16).padStart(2,'0')} (kernel code)`,
+    rip:   "0xffff_ffff_8000_2000",
+    rsp:   `0x${KERNEL_RSP.toString(16)}`,
+    ss:    `0x${SS_KERNEL.toString(16).padStart(2,'0')} (kernel data)`,
+    rflags:"0x0000_0000_0000_0002",
+  };
+  let kernelBadgeText = "ACTIVE";
+  let kernelBadgeClass = "badge-ring0";
+  let userBadgeText = "DORMANT";
+  let userBadgeClass = "badge-ring3";
+
+  // Highlight defaults: nothing
+  ['reg-cs','reg-rip','reg-rsp','reg-ss','reg-rflags'].forEach(id => {
+    document.getElementById(id).classList.remove('highlighted');
+  });
+
+  if (stateName === "push_ss_rsp") {
+    cpu.rsp = "0xffff_ffff_8000_1010";
+    document.getElementById('reg-rsp').classList.add('highlighted');
+    document.getElementById('reg-ss').classList.add('highlighted');
+  } else if (stateName === "push_rflags_cs_rip") {
+    cpu.rsp = "0xffff_ffff_8000_0FF8";
+    document.getElementById('reg-rsp').classList.add('highlighted');
+    document.getElementById('reg-rflags').classList.add('highlighted');
+    document.getElementById('reg-cs').classList.add('highlighted');
+  } else if (stateName === "execute_iretq") {
+    // iretq about to execute
+    cpu.rsp = "0xffff_ffff_8000_0FF8";
+    document.getElementById('reg-rsp').classList.add('highlighted');
+  } else if (stateName === "switch_stack") {
+    // RSP and SS have been loaded from iret frame
+    cpu.rsp = "0x0000_0000_7000_FFF0";
+    cpu.ss  = `0x${SS_USER.toString(16).padStart(2,'0')} (user data)`;
+    document.getElementById('reg-rsp').classList.add('highlighted');
+    document.getElementById('reg-ss').classList.add('highlighted');
+  } else if (stateName === "cpl_becomes_3") {
+    cpu.cpl = "3 (user)";
+    cpu.cs  = `0x${CS_USER.toString(16).padStart(2,'0')} (user code)`;
+    cpu.rip = "0x0000_0000_4000_0000";
+    cpu.rsp = "0x0000_0000_7000_FFF0";
+    cpu.ss  = `0x${SS_USER.toString(16).padStart(2,'0')} (user data)`;
+    cpu.rflags = `0x${RFLAGS_USER.toString(16)}`;
+    document.getElementById('reg-cs').classList.add('highlighted');
+    document.getElementById('reg-rip').classList.add('highlighted');
+    kernelBadgeText = "FROZEN";
+    userBadgeText = "ACTIVE";
+  } else if (stateName === "user_running") {
+    cpu.cpl = "3 (user)";
+    cpu.cs  = `0x${CS_USER.toString(16).padStart(2,'0')} (user code)`;
+    cpu.rip = "0x0000_0000_4000_0002";
+    cpu.rsp = "0x0000_0000_7000_FFF8";
+    cpu.ss  = `0x${SS_USER.toString(16).padStart(2,'0')} (user data)`;
+    cpu.rflags = `0x${RFLAGS_USER.toString(16)}`;
+    kernelBadgeText = "FROZEN";
+    userBadgeText = "ACTIVE";
+  } else if (stateName === "interrupt_fires") {
+    cpu.cpl = "3 (user)";
+    cpu.cs  = `0x${CS_USER.toString(16).padStart(2,'0')} (user code)`;
+    cpu.rip = "0x0000_0000_4000_0005";
+    cpu.rsp = "0x0000_0000_7000_FFF8";
+    cpu.ss  = `0x${SS_USER.toString(16).padStart(2,'0')} (user data)`;
+    document.getElementById('reg-cpl').classList.add('highlighted');
+    kernelBadgeText = "FROZEN";
+    userBadgeText = "INTERRUPTED";
+  } else if (stateName === "read_tss") {
+    cpu.cpl = "3 (user)";  // still user until handler runs
+    cpu.cs  = `0x${CS_USER.toString(16).padStart(2,'0')} (user code)`;
+    cpu.rip = "0x0000_0000_4000_0005";
+    cpu.rsp = "0xffff_ffff_8001_0000";  // RSP0 from TSS
+    cpu.ss  = `0x${SS_KERNEL.toString(16).padStart(2,'0')} (kernel data)`;  // SS switches too
+    document.getElementById('reg-rsp').classList.add('highlighted');
+    kernelBadgeText = "WAKING";
+    userBadgeText = "FROZEN";
+  } else if (stateName === "push_user_state") {
+    cpu.cpl = "0 (kernel)";
+    cpu.cs  = `0x${CS_KERNEL.toString(16).padStart(2,'0')} (kernel code)`;
+    cpu.rip = "0xffff_ffff_8002_0000 (timer handler)";
+    cpu.rsp = "0xffff_ffff_8000_0FF8";  // after pushing 40 bytes
+    cpu.ss  = `0x${SS_KERNEL.toString(16).padStart(2,'0')} (kernel data)`;
+    document.getElementById('reg-cpl').classList.add('highlighted');
+    document.getElementById('reg-cs').classList.add('highlighted');
+    document.getElementById('reg-rip').classList.add('highlighted');
+    kernelBadgeText = "ACTIVE";
+    userBadgeText = "FROZEN";
+  } else if (stateName === "handler_returns") {
+    // iretq popping back to user
+    cpu.cpl = "3 (user)";  // after iretq completes
+    cpu.cs  = `0x${CS_USER.toString(16).padStart(2,'0')} (user code)`;
+    cpu.rip = "0x0000_0000_4000_0005";
+    cpu.rsp = "0x0000_0000_7000_FFF8";
+    cpu.ss  = `0x${SS_USER.toString(16).padStart(2,'0')} (user data)`;
+    document.getElementById('reg-cpl').classList.add('highlighted');
+    kernelBadgeText = "FROZEN";
+    userBadgeText = "RESUMED";
+  }
+
+  setCPL(cpu.cpl);
+  setReg('reg-cs', cpu.cs, false);
+  setReg('reg-rip', cpu.rip, false);
+  setReg('reg-rsp', cpu.rsp, false);
+  setReg('reg-ss', cpu.ss, false);
+  setReg('reg-rflags', cpu.rflags, false);
+  setBadge('kernelBadge', kernelBadgeText, kernelBadgeClass);
+  setBadge('userBadge', userBadgeText, userBadgeClass);
+
+  // User code/stack range panel
+  document.getElementById('userCodeAddr').textContent = '0x0000_0000_4000_0000';
+  document.getElementById('userStackRange').textContent = '0x7000_0000-0x7001_0000';
+
+  renderKernelStack(stateName);
+  renderUserStack(stateName);
+  renderUserCode(stateName);
+}
+
+function updateUI() {
+  const step = steps[currentStep];
+  document.getElementById('stepLabel').textContent = step.label;
+  document.getElementById('stepDesc').innerHTML = step.desc;
+  document.getElementById('prev').disabled = (currentStep === 0);
+  document.getElementById('next').disabled = (currentStep === steps.length - 1);
+  renderState(step.state);
+}
+
+document.getElementById('prev').addEventListener('click', () => {
+  if (currentStep > 0) { currentStep--; updateUI(); }
+});
+document.getElementById('next').addEventListener('click', () => {
+  if (currentStep < steps.length - 1) { currentStep++; updateUI(); }
+});
+document.getElementById('reset').addEventListener('click', () => {
+  currentStep = 0; updateUI();
+});
+
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'ArrowLeft') { document.getElementById('prev').click(); }
+  else if (e.key === 'ArrowRight') { document.getElementById('next').click(); }
+});
+
+updateUI();
+</script>
+
+</body>
+</html>

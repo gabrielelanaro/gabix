@@ -1,37 +1,97 @@
 //! Global Descriptor Table for our kernel.
+//!
+//! Slice 3.6.a: added user-mode segments (ring 3) and a TSS entry.
+//! Preparation for ring 0 ↔ ring 3 transitions in slice 3.6.b. No
+//! behavior change yet — just the data structures in place.
 
 use lazy_static::lazy_static;
 use x86_64::instructions::segmentation::{CS, DS, ES, FS, GS, SS, Segment};
+use x86_64::instructions::tables::load_tss;
 use x86_64::structures::gdt::{Descriptor, GlobalDescriptorTable, SegmentSelector};
+use x86_64::structures::tss::TaskStateSegment;
+use x86_64::VirtAddr;
+
+/// Our Task State Segment. The CPU reads `privilege_stack_table[0]`
+/// (commonly called RSP0) from here when transitioning from ring 3 to
+/// ring 0 — e.g., when an interrupt fires while running user code.
+///
+/// In a full system we'd update RSP0 on every context switch to point
+/// at the new task's kernel stack. For now we set it once at boot to
+/// wherever main's stack happens to be.
+static mut TSS: TaskStateSegment = TaskStateSegment::new();
+
+/// All the segment selectors we captured when building the GDT, so we
+/// don't have to recompute them later. Kernel uses the kernel_*
+/// selectors; user code uses user_* selectors (with RPL=3 added when
+/// building the iret frame in slice 3.6.b).
+pub struct Selectors {
+    pub kernel_code: SegmentSelector,
+    pub kernel_data: SegmentSelector,
+    pub user_code: SegmentSelector,
+    pub user_data: SegmentSelector,
+    pub tss: SegmentSelector,
+}
 
 lazy_static! {
-    /// The kernel's GDT, paired with the selectors returned when we added
-    /// each entry. We need the selectors later to reload the segment
-    /// registers (CS, DS, SS).
-    pub static ref GDT: (GlobalDescriptorTable, SegmentSelector, SegmentSelector) = {
+    /// The kernel's GDT, paired with the selectors returned when we
+    /// added each entry. We need the selectors later to reload segment
+    /// registers (CS, DS, SS) and to build iret frames for user code.
+    pub static ref GDT: (GlobalDescriptorTable, Selectors) = {
         let mut gdt = GlobalDescriptorTable::new();
-        // `kernel_code_segment()` and `kernel_data_segment()` are presets
-        // in the x86_64 crate. They return a Descriptor with sensible
-        // defaults: base 0, full limit, ring 0, present, 64-bit code/data.
-        let code = gdt.append(Descriptor::kernel_code_segment());
-        let data = gdt.append(Descriptor::kernel_data_segment());
-        (gdt, code, data)
+        let kernel_code = gdt.append(Descriptor::kernel_code_segment());
+        let kernel_data = gdt.append(Descriptor::kernel_data_segment());
+        let user_code = gdt.append(Descriptor::user_code_segment());
+        let user_data = gdt.append(Descriptor::user_data_segment());
+        // SAFETY: TSS is a static, so its address is stable for the
+        // lifetime of the program. We're the only writer (init runs
+        // single-threaded before any task switching).
+        let tss = unsafe { gdt.append(Descriptor::tss_segment(&*(&raw const TSS))) };
+        (
+            gdt,
+            Selectors {
+                kernel_code,
+                kernel_data,
+                user_code,
+                user_data,
+                tss,
+            },
+        )
     };
 }
 
-/// Install our GDT and reload all segment registers to point at our entries.
+/// Install our GDT, set up the TSS with the current kernel stack pointer,
+/// reload all segment registers, and load the TSS via `ltr`.
 pub fn init() {
+    // Read the current kernel stack pointer. We use this as RSP0 —
+    // the CPU will switch to this stack when transitioning from ring 3
+    // to ring 0. For now this is main's stack; in a full kernel we'd
+    // allocate a dedicated stack per task for ring transitions.
+    let kernel_rsp: u64;
+    unsafe {
+        core::arch::asm!("mov {}, rsp", out(reg) kernel_rsp, options(nomem, nostack));
+    }
+
+    // SAFETY: we're single-CPU, no concurrent access to TSS. The
+    // mutation happens before `load_tss`, so the CPU sees the right
+    // value when it first reads the TSS.
+    unsafe {
+        (*(&raw mut TSS)).privilege_stack_table[0] = VirtAddr::new(kernel_rsp);
+    }
+
     GDT.0.load();
     unsafe {
         // Data, stack, extra — plain `mov` works for these.
-        DS::set_reg(GDT.2);
-        SS::set_reg(GDT.2);
-        ES::set_reg(GDT.2);
+        DS::set_reg(GDT.1.kernel_data);
+        SS::set_reg(GDT.1.kernel_data);
+        ES::set_reg(GDT.1.kernel_data);
         // FS and GS — null selector (we don't use them yet).
         FS::set_reg(SegmentSelector::NULL);
         GS::set_reg(SegmentSelector::NULL);
         // CS is special: the crate internally uses a far-return trick
         // so the instruction pointer and code segment swap atomically.
-        CS::set_reg(GDT.1);
+        CS::set_reg(GDT.1.kernel_code);
+        // Load the TSS. After this, the CPU knows where to find RSP0
+        // when transitioning from ring 3 to ring 0.
+        load_tss(GDT.1.tss);
     }
 }
