@@ -39,8 +39,8 @@ Status legend: `[ ]` not started · `[~]` in progress · `[x]` done
 **Linux to read alongside:** `include/linux/sched.h` (`task_struct`), `kernel/sched/fair.c` (CFS), `arch/x86/entry/entry_64.S`
 
 ### Month 4 — Syscalls, VFS, IPC
-- [ ] 4.1 Syscall gate (`syscall`/`sysret` ABI), dispatch table
-- [ ] 4.2 Core syscalls: `write`, `exit`, `getpid`
+- [x] 4.1 Syscall gate (`syscall`/`sysret` ABI), dispatch table
+- [x] 4.2 Core syscalls: `write`, `exit`, `getpid`
 - [ ] 4.3 `fork` / `exec` / `wait`
 - [ ] 4.4 VFS layer: `File`, `inode`, `open`/`read`/`write`/`close`
 - [ ] 4.5 RamFS implementation
@@ -525,6 +525,19 @@ Most recent entries at the top. One entry per work session.
 - **Status:** (which milestones/checkboxes flipped)
 - **Notes / blockers / surprises:** (anything useful for future-you)
 - **Next:** (where to pick up next time)
+
+### 2026-06-22 (slice 8) — Syscall dispatch table + core syscalls (4.1 / 4.2 done)
+- **Done:** Expanded the syscall mechanism from a single match arm into a working dispatch table with 3 syscalls. The user program now makes 3 syscalls in sequence (write, getpid, exit) and the kernel routes each one to the right handler. End-to-end test output: `hello` → `sys_write wrote 6 bytes` → `sys_getpid -> 1` → `sys_exit(0) — halting`. M4 has begun.
+    - Added `SYS_GETPID` (39) and `SYS_EXIT` (60) syscall numbers — these match the Linux x86-64 ABI conventions, so a real Linux binary's syscall numbers would (theoretically) line up.
+    - `sys_getpid() -> u64`: hardcoded to return 1 for now. We have one user program; once `fork`/`exec` (M4 item 4.3) creates real processes, this will return the actual ID of whichever task made the syscall.
+    - `sys_exit(exit_code: u64) -> u64`: prints a message, disables interrupts, halts in a `loop { hlt }`. Doesn't actually kill a process — we don't have process tracking yet. M4 item 4.3 will add real exit semantics.
+    - Updated `USER_PROGRAM` to make 3 syscalls: write("hello\n", 6) → getpid → exit(0). 70 bytes of hand-assembled machine code.
+- **Status:** Checkboxes 4.1 and 4.2 flipped to `[x]`. M4 underway.
+- **Notes / blockers / surprises:**
+    - **Major debug: kernel stack overflow in syscall handler.** The handler had `println!("[syscall] num={} args=({}, {}, {})", num, arg1, arg2, arg3)` at the top. The 4-argument format machinery allocates 4 Argument structs (16 bytes each) plus other format state, totaling ~250 extra bytes of stack usage. This overflowed the kernel stack below `KERNEL_RSP` (which was captured at `syscall::init()` time and doesn't have much room below it — we're somewhere mid-stack by the time `main` calls init). Symptom: triple-fault before any output appeared. Bisected by reverting one file at a time, then by stripping the handler down to `let _ = ...; 0` and rebuilding back up. **Workaround:** keep prints in the dispatch minimal — each individual `sys_*` function prints its own short message, which works fine. **Real fix (future):** allocate a dedicated syscall stack (a few fresh frames) instead of using the captured mid-stack RSP.
+    - Initial confusion: I thought the issue was the new user program (which calls 3 syscalls instead of 1), but reverting to the single-syscall user program didn't help. The dispatch code in syscall.rs was the actual culprit. Took a few iterations of bisecting to figure this out.
+    - **The "exit halts" approach has consequences.** Because sys_exit loops with interrupts disabled, the kernel is frozen after exit. That's expected for now — we have one process, so killing it = halting the system. When we have multiple processes, exit will kill the current one and switch to another.
+- **Next:** 4.3 — `fork` / `exec` / `wait`. This is the big one for M4: real process management. `fork` clones an existing process, `exec` replaces its program with a new one, `wait` lets a parent block until a child exits. Requires us to actually track processes (the current `sys_getpid` returning a hardcoded 1 becomes meaningful here).
 
 ### 2026-06-22 (slice 7) — Syscall mechanism via syscall/sysret (3.6.c done, M3 reached)
 - **Done:** Implemented the fast-path user → kernel transition. The user program can now make a real syscall (SYS_WRITE) instead of doing direct memory writes that page-fault. End-to-end: user calls `syscall`, kernel catches it, writes "hello\n" to serial, returns via `sysretq`, user continues looping. Built `src/syscall.rs` (~190 lines):

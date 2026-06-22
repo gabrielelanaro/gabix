@@ -35,18 +35,24 @@ const USER_RFLAGS: u64 = 0x202;
 
 /// The user program in raw x86-64 machine code (70 bytes total).
 ///
-/// Disassembly:
-///   mov rax, 1                   ; syscall number = SYS_WRITE
-///   mov rdi, 0x40000040          ; buffer address (where "hello\n" lives)
-///   mov rsi, 6                   ; length
-///   syscall                      ; → kernel writes 6 bytes to serial
-///   jmp -2                       ; loop forever (eb fe)
-///   ...padding to offset 0x40...
-///   db "hello\n"                 ; the message
+/// Makes 3 syscalls to demonstrate the dispatch table:
+///   1. write(0x40000040, 6)      → kernel writes "hello\n" to serial
+///   2. getpid()                  → kernel returns 1 (we have 1 process)
+///   3. exit(0)                   → kernel halts (single-process for now)
 ///
-/// The buffer address 0x40000040 = USER_CODE_ADDR + 0x40 — that's where
-/// the "hello\n" string lives within the user code page. We pass this
-/// address to the kernel via RDI; the kernel reads from it.
+/// Disassembly (offsets are from start of user code at 0x4000_0000):
+///   0x00: mov rax, 1             ; SYS_WRITE
+///   0x0A: mov rdi, 0x40000040    ; buffer address
+///   0x14: mov rsi, 6             ; length
+///   0x1E: syscall
+///   0x20: mov rax, 39            ; SYS_GETPID
+///   0x2A: syscall
+///   0x2C: mov rax, 60            ; SYS_EXIT
+///   0x36: xor rdi, rdi           ; exit code = 0
+///   0x39: syscall
+///   0x3B: jmp -2                 ; unreachable if exit works (loop)
+///   0x3D: 3 bytes padding
+///   0x40: "hello\n"              ; the message
 const USER_PROGRAM: [u8; 70] = [
     // mov rax, 1 (SYS_WRITE)
     0x48, 0xB8, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
@@ -56,12 +62,20 @@ const USER_PROGRAM: [u8; 70] = [
     0x48, 0xBE, 0x06, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
     // syscall
     0x0F, 0x05,
-    // jmp -2 (loop forever)
+    // mov rax, 39 (SYS_GETPID)
+    0x48, 0xB8, 0x27, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    // syscall
+    0x0F, 0x05,
+    // mov rax, 60 (SYS_EXIT)
+    0x48, 0xB8, 0x3C, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    // xor rdi, rdi (exit code 0)
+    0x48, 0x31, 0xFF,
+    // syscall
+    0x0F, 0x05,
+    // jmp -2 (unreachable if exit works; safety net)
     0xEB, 0xFE,
-    // 30 bytes of padding to align the message to offset 0x40
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    // 3 bytes padding to align message to offset 0x40
+    0x00, 0x00, 0x00,
     // "hello\n" at offset 0x40
     0x68, 0x65, 0x6C, 0x6C, 0x6F, 0x0A,
 ];

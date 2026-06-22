@@ -33,7 +33,12 @@ const EFER_SCE: u64 = 1;
 const RFLAGS_IF: u64 = 0x200;
 
 /// Syscall numbers. Match what user programs put in RAX.
+/// These follow the Linux x86-64 syscall ABI conventions, so a real
+/// Linux binary's syscall numbers would (theoretically) line up —
+/// modulo not actually having the right kernel-side implementations.
 const SYS_WRITE: u64 = 1;
+const SYS_GETPID: u64 = 39;
+const SYS_EXIT: u64 = 60;
 
 /// Where to save the user RSP while we're in the kernel.
 static USER_RSP_SAVE: AtomicU64 = AtomicU64::new(0);
@@ -206,13 +211,17 @@ unsafe extern "C" fn syscall_entry() {
 }
 
 extern "C" fn syscall_handler(num: u64, arg1: u64, arg2: u64, arg3: u64) -> u64 {
-    println!("[syscall] num={} args=({}, {}, {})", num, arg1, arg2, arg3);
+    // Note: keep prints in here MINIMAL. KERNEL_RSP is set to the
+    // current RSP at init() time, and there isn't much room below it
+    // (we're somewhere mid-stack by the time main calls init). A 4-arg
+    // println! overflowed the stack and triple-faulted. The individual
+    // syscall implementations below print their own messages, which is
+    // enough. (Future fix: allocate a dedicated syscall stack.)
     match num {
         SYS_WRITE => sys_write(arg1, arg2),
-        _ => {
-            println!("[syscall] unknown syscall number {}", num);
-            u64::MAX
-        }
+        SYS_GETPID => sys_getpid(),
+        SYS_EXIT => sys_exit(arg1),
+        _ => u64::MAX,
     }
 }
 
@@ -226,4 +235,33 @@ fn sys_write(buffer_ptr: u64, length: u64) -> u64 {
     }
     println!("[syscall] sys_write wrote {} bytes", length);
     length
+}
+
+/// SYS_GETPID: return the calling process's ID.
+///
+/// For now we hardcode 1 because we have a single user program and no
+/// process tracking. Once `fork`/`exec` (M4 item 4.3) creates real
+/// processes, this returns the actual ID of whichever task made the
+/// syscall.
+fn sys_getpid() -> u64 {
+    let pid = 1;
+    println!("[syscall] sys_getpid -> {}", pid);
+    pid
+}
+
+/// SYS_EXIT: terminate the calling process with the given exit code.
+///
+/// In a real kernel this would: clean up the process's resources,
+/// remove it from the scheduler, wake up any parent waiting on it,
+/// and switch to another task. We don't have any of that yet — we
+/// just halt the kernel. (M4 item 4.3 will add real exit semantics.)
+fn sys_exit(exit_code: u64) -> u64 {
+    println!(
+        "[syscall] sys_exit({}) — halting (single-process kernel for now)",
+        exit_code
+    );
+    x86_64::instructions::interrupts::disable();
+    loop {
+        x86_64::instructions::hlt();
+    }
 }
