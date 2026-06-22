@@ -51,6 +51,22 @@ fn alloc_error(layout: Layout) -> ! {
 /// `BootInfo` struct in `rdi` (first arg per the System V AMD64 ABI).
 #[no_mangle]
 pub extern "C" fn _start(boot_info: &'static BootInfo) -> ! {
+    // Enable SSE support: set CR4.OSFXSR (bit 9) and CR4.OSXMMEXCPT (bit 10).
+    // The bootloader leaves CR4 = 0x20 (only PAE). Without OSFXSR, the
+    // Intel SDM says SSE instructions should #UD — QEMU is lax about this
+    // most of the time but seems to enforce it in syscall entry context.
+    unsafe {
+        core::arch::asm!(
+            "mov rax, cr4",
+            "or rax, 0x600",      // bit 9 (OSFXSR) + bit 10 (OSXMMEXCPT)
+            "mov cr4, rax",
+            out("rax") _,
+            options(nomem, nostack, preserves_flags),
+        );
+    }
+    let cr4: u64;
+    unsafe { core::arch::asm!("mov {}, cr4", out(reg) cr4); }
+    println!("[boot] CR4 after SSE enable = 0x{:x}", cr4);
     println!("[boot] gdt...");
     gdt::init();
     println!("[boot] idt...");

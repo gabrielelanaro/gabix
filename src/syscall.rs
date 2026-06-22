@@ -12,10 +12,14 @@
 //!   rsi = length
 //!   syscall
 
+use crate::frame_allocator;
+use crate::memory;
 use crate::println;
 use crate::serial;
 use core::arch::naked_asm;
 use core::sync::atomic::AtomicU64;
+use x86_64::structures::paging::PageTableFlags;
+use x86_64::{PhysAddr, VirtAddr};
 
 /// MSR (Model-Specific Register) addresses for the syscall configuration.
 /// These are well-known constants documented in the Intel SDM
@@ -40,25 +44,49 @@ const SYS_WRITE: u64 = 1;
 const SYS_GETPID: u64 = 39;
 const SYS_EXIT: u64 = 60;
 
+/// Virtual address where the dedicated syscall stack begins.
+/// Picked to be far from everything else (kernel image, heap, task
+/// stacks, user code/stack).
+const SYSCALL_STACK_BOTTOM: u64 = 0x6000_0000_0000;
+/// 16 KB syscall stack (4 frames) — matches Linux's kernel stack size.
+const SYSCALL_STACK_SIZE: u64 = 16 * 4096;
+const SYSCALL_STACK_TOP: u64 = SYSCALL_STACK_BOTTOM + SYSCALL_STACK_SIZE;
+
 /// Where to save the user RSP while we're in the kernel.
 static USER_RSP_SAVE: AtomicU64 = AtomicU64::new(0);
 
-/// Kernel RSP to switch to on syscall entry. Set once during init to
-/// wherever the kernel happens to be running at that point — by the
-/// time syscall fires, main has jumped to user mode, so this stack is
-/// available for syscall use.
+/// Kernel RSP to switch to on syscall entry. Set during init to the
+/// TOP of a dedicated 16 KB stack region — guaranteed to have plenty
+/// of room below for handler frames.
 static KERNEL_RSP: AtomicU64 = AtomicU64::new(0);
 
-/// Initialize the syscall mechanism: set up the MSRs and save the
-/// kernel stack pointer. Must be called from kernel code, before any
-/// user program runs.
+/// Initialize the syscall mechanism: allocate a dedicated kernel stack,
+/// set up the MSRs, and save the kernel stack pointer. Must be called
+/// from kernel code, before any user program runs.
 pub fn init() {
-    // Save current RSP as the kernel stack for syscall entry.
-    let krsp: u64;
-    unsafe {
-        core::arch::asm!("mov {}, rsp", out(reg) krsp, options(nomem, nostack));
+    // Allocate and map a dedicated 16 KB stack for syscall entry.
+    // Using a fresh stack (instead of the captured mid-stack RSP) means
+    // we always have plenty of room for handler frames.
+    let mut frames_allocated = 0;
+    let mut virt = SYSCALL_STACK_BOTTOM;
+    while virt < SYSCALL_STACK_TOP {
+        let frame = frame_allocator::allocate().expect("out of frames for syscall stack");
+        let phys = PhysAddr::new(frame * 4096);
+        // SAFETY: virtual range is fresh (unused), frame is fresh.
+        unsafe {
+            memory::map_to(
+                VirtAddr::new(virt),
+                phys,
+                PageTableFlags::PRESENT | PageTableFlags::WRITABLE,
+            )
+            .expect("map_to failed for syscall stack");
+        }
+        frames_allocated += 1;
+        virt += 4096;
     }
-    KERNEL_RSP.store(krsp, core::sync::atomic::Ordering::SeqCst);
+    // KERNEL_RSP = top of the stack region (stack grows DOWN, so the
+    // top is where we start).
+    KERNEL_RSP.store(SYSCALL_STACK_TOP, core::sync::atomic::Ordering::SeqCst);
 
     unsafe {
         // Enable the SYSCALL instruction (EFER.SCE = 1).
@@ -83,8 +111,10 @@ pub fn init() {
     }
 
     println!(
-        "[syscall] initialized: KERNEL_RSP=0x{:x}, entry=0x{:x}",
-        krsp,
+        "[syscall] initialized: dedicated stack 0x{:x}-0x{:x} ({} frames), entry=0x{:x}",
+        SYSCALL_STACK_BOTTOM,
+        SYSCALL_STACK_TOP,
+        frames_allocated,
         syscall_entry as *const () as u64
     );
 }
@@ -211,12 +241,7 @@ unsafe extern "C" fn syscall_entry() {
 }
 
 extern "C" fn syscall_handler(num: u64, arg1: u64, arg2: u64, arg3: u64) -> u64 {
-    // Note: keep prints in here MINIMAL. KERNEL_RSP is set to the
-    // current RSP at init() time, and there isn't much room below it
-    // (we're somewhere mid-stack by the time main calls init). A 4-arg
-    // println! overflowed the stack and triple-faulted. The individual
-    // syscall implementations below print their own messages, which is
-    // enough. (Future fix: allocate a dedicated syscall stack.)
+    println!("[syscall] num={} args=({}, {}, {})", num, arg1, arg2, arg3);
     match num {
         SYS_WRITE => sys_write(arg1, arg2),
         SYS_GETPID => sys_getpid(),
