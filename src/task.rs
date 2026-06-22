@@ -34,9 +34,13 @@ pub enum TaskState {
     Ready,
     /// Currently executing on the CPU.
     Running,
-    /// Waiting for something (sleep, I/O) — not yet used.
+    /// Waiting for something (sleep, I/O). Not yet used.
     Blocked,
-    /// Finished, can be cleaned up.
+    /// Exited but not yet reaped by a parent via `wait`. The task struct
+    /// stays around so the parent can read its exit status. Reaped by
+    /// `wait` -> Dead.
+    Zombie,
+    /// Fully done — can be cleaned up.
     Dead,
 }
 
@@ -52,7 +56,9 @@ pub struct TaskContext {
     pub rsp: u64,
 }
 
-/// A schedulable task.
+/// A schedulable task. Started small in slice 3.1; extended in 4.3.a
+/// with process-tree fields (parent, children, exit_status) in
+/// preparation for `fork`/`wait` semantics.
 pub struct Task {
     pub id: u64,
     pub name: &'static str,
@@ -65,6 +71,16 @@ pub struct Task {
     /// jumps into `trampoline`, which looks this up and calls it after
     /// enabling interrupts. See `trampoline` for why.
     pub entry_fn: unsafe extern "C" fn(),
+    /// Parent task ID, if any. `None` for the initial main task. Set by
+    /// `fork` (when implemented). Used by `wait` and for orphan
+    /// reparenting on parent exit.
+    pub parent: Option<u64>,
+    /// Child task IDs. Empty until `fork` creates children. Used by
+    /// `wait(-1)` (wait for any child) and for reparenting on exit.
+    pub children: Vec<u64>,
+    /// Exit code set by `sys_exit`. `None` while the task is still
+    /// running. Read by the parent's `wait` call.
+    pub exit_status: Option<i64>,
 }
 
 impl Task {
@@ -150,6 +166,9 @@ impl Task {
             context: TaskContext { rsp: init_rsp },
             stack_top,
             entry_fn,
+            parent: None,
+            children: Vec::new(),
+            exit_status: None,
         }
     }
 }
@@ -314,6 +333,9 @@ pub fn init_main() {
         context: TaskContext { rsp: 0 },
         stack_top: 0,
         entry_fn: main_never_called,
+        parent: None,
+        children: Vec::new(),
+        exit_status: None,
     }));
     sched.current = 0;
     println!("[sched] main task registered (id=0)");
@@ -334,6 +356,16 @@ pub fn spawn(name: &'static str, entry_fn: unsafe extern "C" fn()) -> u64 {
     sched.tasks.push(Box::new(Task::new(id, name, entry_fn)));
     println!("[sched] spawned \"{}\" (id={}), {} tasks total", name, id, sched.tasks.len());
     id
+}
+
+/// Return the currently-running task's ID.
+///
+/// Used by syscalls that need to know "who called me?" — `getpid`,
+/// eventually `fork` (to know what to clone), `exit` (to know who to
+/// mark as exited). Locks SCHEDULER briefly, copies the ID out.
+pub fn current_pid() -> u64 {
+    let sched = SCHEDULER.lock();
+    sched.tasks[sched.current].id
 }
 
 /// Yield the CPU to the next task. Round-robin: advances to

@@ -264,12 +264,13 @@ fn sys_write(buffer_ptr: u64, length: u64) -> u64 {
 
 /// SYS_GETPID: return the calling process's ID.
 ///
-/// For now we hardcode 1 because we have a single user program and no
-/// process tracking. Once `fork`/`exec` (M4 item 4.3) creates real
-/// processes, this returns the actual ID of whichever task made the
-/// syscall.
+/// Returns the ID of the currently-running task. For our single-process
+/// system, that's `main` (id=0) — the user program runs in main's
+/// task context (main jumped to user mode via `enter_user_mode`). Once
+/// `fork` (4.3.b) creates real separate tasks, this returns meaningful
+/// per-process IDs.
 fn sys_getpid() -> u64 {
-    let pid = 1;
+    let pid = crate::task::current_pid();
     println!("[syscall] sys_getpid -> {}", pid);
     pid
 }

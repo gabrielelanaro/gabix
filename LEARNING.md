@@ -526,6 +526,16 @@ Most recent entries at the top. One entry per work session.
 - **Notes / blockers / surprises:** (anything useful for future-you)
 - **Next:** (where to pick up next time)
 
+### 2026-06-22 (slice 10) — Process-tree fields + meaningful getpid (4.3.a done)
+- **Done:** Foundation for `fork`/`wait`. Extended the `Task` struct with three fields that real kernels (Linux's `task_struct`) have but ours didn't: `parent: Option<u64>`, `children: Vec<u64>`, `exit_status: Option<i64>`. Added `TaskState::Zombie` (the "exited but not yet reaped" state — between Running and Dead). Added a `current_pid()` helper that returns the running task's ID. Updated `sys_getpid` to use it instead of the hardcoded `1` it was returning.
+    - Asked-and-answered along the way: **why store both parent and children?** Two different access patterns. Parent pointer answers "who is my parent?" (used for child-exit notification, orphan reparenting). Children list answers "give me all my children" (used for `wait(-1)`, child validation in `wait(pid)`, reparenting). Storing both keeps both directions O(1) instead of O(N). Linux uses intrusive linked lists (`struct list_head`) for memory efficiency; we use a simple `Vec<u64>` since we don't care about scale yet.
+- **Status:** Sub-slice 4.3.a done. 4.3 still in progress (need fork, wait, exec).
+- **Notes / blockers / surprises:**
+    - `sys_getpid` now returns 0 (was 1). Why 0? Because the user program runs in `main`'s task context — `main` called `enter_user_mode` which did `iretq` to user mode, but the task the CPU was running is still `main` (id=0). When we eventually spawn the user program as its own task (probably in 4.3.b or 4.3.c), `getpid` will return that task's actual ID.
+    - All three fields are in place but currently unused — `fork` (next slice) will set `parent`/`children`, `exit` will set `exit_status` and `Zombie` state, `wait` will consume them. The struct is just ready for them.
+    - No actual process behavior changed — the 3-syscall test (write/getpid/exit) still works exactly as before. This slice is purely setup.
+- **Next:** 4.3.b — `fork`. Clones the current task to create a child: allocates a new kernel stack, copies (or shares) the address space, sets parent/children pointers, schedules the child. Return value: child PID to parent, 0 to child (the API that lets the same code work for both after the call). Likely the hardest single slice so far.
+
 ### 2026-06-22 (slice 9) — Fixed SSE bug, dedicated syscall stack (real root cause)
 - **Done:** Found the real root cause of the previous slice's "triple fault when handler uses 4-arg println". The previous log entry blamed "kernel stack overflow" — that was wrong. Actual cause: **SSE wasn't enabled**. The bootloader left `CR4.OSFXSR` (bit 9) clear. Per the Intel SDM, executing SSE instructions (movups/movaps) with OSFXSR=0 should generate #UD. QEMU's emulation is inconsistent about enforcing this — most kernel contexts let SSE work, but the syscall entry context enforces it strictly. Two fixes shipped together:
     - **The actual fix:** explicitly set `CR4.OSFXSR` and `CR4.OSXMMEXCPT` at the top of `_start`. Two `mov cr4` instructions later, SSE works correctly everywhere. The kernel should have done this from M0 — every real OS does this in early boot.
