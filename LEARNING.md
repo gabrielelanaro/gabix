@@ -34,7 +34,7 @@ Status legend: `[ ]` not started · `[~]` in progress · `[x]` done
 - [x] 3.3 Cooperative scheduler round-robin
 - [x] 3.4 Preemptive scheduling via timer interrupt
 - [x] 3.5 Kernel threads (idle task, demo workers)
-- [ ] 3.6 User/kernel mode ring transition (TSS, `syscall`/`sysret`)
+- [x] 3.6 User/kernel mode ring transition (TSS, `syscall`/`sysret`)
 
 **Linux to read alongside:** `include/linux/sched.h` (`task_struct`), `kernel/sched/fair.c` (CFS), `arch/x86/entry/entry_64.S`
 
@@ -525,6 +525,30 @@ Most recent entries at the top. One entry per work session.
 - **Status:** (which milestones/checkboxes flipped)
 - **Notes / blockers / surprises:** (anything useful for future-you)
 - **Next:** (where to pick up next time)
+
+### 2026-06-22 (slice 7) — Syscall mechanism via syscall/sysret (3.6.c done, M3 reached)
+- **Done:** Implemented the fast-path user → kernel transition. The user program can now make a real syscall (SYS_WRITE) instead of doing direct memory writes that page-fault. End-to-end: user calls `syscall`, kernel catches it, writes "hello\n" to serial, returns via `sysretq`, user continues looping. Built `src/syscall.rs` (~190 lines):
+    - **MSR (Model-Specific Register) setup.** Wrote helpers `rdmsr`/`wrmsr` (raw inline asm) and configured four MSRs in `init()`:
+        - EFER (0xC0000080): set bit 0 (SCE — System Call Extensions) to enable the `syscall` instruction
+        - STAR (0xC0000081): set bits 32-47 = 0x08 (kernel CS base) and bits 48-63 = 0x08 (user CS base, CPU adds 16 for user CS). For our GDT layout this gives kernel CS=0x08 / SS=0x10 on syscall entry, and CS=0x1B / SS=0x23 on sysret return.
+        - LSTAR (0xC0000082): set to address of `syscall_entry` naked function
+        - FMASK (0xC0000084): set to 0x200 (IF bit) so the CPU clears the interrupt flag on syscall entry
+    - **KERNEL_RSP global.** Set in `init()` to the current kernel RSP at boot. By the time syscall fires, main has gone to user mode via `enter_user_mode`, so this kernel stack is available for syscall use.
+    - **`syscall_entry` naked asm** (~60 lines). The 15-step sequence: switch from user RSP to kernel RSP (using r10 as scratch); push user RSP + 6 callee-saved registers + user RCX (RIP) and R11 (RFLAGS); rearrange args from syscall convention (rdi/rsi/rdx/r10/r8/r9) to System V (rdi/rsi/rdx/rcx/r8/r9); realign stack to 16 bytes; enable interrupts; call the Rust handler; disable interrupts; undo padding; save return value in r10; pop user state; pop callee-saved; restore user RSP; restore return value to rax; `sysretq`.
+    - **`syscall_handler` dispatch.** Matches on the syscall number in rax. Currently just SYS_WRITE (num=1); unknown syscalls return -1 (u64::MAX).
+    - **`sys_write`.** Reads N bytes from a user-supplied pointer and writes them to the serial port via `serial::SERIAL1.lock().write_byte()`. Returns the byte count.
+- **Status:** Checkbox 3.6 flipped to `[x]`. **M3 milestone reached** (full multitasking: tasks, context switch, cooperative + preemptive scheduling, kernel threads, idle task, ring transition both ways).
+- **Notes / blockers / surprises:**
+    - First draft of the asm had a subtle register-save bug: I tried to save the handler's return value (rax) in rbx after the call, but rbx gets restored by the subsequent `pop rbx`. Fix: save return value in r10 (caller-saved, never pushed/popped in our sequence) and restore it as the very last step before `sysretq`.
+    - Stack alignment for the System V ABI: we push 9 values (72 bytes) before calling the Rust handler. 72 mod 16 = 8, so RSP is misaligned for the call. Added `sub rsp, 8` before `sti`/`call` and `add rsp, 8` after to realign. Without this, any `movaps` instruction in the handler would fault.
+    - Calling convention mismatch: Linux syscall ABI passes args in rdi/rsi/rdx/r10/r8/r9 (note r10 instead of rcx — syscall clobbers rcx by saving user RIP into it). System V function ABI uses rdi/rsi/rdx/rcx/r8/r9. The asm has to shuffle: `mov rcx, rdx; mov rdx, rsi; mov rsi, rdi; mov rdi, rax` (rax has syscall number, becomes first System V arg).
+    - **First test passed cleanly**, no debugging detour this time. The visible proof in the QEMU output: `[syscall] num=1 args=(1073741888, 6, 1)` (args decoded: buffer_addr=0x40000040, length=6, then garbage in rdx we didn't set) → `hello` (the kernel wrote it to serial) → `[syscall] sys_write wrote 6 bytes` → user resumes, no further output (loops forever).
+    - User program grew from 40 bytes (3.6.b) to 70 bytes (3.6.c). New layout: mov rax,1 / mov rdi,buffer_addr / mov rsi,6 / syscall / jmp -2 / 30 bytes padding / "hello\n". The padding is so the message lands at a known offset (0x40) within the user code page — easier to encode the address as an immediate.
+    - **What's NOT in 3.6.c (future work):**
+        - No `swapgs` — we use a global static for KERNEL_RSP instead. Real kernels store the kernel RSP in GS-base-relative memory; swapgs swaps the GS base on entry/exit for per-CPU data access. For single-CPU our global approach works.
+        - No `copy_from_user` / `copy_to_user` validation. `sys_write` blindly trusts the user-supplied pointer. A malicious user could pass a kernel pointer and read kernel memory. Real kernels validate that pointers are within the user's address space (we'll add this when we get per-process address spaces in M4).
+        - Syscall dispatch is a single match arm. As we add syscalls (M4), this becomes a dispatch table.
+- **Next:** M3 is fully done — tag it. M4 starts with **4.1 syscall dispatch table**: a more structured way to register syscalls. Then 4.2 core syscalls (write, exit, getpid), 4.3 fork/exec/wait, 4.4 VFS layer, 4.5 RamFS, 4.6 pipes, 4.7 optional ext2.
 
 ### 2026-06-21 (slices 5 + 6) — Ring transition: GDT upgrade + first user-mode entry (3.6.a / 3.6.b done)
 - **Done:** Got our first user-mode program running at ring 3 and proved the CPU's permission enforcement works end-to-end. Two sub-slices:

@@ -17,6 +17,7 @@ mod memory;
 mod allocator;
 mod task;
 mod user;
+mod syscall;
 
 use bootloader::BootInfo;
 use core::alloc::Layout;
@@ -143,9 +144,14 @@ pub extern "C" fn _start(boot_info: &'static BootInfo) -> ! {
     println!("[boot] enabling interrupts");
     x86_64::instructions::interrupts::enable();
 
-    // M3 slice 3.6.b: jump to user mode. main does NOT return from this
+    // M3 slice 3.6.c: set up the syscall mechanism (MSRs + entry point).
+    // After this, user code can execute the `syscall` instruction to
+    // request kernel services.
+    syscall::init();
+
+    // M3 slice 3.6.b/c: jump to user mode. main does NOT return from this
     // call — enter_user_mode is `-> !` because iretq transfers control
-    // to user code, which runs until it page-faults.
+    // to user code, which runs until it loops forever or page-faults.
     user::enter_user_mode();
 }
 

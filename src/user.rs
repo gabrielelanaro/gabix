@@ -4,13 +4,10 @@
 //! hand-written machine code program into the code page, then builds
 //! the iret frame and jumps to user mode.
 //!
-//! The user program:
-//!   1. Writes a magic value (0xDEADBEEF) to its own writable memory
-//!      at 0x7000_0000 (Option A — proves user code runs and can write
-//!      to its own memory).
-//!   2. Tries to write to a kernel address (0x200000) → page fault
-//!      because the kernel page is supervisor-only (Option B — proves
-//!      the CPU correctly blocks user accesses to kernel memory).
+//! Slice 3.6.c update: the user program now makes a syscall (SYS_WRITE)
+//! instead of doing direct memory writes. The syscall entry (src/syscall.rs)
+//! catches it, calls the Rust handler, and writes "hello\n" to the serial
+//! port on the kernel's behalf.
 
 use crate::frame_allocator;
 use crate::memory;
@@ -36,25 +33,37 @@ const USER_DATA_SELECTOR: u16 = 0x23;
 /// (IF, interrupt enable). So 0b0010_0000_0010 = 0x202.
 const USER_RFLAGS: u64 = 0x202;
 
-/// The user program in raw x86-64 machine code (40 bytes total).
+/// The user program in raw x86-64 machine code (70 bytes total).
 ///
 /// Disassembly:
-///   mov rax, 0x70000000          ; user-writable address
-///   mov rcx, 0xDEADBEEF          ; magic value
-///   mov [rax], rcx               ; write magic to user memory (Option A)
-///   mov rax, 0x200000            ; kernel address (supervisor-only)
-///   mov qword [rax], 0           ; illegal write → page fault (Option B)
-const USER_PROGRAM: [u8; 40] = [
-    // mov rax, 0x0000_0000_7000_0000
-    0x48, 0xB8, 0x00, 0x00, 0x00, 0x70, 0x00, 0x00, 0x00, 0x00,
-    // mov rcx, 0x0000_0000_DEAD_BEEF
-    0x48, 0xB9, 0xEF, 0xBE, 0xAD, 0xDE, 0x00, 0x00, 0x00, 0x00,
-    // mov [rax], rcx
-    0x48, 0x89, 0x08,
-    // mov rax, 0x0000_0000_0020_0000
-    0x48, 0xB8, 0x00, 0x00, 0x20, 0x00, 0x00, 0x00, 0x00, 0x00,
-    // mov qword [rax], 0  (sign-extended imm32)
-    0x48, 0xC7, 0x00, 0x00, 0x00, 0x00, 0x00,
+///   mov rax, 1                   ; syscall number = SYS_WRITE
+///   mov rdi, 0x40000040          ; buffer address (where "hello\n" lives)
+///   mov rsi, 6                   ; length
+///   syscall                      ; → kernel writes 6 bytes to serial
+///   jmp -2                       ; loop forever (eb fe)
+///   ...padding to offset 0x40...
+///   db "hello\n"                 ; the message
+///
+/// The buffer address 0x40000040 = USER_CODE_ADDR + 0x40 — that's where
+/// the "hello\n" string lives within the user code page. We pass this
+/// address to the kernel via RDI; the kernel reads from it.
+const USER_PROGRAM: [u8; 70] = [
+    // mov rax, 1 (SYS_WRITE)
+    0x48, 0xB8, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    // mov rdi, 0x40000040 (buffer address)
+    0x48, 0xBF, 0x40, 0x00, 0x00, 0x40, 0x00, 0x00, 0x00, 0x00,
+    // mov rsi, 6 (length)
+    0x48, 0xBE, 0x06, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    // syscall
+    0x0F, 0x05,
+    // jmp -2 (loop forever)
+    0xEB, 0xFE,
+    // 30 bytes of padding to align the message to offset 0x40
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    // "hello\n" at offset 0x40
+    0x68, 0x65, 0x6C, 0x6C, 0x6F, 0x0A,
 ];
 
 /// Transition from kernel (ring 0) to user (ring 3) and start running
