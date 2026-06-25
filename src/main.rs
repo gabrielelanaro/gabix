@@ -98,6 +98,30 @@ pub extern "C" fn _start(boot_info: &'static BootInfo) -> ! {
     println!("[boot] memory mapper...");
     memory::init(boot_info);
 
+    // Slice 4.4.a test: create a fresh AddressSpace, switch to it, print
+    // something, switch back. If kernel mappings weren't correctly copied
+    // (entries 256-511 from current CR3), the println would page-fault
+    // because VGA/serial/kernel-code addresses wouldn't translate.
+    println!("[test] AddressSpace create + switch");
+    {
+        let original_cr3 = x86_64::registers::control::Cr3::read();
+        let new_as = memory::AddressSpace::new();
+        new_as.switch_to();
+        println!(
+            "[test]   hello from new AS! (CR3 was 0x{:x}, now 0x{:x})",
+            original_cr3.0.start_address().as_u64(),
+            x86_64::registers::control::Cr3::read().0.start_address().as_u64(),
+        );
+        // Switch back to the original so the rest of boot uses the kernel AS.
+        unsafe {
+            x86_64::registers::control::Cr3::write(
+                original_cr3.0,
+                original_cr3.1,
+            );
+        }
+        println!("[test]   switched back to original CR3");
+    }
+
     // M3 slice 3.4 + 3.5: preemptive scheduling with an idle task.
     // For slice 3.6.b (ring transition test) we don't spawn workers —
     // we want a clean isolation of the user-mode test. main will call

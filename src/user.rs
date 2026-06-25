@@ -16,12 +16,12 @@ use x86_64::structures::paging::PageTableFlags;
 use x86_64::{PhysAddr, VirtAddr};
 
 /// Virtual address where the user program's code is loaded.
-const USER_CODE_ADDR: u64 = 0x4000_0000;
+pub(crate) const USER_CODE_ADDR: u64 = 0x4000_0000;
 
 /// Virtual address range for the user stack: [USER_STACK_BOTTOM, USER_STACK_TOP).
 /// 64 KB total (16 pages), plenty for a tiny program.
-const USER_STACK_BOTTOM: u64 = 0x7000_0000;
-const USER_STACK_TOP: u64 = USER_STACK_BOTTOM + 0x1_0000;
+pub(crate) const USER_STACK_BOTTOM: u64 = 0x7000_0000;
+pub(crate) const USER_STACK_TOP: u64 = USER_STACK_BOTTOM + 0x1_0000;
 
 /// User code segment selector with RPL=3: GDT index 3, ring 3 = 0x18 | 3 = 0x1B
 const USER_CODE_SELECTOR: u16 = 0x1B;
@@ -33,51 +33,93 @@ const USER_DATA_SELECTOR: u16 = 0x23;
 /// (IF, interrupt enable). So 0b0010_0000_0010 = 0x202.
 const USER_RFLAGS: u64 = 0x202;
 
-/// The user program in raw x86-64 machine code (70 bytes total).
+/// The user program in raw x86-64 machine code (128 bytes total).
 ///
-/// Makes 3 syscalls to demonstrate the dispatch table:
-///   1. write(0x40000040, 6)      → kernel writes "hello\n" to serial
-///   2. getpid()                  → kernel returns 1 (we have 1 process)
-///   3. exit(0)                   → kernel halts (single-process for now)
+/// Tests fork: parent and child run the same code but print different
+/// messages based on fork's return value (non-zero = parent PID, 0 = child).
 ///
-/// Disassembly (offsets are from start of user code at 0x4000_0000):
-///   0x00: mov rax, 1             ; SYS_WRITE
-///   0x0A: mov rdi, 0x40000040    ; buffer address
-///   0x14: mov rsi, 6             ; length
-///   0x1E: syscall
-///   0x20: mov rax, 39            ; SYS_GETPID
-///   0x2A: syscall
-///   0x2C: mov rax, 60            ; SYS_EXIT
-///   0x36: xor rdi, rdi           ; exit code = 0
-///   0x39: syscall
-///   0x3B: jmp -2                 ; unreachable if exit works (loop)
-///   0x3D: 3 bytes padding
-///   0x40: "hello\n"              ; the message
-const USER_PROGRAM: [u8; 70] = [
-    // mov rax, 1 (SYS_WRITE)
+/// Pseudocode:
+///   pid = fork()              ; syscall 57
+///   if (pid == 0) {
+///     write("child\n")        ; syscall 1
+///     exit(0)                 ; syscall 60
+///   } else {
+///     write("parent\n")       ; syscall 1
+///     exit(0)                 ; syscall 60
+///   }
+///
+/// Disassembly (offsets from start of user code at 0x4000_0000):
+///   0x00: mov rax, 57         ; SYS_FORK
+///   0x0A: syscall
+///   0x0C: test rax, rax       ; is rax == 0? (set ZF)
+///   0x0F: jz +0x2F            ; if zero (child), jump to child path at 0x40
+///   --- parent path ---
+///   0x11: mov rax, 1          ; SYS_WRITE
+///   0x1B: mov rdi, 0x40000071 ; "parent\n"
+///   0x25: mov rsi, 7          ; length
+///   0x2F: syscall
+///   0x31: mov rax, 60         ; SYS_EXIT
+///   0x3B: xor rdi, rdi
+///   0x3E: syscall
+///   --- child path ---
+///   0x40: mov rax, 1          ; SYS_WRITE
+///   0x4A: mov rdi, 0x40000078 ; "child\n"
+///   0x54: mov rsi, 6          ; length
+///   0x5E: syscall
+///   0x60: mov rax, 60         ; SYS_EXIT
+///   0x6A: xor rdi, rdi
+///   0x6D: syscall
+///   0x6F: jmp -2              ; safety net (loop forever)
+///   0x71: "parent\n"
+///   0x78: "child\n"
+///   0x7E-0x7F: padding
+const USER_PROGRAM: [u8; 128] = [
+    // 0x00: mov rax, 57 (SYS_FORK)
+    0x48, 0xB8, 0x39, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    // 0x0A: syscall
+    0x0F, 0x05,
+    // 0x0C: test rax, rax (sets ZF if rax == 0)
+    0x48, 0x85, 0xC0,
+    // 0x0F: jz +0x2F (jump to child path at 0x40; 0x11 + 0x2F = 0x40)
+    0x74, 0x2F,
+    // === parent path ===
+    // 0x11: mov rax, 1 (SYS_WRITE)
     0x48, 0xB8, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    // mov rdi, 0x40000040 (buffer address)
-    0x48, 0xBF, 0x40, 0x00, 0x00, 0x40, 0x00, 0x00, 0x00, 0x00,
-    // mov rsi, 6 (length)
-    0x48, 0xBE, 0x06, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    // syscall
+    // 0x1B: mov rdi, 0x40000071 (parent message address)
+    0x48, 0xBF, 0x71, 0x00, 0x00, 0x40, 0x00, 0x00, 0x00, 0x00,
+    // 0x25: mov rsi, 7 (length of "parent\n")
+    0x48, 0xBE, 0x07, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    // 0x2F: syscall
     0x0F, 0x05,
-    // mov rax, 39 (SYS_GETPID)
-    0x48, 0xB8, 0x27, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    // syscall
-    0x0F, 0x05,
-    // mov rax, 60 (SYS_EXIT)
+    // 0x31: mov rax, 60 (SYS_EXIT)
     0x48, 0xB8, 0x3C, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    // xor rdi, rdi (exit code 0)
+    // 0x3B: xor rdi, rdi (exit code 0)
     0x48, 0x31, 0xFF,
-    // syscall
+    // 0x3E: syscall
     0x0F, 0x05,
-    // jmp -2 (unreachable if exit works; safety net)
+    // === child path ===
+    // 0x40: mov rax, 1 (SYS_WRITE)
+    0x48, 0xB8, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    // 0x4A: mov rdi, 0x40000078 (child message address)
+    0x48, 0xBF, 0x78, 0x00, 0x00, 0x40, 0x00, 0x00, 0x00, 0x00,
+    // 0x54: mov rsi, 6 (length of "child\n")
+    0x48, 0xBE, 0x06, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    // 0x5E: syscall
+    0x0F, 0x05,
+    // 0x60: mov rax, 60 (SYS_EXIT)
+    0x48, 0xB8, 0x3C, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    // 0x6A: xor rdi, rdi (exit code 0)
+    0x48, 0x31, 0xFF,
+    // 0x6D: syscall
+    0x0F, 0x05,
+    // 0x6F: jmp -2 (safety net — should never reach here)
     0xEB, 0xFE,
-    // 3 bytes padding to align message to offset 0x40
-    0x00, 0x00, 0x00,
-    // "hello\n" at offset 0x40
-    0x68, 0x65, 0x6C, 0x6C, 0x6F, 0x0A,
+    // 0x71: "parent\n"
+    0x70, 0x61, 0x72, 0x65, 0x6E, 0x74, 0x0A,
+    // 0x78: "child\n"
+    0x63, 0x68, 0x69, 0x6C, 0x64, 0x0A,
+    // 0x7E-0x7F: padding to 128 bytes
+    0x00, 0x00,
 ];
 
 /// Transition from kernel (ring 0) to user (ring 3) and start running

@@ -42,23 +42,80 @@ const RFLAGS_IF: u64 = 0x200;
 /// modulo not actually having the right kernel-side implementations.
 const SYS_WRITE: u64 = 1;
 const SYS_GETPID: u64 = 39;
+const SYS_FORK: u64 = 57;
 const SYS_EXIT: u64 = 60;
 
 /// Virtual address where the dedicated syscall stack begins.
 /// Picked to be far from everything else (kernel image, heap, task
 /// stacks, user code/stack).
-const SYSCALL_STACK_BOTTOM: u64 = 0x6000_0000_0000;
+pub(crate) const SYSCALL_STACK_BOTTOM: u64 = 0x6000_0000_0000;
 /// 16 KB syscall stack (4 frames) — matches Linux's kernel stack size.
-const SYSCALL_STACK_SIZE: u64 = 16 * 4096;
-const SYSCALL_STACK_TOP: u64 = SYSCALL_STACK_BOTTOM + SYSCALL_STACK_SIZE;
+pub(crate) const SYSCALL_STACK_SIZE: u64 = 16 * 4096;
+pub(crate) const SYSCALL_STACK_TOP: u64 = SYSCALL_STACK_BOTTOM + SYSCALL_STACK_SIZE;
 
-/// Where to save the user RSP while we're in the kernel.
-static USER_RSP_SAVE: AtomicU64 = AtomicU64::new(0);
+/// Saved user state, captured by `syscall_entry` on every syscall.
+///
+/// These are needed by `sys_fork`: it clones the current process by
+/// snapshotting the user-mode register state at the moment the syscall
+/// fired, then constructing a child task whose saved state matches.
+///
+/// The alternative — fishing these values out of the parent's kernel
+/// stack frames from inside `sys_fork` — would require knowing the exact
+/// stack layout at the time `sys_fork` runs, which is fragile. Global
+/// atomics are simpler.
+///
+/// Only the registers `sys_fork` actually needs are saved here:
+///   - user RIP (where to resume in user code — was in RCX)
+///   - user RSP (where the user stack pointer was)
+///   - user RFLAGS (was in R11)
+///   - the 6 callee-saved registers (RBX, RBP, R12-R15) — these MUST be
+///     preserved across the syscall per the System V AMD64 ABI, so the
+///     child needs the parent's values to look like a true copy.
+///
+/// Caller-saved registers (RAX, RCX, RDX, RSI, RDI, R8, R9, R10, R11) are
+/// NOT saved here: the calling convention allows them to be clobbered
+/// across a syscall, so the parent's compiler already treats them as
+/// garbage after the syscall. The child gets the same treatment.
+pub(crate) static USER_RIP_SAVE: AtomicU64 = AtomicU64::new(0);
+pub(crate) static USER_RFLAGS_SAVE: AtomicU64 = AtomicU64::new(0);
+pub(crate) static USER_RSP_SAVE: AtomicU64 = AtomicU64::new(0);
+pub(crate) static USER_RBX_SAVE: AtomicU64 = AtomicU64::new(0);
+pub(crate) static USER_RBP_SAVE: AtomicU64 = AtomicU64::new(0);
+pub(crate) static USER_R12_SAVE: AtomicU64 = AtomicU64::new(0);
+pub(crate) static USER_R13_SAVE: AtomicU64 = AtomicU64::new(0);
+pub(crate) static USER_R14_SAVE: AtomicU64 = AtomicU64::new(0);
+pub(crate) static USER_R15_SAVE: AtomicU64 = AtomicU64::new(0);
+
+/// Public read accessors for the saved user state. Used by `fork_trampoline`
+/// (in task.rs) to load the values into the right registers for `sysretq`.
+// (RIP/RSP/RFLAGS could be pub(crate) too, but keeping them private behind
+// accessors makes the API boundary clearer.)
+pub(crate) fn saved_user_rip() -> u64 {
+    USER_RIP_SAVE.load(core::sync::atomic::Ordering::SeqCst)
+}
+pub(crate) fn saved_user_rsp() -> u64 {
+    USER_RSP_SAVE.load(core::sync::atomic::Ordering::SeqCst)
+}
+pub(crate) fn saved_user_rflags() -> u64 {
+    USER_RFLAGS_SAVE.load(core::sync::atomic::Ordering::SeqCst)
+}
 
 /// Kernel RSP to switch to on syscall entry. Set during init to the
 /// TOP of a dedicated 16 KB stack region — guaranteed to have plenty
 /// of room below for handler frames.
+///
+/// Updated by `task::yield_now` on every context switch to point at the
+/// NEW current task's `syscall_stack_top`. This is what makes per-task
+/// syscall stacks work — syscall_entry always reads this value, and we
+/// keep it current.
 static KERNEL_RSP: AtomicU64 = AtomicU64::new(0);
+
+/// Set the kernel-side RSP that `syscall_entry` switches to. Called by
+/// `task::yield_now` when switching to a new task — the new task's
+/// `syscall_stack_top` becomes the new "current" syscall stack.
+pub(crate) fn set_kernel_rsp(rsp: u64) {
+    KERNEL_RSP.store(rsp, core::sync::atomic::Ordering::SeqCst);
+}
 
 /// Initialize the syscall mechanism: allocate a dedicated kernel stack,
 /// set up the MSRs, and save the kernel stack pointer. Must be called
@@ -186,13 +243,40 @@ unsafe extern "C" fn syscall_entry() {
         "push rcx",                        // user RIP
         "push r11",                        // user RFLAGS
 
+        // Step 3.5: Snapshot user state to globals so sys_fork can read it.
+        // All the values we need are still in their original registers
+        // (we just pushed copies above). We use R8 as scratch — it's
+        // caller-saved, not used for syscall args 1-4, and we don't use
+        // args 5-6 in our kernel. Doing this BEFORE step 4 is important:
+        // step 4 clobbers RCX (writes the user's arg3 there), so we have
+        // to grab user RIP from RCX first.
+        "mov r8, r10",
+        "mov [{user_rsp_save}], r8",
+        "mov r8, rcx",
+        "mov [{user_rip_save}], r8",
+        "mov r8, r11",
+        "mov [{user_rflags_save}], r8",
+        "mov r8, rbx",
+        "mov [{user_rbx_save}], r8",
+        "mov r8, rbp",
+        "mov [{user_rbp_save}], r8",
+        "mov r8, r12",
+        "mov [{user_r12_save}], r8",
+        "mov r8, r13",
+        "mov [{user_r13_save}], r8",
+        "mov r8, r14",
+        "mov [{user_r14_save}], r8",
+        "mov r8, r15",
+        "mov [{user_r15_save}], r8",
+
         // Step 4: Set up System V AMD64 calling convention for the Rust
         // handler. Move args from syscall positions to System V positions.
         "mov rcx, rdx",                    // System V arg4 = rdx (was syscall arg3)
         "mov rdx, rsi",                    // System V arg3 = rsi (was syscall arg2)
         "mov rsi, rdi",                    // System V arg2 = rdi (was syscall arg1)
         "mov rdi, rax",                    // System V arg1 = rax (was syscall number)
-        // r8, r9 unchanged (args 5, 6 if we ever need them)
+        // r8, r9 unchanged (args 5, 6 if we ever need them — well, r8 was
+        // scratch above, but we don't use args 5-6 yet so no value lost)
 
         // Step 5: Realign the stack to 16 bytes for the call. We pushed
         // 9 things (1 + 6 + 2) = 72 bytes, which is 8 mod 16. Subtract
@@ -237,6 +321,15 @@ unsafe extern "C" fn syscall_entry() {
 
         kernel_rsp = sym KERNEL_RSP,
         handler = sym syscall_handler,
+        user_rsp_save = sym USER_RSP_SAVE,
+        user_rip_save = sym USER_RIP_SAVE,
+        user_rflags_save = sym USER_RFLAGS_SAVE,
+        user_rbx_save = sym USER_RBX_SAVE,
+        user_rbp_save = sym USER_RBP_SAVE,
+        user_r12_save = sym USER_R12_SAVE,
+        user_r13_save = sym USER_R13_SAVE,
+        user_r14_save = sym USER_R14_SAVE,
+        user_r15_save = sym USER_R15_SAVE,
     );
 }
 
@@ -245,6 +338,7 @@ extern "C" fn syscall_handler(num: u64, arg1: u64, arg2: u64, arg3: u64) -> u64 
     match num {
         SYS_WRITE => sys_write(arg1, arg2),
         SYS_GETPID => sys_getpid(),
+        SYS_FORK => sys_fork(),
         SYS_EXIT => sys_exit(arg1),
         _ => u64::MAX,
     }
@@ -277,17 +371,102 @@ fn sys_getpid() -> u64 {
 
 /// SYS_EXIT: terminate the calling process with the given exit code.
 ///
-/// In a real kernel this would: clean up the process's resources,
-/// remove it from the scheduler, wake up any parent waiting on it,
-/// and switch to another task. We don't have any of that yet — we
-/// just halt the kernel. (M4 item 4.3 will add real exit semantics.)
+/// Marks the current task as Zombie (so it won't be rescheduled), then
+/// yields. yield_now will pick a different task (or halt if none are
+/// runnable). We never come back from yield_now — if we did, it'd be a
+/// bug (a Zombie got scheduled).
+///
+/// Limitations (improved in later slices):
+///   - No resource cleanup (don't free the task's kernel stack, address
+///     space, etc.).
+///   - No parent notification (no `wait` syscall yet to read exit code).
+///   - No reparenting of children to init (we don't have init).
 fn sys_exit(exit_code: u64) -> u64 {
-    println!(
-        "[syscall] sys_exit({}) — halting (single-process kernel for now)",
-        exit_code
-    );
-    x86_64::instructions::interrupts::disable();
-    loop {
-        x86_64::instructions::hlt();
+    println!("[syscall] sys_exit({})", exit_code);
+    crate::task::mark_current_zombie(exit_code as i64);
+    crate::task::yield_now();
+    panic!("sys_exit: zombie task was rescheduled (this should never happen)");
+}
+
+/// SYS_FORK: clone the calling process.
+///
+/// Returns:
+///   - In the parent: the child's PID (a positive integer).
+///   - In the child: 0.
+///
+/// What it does:
+///   1. Create a new AddressSpace for the child (AddressSpace::new()
+///      duplicates the parent's full PML4 — entries point at the same
+///      physical frames as the parent's, for now).
+///   2. For each user page (user code page + 16 user stack pages):
+///      allocate a fresh frame, copy the parent's bytes into it, unmap
+///      the parent's frame from the child's AS, then map the fresh frame
+///      at the same virtual address. Now the child has its own private
+///      copy of every user page.
+///   3. Read the saved user state (RIP/RSP/RFLAGS + 6 callee-saved
+///      registers) from the globals that `syscall_entry` populated.
+///   4. Hand everything to `task::spawn_fork_child`, which:
+///      - allocates a fresh kernel stack for the child
+///      - populates it with the parent's callee-saved values +
+///        fork_trampoline return address
+///      - sets parent/children pointers
+///      - adds the child to the scheduler as Ready
+///   5. Return the child's PID. (The parent gets this value in RAX.
+///      The child, when it eventually runs, will get 0 from
+///      fork_trampoline's `xor rax, rax`.)
+fn sys_fork() -> u64 {
+    use crate::task::{spawn_fork_child, SavedCalleeSaves};
+
+    println!("[syscall] sys_fork — cloning current process");
+
+    // Disable interrupts for the entire fork operation. Fork touches the
+    // SCHEDULER (via current_pid and spawn_fork_child) and walks page
+    // tables; if the timer fired mid-fork, its handler would try to lock
+    // SCHEDULER and could deadlock. Easier to just hold interrupts off
+    // for the few microseconds fork takes.
+    let was_enabled = x86_64::instructions::interrupts::are_enabled();
+    if was_enabled {
+        x86_64::instructions::interrupts::disable();
     }
+
+    // Note: per-page cloning of user pages is no longer done here.
+    // `spawn_fork_child` calls `AddressSpace::deep_clone_from_current()`,
+    // which walks the parent's page-table tree and gives the child its
+    // own fresh PDPT/PD/PT frames AND its own private copies of every
+    // user page (allocate fresh frame + memcpy 4 KB). Kernel pages are
+    // shared (their PT entries are copied as-is).
+
+    // Step 3: Snapshot the saved user state from the globals populated by
+    // syscall_entry. This is a SNAPSHOT — we read once and pass to
+    // spawn_fork_child, which stores the values on the child's kernel
+    // stack. After this point, the globals can be overwritten by future
+    // syscalls without affecting the child.
+    let saved_callee_saves = SavedCalleeSaves {
+        rbx: USER_RBX_SAVE.load(core::sync::atomic::Ordering::SeqCst),
+        rbp: USER_RBP_SAVE.load(core::sync::atomic::Ordering::SeqCst),
+        r12: USER_R12_SAVE.load(core::sync::atomic::Ordering::SeqCst),
+        r13: USER_R13_SAVE.load(core::sync::atomic::Ordering::SeqCst),
+        r14: USER_R14_SAVE.load(core::sync::atomic::Ordering::SeqCst),
+        r15: USER_R15_SAVE.load(core::sync::atomic::Ordering::SeqCst),
+        user_rip: USER_RIP_SAVE.load(core::sync::atomic::Ordering::SeqCst),
+        user_rsp: USER_RSP_SAVE.load(core::sync::atomic::Ordering::SeqCst),
+        user_rflags: USER_RFLAGS_SAVE.load(core::sync::atomic::Ordering::SeqCst),
+    };
+
+    // Step 4: Get parent PID, then spawn the child task.
+    let parent_pid = crate::task::current_pid();
+    let child_pid = spawn_fork_child(parent_pid, saved_callee_saves);
+
+    println!(
+        "[syscall] sys_fork -> child pid={} (parent pid={})",
+        child_pid, parent_pid
+    );
+
+    // Re-enable interrupts if they were on when we entered.
+    if was_enabled {
+        x86_64::instructions::interrupts::enable();
+    }
+
+    // Step 5: Return child PID. Parent gets this in RAX.
+    child_pid
 }

@@ -59,6 +59,11 @@ pub struct TaskContext {
 /// A schedulable task. Started small in slice 3.1; extended in 4.3.a
 /// with process-tree fields (parent, children, exit_status) in
 /// preparation for `fork`/`wait` semantics.
+///
+/// Slice 4.4.b added `address_space`: every task holds one. Kernel
+/// threads (main, idle, workers) all share the kernel bootstrap AS via
+/// `AddressSpace::from_current()`. User processes (eventually created by
+/// `fork`) get their own via `AddressSpace::new()`.
 pub struct Task {
     pub id: u64,
     pub name: &'static str,
@@ -81,6 +86,16 @@ pub struct Task {
     /// Exit code set by `sys_exit`. `None` while the task is still
     /// running. Read by the parent's `wait` call.
     pub exit_status: Option<i64>,
+    /// This task's address space — the PML4 the CPU should use when
+    /// running this task. Switched via CR3 on context switch.
+    pub address_space: crate::memory::AddressSpace,
+    /// Top of this task's dedicated syscall stack. When this task is
+    /// running and user code executes `syscall`, `syscall_entry` switches
+    /// to this stack. Per-task because a shared syscall stack gets
+    /// overwritten when one task's syscall context is paused (via timer
+    /// preemption) and another task's syscall runs on top of it.
+    /// Updated into `KERNEL_RSP` by `yield_now` on every context switch.
+    pub syscall_stack_top: u64,
 }
 
 impl Task {
@@ -169,6 +184,11 @@ impl Task {
             parent: None,
             children: Vec::new(),
             exit_status: None,
+            address_space: crate::memory::AddressSpace::from_current(),
+            // Kernel threads don't make syscalls (no user mode), so they
+            // can share the dedicated syscall stack. Set to 0; yield_now
+            // will leave KERNEL_RSP alone if it sees 0.
+            syscall_stack_top: 0,
         }
     }
 }
@@ -211,6 +231,59 @@ unsafe extern "C" fn trampoline() {
     // If it returned, the task is done. For now, panic. Later we'll
     // mark the task Dead and exit cleanly.
     panic!("task entry_fn returned");
+}
+
+// ============================================================
+// fork_trampoline (slice 4.4.c.2)
+// ============================================================
+
+/// Entry point for a forked child task's first run.
+///
+/// When `sys_fork` creates a child, it populates the child's kernel stack
+/// so that the first `switch()` into the child pops 6 callee-saved
+/// registers and then `ret`s into this function. (Contrast with `trampoline`
+/// above, which is the entry point for fresh tasks created via `Task::new`.)
+///
+/// What it does:
+///   1. Disable interrupts (defensive — they should already be off since
+///      `yield_now` disables them around the switch).
+///   2. Set RAX = 0. This is the child's distinguishing value — the
+///      "return value" the child sees from the `syscall` instruction that
+///      the parent executed. The parent gets the child's PID; the child
+///      gets 0.
+///   3. Load RCX with the saved user RIP (where to resume in user code).
+///   4. Load R11 with the saved user RFLAGS (CPU state flags, including
+///      the interrupt-enable bit — sysretq will restore them).
+///   5. Load RSP with the saved user RSP (switches to the user stack,
+///      which exists at the same virtual address in the child's address
+///      space, but is backed by the child's own physical frames).
+///   6. `sysretq` — transfers control to user mode at the saved RIP.
+///
+/// After sysretq, the child is running in user mode at the instruction
+/// immediately after the parent's `syscall` instruction, with RAX = 0.
+/// To user code, it looks like the syscall just returned 0.
+/// Naked version of fork_trampoline. Reads the saved user state from
+/// fixed offsets on the kernel stack (NOT from globals — see the spawn
+/// _fork_child comment for why), loads them into the right registers,
+/// and sysretq's.
+///
+/// At entry, RSP = stack_top (we just got ret'd into by switch(), which
+/// popped the callee-saved area + the ret address). The saved user state
+/// lives just below where switch()'s pops reached:
+///   [rsp - 64] = saved user RIP
+///   [rsp - 72] = saved user RFLAGS
+///   [rsp - 80] = saved user RSP
+#[unsafe(naked)]
+unsafe extern "C" fn fork_trampoline() {
+    naked_asm!(
+        "mov rcx, [rsp - 64]",          // user RIP for sysretq
+        "mov r11, [rsp - 72]",          // user RFLAGS for sysretq
+        "mov rax, [rsp - 80]",          // user RSP (use rax as scratch)
+        "mov rsp, rax",                 // switch to user stack
+        "xor rax, rax",                 // RAX = 0 (child's distinguishing fork return)
+        "cli",                          // (defensive) ensure IF=0 for sysretq
+        "sysretq",
+    );
 }
 
 // ============================================================
@@ -336,6 +409,9 @@ pub fn init_main() {
         parent: None,
         children: Vec::new(),
         exit_status: None,
+        address_space: crate::memory::AddressSpace::from_current(),
+        // Main uses the dedicated syscall stack allocated by `syscall::init`.
+        syscall_stack_top: crate::syscall::SYSCALL_STACK_TOP,
     }));
     sched.current = 0;
     println!("[sched] main task registered (id=0)");
@@ -356,6 +432,232 @@ pub fn spawn(name: &'static str, entry_fn: unsafe extern "C" fn()) -> u64 {
     sched.tasks.push(Box::new(Task::new(id, name, entry_fn)));
     println!("[sched] spawned \"{}\" (id={}), {} tasks total", name, id, sched.tasks.len());
     id
+}
+
+/// Spawn a fork-child task. Like `spawn`, but the new task:
+///   - Has its own `AddressSpace` (created INSIDE this function — see
+///     the comment below for why the ordering matters).
+///   - Has a kernel stack populated with the parent's saved callee-saved
+///     register values (so the child sees the same values the parent
+///     had at the moment of the `syscall` instruction).
+///   - Has its "return address" slot pointing at `fork_trampoline` instead
+///     of `trampoline` — when the child first runs, it does `sysretq`
+///     back to user mode at the saved RIP with RAX=0.
+///   - Has `parent` set to the parent's PID and is added to the parent's
+///     `children` list.
+///
+/// Returns the child's PID.
+///
+/// **Why AddressSpace is created INSIDE this function** (not passed in):
+/// the child's AS is built by `AddressSpace::new()`, which copies all 512
+/// entries from the currently-active PML4. For the child to be able to
+/// access its own kernel stack (which we allocate here), those mappings
+/// must already exist in the parent's PML4 at the moment we copy. So we
+/// allocate+map the kernel stack FIRST, then create the AS (which inherits
+/// the new mappings via the copy), then build the Task struct using that AS.
+pub fn spawn_fork_child(
+    parent_pid: u64,
+    saved_callee_saves: SavedCalleeSaves,
+) -> u64 {
+    // Disable interrupts for the duration. While we hold SCHEDULER, the
+    // timer must not fire — its handler would try to lock SCHEDULER and
+    // deadlock. (Caller is sys_fork, which runs with interrupts on because
+    // syscall_entry does `sti` before calling the handler.)
+    let was_enabled = x86_64::instructions::interrupts::are_enabled();
+    if was_enabled {
+        x86_64::instructions::interrupts::disable();
+    }
+
+    let mut sched = SCHEDULER.lock();
+    let id = sched.tasks.len() as u64;
+
+    // Compute stack region (same layout as Task::new).
+    let stack_top = TASK_STACK_BASE + (id + 1) * STACK_SIZE;
+    let stack_bottom = stack_top - STACK_SIZE;
+
+    // Allocate 16 frames and map them into the virtual range, in the
+    // CURRENT (parent's) address space.
+    let mut frames_allocated = 0;
+    let mut virt = stack_bottom;
+    while virt < stack_top {
+        let frame_number = frame_allocator::allocate()
+            .expect("out of frames while allocating fork-child stack");
+        let phys = PhysAddr::new(frame_number * 4096);
+        // SAFETY: virtual range is freshly picked, frame is fresh.
+        unsafe {
+            memory::map_to(
+                VirtAddr::new(virt),
+                phys,
+                PageTableFlags::PRESENT | PageTableFlags::WRITABLE,
+            )
+            .expect("map_to failed while allocating fork-child stack");
+        }
+        frames_allocated += 1;
+        virt += 4096;
+    }
+
+    // Allocate a dedicated syscall stack for the child. Without this,
+    // the child shares the parent's syscall stack and the two collide:
+    // when the parent is preempted mid-syscall and the child then makes
+    // its own syscalls, the child overwrites the parent's paused state
+    // on the shared stack. Per-task stacks fix this.
+    //
+    // Stack placement: SYSCALL_STACK_BOTTOM + (id+1) * SYSCALL_STACK_SIZE.
+    // Task 0 (main) uses slot 0 (the dedicated stack allocated by
+    // syscall::init). Each fork child takes the next slot.
+    let child_syscall_stack_bottom =
+        crate::syscall::SYSCALL_STACK_BOTTOM + (id + 1) * crate::syscall::SYSCALL_STACK_SIZE;
+    let child_syscall_stack_top =
+        child_syscall_stack_bottom + crate::syscall::SYSCALL_STACK_SIZE;
+    {
+        let mut virt = child_syscall_stack_bottom;
+        while virt < child_syscall_stack_top {
+            let frame_number = frame_allocator::allocate()
+                .expect("out of frames while allocating child syscall stack");
+            let phys = PhysAddr::new(frame_number * 4096);
+            // SAFETY: virtual range is freshly picked, frame is fresh.
+            unsafe {
+                memory::map_to(
+                    VirtAddr::new(virt),
+                    phys,
+                    PageTableFlags::PRESENT | PageTableFlags::WRITABLE,
+                )
+                .expect("map_to failed while allocating child syscall stack");
+            }
+            virt += 4096;
+        }
+    }
+
+    // Populate the kernel stack with the parent's callee-saved values + the
+    // fork_trampoline return address + the saved user-mode state. The
+    // layout extends Task::new's layout with three extra slots BELOW
+    // init_rsp for the user RIP/RSP/RFLAGS — these don't get touched by
+    // `switch()` (which only pops the callee-saved area), but they're
+    // readable from `fork_trampoline` via `[rsp - offset]` after the ret.
+    //
+    // Layout (high → low):
+    //   stack_top -  8: fork_trampoline address   ← popped by `ret` into RIP
+    //   stack_top - 16: saved RBX                 ← popped by `pop rbx`
+    //   stack_top - 24: saved RBP
+    //   stack_top - 32: saved R12
+    //   stack_top - 40: saved R13
+    //   stack_top - 48: saved R14
+    //   stack_top - 56: saved R15                 ← init_rsp (RSP starts here)
+    //   stack_top - 64: saved user RIP            ← extra (read by fork_trampoline)
+    //   stack_top - 72: saved user RFLAGS         ← extra
+    //   stack_top - 80: saved user RSP            ← extra
+    //
+    // After switch()'s ret, RSP = stack_top. fork_trampoline reads the
+    // extra slots via [rsp - 64], [rsp - 72], [rsp - 80].
+    let init_rsp = stack_top - 56;
+    let base_ptr = init_rsp as *mut u64;
+    unsafe {
+        // Callee-saved area (consumed by switch's pop instructions).
+        core::ptr::write_volatile(base_ptr.add(0), saved_callee_saves.r15);
+        core::ptr::write_volatile(base_ptr.add(1), saved_callee_saves.r14);
+        core::ptr::write_volatile(base_ptr.add(2), saved_callee_saves.r13);
+        core::ptr::write_volatile(base_ptr.add(3), saved_callee_saves.r12);
+        core::ptr::write_volatile(base_ptr.add(4), saved_callee_saves.rbp);
+        core::ptr::write_volatile(base_ptr.add(5), saved_callee_saves.rbx);
+        core::ptr::write_volatile(base_ptr.add(6), fork_trampoline as *const () as u64);
+
+        // Extra user-state slots below init_rsp. NOT touched by switch();
+        // read by fork_trampoline after ret via fixed offsets from RSP.
+        core::ptr::write_volatile(base_ptr.sub(1), saved_callee_saves.user_rip);
+        core::ptr::write_volatile(base_ptr.sub(2), saved_callee_saves.user_rflags);
+        core::ptr::write_volatile(base_ptr.sub(3), saved_callee_saves.user_rsp);
+    }
+
+    // Deep-clone the current (parent's) address space into a fresh AS
+    // for the child. This walks the parent's full page-table tree and
+    // allocates fresh PDPT/PD/PT frames for the child, so the child has
+    // independent intermediate page tables (modifications to child's
+    // PTs don't affect parent). At the PT level, user pages get
+    // private-copy-on-clone (fresh frame + memcpy); kernel pages share
+    // the frame.
+    //
+    // Both the kernel stack and syscall stack we just allocated are
+    // already mapped in the parent's AS, so they'll be in the child's
+    // too after the deep clone (as kernel-page shares).
+    let mut address_space = crate::memory::AddressSpace::new();
+    address_space.deep_clone_from_current();
+
+    // Build the Task struct. entry_fn is unused for fork children (they
+    // go through fork_trampoline, not trampoline), but the field needs
+    // *something* to satisfy the struct.
+    extern "C" fn fork_child_unused_entry() {
+        panic!("fork_child_unused_entry: should never run (fork children use fork_trampoline)");
+    }
+
+    let task = Task {
+        id,
+        name: "fork-child",
+        state: TaskState::Ready,
+        context: TaskContext { rsp: init_rsp },
+        stack_top,
+        entry_fn: fork_child_unused_entry,
+        parent: Some(parent_pid),
+        children: Vec::new(),
+        exit_status: None,
+        address_space,
+        syscall_stack_top: child_syscall_stack_top,
+    };
+
+    sched.tasks.push(Box::new(task));
+
+    // Add the child to the parent's children list.
+    let parent_task = sched
+        .tasks
+        .iter_mut()
+        .find(|t| t.id == parent_pid)
+        .expect("parent task not found in spawn_fork_child");
+    parent_task.children.push(id);
+
+    println!(
+        "[sched] spawned fork-child id={} (parent={}), stack=0x{:x}-0x{:x} ({} frames), context.rsp=0x{:x}",
+        id, parent_pid, stack_bottom, stack_top, frames_allocated, init_rsp,
+    );
+
+    // Drop the lock BEFORE re-enabling interrupts. Otherwise the timer
+    // could fire between sti and the implicit drop-at-scope-exit, and the
+    // timer handler would try to lock SCHEDULER → deadlock.
+    drop(sched);
+
+    // Re-enable interrupts if they were on when we entered. (They almost
+    // always were, since syscall_entry does `sti` before calling handlers.
+    // But the check makes the function safe to call from any context.)
+    if was_enabled {
+        x86_64::instructions::interrupts::enable();
+    }
+
+    id
+}
+
+/// Saved register values from the moment of a `syscall` instruction,
+/// captured by `syscall_entry` into global atomics (see src/syscall.rs),
+/// read by `sys_fork` ONCE at fork time, and passed here so the child
+/// task starts life seeing the same values the parent had.
+///
+/// **Why this is a snapshot, not a live read:** the globals in syscall.rs
+/// get OVERWRITTEN by every subsequent syscall. If the parent makes more
+/// syscalls between fork and the child's first run, the globals would
+/// have stale (wrong) values. By snapshotting at fork time and storing on
+/// the child's kernel stack, the child always sees the values from THE
+/// fork syscall, regardless of what the parent does later.
+pub struct SavedCalleeSaves {
+    // The 6 callee-saved registers (preserved across syscalls per the
+    // System V AMD64 ABI — the child needs them to look like a true copy).
+    pub rbx: u64,
+    pub rbp: u64,
+    pub r12: u64,
+    pub r13: u64,
+    pub r14: u64,
+    pub r15: u64,
+    // User-mode state at the moment of the syscall. The child needs these
+    // to do `sysretq` back to user mode at the right place.
+    pub user_rip: u64,
+    pub user_rsp: u64,
+    pub user_rflags: u64,
 }
 
 /// Return the currently-running task's ID.
@@ -395,23 +697,91 @@ pub fn yield_now() {
     }
 
     // Pick the next task and grab raw pointers to both contexts.
-    let switch_result: Option<(*mut TaskContext, *const TaskContext)> = {
+    // Also grab the new task's AS frame so we can switch CR3 if needed.
+    //
+    // Scan forward from the current task to find the next non-Zombie task.
+    // This lets sys_exit mark the current task as Zombie and then yield,
+    // knowing yield_now will pick somebody else.
+    let switch_result: Option<(*mut TaskContext, *const TaskContext, u64, u64)> = {
         let mut sched = SCHEDULER.lock();
         if sched.tasks.len() < 2 {
             None // nothing to switch to
         } else {
             let old_index = sched.current;
-            let new_index = (sched.current + 1) % sched.tasks.len();
-            sched.tasks[old_index].state = TaskState::Ready;
-            sched.tasks[new_index].state = TaskState::Running;
-            sched.current = new_index;
-            let old_ptr = &mut sched.tasks[old_index].context as *mut TaskContext;
-            let new_ptr = &sched.tasks[new_index].context as *const TaskContext;
-            Some((old_ptr, new_ptr))
+            // Find next non-Zombie task.
+            let mut new_index_opt = None;
+            for offset in 1..sched.tasks.len() {
+                let candidate = (old_index + offset) % sched.tasks.len();
+                if sched.tasks[candidate].state != TaskState::Zombie {
+                    new_index_opt = Some(candidate);
+                    break;
+                }
+            }
+            match new_index_opt {
+                None => {
+                    // No other runnable task.
+                    if sched.tasks[old_index].state == TaskState::Zombie {
+                        // Current is Zombie AND nothing else can run.
+                        // System is done. Halt.
+                        println!(
+                            "[sched] all tasks Zombie or none Ready — halting"
+                        );
+                        drop(sched);
+                        x86_64::instructions::interrupts::disable();
+                        loop {
+                            x86_64::instructions::hlt();
+                        }
+                    }
+                    // Current is the only runnable task. Just return.
+                    None
+                }
+                Some(new_index) => {
+                    // Don't change current's state if it's Zombie — we
+                    // want it to STAY Zombie so future yields skip it too.
+                    if sched.tasks[old_index].state != TaskState::Zombie {
+                        sched.tasks[old_index].state = TaskState::Ready;
+                    }
+                    sched.tasks[new_index].state = TaskState::Running;
+                    sched.current = new_index;
+                    let old_ptr = &mut sched.tasks[old_index].context as *mut TaskContext;
+                    let new_ptr = &sched.tasks[new_index].context as *const TaskContext;
+                    let new_as_frame = sched.tasks[new_index]
+                        .address_space
+                        .pml4_frame()
+                        .start_address()
+                        .as_u64();
+                    let new_syscall_rsp = sched.tasks[new_index].syscall_stack_top;
+                    Some((old_ptr, new_ptr, new_as_frame, new_syscall_rsp))
+                }
+            }
         }
     };
 
-    if let Some((old_ptr, new_ptr)) = switch_result {
+    if let Some((old_ptr, new_ptr, new_as_frame, new_syscall_rsp)) = switch_result {
+        // Update KERNEL_RSP to the new task's syscall stack. If the new
+        // task has no dedicated syscall stack (kernel threads: field is 0),
+        // leave KERNEL_RSP alone so it stays at whatever the previous
+        // user task set.
+        if new_syscall_rsp != 0 {
+            crate::syscall::set_kernel_rsp(new_syscall_rsp);
+        }
+
+        // Switch address space if the new task's PML4 differs from the
+        // one currently in CR3. Skipping the write when ASes match saves
+        // a TLB flush — important when switching between kernel threads
+        // (which all share the kernel AS).
+        let current_as_frame = x86_64::registers::control::Cr3::read().0.start_address().as_u64();
+        if current_as_frame != new_as_frame {
+            // SAFETY: new_as_frame came from a valid AddressSpace that
+            // owns a properly initialized PML4. Writing CR3 to it is safe.
+            unsafe {
+                x86_64::registers::control::Cr3::write(
+                    x86_64::structures::paging::PhysFrame::containing_address(x86_64::PhysAddr::new(new_as_frame)),
+                    x86_64::registers::control::Cr3Flags::empty(),
+                );
+            }
+        }
+
         // SAFETY: pointers are valid (Box'd tasks), new context has
         // either valid saved state or faked initial state, interrupts
         // are disabled so no concurrent access.
@@ -424,4 +794,34 @@ pub fn yield_now() {
     if was_enabled {
         x86_64::instructions::interrupts::enable();
     }
+}
+
+/// Mark the currently-running task as Zombie with the given exit code.
+///
+/// Called by `sys_exit` BEFORE calling `yield_now`. After this call:
+///   - The task's state is `Zombie`.
+///   - The task's `exit_status` is set.
+///   - Future `yield_now` calls will skip this task when picking what to
+///     run next (so it never gets rescheduled).
+///
+/// Disables interrupts for the lock+update — if the timer fired while we
+/// held the SCHEDULER lock, the timer handler would deadlock trying to
+/// acquire it.
+pub fn mark_current_zombie(exit_code: i64) {
+    let was_enabled = x86_64::instructions::interrupts::are_enabled();
+    if was_enabled {
+        x86_64::instructions::interrupts::disable();
+    }
+    {
+        let mut sched = SCHEDULER.lock();
+        let current = sched.current;
+        sched.tasks[current].state = TaskState::Zombie;
+        sched.tasks[current].exit_status = Some(exit_code);
+        println!(
+            "[sched] task id={} \"{}\" marked Zombie (exit={})",
+            sched.tasks[current].id, sched.tasks[current].name, exit_code
+        );
+    }
+    // Note: don't re-enable here. yield_now (called next by sys_exit)
+    // will handle the interrupt state via its own was_enabled check.
 }
