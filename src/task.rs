@@ -708,11 +708,17 @@ pub fn yield_now() {
             None // nothing to switch to
         } else {
             let old_index = sched.current;
-            // Find next non-Zombie task.
+            // Find next runnable task. Skip Zombie (exited, awaiting reap),
+            // Blocked (sleeping, e.g. waiting on wait()), and Dead (already
+            // reaped, awaiting cleanup).
             let mut new_index_opt = None;
             for offset in 1..sched.tasks.len() {
                 let candidate = (old_index + offset) % sched.tasks.len();
-                if sched.tasks[candidate].state != TaskState::Zombie {
+                let state = sched.tasks[candidate].state;
+                if state != TaskState::Zombie
+                    && state != TaskState::Blocked
+                    && state != TaskState::Dead
+                {
                     new_index_opt = Some(candidate);
                     break;
                 }
@@ -720,11 +726,16 @@ pub fn yield_now() {
             match new_index_opt {
                 None => {
                     // No other runnable task.
-                    if sched.tasks[old_index].state == TaskState::Zombie {
-                        // Current is Zombie AND nothing else can run.
-                        // System is done. Halt.
+                    let current_state = sched.tasks[old_index].state;
+                    if current_state == TaskState::Zombie
+                        || current_state == TaskState::Blocked
+                        || current_state == TaskState::Dead
+                    {
+                        // Current is un-runnable AND nothing else can run.
+                        // System is effectively done. Halt.
                         println!(
-                            "[sched] all tasks Zombie or none Ready — halting"
+                            "[sched] no runnable tasks (current state={:?}) — halting",
+                            current_state
                         );
                         drop(sched);
                         x86_64::instructions::interrupts::disable();
@@ -736,9 +747,14 @@ pub fn yield_now() {
                     None
                 }
                 Some(new_index) => {
-                    // Don't change current's state if it's Zombie — we
-                    // want it to STAY Zombie so future yields skip it too.
-                    if sched.tasks[old_index].state != TaskState::Zombie {
+                    // Don't change current's state if it's un-runnable
+                    // (Zombie, Blocked, Dead) — those states must persist
+                    // across yield so future yields still skip them.
+                    let old_state = sched.tasks[old_index].state;
+                    if old_state != TaskState::Zombie
+                        && old_state != TaskState::Blocked
+                        && old_state != TaskState::Dead
+                    {
                         sched.tasks[old_index].state = TaskState::Ready;
                     }
                     sched.tasks[new_index].state = TaskState::Running;
@@ -812,16 +828,117 @@ pub fn mark_current_zombie(exit_code: i64) {
     if was_enabled {
         x86_64::instructions::interrupts::disable();
     }
-    {
+    let parent_pid = {
         let mut sched = SCHEDULER.lock();
         let current = sched.current;
         sched.tasks[current].state = TaskState::Zombie;
         sched.tasks[current].exit_status = Some(exit_code);
+        let parent_pid = sched.tasks[current].parent;
         println!(
             "[sched] task id={} \"{}\" marked Zombie (exit={})",
             sched.tasks[current].id, sched.tasks[current].name, exit_code
         );
+        parent_pid
+    };
+
+    // If our parent is Blocked (e.g. inside sys_wait), wake it — its child
+    // just exited, so it has a Zombie to reap.
+    if let Some(parent) = parent_pid {
+        let mut sched = SCHEDULER.lock();
+        let parent_task = sched
+            .tasks
+            .iter_mut()
+            .find(|t| t.id == parent);
+        if let Some(task) = parent_task {
+            if task.state == TaskState::Blocked {
+                task.state = TaskState::Ready;
+                println!(
+                    "[sched] task id={} \"{}\" woken (child exited)",
+                    task.id, task.name
+                );
+            }
+        }
     }
     // Note: don't re-enable here. yield_now (called next by sys_exit)
     // will handle the interrupt state via its own was_enabled check.
+}
+
+/// Mark the currently-running task as Blocked. The task won't be picked
+/// by `yield_now` until something else flips its state back to Ready
+/// (e.g. `mark_current_zombie` waking a parent that's waiting on a child).
+pub fn mark_current_blocked() {
+    let was_enabled = x86_64::instructions::interrupts::are_enabled();
+    if was_enabled {
+        x86_64::instructions::interrupts::disable();
+    }
+    {
+        let mut sched = SCHEDULER.lock();
+        let current = sched.current;
+        sched.tasks[current].state = TaskState::Blocked;
+        println!(
+            "[sched] task id={} \"{}\" marked Blocked",
+            sched.tasks[current].id, sched.tasks[current].name
+        );
+    }
+    // Like mark_current_zombie: leave interrupts disabled; caller (sys_wait)
+    // calls yield_now next, which manages interrupt state itself.
+}
+
+/// Find a Zombie child of the given parent. Returns the child's PID and
+/// exit status if one exists, else None.
+pub fn find_zombie_child_of(parent_pid: u64) -> Option<(u64, i64)> {
+    let sched = SCHEDULER.lock();
+    for task in sched.tasks.iter() {
+        if task.parent == Some(parent_pid) && task.state == TaskState::Zombie {
+            return Some((task.id, task.exit_status.unwrap_or(0)));
+        }
+    }
+    None
+}
+
+/// Does the given parent have any child(ren) — in ANY state?
+/// Used by sys_wait to detect ECHILD (no children to wait for).
+pub fn has_any_children(parent_pid: u64) -> bool {
+    let sched = SCHEDULER.lock();
+    sched.tasks.iter().any(|t| t.parent == Some(parent_pid))
+}
+
+/// Reap a Zombie child: copy out its exit status, mark it as Dead (so
+/// yield_now skips it permanently). Caller has already verified the child
+/// is a Zombie child of the current task.
+pub fn reap_child(child_pid: u64) -> i64 {
+    let mut sched = SCHEDULER.lock();
+    let current_pid = sched.tasks[sched.current].id;
+    let child = sched
+        .tasks
+        .iter_mut()
+        .find(|t| t.id == child_pid);
+    let exit_status = match child {
+        Some(task) => {
+            assert!(
+                task.parent == Some(current_pid),
+                "reap_child: not your child"
+            );
+            assert!(task.state == TaskState::Zombie, "reap_child: not Zombie");
+            task.state = TaskState::Dead;
+            task.exit_status.unwrap_or(0)
+        }
+        None => panic!("reap_child: pid {} not found", child_pid),
+    };
+    // Remove reaped child from parent's children list (separate mutable
+    // borrow — couldn't keep both `task` and `parent_task` alive at once).
+    {
+        let parent_task = sched
+            .tasks
+            .iter_mut()
+            .find(|t| t.id == current_pid);
+        if let Some(parent) = parent_task {
+            parent.children.retain(|&c| c != child_pid);
+        }
+    }
+    println!(
+        "[sched] task id={} reaped by parent {} (exit={})",
+        child_pid, current_pid, exit_status
+    );
+    exit_status
 }

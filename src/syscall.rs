@@ -44,6 +44,7 @@ const SYS_WRITE: u64 = 1;
 const SYS_GETPID: u64 = 39;
 const SYS_FORK: u64 = 57;
 const SYS_EXIT: u64 = 60;
+const SYS_WAIT4: u64 = 61;
 
 /// Virtual address where the dedicated syscall stack begins.
 /// Picked to be far from everything else (kernel image, heap, task
@@ -340,6 +341,7 @@ extern "C" fn syscall_handler(num: u64, arg1: u64, arg2: u64, arg3: u64) -> u64 
         SYS_GETPID => sys_getpid(),
         SYS_FORK => sys_fork(),
         SYS_EXIT => sys_exit(arg1),
+        SYS_WAIT4 => sys_wait(arg1),
         _ => u64::MAX,
     }
 }
@@ -386,6 +388,62 @@ fn sys_exit(exit_code: u64) -> u64 {
     crate::task::mark_current_zombie(exit_code as i64);
     crate::task::yield_now();
     panic!("sys_exit: zombie task was rescheduled (this should never happen)");
+}
+
+/// SYS_WAIT4: wait for any child to exit, reap it, return its PID and
+/// write its exit status to the user-provided pointer (if non-NULL).
+///
+/// Linux semantics (simplified):
+///   - If parent has a Zombie child: reap it immediately. Return child PID.
+///   - If parent has children but none are Zombie: block (yield) until one
+///     exits. Then reap.
+///   - If parent has no children at all: return -1 (ECHILD).
+///
+/// Args:
+///   - arg1 (rdi): pointer to a user u64 where exit status will be written,
+///     or 0 (NULL) to ignore.
+///
+/// Returns:
+///   - Child PID on success.
+///   - `u64::MAX` (which user code reads as -1) if no children.
+fn sys_wait(exit_status_ptr: u64) -> u64 {
+    let parent_pid = crate::task::current_pid();
+    println!("[syscall] sys_wait4 (parent pid={})", parent_pid);
+
+    loop {
+        // Try to find a Zombie child.
+        if let Some((child_pid, exit_status)) = crate::task::find_zombie_child_of(parent_pid) {
+            // Reap and return.
+            let reaped_exit = crate::task::reap_child(child_pid);
+            println!(
+                "[syscall] sys_wait4 -> child pid={} (exit={})",
+                child_pid, reaped_exit
+            );
+            // Write exit status to user pointer if non-NULL.
+            if exit_status_ptr != 0 {
+                // SAFETY: the user passed us this pointer; we trust it
+                // points to a writable u64 in user memory. Kernel can
+                // write to user-mapped pages (USER_ACCESSIBLE bit set
+                // in PT entry; kernel mode bypasses US check).
+                let user_ptr = exit_status_ptr as *mut i64;
+                unsafe {
+                    core::ptr::write_volatile(user_ptr, exit_status);
+                }
+            }
+            return child_pid;
+        }
+        // No Zombie child. Check if we have any children at all.
+        if !crate::task::has_any_children(parent_pid) {
+            println!("[syscall] sys_wait4 -> no children, returning -1");
+            return u64::MAX; // -1 / ECHILD
+        }
+        // We have children, but none have exited yet. Block until one does.
+        println!("[syscall] sys_wait4 — no Zombie child yet, blocking");
+        crate::task::mark_current_blocked();
+        crate::task::yield_now();
+        // When yield_now returns, we've been rescheduled — likely because
+        // a child exited and woke us. Loop to check for a Zombie again.
+    }
 }
 
 /// SYS_FORK: clone the calling process.
