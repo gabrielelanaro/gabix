@@ -461,6 +461,24 @@ pub fn copy_frame(src_phys: PhysAddr, dst_phys: PhysAddr) {
     }
 }
 
+/// Write `bytes.len()` bytes from `bytes` into a physical frame, starting
+/// at offset 0 of the frame. The frame is zeroed first so any trailing
+/// bytes (between `bytes.len()` and 4096) are zero rather than garbage.
+///
+/// Used by `sys_exec` to load program bytes into a freshly-allocated
+/// user code page. Operates via the direct map — no AS switch needed.
+///
+/// Caller must guarantee `bytes.len() <= 4096`.
+pub fn write_to_frame(dst_phys: PhysAddr, bytes: &[u8]) {
+    assert!(bytes.len() <= 4096, "write_to_frame: bytes too long for one frame");
+    let dst = phys_to_virt(dst_phys).as_u64() as *mut u8;
+    // SAFETY: frame is mapped via the direct map.
+    unsafe {
+        core::ptr::write_bytes(dst, 0, 4096);
+        core::ptr::copy_nonoverlapping(bytes.as_ptr(), dst, bytes.len());
+    }
+}
+
 /// Run translate on a handful of known addresses to verify the mapper works.
 fn translate_tests() {
     let tests: [(u64, &str); 4] = [

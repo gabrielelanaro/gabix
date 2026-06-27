@@ -40,8 +40,22 @@ lazy_static! {
         let mut gdt = GlobalDescriptorTable::new();
         let kernel_code = gdt.append(Descriptor::kernel_code_segment());
         let kernel_data = gdt.append(Descriptor::kernel_data_segment());
-        let user_code = gdt.append(Descriptor::user_code_segment());
+        // IMPORTANT: user_data comes BEFORE user_code in the GDT so that
+        // the SYSRET math works. SYSRET computes:
+        //   CS = STAR[48:63] + 16, with RPL=3 forced
+        //   SS = STAR[48:63] + 8,  with RPL=3 forced
+        // We set STAR[48:63] = 0x10 in syscall::init, which gives:
+        //   CS = 0x20 (= index 4 = USER_CODE) → 0x23 with RPL
+        //   SS = 0x18 (= index 3 = USER_DATA) → 0x1B with RPL
+        // If we put user_code at index 3 (sel 0x18) and user_data at index 4
+        // (sel 0x20) — the "obvious" order — sysretq would set SS=0x1B but
+        // land on the user_code descriptor (DPL=3, but type=code). Worse:
+        // the previous bug was that STAR[48:63] was 0x08, making SS=0x13
+        // land on kernel_data (DPL=0) — sysretq itself was unchecked so
+        // user mode ran with a "wrong" cached SS, but the timer's eventual
+        // iretq checked DPL ≠ CPL and #GP'd. See slice 4.5 debugging.
         let user_data = gdt.append(Descriptor::user_data_segment());
+        let user_code = gdt.append(Descriptor::user_code_segment());
         // SAFETY: TSS is a static, so its address is stable for the
         // lifetime of the program. We're the only writer (init runs
         // single-threaded before any task switching).

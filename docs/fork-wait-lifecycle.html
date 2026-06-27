@@ -1,0 +1,970 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Fork + Wait Lifecycle — mini-os</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<style>
+:root {
+  --bg: #0f1116;
+  --surface: #1a1d24;
+  --surface-2: #232730;
+  --border: #2d323d;
+  --border-strong: #3d4452;
+  --text: #e8eaed;
+  --text-dim: #9ba1ac;
+  --text-mute: #6b7280;
+  --accent: #5eead4;
+  --accent-dim: #14b8a6;
+  --parent: #fbbf24;
+  --parent-dim: #b45309;
+  --child: #38bdf8;
+  --child-dim: #0369a1;
+  --zombie: #f87171;
+  --kernel: #a78bfa;
+  --user: #34d399;
+  --blocked: #fb923c;
+}
+
+* { box-sizing: border-box; }
+
+html { scroll-behavior: smooth; }
+
+body {
+  margin: 0;
+  padding: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: 'IBM Plex Sans', system-ui, sans-serif;
+  font-size: 15px;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+}
+
+code, pre, .mono {
+  font-family: 'IBM Plex Mono', 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 0.92em;
+}
+
+/* ---------- Page layout ---------- */
+.page {
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 48px 32px 120px;
+}
+
+/* ---------- Hero ---------- */
+.hero {
+  padding: 32px 0 48px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 48px;
+}
+.hero .eyebrow {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 12px;
+  letter-spacing: 0.15em;
+  color: var(--accent);
+  text-transform: uppercase;
+  margin-bottom: 12px;
+}
+.hero h1 {
+  font-size: 38px;
+  font-weight: 600;
+  line-height: 1.15;
+  margin: 0 0 16px;
+  letter-spacing: -0.02em;
+}
+.hero h1 .accent { color: var(--accent); }
+.hero .lede {
+  font-size: 17px;
+  color: var(--text-dim);
+  max-width: 720px;
+  margin: 0 0 24px;
+}
+.hero .meta {
+  display: flex;
+  gap: 24px;
+  font-size: 13px;
+  color: var(--text-mute);
+  font-family: 'IBM Plex Mono', monospace;
+}
+.hero .meta span strong {
+  color: var(--text);
+  font-weight: 500;
+}
+
+/* ---------- Section ---------- */
+section {
+  margin: 64px 0;
+}
+section > h2 {
+  font-size: 24px;
+  font-weight: 600;
+  margin: 0 0 8px;
+  letter-spacing: -0.01em;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+section > h2 .num {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 13px;
+  color: var(--accent);
+  background: rgba(94, 234, 212, 0.08);
+  border: 1px solid rgba(94, 234, 212, 0.25);
+  padding: 3px 8px;
+  border-radius: 4px;
+  font-weight: 500;
+}
+section > .section-lede {
+  color: var(--text-dim);
+  font-size: 16px;
+  max-width: 760px;
+  margin: 0 0 28px;
+}
+
+/* ---------- Cards ---------- */
+.card-grid {
+  display: grid;
+  gap: 16px;
+}
+.card-grid.cols-2 { grid-template-columns: 1fr 1fr; }
+.card-grid.cols-3 { grid-template-columns: repeat(3, 1fr); }
+
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 20px;
+}
+.card h3 {
+  margin: 0 0 8px;
+  font-size: 16px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.card p {
+  margin: 0 0 12px;
+  color: var(--text-dim);
+  font-size: 14px;
+}
+.card p:last-child { margin-bottom: 0; }
+.card .tag {
+  display: inline-block;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 11px;
+  padding: 2px 7px;
+  border-radius: 3px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+}
+.tag.parent { background: rgba(251, 191, 36, 0.12); color: var(--parent); border: 1px solid rgba(251, 191, 36, 0.3); }
+.tag.child { background: rgba(56, 189, 248, 0.12); color: var(--child); border: 1px solid rgba(56, 189, 248, 0.3); }
+.tag.kernel { background: rgba(167, 139, 250, 0.12); color: var(--kernel); border: 1px solid rgba(167, 139, 250, 0.3); }
+.tag.user { background: rgba(52, 211, 153, 0.12); color: var(--user); border: 1px solid rgba(52, 211, 153, 0.3); }
+.tag.zombie { background: rgba(248, 113, 113, 0.12); color: var(--zombie); border: 1px solid rgba(248, 113, 113, 0.3); }
+.tag.blocked { background: rgba(251, 146, 60, 0.12); color: var(--blocked); border: 1px solid rgba(251, 146, 60, 0.3); }
+
+/* ---------- Code block ---------- */
+.code-block {
+  background: #0a0c12;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 14px 16px;
+  overflow-x: auto;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 13px;
+  line-height: 1.6;
+  color: #cbd5e1;
+}
+.code-block .com { color: #6b7280; }
+.code-block .kw { color: #f472b6; }
+.code-block .str { color: #fbbf24; }
+.code-block .num { color: #a78bfa; }
+.code-block .parent { color: var(--parent); }
+.code-block .child { color: var(--child); }
+
+/* ---------- Mermaid shell ---------- */
+.diagram-shell {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.diagram-shell .diagram-header {
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  background: var(--surface-2);
+}
+.diagram-shell .diagram-title {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-dim);
+  font-family: 'IBM Plex Mono', monospace;
+  letter-spacing: 0.04em;
+}
+.diagram-shell .zoom-controls {
+  display: flex;
+  gap: 4px;
+}
+.diagram-shell .zoom-btn {
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  color: var(--text-dim);
+  padding: 4px 8px;
+  border-radius: 3px;
+  cursor: pointer;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 11px;
+}
+.diagram-shell .zoom-btn:hover { background: var(--surface-2); color: var(--text); }
+.mermaid-viewport {
+  overflow: auto;
+  max-height: 720px;
+  padding: 24px;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+}
+.mermaid-viewport .mermaid {
+  background: transparent;
+  transform-origin: top center;
+  transition: transform 0.15s ease-out;
+}
+
+/* ---------- PT tree ---------- */
+.pt-tree {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 32px;
+  margin: 24px 0;
+}
+.pt-tree .pt-column {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 20px;
+}
+.pt-tree .pt-column.parent { border-top: 3px solid var(--parent); }
+.pt-tree .pt-column.child { border-top: 3px solid var(--child); }
+.pt-tree .pt-column h4 {
+  margin: 0 0 16px;
+  font-size: 14px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-family: 'IBM Plex Mono', monospace;
+}
+.pt-level {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 12px;
+  margin-bottom: 8px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 12px;
+}
+.pt-level .level-label {
+  color: var(--text-mute);
+  min-width: 56px;
+}
+.pt-level .frame-box {
+  padding: 4px 8px;
+  border-radius: 3px;
+  font-weight: 500;
+}
+.pt-level .frame-box.fresh {
+  background: rgba(56, 189, 248, 0.12);
+  color: var(--child);
+  border: 1px solid rgba(56, 189, 248, 0.4);
+}
+.pt-level .frame-box.shared {
+  background: rgba(167, 139, 250, 0.08);
+  color: var(--kernel);
+  border: 1px solid rgba(167, 139, 250, 0.3);
+}
+.pt-level .note {
+  font-size: 11px;
+  color: var(--text-mute);
+  margin-left: auto;
+}
+.pt-arrow {
+  text-align: center;
+  color: var(--text-mute);
+  font-size: 16px;
+  margin: 2px 0;
+}
+
+/* ---------- Table ---------- */
+.compare-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.compare-table th,
+.compare-table td {
+  text-align: left;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+.compare-table th {
+  background: var(--surface-2);
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.compare-table td:first-child {
+  font-weight: 500;
+  color: var(--text);
+  width: 25%;
+}
+.compare-table td.ours { color: var(--parent); }
+.compare-table td.linux { color: var(--child); }
+.compare-table tr:last-child td { border-bottom: none; }
+.compare-table code {
+  background: var(--surface-2);
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-size: 12px;
+}
+
+/* ---------- Limitations list ---------- */
+.limit-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+.limit-list li {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--zombie);
+  border-radius: 4px;
+  padding: 14px 18px;
+  margin-bottom: 10px;
+}
+.limit-list li strong {
+  color: var(--text);
+  display: block;
+  margin-bottom: 4px;
+  font-size: 14px;
+}
+.limit-list li span {
+  color: var(--text-dim);
+  font-size: 13px;
+}
+
+/* ---------- Footer ---------- */
+.footer {
+  margin-top: 80px;
+  padding-top: 24px;
+  border-top: 1px solid var(--border);
+  font-size: 13px;
+  color: var(--text-mute);
+  font-family: 'IBM Plex Mono', monospace;
+  display: flex;
+  justify-content: space-between;
+}
+
+/* ---------- Mermaid theme override ---------- */
+.mermaid .node rect,
+.mermaid .node circle,
+.mermaid .node polygon {
+  fill: var(--surface-2) !important;
+  stroke: var(--border-strong) !important;
+}
+.mermaid .edgeLabel {
+  background-color: var(--surface) !important;
+  color: var(--text-dim) !important;
+}
+.mermaid .edgePath .path {
+  stroke: var(--text-mute) !important;
+}
+.mermaid .cluster rect {
+  fill: var(--surface) !important;
+  stroke: var(--border) !important;
+}
+.mermaid .label {
+  color: var(--text) !important;
+  font-family: 'IBM Plex Sans', sans-serif !important;
+}
+
+@media (max-width: 760px) {
+  .card-grid.cols-2, .card-grid.cols-3 { grid-template-columns: 1fr; }
+  .pt-tree { grid-template-columns: 1fr; }
+  .page { padding: 32px 20px 80px; }
+  .hero h1 { font-size: 28px; }
+}
+</style>
+</head>
+<body>
+
+<div class="page">
+
+<!-- ============ HERO ============ -->
+<div class="hero">
+  <div class="eyebrow">slice 4.4 · milestone M4 in progress</div>
+  <h1>Fork + Wait, <span class="accent">end to end</span></h1>
+  <p class="lede">
+    How mini-os clones a running process, gives the child its own private memory,
+    schedules both, and lets the parent block until the child exits. Built across
+    six slices (4.4.a – 4.4.f). This page walks through the whole mechanism.
+  </p>
+  <div class="meta">
+    <span><strong>5</strong> syscalls</span>
+    <span><strong>2</strong> address spaces</span>
+    <span><strong>4</strong> levels of page tables</span>
+    <span><strong>1</strong> CPU</span>
+  </div>
+</div>
+
+<!-- ============ SECTION 1: BIG PICTURE ============ -->
+<section>
+  <h2><span class="num">01</span> The big picture</h2>
+  <p class="section-lede">
+    Two syscalls cooperate to give us process management. Each one is simple on its own;
+    the magic is in how they interact via the scheduler.
+  </p>
+
+  <div class="card-grid cols-2">
+    <div class="card">
+      <h3><span class="tag parent">fork</span> SYS_FORK&nbsp;(57)</h3>
+      <p>Clone the calling process. The kernel snapshots the parent's user-mode register
+      state, deep-clones its page table (independent frames at every level, private copies
+      of every user page), and creates a new task. The new task runs the same code with
+      a different return value.</p>
+      <p><strong style="color: var(--parent);">Parent sees:</strong> child's PID in RAX.<br>
+         <strong style="color: var(--child);">Child sees:</strong> 0 in RAX.</p>
+    </div>
+    <div class="card">
+      <h3><span class="tag blocked">wait</span> SYS_WAIT4&nbsp;(61)</h3>
+      <p>The parent asks the kernel to block until any child exits, then reap it. If a
+      child is already a Zombie, return immediately. If children exist but none have
+      exited, mark self <code>Blocked</code> and yield — the next child to exit will
+      wake the parent.</p>
+      <p><strong>Returns:</strong> the reaped child's PID, with the exit code written to
+      a user pointer.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ============ SECTION 2: ADDRESS SPACE ============ -->
+<section>
+  <h2><span class="num">02</span> Address space basics</h2>
+  <p class="section-lede">
+    Each process has its own page-table tree — a 4-level walk from PML4 down to a
+    4&nbsp;KB frame. Virtual addresses translate per-process. Real Linux splits this
+    cleanly: kernel in entries 256–511, user in entries 0–255. Ours doesn't.
+  </p>
+
+  <div class="card-grid cols-2">
+    <div class="card">
+      <h3><span class="tag kernel">linux</span> The clean split</h3>
+      <p>Linux links its kernel at <code>0xFFFF_8000_0000_0000</code> and above —
+      PML4 entries 256–511. Every process's upper-half entries point at the <em>same</em>
+      shared kernel subtree. Adding a kernel mapping automatically appears in all
+      processes. Clean.</p>
+    </div>
+    <div class="card">
+      <h3><span class="tag parent">ours</span> The low-address wart</h3>
+      <p>Our bootloader loaded the kernel at <code>0x200000</code>, VGA at
+      <code>0xb8000</code>, heap at <code>0x4444_4444_0000</code> — all in entries
+      0–255, mixed in with user memory. "Share the kernel half" doesn't work cleanly.</p>
+      <p style="font-size: 13px; color: var(--text-mute);">Workaround: deep-clone the
+      <em>whole</em> tree, share only kernel data frames (entries without USER_ACCESSIBLE).</p>
+    </div>
+  </div>
+</section>
+
+<!-- ============ SECTION 3: FORK SEQUENCE ============ -->
+<section>
+  <h2><span class="num">03</span> Fork, step by step</h2>
+  <p class="section-lede">
+    What happens between the parent's <code>syscall</code> instruction and the kernel
+    returning to user mode. Steps in the parent's syscall context; the child doesn't
+    exist yet.
+  </p>
+
+  <div class="diagram-shell">
+    <div class="diagram-header">
+      <span class="diagram-title">sequence: parent's fork syscall</span>
+      <div class="zoom-controls">
+        <button class="zoom-btn" onclick="zm(this,-0.1)">−</button>
+        <button class="zoom-btn" onclick="zm(this,0)">reset</button>
+        <button class="zoom-btn" onclick="zm(this,0.1)">+</button>
+      </div>
+    </div>
+    <div class="mermaid-viewport">
+      <div class="mermaid">
+sequenceDiagram
+    autonumber
+    actor U as Parent (user code)
+    participant SE as syscall_entry
+    participant SF as sys_fork
+    participant SP as spawn_fork_child
+    participant S as SCHEDULER
+
+    U->>SE: syscall (rax=57)
+    Note over SE: switch to syscall stack<br/>push callee-saved + RIP/RFLAGS<br/>snapshot user state to globals
+    SE->>SF: sys_fork()
+    Note over SF: disable interrupts<br/>(fork touches SCHEDULER)
+    SF->>SF: snapshot saved state<br/>into SavedCalleeSaves
+    SF->>SP: spawn_fork_child(pid, saved)
+
+    Note over SP: 1. allocate kernel stack<br/>map into parent's PML4
+    Note over SP: 2. allocate syscall stack<br/>map into parent's PML4
+    Note over SP: 3. populate kernel stack:<br/>callee-saved + fork_trampoline addr<br/>+ user RIP/RSP/RFLAGS at fixed offsets
+    Note over SP: 4. deep_clone_from_current()<br/>walks parent's full PT tree<br/>allocates fresh frames at every level<br/>USER_ACCESSIBLE leaves get private copy
+    Note over SP: 5. push Task into SCHEDULER<br/>set parent.children
+
+    SP-->>SF: child_pid
+    SF-->>SE: child_pid (in rax)
+    Note over SE: restore callee-saved<br/>sysretq
+    SE-->>U: rax = child_pid<br/>(parent resumes here)
+    Note over U: timer fires post-sti<br/>→ yield_now → child runs
+      </div>
+    </div>
+  </div>
+
+  <div class="card-grid cols-3" style="margin-top: 24px;">
+    <div class="card">
+      <h3 style="font-size: 14px;"><span class="tag kernel">①</span> Saved state snapshot</h3>
+      <p>Globals in <code>syscall.rs</code> capture user RIP/RSP/RFLAGS + 6 callee-saved
+      regs at the moment of the syscall. <code>sys_fork</code> reads them ONCE and passes
+      them through. The globals can be overwritten by future syscalls without affecting
+      the child.</p>
+    </div>
+    <div class="card">
+      <h3 style="font-size: 14px;"><span class="tag kernel">②</span> Per-task syscall stack</h3>
+      <p>Without this, parent and child collide on the shared syscall stack. Each task
+      gets its own 16&nbsp;KB stack at <code>SYSCALL_STACK_BOTTOM + (id+1) * STACK_SIZE</code>.
+      <code>yield_now</code> updates <code>KERNEL_RSP</code> on every switch.</p>
+    </div>
+    <div class="card">
+      <h3 style="font-size: 14px;"><span class="tag kernel">③</span> Deep PT clone</h3>
+      <p>Walks PML4 → PDPT → PD → PT, allocating fresh frames at each level. User pages
+      get a private 4&nbsp;KB copy; kernel pages share the frame. Fixes the shared-PT bug
+      where unmapping in child also unmapped in parent.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ============ SECTION 4: DEEP CLONE VISUAL ============ -->
+<section>
+  <h2><span class="num">04</span> Deep page-table clone</h2>
+  <p class="section-lede">
+    Each level of the child's page table is a <em>fresh frame</em>. At the leaf level
+    (PT), user pages get private copies; kernel pages are shared via direct entry copy.
+    The two trees are completely independent below the PML4.
+  </p>
+
+  <div class="pt-tree">
+    <div class="pt-column parent">
+      <h4><span class="tag parent">PARENT</span> page tables</h4>
+      <div class="pt-level">
+        <span class="level-label">PML4</span>
+        <span class="frame-box shared">frame A</span>
+        <span class="note">root</span>
+      </div>
+      <div class="pt-arrow">↓</div>
+      <div class="pt-level">
+        <span class="level-label">PDPT</span>
+        <span class="frame-box shared">frame B</span>
+        <span class="note">512 GB slices</span>
+      </div>
+      <div class="pt-arrow">↓</div>
+      <div class="pt-level">
+        <span class="level-label">PD</span>
+        <span class="frame-box shared">frame C</span>
+        <span class="note">1 GB slice</span>
+      </div>
+      <div class="pt-arrow">↓</div>
+      <div class="pt-level">
+        <span class="level-label">PT</span>
+        <span class="frame-box shared">frame D</span>
+        <span class="note">2 MB slice</span>
+      </div>
+      <div class="pt-arrow">↓</div>
+      <div class="pt-level">
+        <span class="level-label">USER</span>
+        <span class="frame-box shared">user page X</span>
+        <span class="note">4 KB</span>
+      </div>
+    </div>
+
+    <div class="pt-column child">
+      <h4><span class="tag child">CHILD</span> page tables (independent)</h4>
+      <div class="pt-level">
+        <span class="level-label">PML4</span>
+        <span class="frame-box fresh">frame A'</span>
+        <span class="note">fresh</span>
+      </div>
+      <div class="pt-arrow">↓</div>
+      <div class="pt-level">
+        <span class="level-label">PDPT</span>
+        <span class="frame-box fresh">frame B'</span>
+        <span class="note">fresh</span>
+      </div>
+      <div class="pt-arrow">↓</div>
+      <div class="pt-level">
+        <span class="level-label">PD</span>
+        <span class="frame-box fresh">frame C'</span>
+        <span class="note">fresh</span>
+      </div>
+      <div class="pt-arrow">↓</div>
+      <div class="pt-level">
+        <span class="level-label">PT</span>
+        <span class="frame-box fresh">frame D'</span>
+        <span class="note">fresh</span>
+      </div>
+      <div class="pt-arrow">↓</div>
+      <div class="pt-level">
+        <span class="level-label">USER</span>
+        <span class="frame-box fresh">user page X'</span>
+        <span class="note">fresh + memcpy</span>
+      </div>
+    </div>
+  </div>
+
+  <p style="font-size: 14px; color: var(--text-dim); margin-top: 16px;">
+    Kernel pages — entries <em>without</em> the <code>USER_ACCESSIBLE</code> flag — skip
+    the leaf copy: their PT entry is copied as-is, sharing the physical frame. Both
+    processes see the same kernel bytes at the same virtual addresses, but neither can
+    accidentally break the other's user pages.
+  </p>
+</section>
+
+<!-- ============ SECTION 5: CHILD'S FIRST RUN ============ -->
+<section>
+  <h2><span class="num">05</span> The child's first run</h2>
+  <p class="section-lede">
+    When the scheduler eventually picks the child, <code>switch()</code> pops the
+    callee-saved area and <code>ret</code>s into <code>fork_trampoline</code>. The
+    trampoline sets RAX=0 and <code>sysretq</code>s to user mode.
+  </p>
+
+  <div class="diagram-shell">
+    <div class="diagram-header">
+      <span class="diagram-title">sequence: child's first switch-in</span>
+      <div class="zoom-controls">
+        <button class="zoom-btn" onclick="zm(this,-0.1)">−</button>
+        <button class="zoom-btn" onclick="zm(this,0)">reset</button>
+        <button class="zoom-btn" onclick="zm(this,0.1)">+</button>
+      </div>
+    </div>
+    <div class="mermaid-viewport">
+      <div class="mermaid">
+sequenceDiagram
+    autonumber
+    participant Y as yield_now
+    participant SW as switch()
+    participant FT as fork_trampoline
+    actor C as Child (user code)
+
+    Y->>Y: pick child task<br/>load CR3 with child's PML4<br/>set KERNEL_RSP to child's syscall stack
+    Y->>SW: switch(old_ctx, new_ctx)
+
+    Note over SW: push callee-saved onto parent's stack<br/>save parent's RSP to old_ctx<br/>load child's saved RSP into CPU<br/>pop callee-saved from child's stack<br/>ret → fork_trampoline address
+
+    SW->>FT: ret into fork_trampoline (rsp = child stack_top)
+    Note over FT: naked asm:<br/>mov rcx, [rsp - 64]   ; user RIP<br/>mov r11, [rsp - 72]   ; user RFLAGS<br/>mov rax, [rsp - 80]   ; user RSP<br/>mov rsp, rax           ; switch to user stack<br/>xor rax, rax           ; child's distinguishing value<br/>cli<br/>sysretq
+
+    FT-->>C: rax = 0, resume at saved user RIP
+    Note over C: child runs!<br/>looks like syscall just returned 0
+      </div>
+    </div>
+  </div>
+
+  <div class="card-grid cols-2" style="margin-top: 24px;">
+    <div class="card">
+      <h3 style="font-size: 14px;"><span class="tag kernel">Why naked asm?</span></h3>
+      <p>Initial attempt used inline <code>asm!</code> with <code>in(reg)</code> constraints.
+      Compiler register allocation clobbered values mid-asm (RCX ended up 0, sysretq jumped
+      to address 0). Converting to <code>naked_asm!</code> — every mov explicit, every
+      register pinned — fixed it.</p>
+    </div>
+    <div class="card">
+      <h3 style="font-size: 14px;"><span class="tag kernel">Why fixed stack offsets?</span></h3>
+      <p>Saved user state lives on the child's kernel stack at <code>stack_top - 64/-72/-80</code>
+      — below the callee-saved area that <code>switch()</code> pops. Reads via
+      <code>[rsp - N]</code> after the ret. No global state, so multiple forks can't
+      overwrite each other.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ============ SECTION 6: TASK STATES ============ -->
+<section>
+  <h2><span class="num">06</span> Task lifecycle</h2>
+  <p class="section-lede">
+    Every task moves through these states. <code>yield_now</code> is the only thing that
+    picks what runs next — it skips Zombie, Blocked, and Dead.
+  </p>
+
+  <div class="diagram-shell">
+    <div class="diagram-header">
+      <span class="diagram-title">state machine: task lifecycle</span>
+      <div class="zoom-controls">
+        <button class="zoom-btn" onclick="zm(this,-0.1)">−</button>
+        <button class="zoom-btn" onclick="zm(this,0)">reset</button>
+        <button class="zoom-btn" onclick="zm(this,0.1)">+</button>
+      </div>
+    </div>
+    <div class="mermaid-viewport">
+      <div class="mermaid">
+stateDiagram-v2
+    [*] --> Ready : spawn / fork
+    Ready --> Running : picked by yield_now
+    Running --> Ready : preempted by yield_now
+    Running --> Blocked : sys_wait, no Zombie child
+    Blocked --> Ready : child exits → wakes parent
+    Running --> Zombie : sys_exit
+    Zombie --> Dead : reaped by parent's sys_wait
+    Dead --> [*]
+
+    note right of Blocked
+        skipped by yield_now
+        only woken by child's
+        mark_current_zombie
+    end note
+
+    note right of Zombie
+        skipped by yield_now
+        exit_status captured
+        stays until parent reaps
+    end note
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ SECTION 7: WAIT + WAKE ============ -->
+<section>
+  <h2><span class="num">07</span> wait + wake</h2>
+  <p class="section-lede">
+    Parent blocks; child eventually exits; child's exit wakes the parent; parent's
+    <code>sys_wait</code> reaps the Zombie. End-to-end coordination.
+  </p>
+
+  <div class="diagram-shell">
+    <div class="diagram-header">
+      <span class="diagram-title">sequence: parent waits, child exits, parent wakes</span>
+      <div class="zoom-controls">
+        <button class="zoom-btn" onclick="zm(this,-0.1)">−</button>
+        <button class="zoom-btn" onclick="zm(this,0)">reset</button>
+        <button class="zoom-btn" onclick="zm(this,0.1)">+</button>
+      </div>
+    </div>
+    <div class="mermaid-viewport">
+      <div class="mermaid">
+sequenceDiagram
+    autonumber
+    actor P as Parent
+    participant K as kernel
+    actor C as Child
+
+    P->>K: sys_wait(NULL)
+    K->>K: find_zombie_child_of(parent)? → None
+    K->>K: has_any_children? → yes
+    K->>K: mark_current_blocked(parent)
+    K-->>P: yield_now (parent sleeps)
+
+    Note over C: scheduler picks child<br/>child runs to completion
+
+    C->>K: sys_exit(0)
+    K->>K: mark_current_zombie(child)
+    Note right of K: child.state = Zombie<br/>child.exit_status = 0<br/>if parent is Blocked:<br/>    parent.state = Ready
+    K-->>C: yield_now (child never resumes)
+
+    Note over P: scheduler picks parent<br/>(now Ready again)
+    P->>K: resume sys_wait loop
+    K->>K: find_zombie_child_of(parent)? → Some(child)
+    K->>K: reap_child(child)<br/>child.state = Dead<br/>remove from parent.children
+    K-->>P: return child_pid (and exit code if ptr != NULL)
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ SECTION 8: COMPARISON ============ -->
+<section>
+  <h2><span class="num">08</span> Ours vs Linux</h2>
+  <p class="section-lede">
+    We use the same ideas as Linux but with extra workarounds because our kernel isn't
+    linked at high addresses. The right-hand column shows what we'd do if we relinked.
+  </p>
+
+  <table class="compare-table">
+    <thead>
+      <tr>
+        <th>Concern</th>
+        <th class="ours">mini-os (current)</th>
+        <th class="linux">Linux</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>Kernel address range</td>
+        <td class="ours">Low: <code>0x200000</code>, heap <code>0x4444_…</code>, all in PML4 entries 0–255</td>
+        <td class="linux">High: <code>0xFFFF_8000_…</code> and above, PML4 entries 256–511</td>
+      </tr>
+      <tr>
+        <td>PML4 entry-level split</td>
+        <td class="ours">No clean split — kernel and user share entries 0–255</td>
+        <td class="linux">Entries 256–511 shared kernel subtree; 0–255 per-process user</td>
+      </tr>
+      <tr>
+        <td>Fork page-table cloning</td>
+        <td class="ours">Deep clone entire tree, share kernel data frames via entry copy</td>
+        <td class="linux">Copy upper-half PML4 entries (8 bytes), COW the user pages lazily</td>
+      </tr>
+      <tr>
+        <td>User-page copy at fork</td>
+        <td class="ours">Eager: allocate fresh frame + memcpy 4&nbsp;KB for every user page</td>
+        <td class="linux">Copy-on-write: shared until first write, then page-fault handler copies</td>
+      </tr>
+      <tr>
+        <td>Saved user state</td>
+        <td class="ours">Globals + snapshot at fork time, written to child kernel stack at fixed offsets</td>
+        <td class="linux"><code>pt_regs</code> struct on the kernel stack at a known layout</td>
+      </tr>
+      <tr>
+        <td>Syscall stack</td>
+        <td class="ours">Per-task 16&nbsp;KB dedicated stack; <code>KERNEL_RSP</code> updated on switch</td>
+        <td class="linux">Per-task kernel stack (16&nbsp;KB), used for syscalls <em>and</em> interrupts; <code>current</code> pointer tracks the owner</td>
+      </tr>
+      <tr>
+        <td>Interrupt stack</td>
+        <td class="ours">TSS.RSP0 set once at boot to main's stack (limitation)</td>
+        <td class="linux">TSS updated per context switch to point at current task's kernel stack</td>
+      </tr>
+      <tr>
+        <td>CR3 switch cost</td>
+        <td class="ours">Always switches between parent/child (different PML4s) — full TLB flush</td>
+        <td class="linux">PCID tags avoid most TLB flushes across switches</td>
+      </tr>
+    </tbody>
+  </table>
+</section>
+
+<!-- ============ SECTION 9: LIMITATIONS ============ -->
+<section>
+  <h2><span class="num">09</span> Known limitations</h2>
+  <p class="section-lede">
+    Working fork + wait, with these caveats. Most are deferred until the kernel is
+    relinked at high addresses (the "real fix" that simplifies much of the above).
+  </p>
+
+  <ul class="limit-list">
+    <li>
+      <strong>Kernel not at high addresses</strong>
+      <span>Forces deep-clone workarounds. Proper fix: relink kernel at <code>0xFFFF_8000_…</code>,
+      get the clean PML4-entry-level split for free. Documented as future work.</span>
+    </li>
+    <li>
+      <strong>No copy-on-write</strong>
+      <span>fork eagerly copies every user page. Real Linux defers the copy until first
+      write. Ours is correct, just expensive for big processes.</span>
+    </li>
+    <li>
+      <strong>No resource cleanup</strong>
+      <span>Dead tasks' kernel stacks, syscall stacks, and address spaces (including the
+      entire deep-cloned page table) all leak. Memory grows unboundedly with process count.</span>
+    </li>
+    <li>
+      <strong>Test doesn't exercise blocking</strong>
+      <span>The simple test happens to hit the immediate-reap path (child exits before
+      parent calls wait). The blocking logic is implemented but not run-time tested.</span>
+    </li>
+    <li>
+      <strong>TSS.RSP0 is static</strong>
+      <span>Set once at boot to main's stack. If a child gets a timer interrupt in user
+      mode, the interrupt context goes to main's stack. Works because main's stack is
+      accessible in every AS, but Linux does this better.</span>
+    </li>
+    <li>
+      <strong>No exec syscall</strong>
+      <span>Fork + wait give us process tree management but every child runs the same
+      program as its parent. <code>exec</code> (load a different program into the current
+      process) is the missing piece for a real shell.</span>
+    </li>
+  </ul>
+</section>
+
+<!-- ============ FOOTER ============ -->
+<div class="footer">
+  <span>mini-os · slice 4.4.a–f</span>
+  <span>fork · wait · deep page-table clone · per-task syscall stack</span>
+</div>
+
+</div>
+
+<script>
+mermaid.initialize({
+  startOnLoad: true,
+  theme: 'base',
+  themeVariables: {
+    background: '#1a1d24',
+    primaryColor: '#232730',
+    primaryTextColor: '#e8eaed',
+    primaryBorderColor: '#3d4452',
+    lineColor: '#6b7280',
+    secondaryColor: '#232730',
+    tertiaryColor: '#1a1d24',
+    fontFamily: 'IBM Plex Sans, sans-serif',
+    fontSize: '14px',
+    sequence: {
+      actorBkg: '#232730',
+      actorBorder: '#3d4452',
+      actorTextColor: '#e8eaed',
+      signalColor: '#9ba1ac',
+      signalTextColor: '#e8eaed',
+      labelBoxBkgColor: '#232730',
+      labelBoxBorderColor: '#3d4452',
+      labelTextColor: '#e8eaed',
+      noteBkgColor: 'rgba(94, 234, 212, 0.08)',
+      noteBorderColor: 'rgba(94, 234, 212, 0.3)',
+      noteTextColor: '#5eead4'
+    }
+  },
+  sequence: { showSequenceNumbers: false, mirrorActors: false },
+  flowchart: { useMaxWidth: false, htmlLabels: true },
+});
+
+// Zoom controls for each diagram
+function zm(btn, delta) {
+  const shell = btn.closest('.diagram-shell');
+  const mer = shell.querySelector('.mermaid');
+  const current = parseFloat(mer.dataset.zoom || '1');
+  let next;
+  if (delta === 0) {
+    next = 1;
+  } else {
+    next = Math.max(0.4, Math.min(2.5, current + delta));
+  }
+  mer.dataset.zoom = next;
+  mer.style.transform = `scale(${next})`;
+}
+</script>
+
+</body>
+</html>

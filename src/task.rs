@@ -670,6 +670,14 @@ pub fn current_pid() -> u64 {
     sched.tasks[sched.current].id
 }
 
+/// Read the PML4 frame of the currently-running task's address space.
+/// Used by `sys_exec` to switch CR3 to the (just-replaced) AS.
+/// Returns the frame as a `PhysFrame` so it can be passed to `Cr3::write`.
+pub fn current_pml4_frame() -> x86_64::structures::paging::PhysFrame {
+    let sched = SCHEDULER.lock();
+    sched.tasks[sched.current].address_space.pml4_frame()
+}
+
 /// Yield the CPU to the next task. Round-robin: advances to
 /// `(current + 1) % tasks.len()`.
 ///
@@ -882,6 +890,36 @@ pub fn mark_current_blocked() {
     }
     // Like mark_current_zombie: leave interrupts disabled; caller (sys_wait)
     // calls yield_now next, which manages interrupt state itself.
+}
+
+/// Replace the current task's address space with `new_as`. Used by
+/// `sys_exec`: the task struct stays (same PID, same kernel stack, same
+/// scheduler entry), but everything user-side — code, stack, page tables —
+/// is replaced.
+///
+/// Returns nothing — caller is expected to immediately jump to user mode
+/// at the new program's entry point (via inline sysretq-style asm).
+pub fn replace_current_address_space(new_as: crate::memory::AddressSpace, new_name: &'static str) {
+    let was_enabled = x86_64::instructions::interrupts::are_enabled();
+    if was_enabled {
+        x86_64::instructions::interrupts::disable();
+    }
+    let old_as_frame = {
+        let mut sched = SCHEDULER.lock();
+        let current = sched.current;
+        let old = sched.tasks[current].address_space.pml4_frame();
+        sched.tasks[current].address_space = new_as;
+        sched.tasks[current].name = new_name;
+        println!(
+            "[sched] task id={} exec: now \"{}\", AS pml4 frame {} → {}",
+            sched.tasks[current].id,
+            new_name,
+            old.start_address().as_u64() / 4096,
+            sched.tasks[current].address_space.pml4_frame().start_address().as_u64() / 4096,
+        );
+        old
+    };
+    let _ = old_as_frame; // old AS leaks (no cleanup yet)
 }
 
 /// Find a Zombie child of the given parent. Returns the child's PID and

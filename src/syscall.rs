@@ -43,6 +43,7 @@ const RFLAGS_IF: u64 = 0x200;
 const SYS_WRITE: u64 = 1;
 const SYS_GETPID: u64 = 39;
 const SYS_FORK: u64 = 57;
+const SYS_EXECVE: u64 = 59;
 const SYS_EXIT: u64 = 60;
 const SYS_WAIT4: u64 = 61;
 
@@ -153,12 +154,28 @@ pub fn init() {
 
         // STAR: kernel CS base in bits 32-47, user CS base in bits 48-63.
         // On SYSCALL: CPU loads CS = STAR[32:47], SS = STAR[32:47] + 8.
-        // On SYSRET:  CPU loads CS = STAR[48:63] + 16, SS = STAR[48:63] + 24
-        //             (with RPL=3 added).
-        // For our GDT: kernel CS = 0x08, kernel SS = 0x10, user CS = 0x18,
-        // user SS = 0x20. So STAR[32:47] = 0x08 (kernel) and
-        // STAR[48:63] = 0x08 (so +16 = 0x18 user code).
-        wrmsr(MSR_STAR, 0x0008_0008_0000_0000);
+        // On SYSRET:  CPU loads CS = STAR[48:63] + 16, SS = STAR[48:63] + 8
+        //             (both with RPL=3 added on AMD hardware).
+        //
+        // Our GDT layout (after the fix in slice 4.5):
+        //   index 1 (sel 0x08): kernel code
+        //   index 2 (sel 0x10): kernel data
+        //   index 3 (sel 0x18): USER DATA   ← (swapped from previous order)
+        //   index 4 (sel 0x20): USER CODE
+        //   index 5 (sel 0x28): TSS
+        //
+        // With STAR[32:47] = 0x08 and STAR[48:63] = 0x10:
+        //   SYSCALL: CS = 0x08, SS = 0x10 ✓
+        //   SYSRET:  CS = 0x10 + 16 = 0x20 | RPL=3 = 0x23 (USER CODE) ✓
+        //            SS = 0x10 + 8  = 0x18 | RPL=3 = 0x1B (USER DATA) ✓
+        //
+        // Previously STAR[48:63] was 0x08, which made SYSRET compute
+        // SS = 0x10 (kernel data). sysretq itself doesn't check DPL in
+        // long mode, so user code ran with cached SS pointing at kernel
+        // data — but the next iretq (e.g., timer firing on user mode)
+        // checked DPL ≠ CPL and #GP'd. Fixed by swapping USER_CS / USER_DS
+        // in the GDT and setting STAR[48:63] = 0x10.
+        wrmsr(MSR_STAR, 0x0010_0008_0000_0000);
 
         // LSTAR: address of the syscall entry point.
         wrmsr(MSR_LSTAR, syscall_entry as *const () as u64);
@@ -340,6 +357,7 @@ extern "C" fn syscall_handler(num: u64, arg1: u64, arg2: u64, arg3: u64) -> u64 
         SYS_WRITE => sys_write(arg1, arg2),
         SYS_GETPID => sys_getpid(),
         SYS_FORK => sys_fork(),
+        SYS_EXECVE => sys_exec(arg1),
         SYS_EXIT => sys_exit(arg1),
         SYS_WAIT4 => sys_wait(arg1),
         _ => u64::MAX,
@@ -527,4 +545,198 @@ fn sys_fork() -> u64 {
 
     // Step 5: Return child PID. Parent gets this in RAX.
     child_pid
+}
+
+/// SYS_EXECVE: replace the calling process's program with a new one.
+///
+/// Args:
+///   - arg1 (rdi): pointer to a null-terminated program name in user memory.
+///
+/// The name is looked up against `PROGRAMS` in `user.rs` (currently a tiny
+/// static registry of two hand-assembled programs: "hello" and "goodbye").
+///
+/// On success: never returns. The old user code/stack are gone; control
+/// transfers to the new program's entry point (start of the loaded bytes).
+///
+/// On failure (unknown program): panic. We don't have a syscall error
+/// convention yet; can be refined later.
+fn sys_exec(program_name_ptr: u64) -> u64 {
+    use crate::user::{PROGRAMS, USER_CODE_ADDR, USER_RFLAGS_INIT, USER_STACK_BOTTOM, USER_STACK_TOP};
+    use x86_64::structures::paging::PageTableFlags;
+
+    println!("[syscall] sys_exec (name_ptr=0x{:x})", program_name_ptr);
+
+    // Disable interrupts for the whole operation — touches SCHEDULER and
+    // allocates frames; the timer firing mid-exec would deadlock on the lock.
+    let was_enabled = x86_64::instructions::interrupts::are_enabled();
+    if was_enabled {
+        x86_64::instructions::interrupts::disable();
+    }
+
+    // Step 1: Read program name from user memory (null-terminated, max 32 bytes).
+    let mut name_buf = [0u8; 32];
+    let mut name_len = 0;
+    for i in 0..32 {
+        // SAFETY: user pointer from syscall arg. We trust it points to a
+        // readable byte in user memory.
+        let byte = unsafe {
+            core::ptr::read_volatile((program_name_ptr + i as u64) as *const u8)
+        };
+        if byte == 0 {
+            break;
+        }
+        name_buf[i] = byte;
+        name_len = i + 1;
+    }
+    let name = core::str::from_utf8(&name_buf[..name_len])
+        .expect("sys_exec: program name not utf-8");
+    println!("[exec] looking up program {:?}", name);
+
+    // Step 2: Look up program in PROGRAMS registry.
+    let program_bytes: &[u8] = PROGRAMS
+        .iter()
+        .find(|(n, _)| *n == name)
+        .map(|(_, b)| *b)
+        .unwrap_or_else(|| panic!("sys_exec: program {:?} not in PROGRAMS registry", name));
+    println!(
+        "[exec] found program {:?} ({} bytes)",
+        name,
+        program_bytes.len()
+    );
+
+    // Step 3: Allocate fresh AddressSpace with INDEPENDENT page tables.
+    // AddressSpace::new() copies PML4 entries (shares PTs); we need
+    // deep_clone_from_current() to get independent PTs so we can safely
+    // unmap the inherited user pages without affecting the current AS.
+    let mut new_as = crate::memory::AddressSpace::new();
+    new_as.deep_clone_from_current();
+
+    // Step 3.5: Unmap the existing user code page and 16 user stack pages
+    // from the new AS (inherited from the current AS via deep_clone). We're
+    // about to replace them with fresh mappings for the new program.
+    new_as
+        .unmap(VirtAddr::new(USER_CODE_ADDR))
+        .expect("sys_exec: unmap of inherited code page failed");
+    let mut stack_virt = USER_STACK_BOTTOM;
+    while stack_virt < USER_STACK_TOP {
+        new_as
+            .unmap(VirtAddr::new(stack_virt))
+            .expect("sys_exec: unmap of inherited stack page failed");
+        stack_virt += 4096;
+    }
+
+    // Step 4: Allocate fresh user code page, copy program bytes in.
+    let code_frame = frame_allocator::allocate()
+        .expect("sys_exec: out of frames for code page");
+    let code_phys = PhysAddr::new(code_frame * 4096);
+    crate::memory::write_to_frame(code_phys, program_bytes);
+    // SAFETY: virtual address USER_CODE_ADDR was just unmapped above.
+    unsafe {
+        new_as
+            .map_to(
+                VirtAddr::new(USER_CODE_ADDR),
+                code_phys,
+                PageTableFlags::PRESENT
+                    | PageTableFlags::WRITABLE
+                    | PageTableFlags::USER_ACCESSIBLE,
+            )
+            .expect("sys_exec: map_to code failed");
+    }
+
+    // Step 5: Allocate fresh user stack pages (16 pages = 64 KB).
+    let mut stack_virt = USER_STACK_BOTTOM;
+    while stack_virt < USER_STACK_TOP {
+        let frame = frame_allocator::allocate()
+            .expect("sys_exec: out of frames for stack page");
+        let phys = PhysAddr::new(frame * 4096);
+        // SAFETY: each page in [USER_STACK_BOTTOM, USER_STACK_TOP) was just
+        // unmapped above.
+        unsafe {
+            new_as
+                .map_to(
+                    VirtAddr::new(stack_virt),
+                    phys,
+                    PageTableFlags::PRESENT
+                        | PageTableFlags::WRITABLE
+                        | PageTableFlags::USER_ACCESSIBLE,
+                )
+                .expect("sys_exec: map_to stack failed");
+        }
+        stack_virt += 4096;
+    }
+
+    // Step 6: Update the current task's address_space (and name, for clarity).
+    // The task struct stays — same PID, same kernel stack, same scheduler entry.
+    crate::task::replace_current_address_space(new_as, leak_program_name(name));
+
+    // Step 7: Switch CR3 to the new AS. After this point, the old user
+    // mappings are gone — if we accessed them now we'd page fault. But we
+    // don't need to; everything from here on is kernel-side.
+    let pml4_frame = crate::task::current_pml4_frame();
+    // SAFETY: the frame is owned by the current task's AddressSpace and was
+    // properly initialized in AddressSpace::new() + map_to calls above.
+    unsafe {
+        x86_64::registers::control::Cr3::write(
+            pml4_frame,
+            x86_64::registers::control::Cr3Flags::empty(),
+        );
+    }
+
+    // Step 8: Jump to user mode at the new program's entry. This is the
+    // "exec trampoline" — same idea as fork_trampoline but with values
+    // coming from the new program (entry = USER_CODE_ADDR, RSP = top of
+    // fresh user stack, RFLAGS = IF + reserved bit).
+    //
+    // Done as inline asm with explicit register constraints:
+    //   - in("rcx") user_rip   — sysretq reads RIP from RCX
+    //   - in("r11") user_rflags — sysretq reads RFLAGS from R11
+    //   - in(reg)  user_rsp    — we mov it into RSP just before sysretq
+    //
+    // The "xor rax, rax" happens AFTER the rsp load so any reg the compiler
+    // chose for user_rsp is no longer needed by the time we clobber RAX.
+    let user_rip = USER_CODE_ADDR;
+    let user_rsp = USER_STACK_TOP;
+    let user_rflags = USER_RFLAGS_INIT;
+
+    println!(
+        "[exec] jumping to user mode: rip=0x{:x} rsp=0x{:x} flags=0x{:x}",
+        user_rip, user_rsp, user_rflags,
+    );
+
+    // SAFETY: this never returns. sysretq transfers control to user mode
+    // at USER_CODE_ADDR. We're in cli state (disabled above), and the user
+    // RFLAGS has IF=1, so sysretq will flip interrupts back on.
+    unsafe {
+        core::arch::asm!(
+            "mov rsp, {rsp}",                // switch to user stack
+            "xor rax, rax",                  // RAX = 0 (convention for exec)
+            "cli",                           // (defensive) ensure IF=0 for sysretq
+            "sysretq",
+            in("rcx") user_rip,
+            in("r11") user_rflags,
+            rsp = in(reg) user_rsp,
+            options(noreturn),
+        );
+    }
+}
+
+/// "Leak" a program name `&str` into a `&'static str`. The program name
+/// came from a user pointer (so its lifetime is the user buffer's lifetime,
+/// not 'static), but `Task.name` requires `&'static str`. We copy the bytes
+/// into a small pool of static buffers and return a reference into one.
+fn leak_program_name(name: &str) -> &'static str {
+    use core::sync::atomic::{AtomicUsize, Ordering};
+    static SLOT: AtomicUsize = AtomicUsize::new(0);
+    static mut BUFFER: [[u8; 32]; 4] = [[0; 32]; 4];
+    static mut LEN: [usize; 4] = [0; 4];
+    let idx = SLOT.fetch_add(1, Ordering::SeqCst) & 3;
+    let bytes = name.as_bytes();
+    let len = bytes.len().min(31);
+    // SAFETY: idx < 4, single CPU, interrupts off (caller is sys_exec).
+    unsafe {
+        core::ptr::copy_nonoverlapping(bytes.as_ptr(), BUFFER[idx].as_mut_ptr(), len);
+        BUFFER[idx][len] = 0;
+        LEN[idx] = len;
+        core::str::from_utf8_unchecked(&BUFFER[idx][..len])
+    }
 }
