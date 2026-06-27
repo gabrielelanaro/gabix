@@ -98,14 +98,15 @@ pub extern "C" fn _start(boot_info: &'static BootInfo) -> ! {
     println!("[boot] memory mapper...");
     memory::init(boot_info);
 
-    // Slice 4.4.a test: create a fresh AddressSpace, switch to it, print
-    // something, switch back. If kernel mappings weren't correctly copied
-    // (entries 256-511 from current CR3), the println would page-fault
-    // because VGA/serial/kernel-code addresses wouldn't translate.
-    println!("[test] AddressSpace create + switch");
+    // Slice 4.4.a test: create a fresh AddressSpace (kernel-only entries
+    // 256-511), deep-clone the current AS into it (adds user-half walking
+    // for low-half kernel mappings like VGA and heap), switch to it, print
+    // something, switch back. This is the same pattern fork/exec uses.
+    println!("[test] AddressSpace create + deep_clone + switch");
     {
         let original_cr3 = x86_64::registers::control::Cr3::read();
-        let new_as = memory::AddressSpace::new();
+        let mut new_as = memory::AddressSpace::new();
+        new_as.deep_clone_from_current();
         new_as.switch_to();
         println!(
             "[test]   hello from new AS! (CR3 was 0x{:x}, now 0x{:x})",

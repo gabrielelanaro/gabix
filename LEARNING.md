@@ -41,7 +41,7 @@ Status legend: `[ ]` not started · `[~]` in progress · `[x]` done
 ### Month 4 — Syscalls, VFS, IPC
 - [x] 4.1 Syscall gate (`syscall`/`sysret` ABI), dispatch table
 - [x] 4.2 Core syscalls: `write`, `exit`, `getpid`
-- [ ] 4.3 `fork` / `exec` / `wait` (`fork` working with proper isolation; `wait` next; `exec` deferred)
+- [x] 4.3 `fork` / `exec` / `wait`
 - [ ] 4.4 VFS layer: `File`, `inode`, `open`/`read`/`write`/`close`
 - [ ] 4.5 RamFS implementation
 - [ ] 4.6 Pipes (`|`)
@@ -519,6 +519,21 @@ A milestone is a "demo-able" checkpoint. Worth a commit + tag + log entry.
 ## Progress Log
 
 Most recent entries at the top. One entry per work session.
+
+### 2026-06-27 (slice 4.6) — Relink kernel at high addresses, simplify AddressSpace
+- **Done:** Closed the long-standing "kernel at low addresses" architectural wart. Two pieces:
+    - **Linker flag:** added `rustflags = ["-C", "link-arg=--image-base=0xFFFFFFFF80000000"]` to `.cargo/config.toml`. No custom linker script needed — `rust-lld`'s `--image-base` shifts the entire kernel binary to start at the high canonical address. The bootloader crate reads the resulting ELF and maps the kernel there automatically.
+    - **AddressSpace simplification** (`src/memory.rs`): `AddressSpace::new()` now copies only PML4 entries 256–511 (the kernel half) instead of all 512. `deep_clone_from_current()` got an explicit two-phase structure: Phase 1 copies entries 256–511 verbatim (no allocations, no walking — just `clone()` per entry), Phase 2 walks only entries 0–255 (user half + low-half kernel mappings like VGA, heap, physical-memory offset). The nested 4-level walk code is unchanged; only its outer range shrank from `0..512` to `0..256`.
+    - **Test fix** (`src/main.rs`): the `[test] AddressSpace create + switch` test now calls `deep_clone_from_current()` after `new()` (matching real fork/exec usage), since `new()` alone no longer copies the low-half kernel mappings (VGA, heap) that `println!` needs.
+    - **Translate test fix** (`src/memory.rs`): the `_start` translate test was hardcoded to the old low address `0x207ec0`. Now uses `_start as u64` to follow the symbol — it currently resolves to `0xFFFFFFFF800216d0` (high canonical), translating to physical `0x4206d0`.
+    - **New doc:** `docs/kernel-linker-layout.html` — visual explainer covering the build pipeline (source → rustc → linker → ELF → bootloader → runtime), what's inside the ELF, what the bootloader crate does at runtime, our concrete address layout, PML4 (Page Map Level 4) entry decoding, the wart we just fixed, and what `--image-base` changed.
+- **Status:** 4.3 flipped to `[x]` (fork/exec/wait all done as of slice 4.5; the checkbox was stale). Slice 4.6 is the architectural cleanup; no roadmap checkbox for it (it's not a feature, just internal hygiene).
+- **Notes / blockers / surprises:**
+    - **The flag worked on the first try.** I had predicted "2–4 surprise hardcoded addresses, probably a triple fault." Reality: zero triple faults, zero hardcoded addresses to fix. The kernel just moved and everything kept working because nothing depended on *where the kernel itself was* — only on the offsets the bootloader handed us via `BootInfo`.
+    - **One small stall:** the standalone `AddressSpace::new()` test triple-faulted when called without `deep_clone_from_current()`, because `println!` after `switch_to()` needs VGA mapped (entry 0), which `new()` no longer copies. Fix was to make the test mirror real-world usage (new + deep_clone).
+    - **Frame usage observation:** deep_clone now allocates slightly *more* frames per AS than before in our test, because the test that used to call only `new()` now also calls `deep_clone`. In actual fork/exec paths the count is essentially unchanged — the savings from skipping the kernel half (entries 256–511) is small because the kernel image is ~555 KB (fits in one PD/PDPT/PT subtree). The win is structural clarity, not memory savings.
+    - **The `physical_memory_offset` from the bootloader is unchanged** (`0x180_0000_0000`, PML4 entry ~96, still in the low half). It works transparently — it's just a kernel mapping in the user half, and deep_clone walks it. Moving it to high addresses too would be cleaner but isn't necessary.
+- **Next:** 4.4 VFS layer. The "what next?" question is now actually next on the roadmap. Likely sub-slices: per-process file descriptor table, `File`/`Inode`/`Directory` abstractions, ramfs implementation, then `open`/`read`/`write`/`close` syscalls.
 
 ### YYYY-MM-DD
 - **Done:** (what got built/learned this session)

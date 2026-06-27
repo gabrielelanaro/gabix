@@ -472,8 +472,10 @@ fn sys_wait(exit_status_ptr: u64) -> u64 {
 ///
 /// What it does:
 ///   1. Create a new AddressSpace for the child (AddressSpace::new()
-///      duplicates the parent's full PML4 — entries point at the same
-///      physical frames as the parent's, for now).
+///      copies the parent's kernel-half PML4 entries 256–511; then
+///      deep_clone_from_current() walks the user half 0–255, sharing
+///      non-user frames via entry copy and copying user frames to
+///      fresh frames for proper isolation).
 ///   2. For each user page (user code page + 16 user stack pages):
 ///      allocate a fresh frame, copy the parent's bytes into it, unmap
 ///      the parent's frame from the child's AS, then map the fresh frame
@@ -605,9 +607,10 @@ fn sys_exec(program_name_ptr: u64) -> u64 {
     );
 
     // Step 3: Allocate fresh AddressSpace with INDEPENDENT page tables.
-    // AddressSpace::new() copies PML4 entries (shares PTs); we need
-    // deep_clone_from_current() to get independent PTs so we can safely
-    // unmap the inherited user pages without affecting the current AS.
+    // AddressSpace::new() copies kernel-half entries 256–511 (shares the
+    // kernel subtree verbatim). deep_clone_from_current() then walks the
+    // user half 0–255, allocating fresh PDPT/PD/PT frames so we can
+    // safely unmap inherited user pages without affecting the current AS.
     let mut new_as = crate::memory::AddressSpace::new();
     new_as.deep_clone_from_current();
 

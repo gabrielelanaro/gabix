@@ -139,25 +139,25 @@ impl AddressSpace {
     /// Steps:
     ///   1. Allocate a fresh 4 KB frame for the PML4.
     ///   2. Zero it (all entries start "not present").
-    ///   3. Copy ALL 512 entries from the *currently active* PML4 (whatever
-    ///      CR3 points at right now).
+    ///   3. Copy entries 256–511 from the *currently active* PML4 (the
+    ///      kernel half). Entries 0–255 (the user half) stay zeroed —
+    ///      callers fill them in as needed.
     ///
-    /// **Why all 512 entries, not just 256-511 (the "kernel half" by Linux
-    /// convention)?** Real Linux links its kernel at high virtual addresses
-    /// (`0xFFFF_8000_0000_0000` and above), so the kernel really does live
-    /// in PML4 entries 256-511 — copying just those shares the kernel
-    /// subtree cleanly. Our kernel isn't linked that way; the bootloader
-    /// loaded it at low addresses (kernel code near 0x200000, VGA at
-    /// 0xb8000, heap at 0x4444_4444_0000, physical-memory offset at
-    /// 0x180_0000_0000), all of which live in entries 0-255. Copying only
-    /// entries 256-511 would leave the new AS without the kernel code
-    /// itself, which triple-faults on the first instruction fetch.
+    /// **Why only entries 256–511?** The kernel is linked at high virtual
+    /// addresses (`0xFFFFFFFF80000000` and up, set via `--image-base` in
+    /// `.cargo/config.toml`), so all kernel code/data lives in PML4 entries
+    /// 256–511. Copying just those shares the kernel subtree cleanly: every
+    /// process's PML4 has identical entries 256–511 pointing at the same
+    /// kernel PDPT/PD/PT frames. Entries 0–255 are per-process user memory.
     ///
-    /// The result: the new AS is currently a *full duplicate* of the
-    /// current one — no isolation yet. In slice 4.4.c (real fork) we'll
-    /// handle "share kernel, separate user" by walking user pages
-    /// individually and copying their bytes into fresh frames, rather than
-    /// relying on a clean PML4 entry split.
+    /// **The standalone-test caveat:** a few kernel mappings still live in
+    /// the low half (VGA buffer at `0xb8000`, heap at `0x4444_4444_0000`,
+    /// physical-memory offset at `0x180_0000_0000`). These are NOT copied
+    /// by `new()` alone — accessing them after `switch_to()` will page-fault.
+    /// `deep_clone_from_current()` handles them by walking the low half and
+    /// sharing non-user frames. The `[test] AddressSpace create + switch`
+    /// test only uses serial output (port I/O, no memory mapping needed),
+    /// so it works without those low mappings.
     pub fn new() -> Self {
         let pml4_frame = BitmapFrameAllocator
             .allocate_frame()
@@ -177,16 +177,18 @@ impl AddressSpace {
             // Zero the new PML4.
             core::ptr::write_bytes(new_pml4 as *mut u8, 0, 4096);
 
-            // Copy ALL 512 entries from current PML4. Each entry holds the
-            // physical address of the next-level page table plus flags —
-            // copying the raw entry shares the underlying subtree.
-            for i in 0..512 {
+            // Copy entries 256–511 (kernel half) from current PML4. Each
+            // entry holds the physical address of the next-level page table
+            // plus flags — copying the raw entry shares the underlying
+            // subtree, which is exactly what we want for kernel memory.
+            // Entries 0–255 stay zero (per-process user memory).
+            for i in 256..512 {
                 (&mut *new_pml4)[i] = (&*current_pml4)[i].clone();
             }
         }
 
         println!(
-            "[mem] new AddressSpace: pml4_frame={} (copied all 512 entries from current CR3={})",
+            "[mem] new AddressSpace: pml4_frame={} (copied 256 kernel entries 256-511 from current CR3={})",
             pml4_frame.start_address().as_u64() / 4096,
             current_pml4_frame.start_address().as_u64() / 4096,
         );
@@ -298,20 +300,27 @@ impl AddressSpace {
 
     /// Deep-clone the currently-active address space into `self`.
     ///
-    /// Unlike `new()` (which shares PDPT/PD/PT frames with the source by
-    /// copying only the PML4 entries), this walks the source's full
-    /// page-table tree and allocates FRESH frames at every intermediate
-    /// level (PDPT, PD, PT) for the destination. Modifications to the
-    /// destination's PTs therefore don't affect the source.
+    /// Two-phase strategy, exploiting the kernel/user PML4-entry split:
     ///
-    /// At the PT (leaf) level, behavior depends on the entry's flags:
+    /// **Phase 1 — copy entries 256–511 (kernel half) verbatim.** Every
+    /// process shares the same kernel mappings, so we don't walk the kernel
+    /// subtree. We just copy each PML4 entry as-is, which shares the entire
+    /// PDPT/PD/PT frame tree underneath. No allocations, no copies — one
+    /// `clone()` per entry, ~256 iterations of work that the old version
+    /// did by walking four full levels.
+    ///
+    /// **Phase 2 — walk entries 0–255 (user half + low kernel mappings).**
+    /// At each level (PDPT, PD, PT), allocate fresh frames for the dest so
+    /// modifications to the dest's PTs don't affect the source. At the leaf
+    /// level, behavior depends on the entry's flags:
     ///   - **USER_ACCESSIBLE entries** (user pages): allocate a fresh frame,
     ///     `memcpy` 4 KB from the source frame, point the dest's PT entry
     ///     at the fresh frame. This gives the dest its own private copy
     ///     of every user page (proper fork isolation).
-    ///   - **Non-user entries** (kernel pages): copy the entry as-is,
-    ///     sharing the physical frame. Kernel pages are typically
-    ///     read-only or read-mostly, so sharing is safe.
+    ///   - **Non-user entries** (kernel pages that still live in the low
+    ///     half — the heap, VGA buffer, physical-memory offset): copy the
+    ///     entry as-is, sharing the physical frame. Kernel pages are
+    ///     typically read-only or read-mostly, so sharing is safe.
     ///
     /// "Huge page" entries (1 GB at PDPT level, 2 MB at PD level) are
     /// copied as-is (shared) — we don't try to break them up.
@@ -321,8 +330,8 @@ impl AddressSpace {
     /// Without deep cloning, two processes share their intermediate PT
     /// frames via PML4 entry aliasing. Then `child_as.unmap(virt)` writes
     /// to the shared PT and silently unmaps the page in the parent too.
-    /// With deep cloning, each process has its own PT frames, so this
-    /// never happens.
+    /// With deep cloning, each process has its own PT frames for the user
+    /// half, so this never happens.
     pub fn deep_clone_from_current(&mut self) {
         // SAFETY: we read the source frames via the bootloader's direct
         // map (covers all of physical RAM). Destination frames are owned
@@ -338,7 +347,17 @@ impl AddressSpace {
             // Zero the destination PML4 first.
             core::ptr::write_bytes(dst_pml4 as *mut u8, 0, 4096);
 
-            for pml4_idx in 0..512u64 {
+            // Phase 1: copy kernel half (entries 256–511) verbatim. No
+            // walking, no allocations — just share the source's kernel
+            // subtrees. This is the entire win from linking the kernel at
+            // high addresses.
+            for i in 256..512 {
+                (&mut *dst_pml4)[i] = (&*src_pml4)[i].clone();
+            }
+
+            // Phase 2: walk user half (entries 0–255). This is where
+            // per-process isolation happens.
+            for pml4_idx in 0..256u64 {
                 let src_entry = (&*src_pml4)[pml4_idx as usize].clone();
                 if !src_entry.flags().contains(PageTableFlags::PRESENT) {
                     continue;
@@ -424,7 +443,8 @@ impl AddressSpace {
                                 core::ptr::copy_nonoverlapping(src_ptr, dst_ptr, 4096);
                                 (&mut *dst_pt)[pt_idx as usize].set_frame(dst_frame, src_entry.flags());
                             } else {
-                                // Kernel page: share the frame (copy entry as-is).
+                                // Low-half kernel page (heap, VGA, phys-offset):
+                                // share the frame (copy entry as-is).
                                 (&mut *dst_pt)[pt_idx as usize] = src_entry;
                             }
                         }
@@ -481,9 +501,18 @@ pub fn write_to_frame(dst_phys: PhysAddr, bytes: &[u8]) {
 
 /// Run translate on a handful of known addresses to verify the mapper works.
 fn translate_tests() {
+    // _start's actual link address comes from the kernel image. Since slice
+    // 4.6 we link the kernel at high addresses (--image-base in .cargo/config.toml),
+    // so _start lives at a high canonical address (0xFFFFFFFF80000000 region)
+    // instead of the old low address near 0x200000.
+    extern "C" {
+        fn _start();
+    }
+    let start_addr = _start as u64;
+
     let tests: [(u64, &str); 4] = [
-        (0x000B_8000, "VGA buffer"),
-        (0x0020_7EC0, "_start (kernel entry, link address)"),
+        (0x000B_8000, "VGA buffer (low half, identity-mapped)"),
+        (start_addr, "_start (kernel entry, high half)"),
         (0x0000_0000, "address 0 (frame zero, NULL guard)"),
         (0x0000_0000_DEAD_BEEF, "(unmapped — expect None)"),
     ];

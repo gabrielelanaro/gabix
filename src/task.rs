@@ -449,12 +449,14 @@ pub fn spawn(name: &'static str, entry_fn: unsafe extern "C" fn()) -> u64 {
 /// Returns the child's PID.
 ///
 /// **Why AddressSpace is created INSIDE this function** (not passed in):
-/// the child's AS is built by `AddressSpace::new()`, which copies all 512
-/// entries from the currently-active PML4. For the child to be able to
-/// access its own kernel stack (which we allocate here), those mappings
-/// must already exist in the parent's PML4 at the moment we copy. So we
-/// allocate+map the kernel stack FIRST, then create the AS (which inherits
-/// the new mappings via the copy), then build the Task struct using that AS.
+/// `AddressSpace::new()` copies the parent's kernel-half PML4 entries
+/// (256–511), and `deep_clone_from_current()` walks the user half
+/// (0–255), sharing non-user frames via entry copy. For the child to
+/// access its own kernel stack (which we allocate here at a low-half
+/// address), those mappings must already exist in the parent's PML4
+/// at the moment deep_clone runs. So we allocate+map the kernel stack
+/// FIRST, then create the AS + deep_clone (which inherits the new
+/// mappings), then build the Task struct using that AS.
 pub fn spawn_fork_child(
     parent_pid: u64,
     saved_callee_saves: SavedCalleeSaves,

@@ -19,3 +19,15 @@ target = "x86_64-mini-os.json"
 # `bootimage runner`, which packages the kernel into a bootable image
 # and launches it in QEMU.
 runner = "bootimage runner"
+
+# Relink the kernel at high canonical virtual addresses (0xFFFFFFFF80000000 and
+# up) so that the kernel lives in PML4 (Page Map Level 4) entries 256-511 (upper
+# half), giving us the Linux-style split: kernel entries shared across all
+# processes, user entries per-process. Without this, the kernel ends up at low
+# addresses (entries 0-255) tangled with user memory, forcing the
+# `deep_clone_from_current` workaround in fork.
+#
+# `--image-base` shifts the entire binary uniformly — no custom linker script
+# needed. The bootloader crate reads the resulting ELF and maps us at whatever
+# virtual address we asked for.
+rustflags = ["-C", "link-arg=--image-base=0xFFFFFFFF80000000"]
