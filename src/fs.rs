@@ -119,6 +119,65 @@ lazy_static::lazy_static! {
 }
 
 // ============================================================
+// Directory entry (dirent) byte format
+// ============================================================
+//
+// A directory's `data` bytes are a sequence of variable-length records:
+//
+//   +-----------+-----------------+----------------+
+//   | name_len  | name [N bytes]  | ino [u64 LE]   |
+//   +-----------+-----------------+----------------+
+//      1 byte        name_len           8 bytes
+//
+// Total entry size is 1 + name_len + 8. Length-prefixing (instead of null
+// termination) lets the parser skip an entry in O(1): read name_len, advance
+// by entry_size. Linux's `struct linux_dirent64` uses the same trick via its
+// `d_reclen` field.
+
+/// Encode a single directory entry as `[name_len: u8][name: N bytes][ino: u64 LE]`.
+///
+/// Names longer than 255 bytes panic — Linux's NAME_MAX is 255 anyway.
+pub fn encode_dirent(name: &str, ino: u64) -> Vec<u8> {
+    let name_bytes = name.as_bytes();
+    assert!(
+        name_bytes.len() <= u8::MAX as usize,
+        "dirent name too long: {} bytes (max {})",
+        name_bytes.len(),
+        u8::MAX
+    );
+    let mut out = Vec::with_capacity(1 + name_bytes.len() + 8);
+    out.push(name_bytes.len() as u8);
+    out.extend_from_slice(name_bytes);
+    out.extend_from_slice(&ino.to_le_bytes());
+    out
+}
+
+/// Walk `dir_bytes` looking for an entry whose name matches `name`. Returns
+/// the matching inode number on hit, `None` on miss, on empty input, or if
+/// `dir_bytes` is truncated mid-entry.
+pub fn lookup_in_dir(dir_bytes: &[u8], name: &str) -> Option<u64> {
+    let name_bytes = name.as_bytes();
+    let mut i = 0;
+    while i < dir_bytes.len() {
+        let name_len = dir_bytes[i] as usize;
+        let entry_size = 1 + name_len + 8;
+        if i + entry_size > dir_bytes.len() {
+            return None; // truncated final entry — corrupted directory
+        }
+        let entry_name = &dir_bytes[i + 1..i + 1 + name_len];
+        if entry_name == name_bytes {
+            let ino_start = i + 1 + name_len;
+            let ino_bytes: [u8; 8] = dir_bytes[ino_start..ino_start + 8]
+                .try_into()
+                .ok()?;
+            return Some(u64::from_le_bytes(ino_bytes));
+        }
+        i += entry_size;
+    }
+    None
+}
+
+// ============================================================
 // File — an open instance
 // ============================================================
 

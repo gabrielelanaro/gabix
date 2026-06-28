@@ -21,6 +21,7 @@ mod syscall;
 mod fs;
 
 use bootloader::BootInfo;
+use alloc::vec::Vec;
 use core::alloc::Layout;
 use core::panic::PanicInfo;
 use core::sync::atomic::{AtomicU64, Ordering};
@@ -182,6 +183,29 @@ pub extern "C" fn _start(boot_info: &'static BootInfo) -> ! {
     println!("[test]   allocated e={:?} (should equal previous a)", e);
 
     println!("[test]   {} frames free after test", frame_allocator::frames_free());
+
+    println!("[test] dirent encode/decode");
+    {
+        use crate::fs::{encode_dirent, lookup_in_dir};
+        let mut dir = Vec::new();
+        dir.extend_from_slice(&encode_dirent("foo.txt", 17));
+        dir.extend_from_slice(&encode_dirent("hello", 42));
+
+        let foo_ino = lookup_in_dir(&dir, "foo.txt");
+        let hello_ino = lookup_in_dir(&dir, "hello");
+        let missing_ino = lookup_in_dir(&dir, "missing");
+        let empty_ino = lookup_in_dir(&[], "anything");
+
+        println!("[test]   lookup foo.txt -> {:?} (expect Some(17))", foo_ino);
+        println!("[test]   lookup hello   -> {:?} (expect Some(42))", hello_ino);
+        println!("[test]   lookup missing -> {:?} (expect None)", missing_ino);
+        println!("[test]   lookup in empty -> {:?} (expect None)", empty_ino);
+
+        assert_eq!(foo_ino, Some(17));
+        assert_eq!(hello_ino, Some(42));
+        assert_eq!(missing_ino, None);
+        assert_eq!(empty_ino, None);
+    }
 
     println!("[boot] enabling interrupts");
     x86_64::instructions::interrupts::enable();
