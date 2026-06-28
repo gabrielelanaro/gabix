@@ -318,6 +318,8 @@ pub extern "C" fn _start(boot_info: &'static BootInfo) -> ! {
         println!("[test]   Intel host bridge found — PCI config access works");
     }
 
+    pci::enumerate();
+
     println!("[boot] enabling interrupts");
     x86_64::instructions::interrupts::enable();
 

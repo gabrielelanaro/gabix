@@ -9,6 +9,7 @@
 //!
 //! See Lesson 5 for the bitfield diagram of the address word.
 
+use crate::println;
 use x86_64::instructions::port::Port;
 
 /// I/O port for the PCI configuration address (32-bit).
@@ -62,5 +63,70 @@ pub fn config_write(bus: u8, device: u8, func: u8, offset: u8, value: u32) {
         let mut data_port: Port<u32> = Port::new(CONFIG_DATA);
         addr_port.write(address);
         data_port.write(value);
+    }
+}
+
+/// Look up the human-readable name for a base class code.
+///
+/// The base class is the top-level "what kind of device is this" — disk,
+/// network, display, bridge, etc. Full table at
+/// https://pci-ids.ucw.cz/read/PD/ — here we just include the common ones.
+fn class_name(base_class: u8) -> &'static str {
+    match base_class {
+        0x00 => "unclassified",
+        0x01 => "mass storage",
+        0x02 => "network",
+        0x03 => "display",
+        0x04 => "multimedia",
+        0x05 => "memory controller",
+        0x06 => "bridge",
+        0x07 => "comm controller",
+        0x08 => "generic peripheral",
+        0x09 => "input device",
+        0x0B => "processor",
+        0x0C => "serial bus (USB etc.)",
+        0x0D => "wireless",
+        _ => "other",
+    }
+}
+
+/// Walk bus 0, every device (0-31), every function (0-7). For each present
+/// slot (vendor != 0xFFFF), print the bus:device.function coordinates, the
+/// vendor/device IDs, and the class code.
+///
+/// QEMU's default pc topology puts everything on bus 0, so we don't need to
+/// scan buses 1-255. Real PCI bridges can fan out to subordinate buses —
+/// Linux's `pci_scan_bus` recurses; we don't need that complexity here.
+pub fn enumerate() {
+    println!("[pci] scanning bus 0");
+    for device in 0..32u8 {
+        for func in 0..8u8 {
+            // Reading offset 0x00 returns vendor_id (low 16) | device_id (high 16)
+            let vendor_word = config_read(0, device, func, 0x00);
+            let vendor_id = (vendor_word & 0xFFFF) as u16;
+            if vendor_id == 0xFFFF {
+                continue; // absent slot
+            }
+            let device_id = (vendor_word >> 16) as u16;
+
+            // Reading offset 0x08 returns revision (low 8) | prog_if (8) |
+            // subclass (8) | base_class (high 8). We extract base_class for
+            // the human-readable name.
+            let class_word = config_read(0, device, func, 0x08);
+            let base_class = ((class_word >> 24) & 0xFF) as u8;
+            let subclass = ((class_word >> 16) & 0xFF) as u8;
+
+            println!(
+                "[pci] {:02x}:{:02x}.{} vendor={:04x} device={:04x} class={:02x}{:02x} ({})",
+                0u8,
+                device,
+                func,
+                vendor_id,
+                device_id,
+                base_class,
+                subclass,
+                class_name(base_class)
+            );
+        }
     }
 }
