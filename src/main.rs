@@ -276,6 +276,27 @@ pub extern "C" fn _start(boot_info: &'static BootInfo) -> ! {
         assert_eq!(trailing_ino, Some(2));
     }
 
+    println!("[test] multiple files (3.6)");
+    {
+        use crate::fs::{resolve_path};
+
+        let hello = resolve_path("/hello.txt").expect("hello.txt should resolve");
+        let secret = resolve_path("/secret.txt").expect("secret.txt should resolve");
+
+        assert_ne!(hello.ino, secret.ino);
+        println!(
+            "[test]   hello.txt ino={}, secret.txt ino={} (must differ)",
+            hello.ino, secret.ino
+        );
+
+        let hello_data = hello.data.lock();
+        let secret_data = secret.data.lock();
+        assert_eq!(&*hello_data, b"hello vfs\n");
+        assert_eq!(&*secret_data, b"top secret\n");
+        println!("[test]   hello.txt bytes = {:?}", &**hello_data);
+        println!("[test]   secret.txt bytes = {:?}", &**secret_data);
+    }
+
     println!("[boot] enabling interrupts");
     x86_64::instructions::interrupts::enable();
 

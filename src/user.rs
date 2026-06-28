@@ -125,58 +125,84 @@ const USER_DATA_SELECTOR: u16 = 0x1B;
 /// (IF, interrupt enable). So 0b0010_0000_0010 = 0x202.
 const USER_RFLAGS: u64 = 0x202;
 
-/// The user program in raw x86-64 machine code (151 bytes total).
+/// The user program in raw x86-64 machine code (270 bytes total).
 ///
-/// Lesson 3 step 3.5: open by real path. Calls `open("/hello.txt")`,
-/// reads the bytes, writes them to stdout, closes, exits. Proves the path
-/// resolution from step 3.4 works end-to-end with a real user program —
-/// the kernel walks the root directory, resolves "hello.txt" to ino 2,
-/// returns a File wrapping that inode.
+/// Lesson 3 step 3.6: open two different files by path, prove they resolve
+/// to different inodes with different contents. Cycle 1 opens "/hello.txt",
+/// reads "hello vfs\n", prints to stdout, closes. Cycle 2 opens
+/// "/secret.txt", reads "top secret\n", prints, closes. Then exits.
 ///
 /// Pseudocode:
-///   fd = open("/hello.txt")    ; syscall 2 (path now actually parsed)
-///   n = read(fd, buf, 10)      ; syscall 0 — reads "hello vfs\n"
-///   write(1, buf, 10)          ; syscall 1 — prints "hello vfs\n" to stdout
-///   close(fd)                  ; syscall 3
-///   exit(0)                    ; syscall 60
+///   ; Cycle 1 — hello.txt (10 bytes)
+///   fd = open("/hello.txt")
+///   n = read(fd, buf, 10)
+///   write(1, buf, 10)
+///   close(fd)
+///   ; Cycle 2 — secret.txt (11 bytes)
+///   fd = open("/secret.txt")
+///   n = read(fd, buf, 11)
+///   write(1, buf, 11)
+///   close(fd)
+///   exit(0)
 ///
-/// Output should show: `hello vfs` followed by a newline, plus the kernel
-/// trace lines for each syscall including `sys_open(path="/hello.txt")`.
+/// Expected serial output: "hello vfs" newline "top secret" newline, plus
+/// kernel syscall trace lines.
 ///
 /// Disassembly (offsets from start of user code at 0x4000_0000):
-///   0x00: mov rax, 2           ; SYS_OPEN
-///   0x0A: mov rdi, 0x4000008C  ; path = "/hello.txt" (string at end of program)
-///   0x14: syscall              ; returns fd=0 (first open in fresh table)
-///   0x16: xor rdi, rdi         ; fd = 0
-///   0x19: mov rsi, 0x4000007C  ; BUF_OUT (16 bytes after the code)
-///   0x23: mov rdx, 10          ; length = 10
-///   0x2D: xor rax, rax         ; SYS_READ
-///   0x30: syscall              ; reads "hello vfs\n" into BUF_OUT
-///   0x32: mov rdi, 1           ; fd = 1 (stdout)
-///   0x3C: mov rsi, 0x4000007C  ; BUF_OUT (same buffer)
-///   0x46: mov rdx, 10          ; length = 10
-///   0x50: mov rax, 1           ; SYS_WRITE
-///   0x5A: syscall              ; prints "hello vfs\n" to serial
-///   0x5C: xor rdi, rdi         ; fd = 0
-///   0x5F: mov rax, 3           ; SYS_CLOSE
-///   0x69: syscall              ; closes fd=0
-///   0x6B: xor rdi, rdi         ; exit code = 0
-///   0x6E: mov rax, 60          ; SYS_EXIT
-///   0x78: syscall
-///   0x7A: jmp -2               ; safety net
-///   0x7C: <16-byte buffer>     ; BUF_OUT
-///   0x8C: "/hello.txt\0"       ; path string (11 bytes)
-const USER_PROGRAM: [u8; 151] = [
+///   ; Cycle 1: hello.txt
+///   0x00: mov rax, 2            ; SYS_OPEN
+///   0x0A: mov rdi, 0x400000F7   ; path = "/hello.txt"
+///   0x14: syscall               ; returns fd=0
+///   0x16: xor rdi, rdi          ; fd = 0
+///   0x19: mov rsi, 0x400000E7   ; BUF_OUT
+///   0x23: mov rdx, 10
+///   0x2D: xor rax, rax          ; SYS_READ
+///   0x30: syscall
+///   0x32: mov rdi, 1            ; stdout
+///   0x3C: mov rsi, 0x400000E7   ; BUF_OUT
+///   0x46: mov rdx, 10
+///   0x50: mov rax, 1            ; SYS_WRITE
+///   0x5A: syscall
+///   0x5C: xor rdi, rdi          ; fd = 0
+///   0x5F: mov rax, 3            ; SYS_CLOSE
+///   0x69: syscall
+///   ; Cycle 2: secret.txt
+///   0x6B: mov rax, 2            ; SYS_OPEN
+///   0x75: mov rdi, 0x40000102   ; path = "/secret.txt"
+///   0x7F: syscall               ; returns fd=0 (hello closed)
+///   0x81: xor rdi, rdi          ; fd = 0
+///   0x84: mov rsi, 0x400000E7   ; BUF_OUT
+///   0x8E: mov rdx, 11
+///   0x98: xor rax, rax          ; SYS_READ
+///   0x9B: syscall
+///   0x9D: mov rdi, 1            ; stdout
+///   0xA7: mov rsi, 0x400000E7   ; BUF_OUT
+///   0xB1: mov rdx, 11
+///   0xBB: mov rax, 1            ; SYS_WRITE
+///   0xC5: syscall
+///   0xC7: xor rdi, rdi          ; fd = 0
+///   0xCA: mov rax, 3            ; SYS_CLOSE
+///   0xD4: syscall
+///   ; Exit
+///   0xD6: xor rdi, rdi          ; exit code = 0
+///   0xD9: mov rax, 60           ; SYS_EXIT
+///   0xE3: syscall
+///   0xE5: jmp -2                ; safety net
+///   ; Data
+///   0xE7: <16-byte buffer>      ; BUF_OUT
+///   0xF7: "/hello.txt\0"        ; 11 bytes
+///   0x102: "/secret.txt\0"      ; 12 bytes
+const USER_PROGRAM: [u8; 270] = [
     // 0x00: mov rax, 2 (SYS_OPEN)
     0x48, 0xB8, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    // 0x0A: mov rdi, 0x4000008C (path = "/hello.txt")
-    0x48, 0xBF, 0x8C, 0x00, 0x00, 0x40, 0x00, 0x00, 0x00, 0x00,
+    // 0x0A: mov rdi, 0x400000F7 (path = "/hello.txt")
+    0x48, 0xBF, 0xF7, 0x00, 0x00, 0x40, 0x00, 0x00, 0x00, 0x00,
     // 0x14: syscall (returns fd=0)
     0x0F, 0x05,
     // 0x16: xor rdi, rdi (fd = 0)
     0x48, 0x31, 0xFF,
-    // 0x19: mov rsi, 0x4000007C (BUF_OUT)
-    0x48, 0xBE, 0x7C, 0x00, 0x00, 0x40, 0x00, 0x00, 0x00, 0x00,
+    // 0x19: mov rsi, 0x400000E7 (BUF_OUT)
+    0x48, 0xBE, 0xE7, 0x00, 0x00, 0x40, 0x00, 0x00, 0x00, 0x00,
     // 0x23: mov rdx, 10 (length)
     0x48, 0xBA, 0x0A, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
     // 0x2D: xor rax, rax (SYS_READ = 0)
@@ -185,33 +211,70 @@ const USER_PROGRAM: [u8; 151] = [
     0x0F, 0x05,
     // 0x32: mov rdi, 1 (fd=1, stdout)
     0x48, 0xBF, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    // 0x3C: mov rsi, 0x4000007C (BUF_OUT, same buffer)
-    0x48, 0xBE, 0x7C, 0x00, 0x00, 0x40, 0x00, 0x00, 0x00, 0x00,
+    // 0x3C: mov rsi, 0x400000E7 (BUF_OUT, same buffer)
+    0x48, 0xBE, 0xE7, 0x00, 0x00, 0x40, 0x00, 0x00, 0x00, 0x00,
     // 0x46: mov rdx, 10 (length)
     0x48, 0xBA, 0x0A, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
     // 0x50: mov rax, 1 (SYS_WRITE)
     0x48, 0xB8, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
     // 0x5A: syscall (prints to serial)
     0x0F, 0x05,
-    // 0x5C: xor rdi, rdi (fd = 0)
+    // 0x5C: xor rdi, rdi (fd = 0 for close)
     0x48, 0x31, 0xFF,
     // 0x5F: mov rax, 3 (SYS_CLOSE)
     0x48, 0xB8, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    // 0x69: syscall
+    // 0x69: syscall (closes hello)
     0x0F, 0x05,
-    // 0x6B: xor rdi, rdi (exit code = 0)
+
+    // 0x6B: mov rax, 2 (SYS_OPEN — second cycle)
+    0x48, 0xB8, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    // 0x75: mov rdi, 0x40000102 (path = "/secret.txt")
+    0x48, 0xBF, 0x02, 0x01, 0x00, 0x40, 0x00, 0x00, 0x00, 0x00,
+    // 0x7F: syscall (returns fd=0 again — hello freed it)
+    0x0F, 0x05,
+    // 0x81: xor rdi, rdi (fd = 0)
     0x48, 0x31, 0xFF,
-    // 0x6E: mov rax, 60 (SYS_EXIT)
-    0x48, 0xB8, 0x3C, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    // 0x78: syscall
+    // 0x84: mov rsi, 0x400000E7 (BUF_OUT)
+    0x48, 0xBE, 0xE7, 0x00, 0x00, 0x40, 0x00, 0x00, 0x00, 0x00,
+    // 0x8E: mov rdx, 11 (length for "top secret\n")
+    0x48, 0xBA, 0x0B, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    // 0x98: xor rax, rax (SYS_READ = 0)
+    0x48, 0x31, 0xC0,
+    // 0x9B: syscall (reads "top secret\n" into BUF_OUT)
     0x0F, 0x05,
-    // 0x7A: jmp -2 (safety net)
+    // 0x9D: mov rdi, 1 (fd=1, stdout)
+    0x48, 0xBF, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    // 0xA7: mov rsi, 0x400000E7 (BUF_OUT, same buffer)
+    0x48, 0xBE, 0xE7, 0x00, 0x00, 0x40, 0x00, 0x00, 0x00, 0x00,
+    // 0xB1: mov rdx, 11 (length)
+    0x48, 0xBA, 0x0B, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    // 0xBB: mov rax, 1 (SYS_WRITE)
+    0x48, 0xB8, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    // 0xC5: syscall (prints to serial)
+    0x0F, 0x05,
+    // 0xC7: xor rdi, rdi (fd = 0 for close)
+    0x48, 0x31, 0xFF,
+    // 0xCA: mov rax, 3 (SYS_CLOSE)
+    0x48, 0xB8, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    // 0xD4: syscall (closes secret)
+    0x0F, 0x05,
+
+    // 0xD6: xor rdi, rdi (exit code = 0)
+    0x48, 0x31, 0xFF,
+    // 0xD9: mov rax, 60 (SYS_EXIT)
+    0x48, 0xB8, 0x3C, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    // 0xE3: syscall
+    0x0F, 0x05,
+    // 0xE5: jmp -2 (safety net)
     0xEB, 0xFE,
-    // 0x7C: 16-byte scratch buffer for read() output
+
+    // 0xE7: 16-byte scratch buffer for read() output
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    // 0x8C: "/hello.txt\0" (11 bytes — path string passed to sys_open)
+    // 0xF7: "/hello.txt\0" (11 bytes — first path string)
     0x2F, 0x68, 0x65, 0x6C, 0x6C, 0x6F, 0x2E, 0x74, 0x78, 0x74, 0x00,
+    // 0x102: "/secret.txt\0" (12 bytes — second path string)
+    0x2F, 0x73, 0x65, 0x63, 0x72, 0x65, 0x74, 0x2E, 0x74, 0x78, 0x74, 0x00,
 ];
 
 /// Transition from kernel (ring 0) to user (ring 3) and start running

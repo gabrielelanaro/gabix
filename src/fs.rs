@@ -332,21 +332,24 @@ impl FdTable {
 pub const ROOT_INO: u64 = 1;
 
 /// Reserved inode number for the `hello.txt` file. Hardcoded so the boot test
-/// in step 3.3 can assert it specifically. Step 3.6 will add more files with
-/// dynamically allocated inode numbers.
+/// in step 3.3 can assert it specifically. Step 3.6 adds `secret.txt` at ino 3.
 const HELLO_INO: u64 = 2;
+
+/// Reserved inode number for the `secret.txt` file. Step 3.6 adds this so we
+/// can prove path resolution distinguishes between multiple files.
+const SECRET_INO: u64 = 3;
 
 lazy_static::lazy_static! {
     /// The root directory of the mini-os filesystem.
     ///
     /// Initialized lazily on first access. The initializer:
-    ///   1. Allocates the root inode (`Inode::new_dir`), which gets `ino=1`
-    ///      because nothing else has been allocated yet.
-    ///   2. Allocates the `hello.txt` inode (`Inode::new_file(b"hello vfs\n")`),
-    ///      which gets `ino=2`.
-    ///   3. Appends a dirent record `("hello.txt", 2)` to the root's bytes.
+    ///   1. Allocates the root inode (`Inode::new_dir`), which gets `ino=1`.
+    ///   2. Allocates `hello.txt` (`Inode::new_file(b"hello vfs\n")`), ino=2.
+    ///   3. Allocates `secret.txt` (`Inode::new_file(b"top secret\n")`), ino=3.
+    ///   4. Appends two dirent records to root's bytes.
     ///
-    /// After this runs, the filesystem is a one-file directory: `/hello.txt`.
+    /// After this runs, the filesystem has two files: `/hello.txt` and
+    /// `/secret.txt`.
     pub static ref ROOT_INODE: Arc<Inode> = {
         let root = Inode::new_dir();
         debug_assert_eq!(root.ino, ROOT_INO,
@@ -356,9 +359,15 @@ lazy_static::lazy_static! {
         debug_assert_eq!(hello.ino, HELLO_INO,
             "hello.txt must be the second inode allocated");
 
-        // Append the directory entry: name="hello.txt", ino=hello.ino
-        let entry = encode_dirent("hello.txt", hello.ino);
-        root.data.lock().extend_from_slice(&entry);
+        let secret = Inode::new_file(b"top secret\n");
+        debug_assert_eq!(secret.ino, SECRET_INO,
+            "secret.txt must be the third inode allocated");
+
+        // Append both directory entries to root's data
+        let mut root_data = root.data.lock();
+        root_data.extend_from_slice(&encode_dirent("hello.txt", hello.ino));
+        root_data.extend_from_slice(&encode_dirent("secret.txt", secret.ino));
+        drop(root_data);
 
         root
     };
