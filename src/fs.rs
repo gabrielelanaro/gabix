@@ -15,36 +15,107 @@
 //! hand `Arc<File>` clones out so the scheduler and the syscall handler can
 //! both touch the same File without aliasing.
 
+use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
+use core::sync::atomic::{AtomicU64, Ordering};
 use spin::Mutex;
+
+// ============================================================
+// InodeKind — what kind of bytes an inode holds
+// ============================================================
+
+/// What kind of bytes an `Inode` holds.
+///
+/// Linux packs this into the upper bits of `i_mode` (the same field that
+/// holds permission bits) alongside six other kinds: symlink, block device,
+/// character device, named pipe, socket. We use a clean Rust enum — easier
+/// to pattern-match, easier to read. The enum grows as we add the others.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InodeKind {
+    /// A regular file. Bytes are the file's contents.
+    File,
+    /// A directory. Bytes are a sequence of directory entries (dirents).
+    Dir,
+}
 
 // ============================================================
 // Inode — the file itself
 // ============================================================
 
-/// A file's identity: its bytes, mutable through interior mutability.
+/// A file's identity: a stable inode number, a kind discriminant, and the
+/// bytes themselves, mutable through interior mutability.
 ///
-/// In a real VFS this would also hold metadata (size, owner uid, group gid,
-/// permissions, timestamps, link count, allocated blocks). For Lesson 2 we
-/// keep only the data — the rest gets added in Lesson 3 when we grow the
-/// inode layer to support multiple files and metadata.
-///
-/// An inode has no name. Names are dentries' job.
+/// An inode has no name. Names are dentries' job — directory entries that
+/// map a name to an inode number, which is what `ino` is for.
 pub struct Inode {
+    /// Stable identifier for this inode. Stored in directory entries, returned
+    /// to userspace by `stat()`. Survives inode cache eviction in Linux's
+    /// design (and would survive reboot on a disk-backed filesystem). Allocated
+    /// monotonically from `NEXT_INO`.
+    pub ino: u64,
+
+    /// File or directory. Tells the kernel how to interpret `data` — as file
+    /// contents or as bytes formatted as directory entries.
+    pub kind: InodeKind,
+
     /// The file's bytes. `Mutex` for interior mutability so two `File`
     /// instances pointing at the same `Inode` can both write without aliasing
-    /// violations.
+    /// violations. For directories, the bytes are dirent records.
     pub data: Mutex<Vec<u8>>,
 }
 
+/// Monotonic counter for allocating fresh inode numbers. Starts at 1 — Linux
+/// reserves inode 0 as "no inode" (the NULL-equivalent), and we follow that
+/// convention. `fetch_add(1)` returns the value before the add, so the first
+/// allocated inode gets number 1.
+static NEXT_INO: AtomicU64 = AtomicU64::new(1);
+
 impl Inode {
-    /// Create a new inode owning a copy of `initial`.
-    pub fn new(initial: &[u8]) -> Self {
-        Self {
-            data: Mutex::new(Vec::from(initial)),
-        }
+    /// Allocate a fresh regular-file inode with the given initial bytes,
+    /// register it, and return an `Arc` to it.
+    pub fn new_file(initial: &[u8]) -> Arc<Inode> {
+        Self::alloc(InodeKind::File, Vec::from(initial))
     }
+
+    /// Allocate a fresh empty directory inode, register it, and return an
+    /// `Arc` to it. The directory's bytes start empty — directory entries are
+    /// added later by appending dirent records to `data`.
+    pub fn new_dir() -> Arc<Inode> {
+        Self::alloc(InodeKind::Dir, Vec::new())
+    }
+
+    fn alloc(kind: InodeKind, data: Vec<u8>) -> Arc<Inode> {
+        let ino = NEXT_INO.fetch_add(1, Ordering::SeqCst);
+        let inode = Arc::new(Inode {
+            ino,
+            kind,
+            data: Mutex::new(data),
+        });
+        REGISTRY.lock().insert(ino, inode.clone());
+        inode
+    }
+
+    /// Look up an inode by number in the global registry. Returns a fresh
+    /// `Arc` clone (cheap refcount bump) if found, `None` if not registered.
+    pub fn lookup(ino: u64) -> Option<Arc<Inode>> {
+        REGISTRY.lock().get(&ino).cloned()
+    }
+}
+
+// ============================================================
+// REGISTRY — global inode-number-to-inode map (the inode cache)
+// ============================================================
+
+/// The kernel's inode cache: maps inode numbers to live `Arc<Inode>` entries.
+///
+/// This is the mini-os analog of Linux's inode cache (historically an
+/// `inode_hashtable`, in modern kernels an xarray-indexed structure). When a
+/// directory entry's `ino` field is resolved during path walk, this is where
+/// the actual inode struct is fetched from.
+lazy_static::lazy_static! {
+    pub static ref REGISTRY: Mutex<BTreeMap<u64, Arc<Inode>>> =
+        Mutex::new(BTreeMap::new());
 }
 
 // ============================================================
@@ -150,8 +221,7 @@ lazy_static::lazy_static! {
     /// The single inode that exists in Lesson 2's "filesystem". `sys_open`
     /// ignores its path argument and returns a `File` pointing here.
     ///
-    /// Lesson 3 replaces this with a real path-indexed table of inodes.
-    pub static ref HARDCODED_INODE: Arc<Inode> = {
-        Arc::new(Inode::new(b"hello vfs\n"))
-    };
+    /// Lesson 3 step 3.3 replaces this with a real root directory containing
+    /// named entries pointing at registered inodes.
+    pub static ref HARDCODED_INODE: Arc<Inode> = Inode::new_file(b"hello vfs\n");
 }
