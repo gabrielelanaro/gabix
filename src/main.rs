@@ -19,6 +19,7 @@ mod task;
 mod user;
 mod syscall;
 mod fs;
+mod pci;
 
 use bootloader::BootInfo;
 use alloc::vec::Vec;
@@ -295,6 +296,26 @@ pub extern "C" fn _start(boot_info: &'static BootInfo) -> ! {
         assert_eq!(&*secret_data, b"top secret\n");
         println!("[test]   hello.txt bytes = {:?}", &**hello_data);
         println!("[test]   secret.txt bytes = {:?}", &**secret_data);
+    }
+
+    println!("[test] PCI config space access (5.2)");
+    {
+        // Read the host bridge at 00:00.0 — should be Intel (vendor 0x8086).
+        // Verifies that port I/O to 0xCF8/0xCFC works end-to-end.
+        let word0 = pci::config_read(0, 0, 0, 0x00);
+        let vendor_id = (word0 & 0xFFFF) as u16;
+        let device_id = (word0 >> 16) as u16;
+        println!(
+            "[test]   00:00.0 vendor={:04x} device={:04x}",
+            vendor_id, device_id
+        );
+        assert_eq!(
+            vendor_id, 0x8086,
+            "host bridge at 00:00.0 should be Intel (0x8086); \
+             got 0x{:04x} — PCI config access is broken",
+            vendor_id
+        );
+        println!("[test]   Intel host bridge found — PCI config access works");
     }
 
     println!("[boot] enabling interrupts");
