@@ -273,14 +273,54 @@ impl FdTable {
 }
 
 // ============================================================
-// Hardcoded inode for Lesson 2 testing
+// The filesystem itself — root directory and its initial contents
 // ============================================================
 
+/// Reserved inode number for the root directory. Linux's ext4 uses inode 2
+/// for the root of a fresh filesystem; we use 1 for simplicity (Linux reserves
+/// inode 1 for its "bad blocks" list, which we don't have).
+pub const ROOT_INO: u64 = 1;
+
+/// Reserved inode number for the `hello.txt` file. Hardcoded so the boot test
+/// in step 3.3 can assert it specifically. Step 3.6 will add more files with
+/// dynamically allocated inode numbers.
+const HELLO_INO: u64 = 2;
+
 lazy_static::lazy_static! {
-    /// The single inode that exists in Lesson 2's "filesystem". `sys_open`
-    /// ignores its path argument and returns a `File` pointing here.
+    /// The root directory of the mini-os filesystem.
     ///
-    /// Lesson 3 step 3.3 replaces this with a real root directory containing
-    /// named entries pointing at registered inodes.
-    pub static ref HARDCODED_INODE: Arc<Inode> = Inode::new_file(b"hello vfs\n");
+    /// Initialized lazily on first access. The initializer:
+    ///   1. Allocates the root inode (`Inode::new_dir`), which gets `ino=1`
+    ///      because nothing else has been allocated yet.
+    ///   2. Allocates the `hello.txt` inode (`Inode::new_file(b"hello vfs\n")`),
+    ///      which gets `ino=2`.
+    ///   3. Appends a dirent record `("hello.txt", 2)` to the root's bytes.
+    ///
+    /// After this runs, the filesystem is a one-file directory: `/hello.txt`.
+    pub static ref ROOT_INODE: Arc<Inode> = {
+        let root = Inode::new_dir();
+        debug_assert_eq!(root.ino, ROOT_INO,
+            "root must be the first inode allocated; something allocated first");
+
+        let hello = Inode::new_file(b"hello vfs\n");
+        debug_assert_eq!(hello.ino, HELLO_INO,
+            "hello.txt must be the second inode allocated");
+
+        // Append the directory entry: name="hello.txt", ino=hello.ino
+        let entry = encode_dirent("hello.txt", hello.ino);
+        root.data.lock().extend_from_slice(&entry);
+
+        root
+    };
+
+    /// Legacy alias for step 3.3 — points at the same `Arc<Inode>` as the
+    /// `hello.txt` entry in the root directory. Step 3.4 replaces the
+    /// `sys_open` call site that uses this with real path resolution.
+    pub static ref HARDCODED_INODE: Arc<Inode> = {
+        // Force ROOT_INODE initialization first, so hello.txt (ino=2) is
+        // registered in the REGISTRY before we look it up below.
+        let _ = &*ROOT_INODE;
+        Inode::lookup(HELLO_INO).expect(
+            "hello.txt inode should be registered after ROOT_INODE init")
+    };
 }

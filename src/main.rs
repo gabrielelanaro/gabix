@@ -207,6 +207,39 @@ pub extern "C" fn _start(boot_info: &'static BootInfo) -> ! {
         assert_eq!(empty_ino, None);
     }
 
+    println!("[test] filesystem setup (3.3)");
+    {
+        use crate::fs::{lookup_in_dir, Inode, InodeKind, HARDCODED_INODE, ROOT_INODE};
+
+        let root = ROOT_INODE.clone(); // triggers lazy_static init
+        println!("[test]   root inode: ino={} kind={:?}", root.ino, root.kind);
+
+        let root_data = root.data.lock();
+        let hello_ino_in_root = lookup_in_dir(&root_data, "hello.txt");
+        println!("[test]   lookup 'hello.txt' in root -> {:?}", hello_ino_in_root);
+        drop(root_data);
+
+        assert_eq!(root.ino, 1);
+        assert_eq!(root.kind, InodeKind::Dir);
+        assert_eq!(hello_ino_in_root, Some(2));
+
+        let hello_inode = Inode::lookup(2).expect("hello.txt inode should be registered");
+        let hello_data = hello_inode.data.lock();
+        println!(
+            "[test]   inode 2: kind={:?}, {} bytes: {:?}",
+            hello_inode.kind,
+            hello_data.len(),
+            &*hello_data
+        );
+        assert_eq!(hello_inode.kind, InodeKind::File);
+        assert_eq!(&*hello_data, b"hello vfs\n");
+
+        // HARDCODED_INODE alias must resolve to the same inode (ino=2)
+        let hardcoded = HARDCODED_INODE.clone();
+        assert_eq!(hardcoded.ino, 2);
+        println!("[test]   HARDCODED_INODE.ino = {} (matches hello.txt)", hardcoded.ino);
+    }
+
     println!("[boot] enabling interrupts");
     x86_64::instructions::interrupts::enable();
 
