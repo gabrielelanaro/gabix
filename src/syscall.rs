@@ -410,6 +410,42 @@ fn is_user_range(ptr: u64, len: u64) -> bool {
     }
 }
 
+/// Read a null-terminated path string from user memory.
+///
+/// Maximum length is 256 bytes (Linux's `PATH_MAX` is 4096, but we don't have
+/// long paths in mini-os). Returns `None` on:
+///   - NULL pointer (`ptr == 0`)
+///   - Pointer outside user address space (`is_user_range` fails)
+///   - No null terminator within 256 bytes
+///   - Invalid UTF-8 in the bytes before the null (mini-os paths are UTF-8;
+///     Linux paths are raw byte strings, a generality we don't need yet)
+///
+/// **Known limitation:** a pointer that's in user range but unmapped still
+/// page-faults during the read. Without a page-fault handler that triple-
+/// faults the kernel. See learning-record 0005 for the broader pattern.
+fn read_user_path(ptr: u64) -> Option<alloc::string::String> {
+    const MAX_PATH: usize = 256;
+
+    if ptr == 0 {
+        return None;
+    }
+    if !is_user_range(ptr, MAX_PATH as u64) {
+        return None;
+    }
+
+    // SAFETY: `ptr` is non-NULL and inside user range. We read at most
+    // MAX_PATH bytes. The in-range-but-unmapped case is a known limitation
+    // documented above.
+    let bytes: &[u8] = unsafe { core::slice::from_raw_parts(ptr as *const u8, MAX_PATH) };
+    let end = bytes.iter().position(|&b| b == 0)?;
+    if end == 0 {
+        return None; // empty path
+    }
+
+    let s = core::str::from_utf8(&bytes[..end]).ok()?;
+    Some(alloc::string::String::from(s))
+}
+
 /// SYS_READ: read up to `length` bytes from the file at `fd` into the user
 /// buffer at `buffer_ptr`.
 ///
@@ -564,26 +600,40 @@ fn sys_close(fd: u64) -> u64 {
     if ok { 0 } else { u64::MAX }
 }
 
-/// SYS_OPEN: open a file by path, return a file descriptor (FD).
+/// SYS_OPEN: open a file by absolute path, return a file descriptor (FD).
 ///
-/// Lesson 2 version: ignores `name_ptr` entirely. There is exactly one
-/// inode in the world (`fs::HARDCODED_INODE`), and `open` of any path
-/// returns a fresh `File` pointing at it with cursor=0. The FD number is
-/// whatever the per-process FD table assigns (lowest free, starting from 0
-/// — Lesson 5 will reserve 0/1/2 for stdio and start file FDs at 3).
+/// Lesson 3 version: actually parses `name_ptr` as a null-terminated path
+/// and walks the directory tree to resolve it. Returns `u64::MAX` (-1) on
+/// any failure: bad pointer, relative path (not supported yet), missing
+/// file, intermediate component not a directory.
 ///
-/// Returns the FD number on success. Always succeeds in Lesson 2 (no
-/// error path). Lesson 3 will parse `name_ptr` as a null-terminated path
-/// and return `u64::MAX` (-1) on no-such-file.
+/// On success: wraps the resolved `Arc<Inode>` in a fresh `File` (cursor=0),
+/// inserts into the current task's FD table, returns the FD number (lowest
+/// free, starting at 0 — Lesson 5 will reserve 0/1/2 for stdio and start
+/// file FDs at 3).
 fn sys_open(name_ptr: u64) -> u64 {
-    // We do not yet read the path from user memory — Lesson 3's problem.
-    // For Lesson 2 we log the raw pointer so we can see it came through.
-    let file = Arc::new(fs::File::new(Arc::clone(&fs::HARDCODED_INODE)));
+    let path = match read_user_path(name_ptr) {
+        Some(p) => p,
+        None => {
+            println!(
+                "[syscall] sys_open: bad path pointer 0x{:x}",
+                name_ptr
+            );
+            return u64::MAX;
+        }
+    };
+
+    let inode = match fs::resolve_path(&path) {
+        Some(i) => i,
+        None => {
+            println!("[syscall] sys_open: no such file: {:?}", path);
+            return u64::MAX;
+        }
+    };
+
+    let file = Arc::new(fs::File::new(inode));
     let fd = crate::task::with_current_fd_table(|fdt| fdt.open(file));
-    println!(
-        "[syscall] sys_open(name_ptr=0x{:x}) -> fd={}",
-        name_ptr, fd
-    );
+    println!("[syscall] sys_open(path={:?}) -> fd={}", path, fd);
     fd
 }
 

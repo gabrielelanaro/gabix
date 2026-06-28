@@ -178,6 +178,56 @@ pub fn lookup_in_dir(dir_bytes: &[u8], name: &str) -> Option<u64> {
 }
 
 // ============================================================
+// Path resolution — walk the directory tree by absolute path
+// ============================================================
+
+/// Resolve an absolute path to the inode it points at.
+///
+/// Returns `Some(Arc<Inode>)` on success, `None` on any failure:
+///   - path doesn't start with `/` (relative paths not supported yet)
+///   - intermediate component isn't a directory (`ENOTDIR`)
+///   - component name not found in the parent directory (`ENOENT`)
+///   - inode number not registered (shouldn't happen with our registry design)
+///
+/// Algorithm:
+///   1. Path must start with `/`. We don't support relative paths yet.
+///   2. Start at `ROOT_INODE`.
+///   3. Split on `/`, drop empty components (handles leading `/`, `//`,
+///      trailing `/`).
+///   4. For each component:
+///        a. Current must be `InodeKind::Dir`, else `ENOTDIR`.
+///        b. Look up the component name in current's bytes via `lookup_in_dir`.
+///        c. Look up the returned inode number in `REGISTRY` via `Inode::lookup`.
+///        d. Descend.
+///   5. Return the final inode (kind unchecked — caller decides whether to
+///      care that it's a file or directory).
+///
+/// Lock discipline: locks each directory's data only as long as needed to
+/// read its entries, then drops the guard before locking the `REGISTRY`. No
+/// nested locks.
+pub fn resolve_path(path: &str) -> Option<Arc<Inode>> {
+    if !path.starts_with('/') {
+        return None;
+    }
+
+    let mut current = ROOT_INODE.clone();
+
+    for component in path.split('/').filter(|c| !c.is_empty()) {
+        if current.kind != InodeKind::Dir {
+            return None; // ENOTDIR
+        }
+
+        let dir_data = current.data.lock();
+        let next_ino = lookup_in_dir(&dir_data, component)?;
+        drop(dir_data);
+
+        current = Inode::lookup(next_ino)?;
+    }
+
+    Some(current)
+}
+
+// ============================================================
 // File — an open instance
 // ============================================================
 

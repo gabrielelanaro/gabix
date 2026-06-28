@@ -240,6 +240,42 @@ pub extern "C" fn _start(boot_info: &'static BootInfo) -> ! {
         println!("[test]   HARDCODED_INODE.ino = {} (matches hello.txt)", hardcoded.ino);
     }
 
+    println!("[test] path resolution (3.4)");
+    {
+        use crate::fs::{resolve_path, InodeKind};
+
+        let root = resolve_path("/");
+        let root_ino = root.as_ref().map(|i| i.ino);
+        let root_kind = root.as_ref().map(|i| i.kind);
+        println!("[test]   '/' -> ino={:?} kind={:?} (expect ino=1, kind=Dir)", root_ino, root_kind);
+        assert_eq!(root_ino, Some(1));
+        assert_eq!(root_kind, Some(InodeKind::Dir));
+
+        let hello = resolve_path("/hello.txt");
+        let hello_ino = hello.as_ref().map(|i| i.ino);
+        let hello_kind = hello.as_ref().map(|i| i.kind);
+        println!("[test]   '/hello.txt' -> ino={:?} kind={:?} (expect ino=2, kind=File)", hello_ino, hello_kind);
+        assert_eq!(hello_ino, Some(2));
+        assert_eq!(hello_kind, Some(InodeKind::File));
+
+        let missing = resolve_path("/missing");
+        println!("[test]   '/missing' -> is_none={} (expect true)", missing.is_none());
+        assert!(missing.is_none());
+
+        let relative = resolve_path("hello.txt");
+        println!("[test]   'hello.txt' (relative) -> is_none={} (expect true)", relative.is_none());
+        assert!(relative.is_none());
+
+        let notdir = resolve_path("/hello.txt/foo");
+        println!("[test]   '/hello.txt/foo' (ENOTDIR) -> is_none={} (expect true)", notdir.is_none());
+        assert!(notdir.is_none());
+
+        let trailing = resolve_path("/hello.txt/");
+        let trailing_ino = trailing.as_ref().map(|i| i.ino);
+        println!("[test]   '/hello.txt/' (trailing slash) -> ino={:?} (expect Some(2))", trailing_ino);
+        assert_eq!(trailing_ino, Some(2));
+    }
+
     println!("[boot] enabling interrupts");
     x86_64::instructions::interrupts::enable();
 
