@@ -13,9 +13,11 @@
 //!   syscall
 
 use crate::frame_allocator;
+use crate::fs;
 use crate::memory;
 use crate::println;
 use crate::serial;
+use alloc::sync::Arc;
 use core::arch::naked_asm;
 use core::sync::atomic::AtomicU64;
 use x86_64::structures::paging::PageTableFlags;
@@ -40,7 +42,10 @@ const RFLAGS_IF: u64 = 0x200;
 /// These follow the Linux x86-64 syscall ABI conventions, so a real
 /// Linux binary's syscall numbers would (theoretically) line up —
 /// modulo not actually having the right kernel-side implementations.
+const SYS_READ: u64 = 0;
 const SYS_WRITE: u64 = 1;
+const SYS_OPEN: u64 = 2;
+const SYS_CLOSE: u64 = 3;
 const SYS_GETPID: u64 = 39;
 const SYS_FORK: u64 = 57;
 const SYS_EXECVE: u64 = 59;
@@ -354,7 +359,10 @@ unsafe extern "C" fn syscall_entry() {
 extern "C" fn syscall_handler(num: u64, arg1: u64, arg2: u64, arg3: u64) -> u64 {
     println!("[syscall] num={} args=({}, {}, {})", num, arg1, arg2, arg3);
     match num {
-        SYS_WRITE => sys_write(arg1, arg2),
+        SYS_READ => sys_read(arg1, arg2, arg3),
+        SYS_WRITE => sys_write(arg1, arg2, arg3),
+        SYS_OPEN => sys_open(arg1),
+        SYS_CLOSE => sys_close(arg1),
         SYS_GETPID => sys_getpid(),
         SYS_FORK => sys_fork(),
         SYS_EXECVE => sys_exec(arg1),
@@ -364,16 +372,219 @@ extern "C" fn syscall_handler(num: u64, arg1: u64, arg2: u64, arg3: u64) -> u64 
     }
 }
 
-/// SYS_WRITE: write `length` bytes from `buffer_ptr` to the serial port.
+// ============================================================
+// User-pointer validation
+// ============================================================
+
+/// Maximum user-space virtual address (exclusive).
+///
+/// On x86-64 with canonical addressing, user space is the lower canonical
+/// half: addresses with bits 47-63 all zero, i.e., `0` through `2^47 - 1`.
+/// The address `2^47` itself is non-canonical (bit 47 is 1 but bits 48-63
+/// aren't all 1).
+///
+/// Any pointer at or above this is either in the non-canonical hole or in
+/// the kernel upper half — either way, not a valid user pointer.
+const USER_ADDR_LIMIT: u64 = 0x0000_8000_0000_0000;
+
+/// Return `true` if `[ptr, ptr+len)` is entirely within user space.
+///
+/// Used by syscall handlers to reject kernel pointers before dereferencing
+/// them. Without this, a user program could pass e.g. `0xFFFFFFFF80000000`
+/// (kernel .text) to `sys_read` and have the kernel memcpy its own memory
+/// into the user's buffer.
+///
+/// Catches the *range* attack but not the *faulting* case: a pointer in
+/// range but unmapped still page-faults during copy, and without a page-
+/// fault handler that triple-faults the kernel. The fault-tolerant version
+/// (`copy_to_user` with exception tables) requires a page-fault handler
+/// — deferred until that lands.
+fn is_user_range(ptr: u64, len: u64) -> bool {
+    if ptr >= USER_ADDR_LIMIT {
+        return false;
+    }
+    // ptr + len must not overflow u64 and must stay in user space.
+    match ptr.checked_add(len) {
+        Some(end) => end <= USER_ADDR_LIMIT,
+        None => false,
+    }
+}
+
+/// SYS_READ: read up to `length` bytes from the file at `fd` into the user
+/// buffer at `buffer_ptr`.
+///
+/// Returns the number of bytes actually read. Returns 0 at end-of-file.
+/// Returns `u64::MAX` (-1 cast) on bad FD.
+///
+/// **User-buffer access (Lesson 2 simplification):** we cast `buffer_ptr`
+/// directly to a kernel pointer. This works because the syscall handler
+/// runs with the user's CR3 still loaded — the kernel mappings (PML4
+/// entries 256-511) coexist with the user mappings (entries 0-255) in the
+/// same page tables, so both address spaces are reachable without a
+/// switch. Lesson 5+ will add `copy_to_user` / `copy_from_user` helpers
+/// that validate the pointer is in user range and survive page faults
+/// (real Linux's pattern).
+fn sys_read(fd: u64, buffer_ptr: u64, length: u64) -> u64 {
+    if !is_user_range(buffer_ptr, length) {
+        println!(
+            "[syscall] sys_read: bad user pointer buf=0x{:x} len={}",
+            buffer_ptr, length
+        );
+        return u64::MAX; // EFAULT — caller tried to read/write kernel memory
+    }
+
+    // Pull the File out of the FdTable. The closure form clones the Arc
+    // out — we hold our own Arc<File> and the FdTable lock can release
+    // immediately, before we touch the inode's data.
+    let file = match crate::task::with_current_fd_table(|fdt| fdt.get(fd)) {
+        Some(f) => f,
+        None => {
+            println!("[syscall] sys_read: bad fd={}", fd);
+            return u64::MAX;
+        }
+    };
+
+    // Lock order: inode data first, then cursor. Always this order to
+    // avoid deadlock if anyone else ever locks both.
+    let data = file.inode.data.lock();
+    let mut cursor = file.cursor.lock();
+
+    let cursor_pos = *cursor as usize;
+    let available = data.len().saturating_sub(cursor_pos);
+    let to_read = (length as usize).min(available);
+
+    // Guard the unsafe so we don't form a pointer past the end of `data`
+    // even when `to_read == 0` (which would be UB even without deref).
+    if to_read > 0 {
+        // SAFETY: `buffer_ptr` is a user virtual address; user mappings
+        // are visible to us. `data` is a valid Vec; `cursor_pos +
+        // to_read <= data.len()` by construction above.
+        unsafe {
+            let src = data.as_ptr().add(cursor_pos);
+            let dst = buffer_ptr as *mut u8;
+            core::ptr::copy_nonoverlapping(src, dst, to_read);
+        }
+    }
+
+    *cursor += to_read as u64;
+    println!(
+        "[syscall] sys_read fd={} buf=0x{:x} len={} -> read {} bytes (inode {} bytes, cursor {}->{})",
+        fd, buffer_ptr, length, to_read, data.len(), cursor_pos, *cursor
+    );
+
+    to_read as u64
+}
+
+/// SYS_WRITE: write `length` bytes from the user buffer at `buffer_ptr` to
+/// the file (or stdio stream) at `fd`.
 ///
 /// Returns the number of bytes written.
-fn sys_write(buffer_ptr: u64, length: u64) -> u64 {
-    let buffer = unsafe { core::slice::from_raw_parts(buffer_ptr as *const u8, length as usize) };
-    for &byte in buffer {
-        serial::SERIAL1.lock().write_byte(byte);
+///
+/// **Dispatch by fd:**
+/// - FD 1 (stdout) and FD 2 (stderr) — write to the serial port. This is
+///   the special stdio case from Lesson 2's design Option 2 (reserve 0/1/2
+///   at the FD-table level for stdio; keep the serial path special-cased
+///   here). Real Files eventually replace this (Lesson 5 design Option 3).
+/// - Any other FD — look up the File, extend its inode's data with the
+///   bytes, advance the cursor.
+///
+/// Returns `u64::MAX` (-1) on bad FD, bad user pointer, or other failure.
+fn sys_write(fd: u64, buffer_ptr: u64, length: u64) -> u64 {
+    if !is_user_range(buffer_ptr, length) {
+        println!(
+            "[syscall] sys_write: bad user pointer buf=0x{:x} len={}",
+            buffer_ptr, length
+        );
+        return u64::MAX; // EFAULT
     }
-    println!("[syscall] sys_write wrote {} bytes", length);
+
+    // Stdio special case: FD 1 (stdout) and FD 2 (stderr) → serial.
+    if fd == 1 || fd == 2 {
+        let buffer =
+            unsafe { core::slice::from_raw_parts(buffer_ptr as *const u8, length as usize) };
+        for &byte in buffer {
+            serial::SERIAL1.lock().write_byte(byte);
+        }
+        println!("[syscall] sys_write fd={} -> serial, {} bytes", fd, length);
+        return length;
+    }
+
+    // Regular file write: look up the File, extend its inode data, advance cursor.
+    let file = match crate::task::with_current_fd_table(|fdt| fdt.get(fd)) {
+        Some(f) => f,
+        None => {
+            println!("[syscall] sys_write: bad fd={}", fd);
+            return u64::MAX;
+        }
+    };
+
+    // Lock order: inode data first, then cursor (same as sys_read).
+    let mut data = file.inode.data.lock();
+    let mut cursor = file.cursor.lock();
+
+    let cursor_pos = *cursor as usize;
+    let new_end = cursor_pos
+        .checked_add(length as usize)
+        .unwrap_or(data.len());
+
+    // Extend the Vec if writing past end. New slots default to 0 — sparse
+    // writes that skip the end get zero-fill, which matches POSIX behavior
+    // for the file size growing past the last write.
+    if new_end > data.len() {
+        data.resize(new_end, 0);
+    }
+
+    // SAFETY: buffer_ptr is in user space (validated above). data has at
+    // least new_end bytes (we resized if needed). [cursor_pos, cursor_pos+length)
+    // is in-bounds by construction.
+    unsafe {
+        let src = buffer_ptr as *const u8;
+        let dst = data[cursor_pos..].as_mut_ptr();
+        core::ptr::copy_nonoverlapping(src, dst, length as usize);
+    }
+
+    *cursor += length;
+    println!(
+        "[syscall] sys_write fd={} -> file, {} bytes (inode now {} bytes, cursor {}->{})",
+        fd, length, data.len(), cursor_pos, *cursor
+    );
+
     length
+}
+
+/// SYS_CLOSE: release the file descriptor `fd`.
+///
+/// Returns 0 on success, `u64::MAX` (-1) on bad FD. Closing an already-
+/// closed FD is an error (matches POSIX). The underlying File (and its
+/// inode, if this was the last reference) gets dropped when the Arc's
+/// refcount hits zero — for our hardcoded inode, it never does.
+fn sys_close(fd: u64) -> u64 {
+    let ok = crate::task::with_current_fd_table(|fdt| fdt.close(fd));
+    println!("[syscall] sys_close fd={} -> {}", fd, if ok { "ok" } else { "bad" });
+    if ok { 0 } else { u64::MAX }
+}
+
+/// SYS_OPEN: open a file by path, return a file descriptor (FD).
+///
+/// Lesson 2 version: ignores `name_ptr` entirely. There is exactly one
+/// inode in the world (`fs::HARDCODED_INODE`), and `open` of any path
+/// returns a fresh `File` pointing at it with cursor=0. The FD number is
+/// whatever the per-process FD table assigns (lowest free, starting from 0
+/// — Lesson 5 will reserve 0/1/2 for stdio and start file FDs at 3).
+///
+/// Returns the FD number on success. Always succeeds in Lesson 2 (no
+/// error path). Lesson 3 will parse `name_ptr` as a null-terminated path
+/// and return `u64::MAX` (-1) on no-such-file.
+fn sys_open(name_ptr: u64) -> u64 {
+    // We do not yet read the path from user memory — Lesson 3's problem.
+    // For Lesson 2 we log the raw pointer so we can see it came through.
+    let file = Arc::new(fs::File::new(Arc::clone(&fs::HARDCODED_INODE)));
+    let fd = crate::task::with_current_fd_table(|fdt| fdt.open(file));
+    println!(
+        "[syscall] sys_open(name_ptr=0x{:x}) -> fd={}",
+        name_ptr, fd
+    );
+    fd
 }
 
 /// SYS_GETPID: return the calling process's ID.

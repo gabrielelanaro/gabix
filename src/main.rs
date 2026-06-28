@@ -18,6 +18,7 @@ mod allocator;
 mod task;
 mod user;
 mod syscall;
+mod fs;
 
 use bootloader::BootInfo;
 use core::alloc::Layout;

@@ -96,6 +96,11 @@ pub struct Task {
     /// preemption) and another task's syscall runs on top of it.
     /// Updated into `KERNEL_RSP` by `yield_now` on every context switch.
     pub syscall_stack_top: u64,
+    /// Per-process file descriptor table. Maps FD numbers (0, 1, 2, ...)
+    /// to `Arc<File>` entries. Empty at task creation in Lesson 2 — fork
+    /// inheritance lands in a later slice. Accessed from syscall handlers
+    /// via `task::with_current_fd_table`.
+    pub fd_table: crate::fs::FdTable,
 }
 
 impl Task {
@@ -189,6 +194,9 @@ impl Task {
             // can share the dedicated syscall stack. Set to 0; yield_now
             // will leave KERNEL_RSP alone if it sees 0.
             syscall_stack_top: 0,
+            // Empty FD table — kernel threads don't open files. Real user
+            // processes (forked from main) inherit their parent's table.
+            fd_table: crate::fs::FdTable::new(),
         }
     }
 }
@@ -412,6 +420,10 @@ pub fn init_main() {
         address_space: crate::memory::AddressSpace::from_current(),
         // Main uses the dedicated syscall stack allocated by `syscall::init`.
         syscall_stack_top: crate::syscall::SYSCALL_STACK_TOP,
+        // Main starts with an empty FD table. (Stdin/stdout/stderr pre-
+        // population is a later design decision — see Lesson 2 design note
+        // on Option 2 vs Option 3.)
+        fd_table: crate::fs::FdTable::new(),
     }));
     sched.current = 0;
     println!("[sched] main task registered (id=0)");
@@ -603,6 +615,10 @@ pub fn spawn_fork_child(
         exit_status: None,
         address_space,
         syscall_stack_top: child_syscall_stack_top,
+        // Lesson 2: child starts with an empty FD table. Lesson 5 will
+        // inherit the parent's table (POSIX fork semantics) by cloning
+        // each `Arc<File>` from the parent's table into the child's.
+        fd_table: crate::fs::FdTable::new(),
     };
 
     sched.tasks.push(Box::new(task));
@@ -666,18 +682,60 @@ pub struct SavedCalleeSaves {
 ///
 /// Used by syscalls that need to know "who called me?" — `getpid`,
 /// eventually `fork` (to know what to clone), `exit` (to know who to
-/// mark as exited). Locks SCHEDULER briefly, copies the ID out.
+/// mark as exited).
+///
+/// **Interrupt safety:** wraps the SCHEDULER access in `without_interrupts`
+/// so the timer cannot fire mid-access and try to re-lock SCHEDULER from
+/// the handler (which would deadlock). This is the Rust equivalent of
+/// Linux's `spin_lock_irqsave` — disable interrupts on this CPU before
+/// acquiring the lock, restore on release. All public SCHEDULER accessors
+/// that syscall handlers can reach must do this.
 pub fn current_pid() -> u64 {
-    let sched = SCHEDULER.lock();
-    sched.tasks[sched.current].id
+    x86_64::instructions::interrupts::without_interrupts(|| {
+        let sched = SCHEDULER.lock();
+        sched.tasks[sched.current].id
+    })
+}
+
+/// Run `f` on the currently-running task's FD (File Descriptor) table.
+///
+/// Locks SCHEDULER for the duration of `f`, finds the running task, passes
+/// its `fd_table` to `f` as `&mut`. The lock is released when `f` returns.
+/// Use this from syscall handlers (`sys_open`, `sys_read`, `sys_close`, etc.)
+/// to reach the calling process's FD table.
+///
+/// The closure form (vs. returning `&mut FdTable`) sidesteps lifetime pain:
+/// the borrow would have to be tied to the SCHEDULER lock guard, which is
+/// awkward to thread through callers.
+///
+/// **Interrupt safety:** see `current_pid` — same `without_interrupts`
+/// wrap. Disabling interrupts before locking is the only correct pattern;
+/// without it, a timer tick during `f` would deadlock the kernel.
+pub fn with_current_fd_table<F, R>(f: F) -> R
+where
+    F: FnOnce(&mut crate::fs::FdTable) -> R,
+{
+    x86_64::instructions::interrupts::without_interrupts(|| {
+        let mut sched = SCHEDULER.lock();
+        // Copy the index out first so we don't fight the borrow checker —
+        // indexing `sched.tasks[sched.current]` would otherwise need both a
+        // shared borrow of `.current` and a mutable borrow of `.tasks`.
+        let idx = sched.current;
+        f(&mut sched.tasks[idx].fd_table)
+    })
 }
 
 /// Read the PML4 frame of the currently-running task's address space.
 /// Used by `sys_exec` to switch CR3 to the (just-replaced) AS.
 /// Returns the frame as a `PhysFrame` so it can be passed to `Cr3::write`.
+///
+/// **Interrupt safety:** see `current_pid` — `without_interrupts` around
+/// the SCHEDULER access.
 pub fn current_pml4_frame() -> x86_64::structures::paging::PhysFrame {
-    let sched = SCHEDULER.lock();
-    sched.tasks[sched.current].address_space.pml4_frame()
+    x86_64::instructions::interrupts::without_interrupts(|| {
+        let sched = SCHEDULER.lock();
+        sched.tasks[sched.current].address_space.pml4_frame()
+    })
 }
 
 /// Yield the CPU to the next task. Round-robin: advances to
@@ -711,11 +769,14 @@ pub fn yield_now() {
     //
     // Scan forward from the current task to find the next non-Zombie task.
     // This lets sys_exit mark the current task as Zombie and then yield,
-    // knowing yield_now will pick somebody else.
+    // knowing yield_now will pick somebody else (or halt if nobody can).
     let switch_result: Option<(*mut TaskContext, *const TaskContext, u64, u64)> = {
         let mut sched = SCHEDULER.lock();
-        if sched.tasks.len() < 2 {
-            None // nothing to switch to
+        // Note: no `len < 2` shortcut here. If current is Zombie/Blocked/Dead
+        // and there's nothing else to run, we must halt — that check lives in
+        // the `None` arm below and needs to fire even when len==1.
+        if sched.tasks.is_empty() {
+            None
         } else {
             let old_index = sched.current;
             // Find next runnable task. Skip Zombie (exited, awaiting reap),

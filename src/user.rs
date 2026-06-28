@@ -34,25 +34,32 @@ pub(crate) const USER_RFLAGS_INIT: u64 = 0x202;
 
 /// The "hello" program — what `exec("hello")` loads.
 ///
-/// Writes "hello from exec\n" to stdout, then exits 0.
+/// Writes "hello from exec\n" to stdout (fd=1), then exits 0.
+///
+/// Slice 2.5 update: switched to Linux convention `sys_write(fd, buf, len)`.
+/// Each write syscall now sets rdi=1 (fd=1) before the buffer address in rsi
+/// and length in rdx.
 ///
 /// Layout:
 ///   0x00: mov rax, 1              ; SYS_WRITE
-///   0x0A: mov rdi, 0x40000031     ; "hello from exec\n"
-///   0x14: mov rsi, 16             ; length
-///   0x1E: syscall
-///   0x20: mov rax, 60             ; SYS_EXIT
-///   0x2A: xor rdi, rdi
-///   0x2D: syscall
-///   0x2F: jmp -2                  ; safety net
-///   0x31: "hello from exec\n"     ; 16 bytes
-const HELLO_PROGRAM: [u8; 65] = [
+///   0x0A: mov rdi, 1              ; fd=1 (stdout)
+///   0x14: mov rsi, 0x4000003B     ; "hello from exec\n"
+///   0x1E: mov rdx, 16             ; length
+///   0x28: syscall
+///   0x2A: mov rax, 60             ; SYS_EXIT
+///   0x34: xor rdi, rdi
+///   0x37: syscall
+///   0x39: jmp -2                  ; safety net
+///   0x3B: "hello from exec\n"     ; 16 bytes
+const HELLO_PROGRAM: [u8; 75] = [
     // mov rax, 1 (SYS_WRITE)
     0x48, 0xB8, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    // mov rdi, 0x40000031 (string address)
-    0x48, 0xBF, 0x31, 0x00, 0x00, 0x40, 0x00, 0x00, 0x00, 0x00,
-    // mov rsi, 16 (length of "hello from exec\n")
-    0x48, 0xBE, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    // mov rdi, 1 (fd=1, stdout)
+    0x48, 0xBF, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    // mov rsi, 0x4000003B (string address)
+    0x48, 0xBE, 0x3B, 0x00, 0x00, 0x40, 0x00, 0x00, 0x00, 0x00,
+    // mov rdx, 16 (length of "hello from exec\n")
+    0x48, 0xBA, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
     // syscall
     0x0F, 0x05,
     // mov rax, 60 (SYS_EXIT)
@@ -63,22 +70,24 @@ const HELLO_PROGRAM: [u8; 65] = [
     0x0F, 0x05,
     // jmp -2 (safety net)
     0xEB, 0xFE,
-    // 0x31: "hello from exec\n" (16 bytes)
+    // 0x3B: "hello from exec\n" (16 bytes)
     0x68, 0x65, 0x6C, 0x6C, 0x6F, 0x20, 0x66, 0x72, 0x6F, 0x6D,
     0x20, 0x65, 0x78, 0x65, 0x63, 0x0A,
 ];
 
 /// The "goodbye" program — what `exec("goodbye")` loads.
 ///
-/// Writes "goodbye from exec\n" to stdout, then exits 0.
+/// Writes "goodbye from exec\n" to stdout (fd=1), then exits 0.
 /// Same code shape as HELLO_PROGRAM, different string and length.
-const GOODBYE_PROGRAM: [u8; 67] = [
+const GOODBYE_PROGRAM: [u8; 77] = [
     // mov rax, 1 (SYS_WRITE)
     0x48, 0xB8, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    // mov rdi, 0x40000031 (string address)
-    0x48, 0xBF, 0x31, 0x00, 0x00, 0x40, 0x00, 0x00, 0x00, 0x00,
-    // mov rsi, 18 (length of "goodbye from exec\n")
-    0x48, 0xBE, 0x12, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    // mov rdi, 1 (fd=1, stdout)
+    0x48, 0xBF, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    // mov rsi, 0x4000003B (string address)
+    0x48, 0xBE, 0x3B, 0x00, 0x00, 0x40, 0x00, 0x00, 0x00, 0x00,
+    // mov rdx, 18 (length of "goodbye from exec\n")
+    0x48, 0xBA, 0x12, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
     // syscall
     0x0F, 0x05,
     // mov rax, 60 (SYS_EXIT)
@@ -89,7 +98,7 @@ const GOODBYE_PROGRAM: [u8; 67] = [
     0x0F, 0x05,
     // jmp -2 (safety net)
     0xEB, 0xFE,
-    // 0x31: "goodbye from exec\n" (18 bytes)
+    // 0x3B: "goodbye from exec\n" (18 bytes)
     0x67, 0x6F, 0x6F, 0x64, 0x62, 0x79, 0x65, 0x20, 0x66, 0x72,
     0x6F, 0x6D, 0x20, 0x65, 0x78, 0x65, 0x63, 0x0A,
 ];
@@ -116,91 +125,87 @@ const USER_DATA_SELECTOR: u16 = 0x1B;
 /// (IF, interrupt enable). So 0b0010_0000_0010 = 0x202.
 const USER_RFLAGS: u64 = 0x202;
 
-/// The user program in raw x86-64 machine code (116 bytes total).
+/// The user program in raw x86-64 machine code (133 bytes total).
 ///
-/// Tests fork + exec + wait: parent forks, child execs "hello" (which
-/// writes "hello from exec\n"), parent waits for the child to exit, then
-/// writes "parent\n" and exits. The exec is the new piece — it replaces
-/// the child's program entirely; the child never returns from exec.
+/// Lesson 2 step 2.6: tests the four VFS syscalls end-to-end against the
+/// hardcoded inode (`HARDCODED_INODE`, which contains "hello vfs\n").
 ///
 /// Pseudocode:
-///   pid = fork()              ; syscall 57
-///   if (pid == 0) {
-///     exec("hello")           ; syscall 59 — never returns on success
-///   } else {
-///     wait(NULL)              ; syscall 61 — blocks until child exits
-///     write("parent\n")       ; syscall 1
-///     exit(0)                 ; syscall 60
-///   }
+///   fd = open(NULL)            ; syscall 2 (path ignored in Lesson 2)
+///   n = read(fd, buf, 10)      ; syscall 0 — reads "hello vfs\n"
+///   write(1, buf, 10)          ; syscall 1 — prints "hello vfs\n" to stdout
+///   close(fd)                  ; syscall 3
+///   exit(0)                    ; syscall 60
+///
+/// Output should show: `hello vfs` followed by a newline, plus the kernel
+/// trace lines for each syscall.
 ///
 /// Disassembly (offsets from start of user code at 0x4000_0000):
-///   0x00: mov rax, 57         ; SYS_FORK
-///   0x0A: syscall
-///   0x0C: test rax, rax       ; set ZF if rax == 0
-///   0x0F: jz +0x3E            ; if zero (child), jump to child path at 0x4F
-///   --- parent path ---
-///   0x11: mov rax, 61         ; SYS_WAIT4
-///   0x1B: xor rdi, rdi        ; NULL
-///   0x1E: syscall             ; (blocks until child exits)
-///   0x20: mov rax, 1          ; SYS_WRITE
-///   0x2A: mov rdi, 0x4000006D ; "parent\n"
-///   0x34: mov rsi, 7
-///   0x3E: syscall
-///   0x40: mov rax, 60         ; SYS_EXIT
-///   0x4A: xor rdi, rdi
-///   0x4D: syscall
-///   --- child path ---
-///   0x4F: mov rax, 59         ; SYS_EXECVE
-///   0x59: mov rdi, 0x40000067 ; "hello\0"
-///   0x63: syscall             ; doesn't return on success
-///   0x65: jmp -2              ; safety net (only reached if exec fails)
-///   --- data ---
-///   0x67: "hello\0"
-///   0x6D: "parent\n"
-const USER_PROGRAM: [u8; 116] = [
-    // 0x00: mov rax, 57 (SYS_FORK)
-    0x48, 0xB8, 0x39, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    // 0x0A: syscall
-    0x0F, 0x05,
-    // 0x0C: test rax, rax (sets ZF if rax == 0)
-    0x48, 0x85, 0xC0,
-    // 0x0F: jz +0x3E (jump to child path at 0x4F; 0x11 + 0x3E = 0x4F)
-    0x74, 0x3E,
-    // === parent path ===
-    // 0x11: mov rax, 61 (SYS_WAIT4)
-    0x48, 0xB8, 0x3D, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    // 0x1B: xor rdi, rdi (NULL)
+///   0x00: mov rax, 2           ; SYS_OPEN
+///   0x0A: xor rdi, rdi         ; path = NULL (kernel ignores)
+///   0x0D: syscall              ; returns fd=0 (first open in fresh table)
+///   0x0F: xor rdi, rdi         ; fd = 0
+///   0x12: mov rsi, 0x40000075  ; BUF_OUT (16 bytes after the code)
+///   0x1C: mov rdx, 10          ; length = 10
+///   0x26: xor rax, rax         ; SYS_READ
+///   0x29: syscall              ; reads "hello vfs\n" into BUF_OUT
+///   0x2B: mov rdi, 1           ; fd = 1 (stdout)
+///   0x35: mov rsi, 0x40000075  ; BUF_OUT (same buffer)
+///   0x3F: mov rdx, 10          ; length = 10
+///   0x49: mov rax, 1           ; SYS_WRITE
+///   0x53: syscall              ; prints "hello vfs\n" to serial
+///   0x55: xor rdi, rdi         ; fd = 0
+///   0x58: mov rax, 3           ; SYS_CLOSE
+///   0x62: syscall              ; closes fd=0
+///   0x64: xor rdi, rdi         ; exit code = 0
+///   0x67: mov rax, 60          ; SYS_EXIT
+///   0x71: syscall
+///   0x73: jmp -2               ; safety net
+///   0x75: <16-byte buffer>     ; BUF_OUT
+const USER_PROGRAM: [u8; 133] = [
+    // 0x00: mov rax, 2 (SYS_OPEN)
+    0x48, 0xB8, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    // 0x0A: xor rdi, rdi (path = NULL)
     0x48, 0x31, 0xFF,
-    // 0x1E: syscall (blocks until child exits)
+    // 0x0D: syscall (returns fd=0)
     0x0F, 0x05,
-    // 0x20: mov rax, 1 (SYS_WRITE)
+    // 0x0F: xor rdi, rdi (fd = 0)
+    0x48, 0x31, 0xFF,
+    // 0x12: mov rsi, 0x40000075 (BUF_OUT)
+    0x48, 0xBE, 0x75, 0x00, 0x00, 0x40, 0x00, 0x00, 0x00, 0x00,
+    // 0x1C: mov rdx, 10 (length)
+    0x48, 0xBA, 0x0A, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    // 0x26: xor rax, rax (SYS_READ = 0)
+    0x48, 0x31, 0xC0,
+    // 0x29: syscall (reads "hello vfs\n" into BUF_OUT)
+    0x0F, 0x05,
+    // 0x2B: mov rdi, 1 (fd=1, stdout)
+    0x48, 0xBF, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    // 0x35: mov rsi, 0x40000075 (BUF_OUT, same buffer)
+    0x48, 0xBE, 0x75, 0x00, 0x00, 0x40, 0x00, 0x00, 0x00, 0x00,
+    // 0x3F: mov rdx, 10 (length)
+    0x48, 0xBA, 0x0A, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    // 0x49: mov rax, 1 (SYS_WRITE)
     0x48, 0xB8, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    // 0x2A: mov rdi, 0x4000006D (parent message address)
-    0x48, 0xBF, 0x6D, 0x00, 0x00, 0x40, 0x00, 0x00, 0x00, 0x00,
-    // 0x34: mov rsi, 7 (length of "parent\n")
-    0x48, 0xBE, 0x07, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    // 0x3E: syscall
+    // 0x53: syscall (prints to serial)
     0x0F, 0x05,
-    // 0x40: mov rax, 60 (SYS_EXIT)
-    0x48, 0xB8, 0x3C, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    // 0x4A: xor rdi, rdi (exit code 0)
+    // 0x55: xor rdi, rdi (fd = 0)
     0x48, 0x31, 0xFF,
-    // 0x4D: syscall
+    // 0x58: mov rax, 3 (SYS_CLOSE)
+    0x48, 0xB8, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    // 0x62: syscall
     0x0F, 0x05,
-    // === child path ===
-    // 0x4F: mov rax, 59 (SYS_EXECVE)
-    0x48, 0xB8, 0x3B, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    // 0x59: mov rdi, 0x40000067 (program name "hello\0")
-    0x48, 0xBF, 0x67, 0x00, 0x00, 0x40, 0x00, 0x00, 0x00, 0x00,
-    // 0x63: syscall (never returns on success)
+    // 0x64: xor rdi, rdi (exit code = 0)
+    0x48, 0x31, 0xFF,
+    // 0x67: mov rax, 60 (SYS_EXIT)
+    0x48, 0xB8, 0x3C, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    // 0x71: syscall
     0x0F, 0x05,
-    // 0x65: jmp -2 (safety net — only reached if exec failed)
+    // 0x73: jmp -2 (safety net)
     0xEB, 0xFE,
-    // === data ===
-    // 0x67: "hello\0" (6 bytes)
-    0x68, 0x65, 0x6C, 0x6C, 0x6F, 0x00,
-    // 0x6D: "parent\n" (7 bytes)
-    0x70, 0x61, 0x72, 0x65, 0x6E, 0x74, 0x0A,
+    // 0x75: 16-byte scratch buffer for read() output
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
 ];
 
 /// Transition from kernel (ring 0) to user (ring 3) and start running
