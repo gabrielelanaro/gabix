@@ -20,6 +20,7 @@ mod user;
 mod syscall;
 mod fs;
 mod pci;
+mod virtio;
 
 use bootloader::BootInfo;
 use alloc::vec::Vec;
@@ -328,6 +329,11 @@ pub extern "C" fn _start(boot_info: &'static BootInfo) -> ! {
                 bus, dev, func
             );
             pci::print_bars(bus, dev, func);
+
+            println!("[test] parse virtio capability list (6.1)");
+            println!("[virtio] parsing capability list of {:02x}:{:02x}.{}", bus, dev, func);
+            let caps = virtio::parse_virtio_capabilities(bus, dev, func);
+            println!("[virtio]   found {} virtio caps", caps.len());
         }
         None => {
             println!("[pci] virtio-blk not found on bus 0");
