@@ -338,6 +338,9 @@ pub extern "C" fn _start(boot_info: &'static BootInfo) -> ! {
             println!("[test] virtio handshake phase 1 — reset + ACK + DRIVER (6.2)");
             if let Some(virtio_dev) = virtio::VirtioBlk::probe() {
                 virtio_dev.reset_and_acknowledge();
+
+                println!("[test] virtio handshake phase 2 — feature negotiation (6.3)");
+                virtio_dev.negotiate_features();
             } else {
                 println!("[virtio] failed to probe device");
             }

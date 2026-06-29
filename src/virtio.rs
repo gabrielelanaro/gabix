@@ -279,4 +279,82 @@ impl VirtioBlk {
             after_driver
         );
     }
+
+    /// Step 6.3: feature negotiation.
+    ///
+    /// The device advertises which features it supports via
+    /// `device_feature`. The driver picks the subset it can use and
+    /// writes that to `driver_feature`. Both halves (low 32, high 32)
+    /// must be written via the corresponding `*_select` index. After
+    /// writing, the driver sets FEATURES_OK and re-reads the status —
+    /// if the device didn't accept the proposed subset, it clears
+    /// FEATURES_OK and the driver must retry or give up.
+    ///
+    /// mini-os currently supports only `VIRTIO_F_VERSION_1` (modern
+    /// transport compliance, bit 32 = bit 0 of the high half). Real
+    /// Linux claims more (flush, discard, write zeroes) for performance
+    /// and correctness.
+    pub fn negotiate_features(&self) {
+        // Read what the device supports, both halves
+        self.write_common_u32(COMMON_DEVICE_FEATURE_SELECT, 0);
+        let device_features_low = self.read_common_u32(COMMON_DEVICE_FEATURE);
+        self.write_common_u32(COMMON_DEVICE_FEATURE_SELECT, 1);
+        let device_features_high = self.read_common_u32(COMMON_DEVICE_FEATURE);
+
+        println!(
+            "[virtio]   device features low:  0x{:08X}",
+            device_features_low
+        );
+        println!(
+            "[virtio]   device features high: 0x{:08X}",
+            device_features_high
+        );
+
+        // Compute the subset we support. VIRTIO_F_VERSION_1 is bit 32
+        // (bit 0 of the high half). We claim it only if the device
+        // advertises it — claiming an unsupported feature would make
+        // FEATURES_OK fail.
+        let supported_low: u32 = 0;
+        let supported_high: u32 = if device_features_high & 0x1 != 0 {
+            0x1
+        } else {
+            0
+        };
+
+        println!(
+            "[virtio]   driver features low:  0x{:08X}",
+            supported_low
+        );
+        println!(
+            "[virtio]   driver features high: 0x{:08X}{}",
+            supported_high,
+            if supported_high & 0x1 != 0 {
+                " (VIRTIO_F_VERSION_1)"
+            } else {
+                ""
+            }
+        );
+
+        // Write the negotiated subset
+        self.write_common_u32(COMMON_DRIVER_FEATURE_SELECT, 0);
+        self.write_common_u32(COMMON_DRIVER_FEATURE, supported_low);
+        self.write_common_u32(COMMON_DRIVER_FEATURE_SELECT, 1);
+        self.write_common_u32(COMMON_DRIVER_FEATURE, supported_high);
+
+        // Set FEATURES_OK
+        self.write_status(STATUS_ACKNOWLEDGE | STATUS_DRIVER | STATUS_FEATURES_OK);
+        let status = self.read_status();
+        println!(
+            "[virtio]   device_status after FEATURES_OK: 0x{:02X}",
+            status
+        );
+
+        // The spec requires this re-read: if the device doesn't accept
+        // our feature subset, it clears FEATURES_OK. We'd have to retry
+        // or give up.
+        assert!(
+            status & STATUS_FEATURES_OK != 0,
+            "device rejected our features — FEATURES_OK was cleared"
+        );
+    }
 }
