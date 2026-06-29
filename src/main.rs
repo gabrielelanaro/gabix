@@ -334,6 +334,13 @@ pub extern "C" fn _start(boot_info: &'static BootInfo) -> ! {
             println!("[virtio] parsing capability list of {:02x}:{:02x}.{}", bus, dev, func);
             let caps = virtio::parse_virtio_capabilities(bus, dev, func);
             println!("[virtio]   found {} virtio caps", caps.len());
+
+            println!("[test] virtio handshake phase 1 — reset + ACK + DRIVER (6.2)");
+            if let Some(virtio_dev) = virtio::VirtioBlk::probe() {
+                virtio_dev.reset_and_acknowledge();
+            } else {
+                println!("[virtio] failed to probe device");
+            }
         }
         None => {
             println!("[pci] virtio-blk not found on bus 0");

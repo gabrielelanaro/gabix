@@ -82,6 +82,62 @@ pub fn translate(virt: VirtAddr) -> Option<PhysAddr> {
     with_mapper(|m| m.translate_addr(virt))
 }
 
+/// Return the kernel's physical-memory offset (set at boot from
+/// `boot_info.physical_memory_offset`). The direct map covers all of
+/// physical RAM at `phys + offset`.
+pub fn phys_offset() -> u64 {
+    PHYS_OFFSET.load(Ordering::SeqCst)
+}
+
+/// Map an MMIO (Memory-Mapped I/O) physical region into the kernel's
+/// virtual address space at `phys_offset() + phys_start`. Idempotent —
+/// already-mapped pages are skipped.
+///
+/// Used for virtio device register regions: the device's BAR points at
+/// physical addresses (e.g., 0xFE000000 for virtio-blk's modern transport
+/// region in QEMU). The kernel reaches them by translating to a virtual
+/// address via the direct map. If the bootloader didn't already map the
+/// MMIO region (it usually doesn't — the direct map covers RAM, not
+/// devices), this function creates the missing page-table entries.
+///
+/// Pages are mapped `PRESENT | WRITABLE | NO_CACHE | NO_EXECUTE`:
+///   - `NO_CACHE` is load-bearing for MMIO — without it, the CPU might
+///     cache device register reads/writes, breaking the device protocol.
+///   - `NO_EXECUTE` because MMIO must never be executable.
+///
+/// Returns the virtual address of the start of the region.
+pub fn map_mmio(phys_start: u64, size: u64) -> u64 {
+    let offset = phys_offset();
+    let virt_start = phys_start + offset;
+
+    let start_virt = VirtAddr::new(virt_start);
+    let end_virt = VirtAddr::new(virt_start + size.saturating_sub(1));
+    let start_page = Page::<Size4KiB>::containing_address(start_virt);
+    let end_page = Page::<Size4KiB>::containing_address(end_virt);
+
+    let aspace = AddressSpace::from_current();
+    let flags = PageTableFlags::PRESENT
+        | PageTableFlags::WRITABLE
+        | PageTableFlags::NO_CACHE
+        | PageTableFlags::NO_EXECUTE;
+
+    let mut current_phys = PhysAddr::new(phys_start);
+    for page in Page::range_inclusive(start_page, end_page) {
+        // Skip already-mapped pages (idempotency for repeat calls).
+        if translate(page.start_address()).is_none() {
+            // SAFETY: caller guarantees the virtual range is unused for
+            // anything other than the MMIO mapping. We pass a physical
+            // address that points at device registers, not RAM.
+            unsafe {
+                aspace.map_to(page.start_address(), current_phys, flags).unwrap();
+            }
+        }
+        current_phys += 4096u64;
+    }
+
+    virt_start
+}
+
 /// Map a virtual page to a specific physical frame with given flags.
 ///
 /// Allocates any missing intermediate page tables (PML4/PDPT/PD/PT entries)

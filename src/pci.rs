@@ -36,6 +36,41 @@ fn make_address(bus: u8, device: u8, func: u8, offset: u8) -> u32 {
         | ((offset as u32) & 0xFC)
 }
 
+/// Read the base physical address encoded in BAR number `bar_index`.
+///
+/// For 32-bit memory BARs, returns the address in the low 32 bits with the
+/// type bits masked off. For 64-bit memory BARs, combines the next BAR slot
+/// to form a 64-bit address. For I/O BARs, returns the address from the low
+/// 32 bits (treated as a u64 — callers can downcast if they know it's small).
+///
+/// Returns 0 for an unused BAR (one that reads as all zeros).
+pub fn bar_base(bus: u8, device: u8, func: u8, bar_index: u8) -> u64 {
+    let offset = 0x10 + bar_index * 4;
+    let bar = config_read(bus, device, func, offset);
+
+    if bar == 0 {
+        return 0;
+    }
+
+    if bar & 0x1 == 1 {
+        // I/O BAR — low 2 bits are type, rest is address
+        return (bar & !0x3) as u64;
+    }
+
+    // Memory BAR
+    let type_bits = (bar >> 1) & 0x3;
+    let base_low = (bar & !0xF) as u64;
+
+    if type_bits == 0b10 {
+        // 64-bit memory BAR — combine with the next BAR slot's high 32 bits
+        let next_offset = 0x10 + (bar_index + 1) * 4;
+        let bar_high = config_read(bus, device, func, next_offset);
+        base_low | ((bar_high as u64) << 32)
+    } else {
+        base_low
+    }
+}
+
 /// Read 32 bits from PCI config space at the given bus/device/function/offset.
 ///
 /// Offset must be 4-byte aligned (the low 2 bits are masked off automatically).
