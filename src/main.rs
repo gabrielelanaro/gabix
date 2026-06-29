@@ -320,6 +320,20 @@ pub extern "C" fn _start(boot_info: &'static BootInfo) -> ! {
 
     pci::enumerate();
 
+    println!("[test] find virtio-blk and decode BARs (5.4)");
+    match pci::find_virtio_blk() {
+        Some((bus, dev, func)) => {
+            println!(
+                "[pci] virtio-blk found at {:02x}:{:02x}.{}",
+                bus, dev, func
+            );
+            pci::print_bars(bus, dev, func);
+        }
+        None => {
+            println!("[pci] virtio-blk not found on bus 0");
+        }
+    }
+
     println!("[boot] enabling interrupts");
     x86_64::instructions::interrupts::enable();
 

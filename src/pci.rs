@@ -130,3 +130,109 @@ pub fn enumerate() {
         }
     }
 }
+
+/// PCI vendor ID for Red Hat / virtio devices.
+const VIRTIO_VENDOR_ID: u16 = 0x1AF4;
+
+/// Transitional virtio-blk device ID — supports both legacy and modern transports.
+const VIRTIO_BLK_TRANSITIONAL: u16 = 0x1001;
+
+/// Non-transitional (modern-only) virtio-blk device ID.
+const VIRTIO_BLK_NON_TRANSITIONAL: u16 = 0x1042;
+
+/// Search bus 0 for the virtio-blk device.
+///
+/// Returns `Some((bus, device, func))` if found, `None` if no virtio-blk
+/// device is attached. Accepts both transitional (0x1001) and non-transitional
+/// (0x1042) device IDs — QEMU exposes transitional by default.
+pub fn find_virtio_blk() -> Option<(u8, u8, u8)> {
+    for device in 0..32u8 {
+        for func in 0..8u8 {
+            let vendor_word = config_read(0, device, func, 0x00);
+            let vendor_id = (vendor_word & 0xFFFF) as u16;
+            if vendor_id != VIRTIO_VENDOR_ID {
+                continue;
+            }
+            let device_id = (vendor_word >> 16) as u16;
+            if device_id == VIRTIO_BLK_TRANSITIONAL
+                || device_id == VIRTIO_BLK_NON_TRANSITIONAL
+            {
+                return Some((0, device, func));
+            }
+        }
+    }
+    None
+}
+
+/// Read and decode all six BARs (Base Address Registers) for a device.
+///
+/// BAR layout per slot (32 bits):
+///   - bit 0 = 1: I/O BAR. Bits 2-31 = base address (mask off low 2 type bits).
+///   - bit 0 = 0: memory BAR.
+///       - bits 1-2 = type: 00 = 32-bit, 10 = 64-bit (uses TWO BAR slots),
+///                              01 = reserved (was 16-bit), 11 = reserved.
+///       - bit 3 = prefetchable flag (1 = safe to read-ahead).
+///       - bits 4-31 = base address (mask off low 4 type bits).
+///
+/// For 64-bit memory BARs, the next BAR slot holds the high 32 bits of the
+/// base address — combined with this slot's low 32 bits to form a 64-bit base.
+pub fn print_bars(bus: u8, device: u8, func: u8) {
+    let mut i = 0u8;
+    while i < 6 {
+        let offset = 0x10 + i * 4;
+        let bar = config_read(bus, device, func, offset);
+
+        if bar == 0 {
+            println!("[pci]   BAR{} = 0x{:08X} (unused)", i, bar);
+            i += 1;
+            continue;
+        }
+
+        if bar & 0x1 == 1 {
+            // I/O BAR
+            let base = bar & !0x3;
+            println!(
+                "[pci]   BAR{} = 0x{:08X} (I/O space, base 0x{:08X})",
+                i, bar, base
+            );
+            i += 1;
+        } else {
+            // Memory BAR
+            let type_bits = (bar >> 1) & 0x3;
+            let prefetchable = (bar & 0x8) != 0;
+            let base_low = bar & !0xF;
+            let pref_str = if prefetchable { " prefetchable" } else { "" };
+
+            if type_bits == 0b10 {
+                // 64-bit memory BAR — consumes this slot AND the next
+                let next_offset = offset + 4;
+                let bar_high = config_read(bus, device, func, next_offset);
+                let base64 = (base_low as u64) | ((bar_high as u64) << 32);
+                println!(
+                    "[pci]   BAR{}-BAR{} = 0x{:08X}{:08X} (memory, 64-bit{}, base 0x{:016X})",
+                    i,
+                    i + 1,
+                    bar_high,
+                    bar,
+                    pref_str,
+                    base64
+                );
+                i += 2; // consume both slots
+            } else if type_bits == 0b00 {
+                // 32-bit memory BAR
+                println!(
+                    "[pci]   BAR{} = 0x{:08X} (memory, 32-bit{}, base 0x{:08X})",
+                    i, bar, pref_str, base_low
+                );
+                i += 1;
+            } else {
+                // Reserved type (01 or 11) — shouldn't happen on modern hardware
+                println!(
+                    "[pci]   BAR{} = 0x{:08X} (memory, RESERVED type {})",
+                    i, bar, type_bits
+                );
+                i += 1;
+            }
+        }
+    }
+}
