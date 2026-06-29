@@ -357,4 +357,39 @@ impl VirtioBlk {
             "device rejected our features — FEATURES_OK was cleared"
         );
     }
+
+    /// Step 6.4: DRIVER_OK — the final "go" bit.
+    ///
+    /// Once DRIVER_OK is set, the device is in operational state. The
+    /// device may start using configured virtqueues (Lesson 7 sets those
+    /// up). Before this bit, configuring queues is safe — the device
+    /// ignores them.
+    ///
+    /// Reads back the status after writing to check for FAILED or
+    /// DEVICE_NEEDS_RESET. If either is set, the device couldn't enter
+    /// operational state — we'd have to investigate.
+    pub fn set_driver_ok(&self) {
+        self.write_status(
+            STATUS_ACKNOWLEDGE | STATUS_DRIVER | STATUS_FEATURES_OK | STATUS_DRIVER_OK,
+        );
+        let status = self.read_status();
+        println!(
+            "[virtio]   device_status after DRIVER_OK: 0x{:02X}",
+            status
+        );
+
+        assert!(
+            status & STATUS_FAILED == 0,
+            "device entered FAILED state during DRIVER_OK"
+        );
+        assert!(
+            status & STATUS_DEVICE_NEEDS_RESET == 0,
+            "device requested reset during DRIVER_OK — internal error"
+        );
+        assert!(
+            status & STATUS_DRIVER_OK != 0,
+            "DRIVER_OK didn't stick — device rejected operational state"
+        );
+        println!("[virtio] device is live — ready for virtqueue setup");
+    }
 }

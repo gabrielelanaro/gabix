@@ -341,6 +341,9 @@ pub extern "C" fn _start(boot_info: &'static BootInfo) -> ! {
 
                 println!("[test] virtio handshake phase 2 — feature negotiation (6.3)");
                 virtio_dev.negotiate_features();
+
+                println!("[test] virtio handshake phase 3 — DRIVER_OK (6.4)");
+                virtio_dev.set_driver_ok();
             } else {
                 println!("[virtio] failed to probe device");
             }
