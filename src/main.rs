@@ -383,6 +383,22 @@ pub extern "C" fn _start(boot_info: &'static BootInfo) -> ! {
                 queue.write_descriptor(head, 0, 0, 0, 0);
                 queue.submit_chain(head);
                 // After this, avail->idx is 1. No kick yet — step 7.5 does that.
+
+                println!("[test] used ring polling + kick (7.5)");
+                virtio_dev.kick();
+                // The descriptor we submitted has bogus data (addr=0, len=0,
+                // flags=0) — the device may or may not produce a completion.
+                // Poll a few times to see if anything comes back.
+                let mut completions = 0;
+                for _ in 0..5 {
+                    if queue.poll_completion().is_some() {
+                        completions += 1;
+                    }
+                }
+                if completions == 0 {
+                    println!("[virtio]   no completion observed (expected — descriptor has bogus data)");
+                    println!("[virtio]   Lesson 8 sends a real virtio-blk request that completes");
+                }
             } else {
                 println!("[virtio] failed to probe device");
             }

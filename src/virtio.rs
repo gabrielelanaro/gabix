@@ -13,6 +13,8 @@
 //! The list is walked by reading the "capabilities pointer" at offset 0x34
 //! in the standard config header, then following next_ptr until it's 0.
 
+extern crate alloc;
+
 use crate::println;
 use crate::pci;
 use core::ptr::{read_volatile, write_volatile};
@@ -70,12 +72,16 @@ const VIRTIO_F_VERSION_1: u64 = 1 << 32;
 /// `length` bytes." The driver translates (bar, offset) into a virtual
 /// address (via the BAR's base address plus the kernel's MMIO mapping)
 /// and accesses the structure via normal memory loads/stores.
+///
+/// `notify_off_multiplier` is only meaningful for the notification
+/// capability (cfg_type = VIRTIO_CAP_NOTIFY); zero otherwise.
 #[derive(Debug, Clone, Copy)]
 pub struct VirtioCap {
     pub cfg_type: u8,
     pub bar: u8,
     pub offset: u32,
     pub length: u32,
+    pub notify_off_multiplier: u32,
 }
 
 /// Human-readable label for a virtio capability sub-type.
@@ -129,20 +135,40 @@ pub fn parse_virtio_capabilities(bus: u8, device: u8, func: u8) -> alloc::vec::V
             let word3 = pci::config_read(bus, device, func, cap_offset + 12);
             let region_length = word3;
 
-            println!(
-                "[virtio]   cap: cfg_type={} ({}), bar={}, offset=0x{:04X}, length=0x{:04X}",
-                cfg_type,
-                cap_type_name(cfg_type),
-                bar,
-                region_offset,
-                region_length
-            );
+            // word4 at offset 16 holds the notify_off_multiplier, only
+            // meaningful for the notification capability. For other caps
+            // the spec leaves that region undefined; we read it but only
+            // use the value when cfg_type == NOTIFY.
+            let word4 = pci::config_read(bus, device, func, cap_offset + 16);
+            let notify_off_multiplier = word4;
+
+            if cfg_type == VIRTIO_CAP_NOTIFY {
+                println!(
+                    "[virtio]   cap: cfg_type={} ({}), bar={}, offset=0x{:04X}, length=0x{:04X}, notify_off_multiplier={}",
+                    cfg_type,
+                    cap_type_name(cfg_type),
+                    bar,
+                    region_offset,
+                    region_length,
+                    notify_off_multiplier,
+                );
+            } else {
+                println!(
+                    "[virtio]   cap: cfg_type={} ({}), bar={}, offset=0x{:04X}, length=0x{:04X}",
+                    cfg_type,
+                    cap_type_name(cfg_type),
+                    bar,
+                    region_offset,
+                    region_length,
+                );
+            }
 
             caps.push(VirtioCap {
                 cfg_type,
                 bar,
                 offset: region_offset,
                 length: region_length,
+                notify_off_multiplier,
             });
         }
 
@@ -158,15 +184,22 @@ pub fn parse_virtio_capabilities(bus: u8, device: u8, func: u8) -> alloc::vec::V
 
 /// Driver state for the virtio-blk device.
 ///
-/// Holds the PCI coordinates and the virtual addresses of the four
-/// virtio capability regions we care about (common config, notifications,
-/// ISR, device config). After construction, methods do the handshake.
+/// Holds the PCI coordinates and the virtual addresses of the
+/// capability regions we use: common config (handshake + queue
+/// configuration) and notifications (for kicking the device).
 pub struct VirtioBlk {
     bus: u8,
     device: u8,
     func: u8,
     /// Virtual address of the common config region (mapped via `map_mmio`).
     common_virt: u64,
+    /// Virtual address of the notification capability region. The kick
+    /// path writes the queue index at `notify_virt + queue_notify_off *
+    /// notify_off_multiplier` to wake the device.
+    notify_virt: u64,
+    /// Multiplier (in bytes) for computing the per-queue notify offset.
+    /// Read from the notification capability's body.
+    notify_off_multiplier: u32,
 }
 
 impl VirtioBlk {
@@ -191,11 +224,28 @@ impl VirtioBlk {
             common_cap.bar, common_cap.offset, common_phys, common_virt
         );
 
+        // Find the notification capability — needed for the kick path.
+        let notify_cap = caps.iter().find(|c| c.cfg_type == VIRTIO_CAP_NOTIFY)?;
+        let notify_bar_base = pci::bar_base(bus, device, func, notify_cap.bar);
+        let notify_phys = notify_bar_base + notify_cap.offset as u64;
+        let notify_virt = crate::memory::map_mmio(notify_phys, notify_cap.length as u64);
+
+        println!(
+            "[virtio] notifications: BAR{}+0x{:X} = phys 0x{:X} = virt 0x{:X} (multiplier {})",
+            notify_cap.bar,
+            notify_cap.offset,
+            notify_phys,
+            notify_virt,
+            notify_cap.notify_off_multiplier,
+        );
+
         Some(Self {
             bus,
             device,
             func,
             common_virt,
+            notify_virt,
+            notify_off_multiplier: notify_cap.notify_off_multiplier,
         })
     }
 
@@ -484,6 +534,40 @@ impl VirtioBlk {
         );
         println!("[virtio] virtqueue 0 active");
     }
+
+    /// Step 7.5: kick — wake the device so it processes new submissions.
+    ///
+    /// Writes the queue index (0 for virtio-blk's request queue) to the
+    /// notification register. The address is computed from the
+    /// notification capability base plus the per-queue offset:
+    ///
+    ///   notify_addr = notify_cap_base + queue_notify_off * multiplier
+    ///
+    /// `queue_notify_off` is read from common config — it's the device's
+    /// way of saying "for this queue, write the kick at this offset."
+    /// `multiplier` is a constant from the notification capability body,
+    /// usually 0 (meaning "ignore queue_notify_off, just write at base").
+    ///
+    /// After this store, the device wakes (in QEMU, that's a host-side
+    /// thread switch) and processes everything in the available ring.
+    pub fn kick(&self) {
+        // Per-queue offset for this queue, as advertised by the device.
+        let queue_notify_off = self.read_common_u16(COMMON_QUEUE_NOTIFY_OFF) as u64;
+        let off = queue_notify_off * (self.notify_off_multiplier as u64);
+        let notify_addr = self.notify_virt + off;
+
+        // SAFETY: notify_virt was mapped via map_mmio in probe().
+        // Writing the queue index (0) is the spec-defined kick action.
+        // Volatile so the compiler can't elide the store.
+        unsafe {
+            write_volatile(notify_addr as *mut u16, 0);
+        }
+
+        println!(
+            "[virtio] kick: wrote queue 0 to notify register at virt 0x{:X} (notify_off={} * mult={})",
+            notify_addr, queue_notify_off, self.notify_off_multiplier
+        );
+    }
 }
 
 // ============================================================
@@ -543,6 +627,10 @@ pub struct VirtQueue {
     // Free descriptor indices. Treated as a stack — pop on alloc,
     // push on free. O(1) both ways, no fragmentation.
     free_list: alloc::vec::Vec<u16>,
+
+    /// Last `used->idx` we processed. Initialized to 0 (no completions
+    /// seen yet). Used by `poll_completion` to detect new entries.
+    last_used_idx: u16,
 }
 
 impl VirtQueue {
@@ -613,6 +701,7 @@ impl VirtQueue {
             avail_phys,
             used_phys,
             free_list: (0..queue_size).collect(),
+            last_used_idx: 0,
         }
     }
 
@@ -731,5 +820,56 @@ impl VirtQueue {
         );
 
         old_idx
+    }
+
+    /// Poll the used ring for new completions. Returns `Some((id, len))`
+    /// if a new completion has arrived since the last call, `None` if no
+    /// new completions.
+    ///
+    /// - `id` is the head descriptor index the kernel originally
+    ///   submitted — use it to find and free the chain.
+    /// - `len` is the number of bytes the device actually wrote to the
+    ///   data buffer. For a read: the bytes read. For a write: 0.
+    ///
+    /// Reads `used->idx` with Acquire ordering. This pairs with the
+    /// device's Release-ordered store: we won't see the new idx until
+    /// the device's prior writes (the used ring entry fields) are also
+    /// visible to us. So reading the entry right after seeing idx
+    /// advance is safe.
+    pub fn poll_completion(&mut self) -> Option<(u32, u32)> {
+        let q = self.queue_size as u64;
+
+        // Pointer to used->idx (offset 2 from region base).
+        let idx_atomic: *const AtomicU16 =
+            (self.used_virt + 2) as *const AtomicU16;
+
+        // Acquire load pairs with the device's Release store.
+        let current = unsafe { (*idx_atomic).load(Ordering::Acquire) };
+
+        if current == self.last_used_idx {
+            return None;
+        }
+
+        // Read the entry at last_used_idx % N. Layout: offset 4 (past
+        // flags+idx), each entry is 8 bytes (id u32, len u32).
+        let slot = (self.last_used_idx as u64) % q;
+        let entry_virt = self.used_virt + 4 + slot * 8;
+        let (id, len) = unsafe {
+            (
+                read_volatile(entry_virt as *const u32),
+                read_volatile((entry_virt + 4) as *const u32),
+            )
+        };
+
+        self.last_used_idx = self.last_used_idx.wrapping_add(1);
+        println!(
+            "[virtio] poll_completion: used->idx {} -> {}, id={} len={}",
+            self.last_used_idx.wrapping_sub(1),
+            current,
+            id,
+            len
+        );
+
+        Some((id, len))
     }
 }
