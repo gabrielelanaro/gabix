@@ -346,7 +346,10 @@ pub extern "C" fn _start(boot_info: &'static BootInfo) -> ! {
                 virtio_dev.set_driver_ok();
 
                 println!("[test] virtqueue allocation (7.1)");
-                let _queue = virtio::VirtQueue::new(64);
+                let queue = virtio::VirtQueue::new(64);
+
+                println!("[test] configure virtqueue in common config (7.2)");
+                virtio_dev.configure_queue(&queue);
             } else {
                 println!("[virtio] failed to probe device");
             }

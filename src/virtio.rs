@@ -238,6 +238,33 @@ impl VirtioBlk {
         }
     }
 
+    /// Read 16 bits from the common config region at `offset`.
+    fn read_common_u16(&self, offset: u8) -> u16 {
+        unsafe { read_volatile((self.common_virt + offset as u64) as *const u16) }
+    }
+
+    /// Write 16 bits to the common config region at `offset`.
+    fn write_common_u16(&self, offset: u8, value: u16) {
+        unsafe {
+            write_volatile(
+                (self.common_virt + offset as u64) as *mut u16,
+                value,
+            );
+        }
+    }
+
+    /// Write 64 bits to the common config region at `offset`. Used for
+    /// queue_desc / queue_avail / queue_used — the physical addresses of
+    /// the virtqueue regions.
+    fn write_common_u64(&self, offset: u8, value: u64) {
+        unsafe {
+            write_volatile(
+                (self.common_virt + offset as u64) as *mut u64,
+                value,
+            );
+        }
+    }
+
     // ---------- Handshake helpers ----------
 
     /// Read the device_status byte from common config.
@@ -400,6 +427,62 @@ impl VirtioBlk {
             "DRIVER_OK didn't stick — device rejected operational state"
         );
         println!("[virtio] device is live — ready for virtqueue setup");
+    }
+
+    /// Step 7.2: configure virtqueue 0 (the request queue) in common config.
+    ///
+    /// Writes the seven queue fields in the order the spec requires:
+    ///   1. queue_select = 0  — target the request queue
+    ///   2. queue_size = N    — negotiate down from device max to our size
+    ///   3. queue_desc        — physical address of descriptor table
+    ///   4. queue_avail       — physical address of available ring
+    ///   5. queue_used        — physical address of used ring
+    ///   6. queue_enable = 1  — "I'm done, activate"
+    ///
+    /// The device treats `queue_enable` as the commit bit — before that
+    /// write it ignores the queue entirely. Reading back `queue_enable`
+    /// and seeing 1 confirms acceptance.
+    pub fn configure_queue(&self, queue: &VirtQueue) {
+        println!("[virtio] configuring virtqueue 0 in common config");
+
+        // 1. Select queue 0 (the request queue for virtio-blk)
+        self.write_common_u16(COMMON_QUEUE_SELECT, 0);
+
+        // 2. Negotiate size. Read the device's max, then write back ours.
+        let device_max = self.read_common_u16(COMMON_QUEUE_SIZE);
+        println!(
+            "[virtio]   device max queue_size: {} (we want {})",
+            device_max,
+            queue.queue_size()
+        );
+        assert!(
+            queue.queue_size() <= device_max,
+            "device max queue_size {} < our requested {}",
+            device_max,
+            queue.queue_size()
+        );
+        self.write_common_u16(COMMON_QUEUE_SIZE, queue.queue_size());
+
+        // 3-5. Write the three region addresses. The device reads these
+        // once at queue_enable time and DMAs from them forever after.
+        self.write_common_u64(COMMON_QUEUE_DESC, queue.desc_phys());
+        self.write_common_u64(COMMON_QUEUE_AVAIL, queue.avail_phys());
+        self.write_common_u64(COMMON_QUEUE_USED, queue.used_phys());
+
+        // 6. Enable. The device checks all the above only at this point.
+        self.write_common_u16(COMMON_QUEUE_ENABLE, 1);
+
+        // Verify acceptance — read-back should be 1.
+        let enable_readback = self.read_common_u16(COMMON_QUEUE_ENABLE);
+        println!(
+            "[virtio]   queue_enable readback: {} (expect 1)",
+            enable_readback
+        );
+        assert_eq!(
+            enable_readback, 1,
+            "device rejected queue configuration — queue_enable didn't stick"
+        );
+        println!("[virtio] virtqueue 0 active");
     }
 }
 
