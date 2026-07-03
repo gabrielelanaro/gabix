@@ -350,6 +350,31 @@ pub extern "C" fn _start(boot_info: &'static BootInfo) -> ! {
 
                 println!("[test] configure virtqueue in common config (7.2)");
                 virtio_dev.configure_queue(&queue);
+
+                println!("[test] descriptor free list (7.3)");
+                let mut queue = queue;
+                println!(
+                    "[virtio] free list size: {} (expect {})",
+                    queue.num_free(),
+                    queue.queue_size()
+                );
+                let a = queue.alloc_descriptor().expect("alloc should succeed");
+                let b = queue.alloc_descriptor().expect("alloc should succeed");
+                println!(
+                    "[virtio]   alloc_descriptor() = {}, {} (expect 63, 62 — LIFO)",
+                    a, b
+                );
+                println!("[virtio]   free list size after allocs: {}", queue.num_free());
+                queue.free_descriptor(a);
+                println!("[virtio]   free_descriptor({})", a);
+                let c = queue.alloc_descriptor().expect("alloc should succeed");
+                println!(
+                    "[virtio]   alloc_descriptor() = {} (expect {} — stack reuse)",
+                    c, a
+                );
+                // Return to a clean state
+                queue.free_descriptor(b);
+                queue.free_descriptor(c);
             } else {
                 println!("[virtio] failed to probe device");
             }

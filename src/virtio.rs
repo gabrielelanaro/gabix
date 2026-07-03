@@ -493,6 +493,20 @@ impl VirtioBlk {
 /// Bytes occupied by one descriptor entry: addr(8) + len(4) + flags(2) + next(2).
 const VIRTQ_DESC_SIZE: usize = 16;
 
+// Descriptor flags (bits in the `flags` field).
+const VIRTQ_DESC_F_NEXT: u16 = 0x01;
+const VIRTQ_DESC_F_WRITE: u16 = 0x02;
+
+/// Layout of one descriptor entry. `repr(C)` guarantees the fields land
+/// at the spec-mandated offsets: addr at 0, len at 8, flags at 12, next at 14.
+#[repr(C)]
+struct VirtqDesc {
+    addr: u64,
+    len: u32,
+    flags: u16,
+    next: u16,
+}
+
 /// A split virtqueue: three regions in guest memory that the kernel and
 /// the device use to exchange requests.
 ///
@@ -525,6 +539,10 @@ pub struct VirtQueue {
     desc_phys: u64,
     avail_phys: u64,
     used_phys: u64,
+
+    // Free descriptor indices. Treated as a stack — pop on alloc,
+    // push on free. O(1) both ways, no fragmentation.
+    free_list: alloc::vec::Vec<u16>,
 }
 
 impl VirtQueue {
@@ -594,6 +612,7 @@ impl VirtQueue {
             desc_phys,
             avail_phys,
             used_phys,
+            free_list: (0..queue_size).collect(),
         }
     }
 
@@ -611,5 +630,56 @@ impl VirtQueue {
 
     pub fn used_phys(&self) -> u64 {
         self.used_phys
+    }
+
+    /// Pop a free descriptor index from the free list. Returns `None`
+    /// if all `queue_size` descriptors are in use.
+    pub fn alloc_descriptor(&mut self) -> Option<u16> {
+        self.free_list.pop()
+    }
+
+    /// Push a descriptor index back onto the free list. Caller's
+    /// responsibility to ensure no device is still reading the
+    /// descriptor (typically called only after seeing the completion
+    /// in the used ring).
+    pub fn free_descriptor(&mut self, idx: u16) {
+        debug_assert!(
+            idx < self.queue_size,
+            "descriptor index {} out of range (queue_size {})",
+            idx,
+            self.queue_size
+        );
+        self.free_list.push(idx);
+    }
+
+    /// Number of descriptors currently free.
+    pub fn num_free(&self) -> usize {
+        self.free_list.len()
+    }
+
+    /// Write the four fields of descriptor `idx`. Used by future steps
+    /// to build a descriptor chain before submitting it.
+    ///
+    /// SAFETY-conscious: writes via volatile so the compiler can't
+    /// reorder or coalesce with device reads.
+    pub fn write_descriptor(
+        &self,
+        idx: u16,
+        addr: u64,
+        len: u32,
+        flags: u16,
+        next: u16,
+    ) {
+        let entry_virt = self.desc_virt + (idx as u64) * VIRTQ_DESC_SIZE as u64;
+        // SAFETY: `idx` is in range (caller contract), `entry_virt`
+        // points at one descriptor inside the descriptor-table frame,
+        // which we own and which is reachable via the direct map.
+        unsafe {
+            let ptr = entry_virt as *mut VirtqDesc;
+            write_volatile(&mut (*ptr).addr, addr);
+            write_volatile(&mut (*ptr).len, len);
+            write_volatile(&mut (*ptr).flags, flags);
+            write_volatile(&mut (*ptr).next, next);
+        }
     }
 }
