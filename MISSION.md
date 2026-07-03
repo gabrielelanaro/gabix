@@ -1,0 +1,75 @@
+# Mission: Reach a disk-backed filesystem and ELF execution
+
+## Why
+Build a Virtual File System layer in the mini-os bare-metal kernel as a means
+to a concrete goal: **plug in a disk, load an ELF (Executable and Linkable
+Format) binary from it, and execute it.** The VFS work is the generic file
+interface that a disk-backed filesystem plugs into; disk is what makes the
+filesystem real instead of a boot-time snapshot.
+
+The deeper goal is to learn Linux's storage stack internals by re-implementing
+them: PCI (Peripheral Component Interconnect) device discovery, virtio,
+block layers, ext2, page cache, ELF loading, `exec()`. Each layer in the
+kernel has a Linux counterpart we can read alongside.
+
+## Success looks like
+
+### VFS foundation (done — Lessons 1–3)
+- [x] A user program can call `open(...)` and get back a file descriptor — Lesson 2
+- [x] `read(fd, buf, len)` returns the file's bytes — Lesson 2
+- [x] `write(fd, buf, len)` modifies the file (or prints to stdout for fd=1) — Lesson 2
+- [x] `close(fd)` releases the descriptor — Lesson 2
+- [x] Each process has its own file descriptor table — Lesson 2
+- [x] Path resolution walks the directory tree — Lesson 3
+- [x] Multiple files: real directory with byte-format dirents — Lesson 3
+
+### Disk path (current focus)
+- [x] QEMU launched with a raw disk image attached via virtio-blk-pci — Lesson 5
+- [x] PCI bus enumeration from the kernel — list every device, read vendor/device IDs — Lesson 5
+- [x] Find the virtio-blk device on the PCI bus (vendor `0x1AF4`) — Lesson 5
+- [x] virtio PCI modern initialization — probe, negotiate features, enable — Lesson 6
+- [ ] Virtqueues set up — read/write requests submitted and completed — Lessons 7-8
+- [ ] Virtqueues set up — read/write requests submitted and completed — Lessons 7-8
+- [ ] First successful read of sector 0 (boot signature / known bytes) — Lesson 8 (keystone 1)
+- [ ] Block layer abstraction — `read_block(n) -> [u8; 512]` — Lesson 9
+
+### ext2 filesystem
+- [ ] Superblock parsed (offset 1024, fields validated)
+- [ ] Block group descriptor table walked
+- [ ] Inode lookup by number (root inode = 2 by ext2 convention)
+- [ ] ext2 directory entries parsed — different byte format from our VFS dirents
+- [ ] ext2 mounted as the root filesystem, replacing `ROOT_INODE` lazy_static
+
+### ELF execution
+- [ ] ELF header parser (magic, class, endianness, program headers)
+- [ ] PT_LOAD segments mapped into a fresh `AddressSpace`
+- [ ] `exec(path)` syscall — load ELF from filesystem, replace current process image
+- [ ] A user program compiled externally, written to the disk image, loaded and executed by the kernel
+
+### Polish (deferred — not on critical path)
+- [ ] `creat`, `mkdir`, `unlink` for runtime filesystem mutation (was Lesson 4 plan)
+- [ ] Frame-backed inode data instead of heap-backed (true page-cache shape)
+- [ ] Fork inherits parent's file descriptor table (POSIX semantics)
+- [ ] Permissions, ownership, ACLs (Access Control Lists)
+- [ ] Reading Linux's `fs/read_write.c`, `block/`, `fs/ext2/`, `fs/exec.c` and the patterns making sense
+
+## Progress
+- **Lesson 1** (concept foundation): four abstractions absorbed. See learning-records 0001.
+- **Lesson 2** (VFS foundation built): committed as `72c215f`. open/read/write/close working end-to-end on hardcoded inode. See learning-records 0006.
+- **Lesson 3** (real inodes and paths built): six steps across commits `3b743cc` → `c4f6101`. Filesystem has a real root directory with two files, path resolution walks the tree, USER_PROGRAM resolves paths end-to-end. See learning-records 0007.
+- **Lesson 5** (PCI bus enumeration): four steps across commits `7ec8c03` → `e05b0de`. Kernel walks bus 0, lists every device, identifies virtio-blk specifically, decodes its BAR layout. See learning-records 0008.
+- **Lesson 6** (virtio device initialization): four steps across commits `fc21746` → `d5f03d3`. Kernel parses the PCI capability list, maps the MMIO regions, walks through the full virtio handshake (reset → ACKNOWLEDGE → DRIVER → feature negotiation → FEATURES_OK → DRIVER_OK). Device is now live. See learning-records 0009.
+
+## Constraints
+- Rust on bare-metal x86-64 (`#![no_std]`)
+- No external dependencies; uses our existing heap allocator, frame allocator, and per-process AddressSpace
+- Disk: virtio-blk-pci (modern transport), raw image format, ext2 filesystem
+- Follow existing mini-os conventions: Socratic learning, expand every acronym on first use, write code together where possible
+- Read the Linux sources alongside: `fs/read_write.c`, `block/`, `fs/ext2/`, `drivers/block/virtio_blk.c`, `fs/exec.c`
+
+## Out of scope (for this push to disk)
+- Asynchronous I/O (`aio`, `io_uring`)
+- Memory-mapped files (`mmap`)
+- Networking sockets
+- Other disk interfaces (ATA/IDE, NVMe) — virtio-blk only
+- Other filesystems (ext4, FAT, XFS) — ext2 only

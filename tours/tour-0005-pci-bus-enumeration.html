@@ -1,0 +1,819 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Tour — Lesson 5 · PCI Bus Enumeration</title>
+<link rel="stylesheet" href="../assets/lesson.css">
+<style>
+  .tour-step {
+    margin: 3rem 0;
+    padding-top: 1rem;
+    border-top: 1px solid var(--border);
+  }
+  .tour-step:first-of-type { border-top: none; padding-top: 0; }
+
+  .tour-step-num {
+    display: inline-block;
+    font-family: var(--font-mono);
+    font-size: 0.78rem;
+    font-weight: 600;
+    color: var(--accent);
+    background: var(--accent-soft);
+    padding: 2px 8px;
+    border-radius: 3px;
+    margin-right: 0.6rem;
+  }
+  .tour-step-title {
+    font-family: var(--font-sans);
+    font-weight: 700;
+    font-size: 1.3rem;
+    color: var(--text);
+    margin: 0 0 0.4rem;
+    display: inline;
+  }
+  .tour-step-h2 {
+    margin: 0 0 1rem;
+  }
+
+  .tour-files {
+    font-family: var(--font-mono);
+    font-size: 0.82rem;
+    color: var(--text-dim);
+    margin: 0.5rem 0 1.5rem;
+  }
+  .tour-files strong { color: var(--text); font-weight: 600; }
+
+  .snippet-meta {
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
+    color: var(--text-dim);
+    margin: 1.5rem 0 0.35rem;
+    display: flex;
+    align-items: baseline;
+    gap: 0.6rem;
+  }
+  .snippet-meta .snippet-file {
+    color: var(--accent);
+    font-weight: 600;
+    background: var(--accent-soft);
+    padding: 1px 6px;
+    border-radius: 3px;
+  }
+  .snippet-meta .snippet-what {
+    color: var(--text-faint);
+    font-style: italic;
+  }
+  .snippet-meta + pre,
+  .snippet-meta + pre.tour-output {
+    margin-top: 0;
+  }
+
+  pre.tour-output {
+    background: #111827;
+    color: #e5e7eb;
+    border-left: 3px solid var(--accent);
+    padding: 1rem 1.25rem;
+    border-radius: 0 6px 6px 0;
+    font-size: 0.8rem;
+    line-height: 1.55;
+    margin: 1rem 0;
+  }
+  pre.tour-output .ann {
+    color: #9ca3af;
+    font-style: italic;
+  }
+  pre.tour-output .ok {
+    color: #86efac;
+  }
+  pre.tour-output .err {
+    color: #fca5a5;
+  }
+
+  .pull-quote {
+    border-left: 3px solid var(--accent);
+    padding: 0.4rem 0 0.4rem 1rem;
+    margin: 1.5rem 0;
+    font-style: italic;
+    color: var(--text-dim);
+  }
+</style>
+</head>
+<body>
+<article class="lesson">
+
+  <header class="lesson-header">
+    <div class="lesson-eyebrow">Tour · Lesson 5 · Companion to <a href="../lessons/0005-pci-bus-enumeration.html" style="color:inherit;">the lesson</a></div>
+    <h1 class="lesson-title">Code Tour — PCI Bus Enumeration</h1>
+    <p class="lesson-subtitle">What the design looks like once it lands in Rust and shell. Step by step, with the verification output that proved each one.</p>
+    <div class="lesson-meta">
+      <span><strong>Steps done</strong> 5.1 – 5.4 (complete)</span>
+      <span><strong>Last commit</strong> <code>e05b0de</code></span>
+    </div>
+  </header>
+
+  <div class="content">
+
+  <p class="lead">
+    The <a href="../lessons/0005-pci-bus-enumeration.html">lesson</a> explains
+    <em>what PCI is and why</em>. This page is the <em>code</em> — what each
+    step actually added, with the verification output that proved it. Every
+    snippet is labeled with the file it came from.
+  </p>
+
+  <!-- ============================================================
+       STEP 5.1
+       ============================================================ -->
+  <section class="tour-step">
+    <h2 class="tour-step-h2">
+      <span class="tour-step-num">5.1</span><span class="tour-step-title">Raw disk image + QEMU virtio-blk-pci attach</span>
+    </h2>
+    <div class="tour-files"><strong>Files touched:</strong> <code>scripts/make-disk.sh</code> (new), <code>scripts/run.sh</code> (new), <code>.gitignore</code></div>
+
+    <p>
+      Pure infrastructure — no kernel code. The disk needs to exist before
+      the kernel can find it on the PCI bus in step 5.3, so this step
+      makes it exist and attaches it to QEMU.
+    </p>
+
+    <h3>Disk image creation script</h3>
+
+    <div class="snippet-meta">
+      <span class="snippet-file">scripts/make-disk.sh</span>
+      <span class="snippet-what">— Full script</span>
+    </div>
+<pre><span class="c">#!/bin/sh</span>
+<span class="c"># Create or reset the test disk image used by mini-os for the virtio-blk path.</span>
+
+<span class="k">set</span> -e
+
+DISK_IMG=disk.img
+SIZE_MB=<span class="n">1</span>
+SIGNATURE=<span class="s">'MINIOS_DISK_v0'</span>
+
+<span class="c"># Create the file (sparse, all zeros)</span>
+truncate -s <span class="s">"</span><span class="n">${SIZE_MB}</span><span class="s">M"</span> <span class="s">"</span><span class="n">$DISK_IMG</span><span class="s">"</span>
+
+<span class="c"># Write the signature at offset 0 followed by a newline</span>
+printf <span class="s">'%s\n'</span> <span class="s">"</span><span class="n">$SIGNATURE</span><span class="s">"</span> | dd of=<span class="s">"</span><span class="n">$DISK_IMG</span><span class="s">"</span> conv=notrunc bs=<span class="n">1</span> count=$(( <span class="n">${#SIGNATURE}</span> + <span class="n">1</span> )) <span class="n">2</span>&gt;/dev/null
+
+<span class="c"># Verify</span>
+<span class="k">echo</span> <span class="s">"Created </span><span class="n">$DISK_IMG</span><span class="s"> (</span><span class="n">$SIZE_MB</span><span class="s"> MB)"</span>
+<span class="k">echo</span> <span class="s">"First 16 bytes:"</span>
+hexdump -C <span class="s">"</span><span class="n">$DISK_IMG</span><span class="s">"</span> | head -<span class="n">1</span></pre>
+
+    <p>
+      Two commands do the real work: <code>truncate -s 1M disk.img</code>
+      creates a 1 MB sparse file (no actual disk space used until
+      written), and <code>dd conv=notrunc</code> writes the signature
+      without truncating the file. The <code>bs=1 count=15</code> writes
+      exactly the signature length, leaving the rest of the file as zeros.
+    </p>
+
+    <p>
+      The signature <code>"MINIOS_DISK_v0\n"</code> is 15 bytes — a
+      readable marker that Lesson 8 will verify after the first disk
+      read. Any recognizable pattern works; the point is having known
+      bytes at sector 0 to compare against.
+    </p>
+
+    <h3>QEMU launch script</h3>
+
+    <div class="snippet-meta">
+      <span class="snippet-file">scripts/run.sh</span>
+      <span class="snippet-what">— Full script (boots kernel + attaches virtio-blk)</span>
+    </div>
+<pre><span class="c">#!/bin/sh</span>
+<span class="k">set</span> -e
+
+DISK_IMG=disk.img
+KERNEL=target/x86_64-mini-os/debug/bootimage-mini-os.bin
+
+<span class="k">if</span> [ ! -f <span class="s">"</span><span class="n">$DISK_IMG</span><span class="s">"</span> ]; <span class="k">then</span>
+    <span class="k">echo</span> <span class="s">"Run ./scripts/make-disk.sh first to create </span><span class="n">$DISK_IMG</span><span class="s">"</span> &gt;&amp;<span class="n">2</span>
+    <span class="k">exit</span> <span class="n">1</span>
+<span class="k">fi</span>
+
+cargo bootimage <span class="n">2</span>&gt;&amp;<span class="n">1</span> | tail -<span class="n">3</span>
+
+<span class="k">exec</span> qemu-system-x86_64 \
+    -drive format=raw,file=<span class="s">"</span><span class="n">$KERNEL</span><span class="s">"</span> \
+    -drive file=<span class="s">"</span><span class="n">$DISK_IMG</span><span class="s">"</span>,format=raw,<span class="k">if</span>=none,id=drv0 \
+    -device virtio-blk-pci,drive=drv0 \
+    -display none \
+    -serial stdio \
+    -no-reboot</pre>
+
+    <p>
+      Two <code>-drive</code> flags + one <code>-device</code> flag
+      attach the virtio-blk disk:
+    </p>
+
+    <ol>
+      <li>
+        <strong>First <code>-drive</code></strong> &mdash; the kernel
+        bootimage. QEMU's bootloader (SeaBIOS) sees this as the boot
+        disk and loads our kernel from it.
+      </li>
+      <li>
+        <strong>Second <code>-drive</code></strong> &mdash; our raw
+        <code>disk.img</code>. The <code>if=none</code> means "don't
+        auto-attach it to a built-in controller" — we're going to wire
+        it up explicitly via the next flag. The <code>id=drv0</code>
+        gives it a name we can reference.
+      </li>
+      <li>
+        <strong><code>-device virtio-blk-pci,drive=drv0</code></strong>
+        &mdash; instantiates a virtio-blk PCI device and connects it to
+        the drive we just defined. From QEMU's perspective: this is the
+        moment the PCI bus gets a virtio-blk device attached. From the
+        guest kernel's perspective (once we look): there's now a device
+        at some PCI slot waiting to be found.
+      </li>
+    </ol>
+
+    <p>
+      The <code>-no-reboot</code> flag tells QEMU to halt on triple fault
+      instead of rebooting. Useful for catching kernel bugs that would
+      otherwise cause an infinite reboot loop.
+    </p>
+
+    <h3>.gitignore update</h3>
+
+    <div class="snippet-meta">
+      <span class="snippet-file">.gitignore</span>
+      <span class="snippet-what">— Add disk.img (binary, recreated by make-disk.sh)</span>
+    </div>
+<pre><span class="c"># Before:</span>
+/target
+/qemu.log
+
+<span class="c"># After:</span>
+/target
+/qemu.log
+/disk.img</pre>
+
+    <p>
+      The disk image is a binary blob, not source. The script
+      <code>make-disk.sh</code> reproduces it deterministically, so
+      there's no reason to commit the binary itself. Same convention as
+      the <code>target/</code> build directory.
+    </p>
+
+    <h3>Verification</h3>
+
+    <p>
+      Run the QEMU command (the script or inline). The kernel should
+      boot normally &mdash; it doesn't know about the disk yet, so
+      behavior is unchanged from Lesson 3's USER_PROGRAM. The disk just
+      sits on the PCI bus waiting to be discovered.
+    </p>
+
+    <div class="snippet-meta">
+      <span class="snippet-what">— Boot serial output (kernel boots cleanly with disk attached)</span>
+    </div>
+<pre class="tour-output"><span class="ann">[boot]</span> CR4 after SSE enable = 0x620
+<span class="ann">[boot]</span> gdt...
+<span class="ann">[boot]</span> idt...
+<span class="ann">[boot]</span> pic...
+<span class="ann">[boot]</span> pit...
+<span class="ann">[boot]</span> hello
+<span class="ann">[boot]</span> memory map:
+<span class="ann">[boot]</span> frame allocator...
+<span class="ann">[boot]</span> memory mapper...
+<span class="ann">...</span>
+<span class="ann">[test]</span> filesystem setup (3.3)
+<span class="ann">[test]</span>   root inode: ino=1 kind=Dir
+<span class="ann">[test]</span>   lookup 'hello.txt' in root -&gt; <span class="ok">Some(2)</span>
+<span class="ann">[test]</span> path resolution (3.4)
+<span class="ann">[test]</span>   '/hello.txt' -&gt; ino=<span class="ok">Some(2)</span> kind=<span class="ok">Some(File)</span>
+<span class="ann">...</span>
+<span class="ann">[syscall]</span> sys_open(path=<span class="ok">"/hello.txt"</span>) -&gt; fd=0
+<span class="ok">hello vfs</span>
+<span class="ann">[syscall]</span> sys_exit(0)</pre>
+
+    <p>
+      All the existing Lesson 3 tests still pass. The disk image's
+      presence on the PCI bus hasn't broken anything &mdash; the kernel
+      just isn't looking for it yet. Step 5.2 changes that.
+    </p>
+
+    <h3>Disk image hex verification</h3>
+
+    <p>
+      Running <code>make-disk.sh</code> prints the first 16 bytes for
+      confirmation. The signature <code>"MINIOS_DISK_v0\n"</code> in
+      ASCII is <code>4d 49 4e 49 4f 53 5f 44 49 53 4b 5f 76 30 0a</code>,
+      followed by a zero:
+    </p>
+
+    <div class="snippet-meta">
+      <span class="snippet-what">— hexdump output from make-disk.sh</span>
+    </div>
+<pre class="tour-output"><span class="ann">00000000</span>  <span class="ok">4d 49 4e 49 4f 53 5f 44</span>  <span class="ok">49 53 4b 5f 76 30 0a</span> 00  |<span class="ok">MINIOS_DISK_v0</span>.|</pre>
+
+    <p>
+      This is the byte pattern Lesson 8 will read back via virtio-blk
+      and compare against. If the disk read returns these exact 15
+      bytes, the whole driver stack works.
+    </p>
+
+    <p class="pull-quote">
+      Commit <code>7ec8c03</code>. Wall-clock time: ~100 seconds. No
+      kernel code yet &mdash; the next step starts the actual PCI work.
+    </p>
+  </section>
+
+  <!-- ============================================================
+       STEP 5.2
+       ============================================================ -->
+  <section class="tour-step">
+    <h2 class="tour-step-h2">
+      <span class="tour-step-num">5.2</span><span class="tour-step-title">PCI config space access — <code>src/pci.rs</code></span>
+    </h2>
+    <div class="tour-files"><strong>Files touched:</strong> <code>src/pci.rs</code> (new), <code>src/main.rs</code></div>
+
+    <p>
+      New module <code>pci.rs</code> with two functions —
+      <code>config_read</code> and <code>config_write</code> — that
+      translate bus/device/function/offset into a 32-bit I/O port
+      transaction. The full PCI bus walk comes in 5.3; this step is the
+      primitive they're built on.
+    </p>
+
+    <h3>The address-word helper</h3>
+
+    <div class="snippet-meta">
+      <span class="snippet-file">src/pci.rs</span>
+      <span class="snippet-what">— make_address: build the 32-bit config address word</span>
+    </div>
+<pre><span class="k">fn</span> <span class="f">make_address</span>(bus: <span class="t">u8</span>, device: <span class="t">u8</span>, func: <span class="t">u8</span>, offset: <span class="t">u8</span>) -&gt; <span class="t">u32</span> {
+    (<span class="n">1u32</span> &lt;&lt; <span class="n">31</span>)
+        | ((bus <span class="k">as</span> <span class="t">u32</span>) &lt;&lt; <span class="n">16</span>)
+        | ((device <span class="k">as</span> <span class="t">u32</span>) &lt;&lt; <span class="n">11</span>)
+        | ((func <span class="k">as</span> <span class="t">u32</span>) &lt;&lt; <span class="n">8</span>)
+        | ((offset <span class="k">as</span> <span class="t">u32</span>) &amp; <span class="n">0xFC</span>)
+}</pre>
+
+    <p>
+      Direct translation of the bitfield from the lesson. Enable bit at
+      position 31, bus at 23-16, device at 15-11, function at 10-8,
+      offset at 7-2 (the <code>&amp; 0xFC</code> mask clears the low 2
+      bits — config space accesses are always 32-bit-aligned).
+    </p>
+
+    <h3>Config read</h3>
+
+    <div class="snippet-meta">
+      <span class="snippet-file">src/pci.rs</span>
+      <span class="snippet-what">— config_read function</span>
+    </div>
+<pre><span class="k">pub fn</span> <span class="f">config_read</span>(bus: <span class="t">u8</span>, device: <span class="t">u8</span>, func: <span class="t">u8</span>, offset: <span class="t">u8</span>) -&gt; <span class="t">u32</span> {
+    <span class="k">let</span> address = <span class="f">make_address</span>(bus, device, func, offset);
+    <span class="k">unsafe</span> {
+        <span class="k">let mut</span> addr_port: <span class="t">Port</span>&lt;<span class="t">u32</span>&gt; = <span class="t">Port</span>::new(<span class="t">CONFIG_ADDRESS</span>);
+        <span class="k">let mut</span> data_port: <span class="t">Port</span>&lt;<span class="t">u32</span>&gt; = <span class="t">Port</span>::new(<span class="t">CONFIG_DATA</span>);
+        addr_port.write(address);
+        data_port.read()
+    }
+}</pre>
+
+    <p>
+      Two-step protocol: write the address word to port
+      <code>0xCF8</code>, then read 32 bits from port
+      <code>0xCFC</code>. The <code>x86_64</code> crate's
+      <code>Port::new</code> + <code>read</code>/<code>write</code> wraps
+      the <code>in</code>/<code>out</code> instructions &mdash; same
+      pattern as <code>src/pit.rs</code> and <code>src/serial.rs</code>.
+    </p>
+
+    <p>
+      The <code>unsafe</code> block is required because port I/O touches
+      hardware. The safety argument: <code>0xCF8</code> and
+      <code>0xCFC</code> are well-defined PCI configuration access ports,
+      stable across all x86 platforms. Reading a non-existent device
+      returns <code>0xFFFFFFFF</code>, doesn't crash.
+    </p>
+
+    <h3>Config write</h3>
+
+    <p>
+      Identical shape to <code>config_read</code> but writes
+      <code>value</code> to <code>0xCFC</code> after setting the
+      address. Not used in step 5.2's smoke test &mdash; comes into play
+      in Lesson 6 when we write the virtio status register to set
+      <code>DRIVER_OK</code>.
+    </p>
+
+    <h3>Smoke test</h3>
+
+    <p>
+      Reads the host bridge at <code>00:00.0</code> and asserts its
+      vendor ID is Intel (<code>0x8086</code>). QEMU's <code>pc</code>
+      machine always has an Intel i440FX host bridge at slot 00:00.0, so
+      this is a reliable sanity check that the port I/O actually works.
+    </p>
+
+    <div class="snippet-meta">
+      <span class="snippet-file">src/main.rs</span>
+      <span class="snippet-what">— PCI config access smoke test</span>
+    </div>
+<pre><span class="k">println!</span>(<span class="s">"[test] PCI config space access (5.2)"</span>);
+{
+    <span class="k">let</span> word0 = pci::config_read(<span class="n">0</span>, <span class="n">0</span>, <span class="n">0</span>, <span class="n">0x00</span>);
+    <span class="k">let</span> vendor_id = (word0 &amp; <span class="n">0xFFFF</span>) <span class="k">as</span> <span class="t">u16</span>;
+    <span class="k">let</span> device_id = (word0 &gt;&gt; <span class="n">16</span>) <span class="k">as</span> <span class="t">u16</span>;
+    <span class="k">println!</span>(<span class="s">"[test]   00:00.0 vendor={:04x} device={:04x}"</span>, vendor_id, device_id);
+    <span class="k">assert_eq!</span>(vendor_id, <span class="n">0x8086</span>,
+        <span class="s">"host bridge at 00:00.0 should be Intel (0x8086); got 0x{:04x}"</span>,
+        vendor_id);
+}</pre>
+
+    <p>
+      The 32-bit word at offset 0 holds both IDs packed: vendor in the
+      low 16 bits, device in the high 16. So one read gets both.
+    </p>
+
+    <h3>Verification</h3>
+
+    <div class="snippet-meta">
+      <span class="snippet-what">— Boot serial output</span>
+    </div>
+<pre class="tour-output"><span class="ann">[test]</span> PCI config space access (5.2)
+<span class="ann">[test]</span>   00:00.0 vendor=<span class="ok">8086</span> device=<span class="ok">1237</span>
+<span class="ann">[test]</span>   Intel host bridge found — PCI config access works</pre>
+
+    <p>
+      <code>vendor=8086</code> is Intel's permanent PCI vendor ID.
+      <code>device=1237</code> is the i440FX host bridge &mdash; QEMU's
+      default chipset for the <code>pc</code> machine type. Exactly
+      what we expected. Step 5.3 will use these same primitives to walk
+      all 32 devices on bus 0 and list every one that responds.
+    </p>
+
+    <p class="pull-quote">
+      Wall-clock time: ~95 seconds. Just the primitives &mdash; no
+      enumeration yet. Step 5.3 builds the walk on top of these.
+    </p>
+  </section>
+
+  <!-- ============================================================
+       STEP 5.3
+       ============================================================ -->
+  <section class="tour-step">
+    <h2 class="tour-step-h2">
+      <span class="tour-step-num">5.3</span><span class="tour-step-title">Walk bus 0, list every device</span>
+    </h2>
+    <div class="tour-files"><strong>Files touched:</strong> <code>src/pci.rs</code>, <code>src/main.rs</code></div>
+
+    <p>
+      The kernel can now see the PCI bus. This step builds the walk on
+      top of the step 5.2 primitives: nested loops over device and
+      function, read vendor ID, skip absent slots, print everything
+      present.
+    </p>
+
+    <h3>Human-readable class names</h3>
+
+    <div class="snippet-meta">
+      <span class="snippet-file">src/pci.rs</span>
+      <span class="snippet-what">— class_name lookup</span>
+    </div>
+<pre><span class="k">fn</span> <span class="f">class_name</span>(base_class: <span class="t">u8</span>) -&gt; &amp;<span class="k">'static str</span> {
+    <span class="k">match</span> base_class {
+        <span class="n">0x00</span> =&gt; <span class="s">"unclassified"</span>,
+        <span class="n">0x01</span> =&gt; <span class="s">"mass storage"</span>,
+        <span class="n">0x02</span> =&gt; <span class="s">"network"</span>,
+        <span class="n">0x03</span> =&gt; <span class="s">"display"</span>,
+        <span class="n">0x04</span> =&gt; <span class="s">"multimedia"</span>,
+        <span class="n">0x05</span> =&gt; <span class="s">"memory controller"</span>,
+        <span class="n">0x06</span> =&gt; <span class="s">"bridge"</span>,
+        <span class="n">0x07</span> =&gt; <span class="s">"comm controller"</span>,
+        <span class="n">0x08</span> =&gt; <span class="s">"generic peripheral"</span>,
+        <span class="n">0x09</span> =&gt; <span class="s">"input device"</span>,
+        <span class="n">0x0B</span> =&gt; <span class="s">"processor"</span>,
+        <span class="n">0x0C</span> =&gt; <span class="s">"serial bus (USB etc.)"</span>,
+        <span class="n">0x0D</span> =&gt; <span class="s">"wireless"</span>,
+        _ =&gt; <span class="s">"other"</span>,
+    }
+}</pre>
+
+    <p>
+      Not exhaustive &mdash; the full table lives at
+      <a href="https://pci-ids.ucw.cz/read/PD/">pci-ids.ucw.cz</a>.
+      Just the common ones we'll see in QEMU.
+    </p>
+
+    <h3>The enumeration loop</h3>
+
+    <div class="snippet-meta">
+      <span class="snippet-file">src/pci.rs</span>
+      <span class="snippet-what">— enumerate function</span>
+    </div>
+<pre><span class="k">pub fn</span> <span class="f">enumerate</span>() {
+    <span class="k">println!</span>(<span class="s">"[pci] scanning bus 0"</span>);
+    <span class="k">for</span> device <span class="k">in</span> <span class="n">0</span>..<span class="n">32u8</span> {
+        <span class="k">for</span> func <span class="k">in</span> <span class="n">0</span>..<span class="n">8u8</span> {
+            <span class="k">let</span> vendor_word = <span class="f">config_read</span>(<span class="n">0</span>, device, func, <span class="n">0x00</span>);
+            <span class="k">let</span> vendor_id = (vendor_word &amp; <span class="n">0xFFFF</span>) <span class="k">as</span> <span class="t">u16</span>;
+            <span class="k">if</span> vendor_id == <span class="n">0xFFFF</span> {
+                <span class="k">continue</span>; <span class="c">// absent slot</span>
+            }
+            <span class="k">let</span> device_id = (vendor_word &gt;&gt; <span class="n">16</span>) <span class="k">as</span> <span class="t">u16</span>;
+
+            <span class="k">let</span> class_word = <span class="f">config_read</span>(<span class="n">0</span>, device, func, <span class="n">0x08</span>);
+            <span class="k">let</span> base_class = ((class_word &gt;&gt; <span class="n">24</span>) &amp; <span class="n">0xFF</span>) <span class="k">as</span> <span class="t">u8</span>;
+            <span class="k">let</span> subclass = ((class_word &gt;&gt; <span class="n">16</span>) &amp; <span class="n">0xFF</span>) <span class="k">as</span> <span class="t">u8</span>;
+
+            <span class="k">println!</span>(
+                <span class="s">"[pci] {:02x}:{:02x}.{} vendor={:04x} device={:04x} class={:02x}{:02x} ({})"</span>,
+                <span class="n">0u8</span>, device, func,
+                vendor_id, device_id,
+                base_class, subclass,
+                <span class="f">class_name</span>(base_class)
+            );
+        }
+    }
+}</pre>
+
+    <p>
+      Two config reads per slot: offset <code>0x00</code> for
+      vendor+device (both 16-bit, packed in one 32-bit word), offset
+      <code>0x08</code> for revision+class (revision is byte 0,
+      programming interface is byte 1, subclass is byte 2, base class is
+      byte 3). The class is what tells us "this is a storage device,
+      this is a display, this is a bridge."
+    </p>
+
+    <p>
+      Scanning all 8 functions for every device is wasteful for
+      single-function devices &mdash; strictly speaking, the PCI spec
+      says you should check the header type's multifunction bit (offset
+      <code>0x0E</code> bit 7) and only scan functions 1-7 if it's set.
+      In practice, all PCI host bridges return <code>0xFFFF</code> for
+      absent functions, so the filter does the right thing. Linux does
+      the proper check; we don't bother.
+    </p>
+
+    <h3>Verification</h3>
+
+    <div class="snippet-meta">
+      <span class="snippet-what">— Boot serial output (full PCI inventory)</span>
+    </div>
+<pre class="tour-output"><span class="ann">[pci]</span> scanning bus 0
+<span class="ann">[pci]</span> 00:00.0 vendor=<span class="ok">8086</span> device=<span class="ok">1237</span> class=<span class="ok">0600</span> (bridge)         <span class="ann"># Intel i440FX host bridge</span>
+<span class="ann">[pci]</span> 00:01.0 vendor=<span class="ok">8086</span> device=<span class="ok">7000</span> class=<span class="ok">0601</span> (bridge)         <span class="ann"># PIIX ISA bridge</span>
+<span class="ann">[pci]</span> 00:01.1 vendor=<span class="ok">8086</span> device=<span class="ok">7010</span> class=<span class="ok">0101</span> (mass storage)   <span class="ann"># PIIX IDE controller</span>
+<span class="ann">[pci]</span> 00:01.3 vendor=<span class="ok">8086</span> device=<span class="ok">7113</span> class=<span class="ok">0680</span> (bridge)         <span class="ann"># PIIX power management</span>
+<span class="ann">[pci]</span> 00:02.0 vendor=<span class="ok">1234</span> device=<span class="ok">1111</span> class=<span class="ok">0300</span> (display)        <span class="ann"># Bochs / stdvga</span>
+<span class="ann">[pci]</span> 00:03.0 vendor=<span class="ok">8086</span> device=<span class="ok">100e</span> class=<span class="ok">0200</span> (network)        <span class="ann"># Intel E1000 NIC</span>
+<span class="ann">[pci]</span> 00:04.0 vendor=<span class="ok">1af4</span> device=<span class="ok">1001</span> class=<span class="ok">0100</span> (mass storage)   <span class="ann"># virtio-blk</span></pre>
+
+    <p>
+      Seven devices on bus 0. The first six are QEMU's default
+      chipset-and-peripherals inventory &mdash; the i440FX host bridge
+      and PIIX ISA bridge are the chipset, IDE and PM are part of PIIX,
+      Bochs VGA is the display, E1000 is networking (QEMU adds a NIC by
+      default).
+    </p>
+
+    <p>
+      The seventh &mdash; <code>00:04.0 vendor=1af4</code> &mdash; is
+      ours. <code>vendor=1af4</code> is Red Hat / virtio. The device ID
+      <code>1001</code> is the <em>transitional</em> virtio-blk ID (the
+      non-transitional/modern-only one would be <code>1042</code>).
+      QEMU exposes transitional by default; it supports both legacy and
+      modern transports. Step 5.4 will identify this specifically and
+      read its BARs.
+    </p>
+
+    <p class="pull-quote">
+      Commit <code>738f033</code>. Wall-clock time: ~127 seconds.
+    </p>
+  </section>
+
+  <!-- ============================================================
+       STEP 5.4
+       ============================================================ -->
+  <section class="tour-step">
+    <h2 class="tour-step-h2">
+      <span class="tour-step-num">5.4</span><span class="tour-step-title">Find virtio-blk specifically, decode its BARs</span>
+    </h2>
+    <div class="tour-files"><strong>Files touched:</strong> <code>src/pci.rs</code>, <code>src/main.rs</code></div>
+
+    <p>
+      Step 5.3 walked every device. Step 5.4 picks out the virtio-blk
+      specifically and reads its BAR layout &mdash; the memory regions
+      where the device's registers live. This is the last kernel-side
+      output we need before Lesson 6's virtio handshake.
+    </p>
+
+    <h3>Identifying constants</h3>
+
+    <div class="snippet-meta">
+      <span class="snippet-file">src/pci.rs</span>
+      <span class="snippet-what">— virtio vendor and device IDs</span>
+    </div>
+<pre><span class="k">const</span> <span class="t">VIRTIO_VENDOR_ID</span>: <span class="t">u16</span> = <span class="n">0x1AF4</span>;
+<span class="k">const</span> <span class="t">VIRTIO_BLK_TRANSITIONAL</span>: <span class="t">u16</span> = <span class="n">0x1001</span>;
+<span class="k">const</span> <span class="t">VIRTIO_BLK_NON_TRANSITIONAL</span>: <span class="t">u16</span> = <span class="n">0x1042</span>;</pre>
+
+    <p>
+      The lesson text mentioned only the non-transitional ID
+      (<code>0x1042</code>), but QEMU exposes the transitional one
+      (<code>0x1001</code>) by default. Both are virtio-blk;
+      transitional means the device also supports the legacy transport
+      for backward compatibility. Modern Linux works with either. We
+      accept both &mdash; never trust a single canonical device ID
+      where the spec allows multiple.
+    </p>
+
+    <h3>Finding the device</h3>
+
+    <div class="snippet-meta">
+      <span class="snippet-file">src/pci.rs</span>
+      <span class="snippet-what">— find_virtio_blk function</span>
+    </div>
+<pre><span class="k">pub fn</span> <span class="f">find_virtio_blk</span>() -&gt; <span class="t">Option</span>&lt;(<span class="t">u8</span>, <span class="t">u8</span>, <span class="t">u8</span>)&gt; {
+    <span class="k">for</span> device <span class="k">in</span> <span class="n">0</span>..<span class="n">32u8</span> {
+        <span class="k">for</span> func <span class="k">in</span> <span class="n">0</span>..<span class="n">8u8</span> {
+            <span class="k">let</span> vendor_word = <span class="f">config_read</span>(<span class="n">0</span>, device, func, <span class="n">0x00</span>);
+            <span class="k">let</span> vendor_id = (vendor_word &amp; <span class="n">0xFFFF</span>) <span class="k">as</span> <span class="t">u16</span>;
+            <span class="k">if</span> vendor_id != <span class="t">VIRTIO_VENDOR_ID</span> {
+                <span class="k">continue</span>;
+            }
+            <span class="k">let</span> device_id = (vendor_word &gt;&gt; <span class="n">16</span>) <span class="k">as</span> <span class="t">u16</span>;
+            <span class="k">if</span> device_id == <span class="t">VIRTIO_BLK_TRANSITIONAL</span>
+                || device_id == <span class="t">VIRTIO_BLK_NON_TRANSITIONAL</span>
+            {
+                <span class="k">return</span> <span class="t">Some</span>((<span class="n">0</span>, device, func));
+            }
+        }
+    }
+    <span class="t">None</span>
+}</pre>
+
+    <p>
+      Same nested-loop shape as <code>enumerate()</code>, but stops on
+      the first match. Returns the bus/device/function tuple so callers
+      can address the device in subsequent config reads. Returns
+      <code>None</code> if no virtio-blk is attached &mdash; QEMU
+      without <code>-device virtio-blk-pci</code> would hit this path.
+    </p>
+
+    <h3>BAR decoding</h3>
+
+    <p>
+      Each BAR encodes both the type and the address. The low bits are
+      type flags; the rest is the address. Different masks depending on
+      what the type bits say:
+    </p>
+
+    <div class="snippet-meta">
+      <span class="snippet-file">src/pci.rs</span>
+      <span class="snippet-what">— print_bars: the type/decode logic</span>
+    </div>
+<pre><span class="k">if</span> bar &amp; <span class="n">0x1</span> == <span class="n">1</span> {
+    <span class="c">// I/O BAR — bit 0 is 1, bits 2-31 are the address</span>
+    <span class="k">let</span> base = bar &amp; !<span class="n">0x3</span>;
+    <span class="c">// ...</span>
+} <span class="k">else</span> {
+    <span class="c">// Memory BAR — bits 1-2 type, bit 3 prefetch, bits 4-31 address</span>
+    <span class="k">let</span> type_bits = (bar &gt;&gt; <span class="n">1</span>) &amp; <span class="n">0x3</span>;
+    <span class="k">let</span> prefetchable = (bar &amp; <span class="n">0x8</span>) != <span class="n">0</span>;
+    <span class="k">let</span> base_low = bar &amp; !<span class="n">0xF</span>;
+
+    <span class="k">if</span> type_bits == <span class="n">0b10</span> {
+        <span class="c">// 64-bit memory BAR — consume THIS slot AND the next.</span>
+        <span class="c">// Next BAR holds the high 32 bits of the address.</span>
+        <span class="k">let</span> bar_high = <span class="f">config_read</span>(bus, device, func, offset + <span class="n">4</span>);
+        <span class="k">let</span> base64 = (base_low <span class="k">as</span> <span class="t">u64</span>) | ((bar_high <span class="k">as</span> <span class="t">u64</span>) &lt;&lt; <span class="n">32</span>);
+        <span class="c">// ... advance i by 2 (skip the consumed next slot)</span>
+    } <span class="k">else if</span> type_bits == <span class="n">0b00</span> {
+        <span class="c">// 32-bit memory BAR — this slot alone</span>
+    } <span class="k">else</span> {
+        <span class="c">// Reserved type (01 or 11) — shouldn't happen</span>
+    }
+}</pre>
+
+    <p>
+      The 64-bit BAR case is the easy-to-miss detail: a 64-bit memory
+      BAR consumes <em>two</em> adjacent BAR slots. The first slot holds
+      the type bits + low 32 bits of address; the next slot holds the
+      high 32 bits. If you naively iterated one slot at a time, you'd
+      misinterpret the high half as a separate BAR.
+    </p>
+
+    <p>
+      The full loop tracks the slot index with <code>i += 1</code> or
+      <code>i += 2</code> accordingly, so 64-bit BARs are decoded as
+      one entry, not two.
+    </p>
+
+    <h3>Wiring it in</h3>
+
+    <div class="snippet-meta">
+      <span class="snippet-file">src/main.rs</span>
+      <span class="snippet-what">— Call find_virtio_blk + print_bars after enumerate</span>
+    </div>
+<pre><span class="f">pci::enumerate</span>();
+
+<span class="k">println!</span>(<span class="s">"[test] find virtio-blk and decode BARs (5.4)"</span>);
+<span class="k">match</span> pci::find_virtio_blk() {
+    <span class="t">Some</span>((bus, dev, func)) =&gt; {
+        <span class="k">println!</span>(<span class="s">"[pci] virtio-blk found at {:02x}:{:02x}.{}"</span>, bus, dev, func);
+        pci::print_bars(bus, dev, func);
+    }
+    <span class="t">None</span> =&gt; {
+        <span class="k">println!</span>(<span class="s">"[pci] virtio-blk not found on bus 0"</span>);
+    }
+}</pre>
+
+    <h3>Verification</h3>
+
+    <div class="snippet-meta">
+      <span class="snippet-what">— Boot serial output (virtio-blk BAR dump)</span>
+    </div>
+<pre class="tour-output"><span class="ann">[test]</span> find virtio-blk and decode BARs (5.4)
+<span class="ann">[pci]</span> virtio-blk found at 00:04.0
+<span class="ann">[pci]</span>   BAR0 = 0x0000C001 (<span class="ok">I/O space</span>, base 0x0000C000)
+<span class="ann">[pci]</span>   BAR1 = 0xFEBF1000 (memory, <span class="ok">32-bit</span>, base 0xFEBF1000)
+<span class="ann">[pci]</span>   BAR2 = 0x00000000 (unused)
+<span class="ann">[pci]</span>   BAR3 = 0x00000000 (unused)
+<span class="ann">[pci]</span>   BAR4-BAR5 = 0x00000000FE00000C (memory, <span class="ok">64-bit prefetchable</span>, base 0x00000000FE000000)</pre>
+
+    <p>
+      Decoding this output by what each BAR holds for the transitional
+      virtio-blk device:
+    </p>
+
+    <ul>
+      <li>
+        <strong>BAR0 (I/O at 0xC000)</strong> &mdash; the <em>legacy</em>
+        virtio transport interface. Old-style I/O port access. We won't
+        use this; we're going modern.
+      </li>
+      <li>
+        <strong>BAR1 (32-bit memory at 0xFEBF1000)</strong> &mdash;
+        likely the MSI-X (Message Signaled Interrupts, Extended) table
+        region. Used for interrupt delivery. We'll defer interrupts and
+        poll for completions initially.
+      </li>
+      <li>
+        <strong>BAR4-BAR5 (64-bit prefetchable memory at
+        0xFE000000)</strong> &mdash; the <em>modern</em> virtio
+        transport region. This is what Lesson 6 reads from. The 64-bit
+        form means it spans two BAR slots (the loop's
+        <code>i += 2</code> advance handled that).
+      </li>
+    </ul>
+
+    <p>
+      The high 32 bits being zero (the <code>0x00000000FE000000</code>
+      padding) is just the formatter showing the full 64-bit value.
+      virtio's MMIO regions comfortably fit in 32-bit address space;
+      QEMU places them around <code>0xFE000000</code>, the standard
+      MMIO window.
+    </p>
+
+    <p>
+      Lesson 6 doesn't use the BAR addresses directly. Modern virtio
+      hides the actual regions behind a <em>capability list</em> in the
+      config space's upper bytes (0x40&ndash;0xFF). Each capability
+      points at an offset within a BAR where a specific structure lives
+      (common config, ISR, notifications, device config). The capability
+      list is how the device tells the OS "the common config is at
+      BAR4 + 0x1000" rather than the OS having to guess.
+    </p>
+
+    <p class="pull-quote">
+      Commit <code>e05b0de</code>. Wall-clock time: ~60 seconds. Lesson
+      5 complete &mdash; the kernel can now find the virtio-blk and
+      knows where its registers live. Lesson 6 picks up with the virtio
+      handshake (reset, acknowledge, feature negotiation, DRIVER_OK).
+    </p>
+  </section>
+
+  </div>
+
+  <footer class="lesson-footer">
+    <div class="footer-block">
+      <h4>How to use this page</h4>
+      <p style="margin:0;">
+        Revisit after stepping away from the lesson. The lesson teaches
+        the design; this page reminds you what the design
+        <em>looks like</em> as code. If you can read the snippets here
+        and explain them without referring back to the lesson, the
+        concept has truly landed.
+      </p>
+    </div>
+
+    <nav class="lesson-nav">
+      <a href="../lessons/0005-pci-bus-enumeration.html">← Lesson 5</a>
+      <a href="../lessons/roadmap-disk-to-exec.html">Roadmap ↑</a>
+    </nav>
+  </footer>
+
+</article>
+</body>
+</html>

@@ -1,0 +1,713 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Roadmap — From VFS to Disk-Loaded ELF Execution</title>
+<link rel="stylesheet" href="../assets/lesson.css">
+<style>
+  .roadmap-lesson {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1.25rem 1.5rem;
+    margin: 1.5rem 0;
+    border-left: 4px solid var(--border-bright);
+  }
+  .roadmap-lesson.done {
+    border-left-color: #15803d;
+    background: #f0fdf4;
+  }
+  .roadmap-lesson.current {
+    border-left-color: var(--accent);
+    background: var(--accent-soft);
+  }
+  .roadmap-lesson.keystone {
+    border-left-color: var(--accent);
+    background: linear-gradient(to right, var(--accent-soft) 0%, var(--surface) 30%);
+  }
+  .roadmap-lesson.objective {
+    border-left-color: #15803d;
+    background: linear-gradient(to right, #f0fdf4 0%, var(--surface) 30%);
+    border-width: 2px;
+  }
+  .roadmap-lesson.upcoming {
+    border-left-color: var(--border-bright);
+  }
+  .roadmap-lesson-head {
+    display: flex;
+    align-items: baseline;
+    gap: 0.8rem;
+    margin-bottom: 0.5rem;
+    flex-wrap: wrap;
+  }
+  .roadmap-lesson-num {
+    font-family: var(--font-mono);
+    font-size: 0.78rem;
+    font-weight: 600;
+    color: var(--accent);
+    background: rgba(255,255,255,0.6);
+    padding: 2px 8px;
+    border-radius: 3px;
+  }
+  .roadmap-lesson.done .roadmap-lesson-num { background: #dcfce7; color: #15803d; }
+  .roadmap-lesson.current .roadmap-lesson-num { background: var(--accent); color: white; }
+  .roadmap-lesson.keystone .roadmap-lesson-num { background: var(--accent); color: white; }
+  .roadmap-lesson.objective .roadmap-lesson-num { background: #15803d; color: white; }
+  .roadmap-lesson-title {
+    font-family: var(--font-sans);
+    font-weight: 700;
+    font-size: 1.15rem;
+    color: var(--text);
+    margin: 0;
+    flex: 1;
+  }
+  .roadmap-lesson-status {
+    font-family: var(--font-sans);
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    color: var(--text-faint);
+  }
+  .roadmap-lesson.done .roadmap-lesson-status { color: #15803d; }
+  .roadmap-lesson.current .roadmap-lesson-status { color: var(--accent); font-weight: 600; }
+  .roadmap-lesson.keystone .roadmap-lesson-status { color: var(--accent); font-weight: 600; }
+  .roadmap-lesson.objective .roadmap-lesson-status { color: #15803d; font-weight: 600; }
+  .roadmap-lesson-body {
+    font-family: var(--font-serif);
+    font-size: 0.95rem;
+    color: var(--text);
+    margin: 0.5rem 0 0.8rem;
+  }
+  .roadmap-substeps {
+    margin: 0.5rem 0 0.8rem;
+    padding-left: 1.2rem;
+  }
+  .roadmap-substeps li {
+    font-family: var(--font-sans);
+    font-size: 0.85rem;
+    color: var(--text-dim);
+    margin: 0.2rem 0;
+  }
+  .roadmap-substeps li::marker { color: var(--text-faint); }
+  .roadmap-linux-ref {
+    font-family: var(--font-mono);
+    font-size: 0.78rem;
+    color: var(--text-faint);
+    margin-top: 0.6rem;
+    padding-top: 0.5rem;
+    border-top: 1px dashed var(--border);
+  }
+  .roadmap-linux-ref strong { color: var(--text-dim); }
+
+  .progress-banner {
+    background: var(--accent-soft);
+    border-left: 4px solid var(--accent);
+    padding: 1rem 1.25rem;
+    border-radius: 0 6px 6px 0;
+    margin: 2rem 0;
+    font-family: var(--font-sans);
+    font-size: 0.9rem;
+    color: var(--text);
+  }
+  .progress-banner strong { color: var(--accent); }
+
+  .objective {
+    background: #f0fdf4;
+    border: 1px solid #86efac;
+    border-radius: 8px;
+    padding: 1.25rem 1.5rem;
+    margin: 1.5rem 0 2rem;
+  }
+  .objective h3 {
+    margin: 0 0 0.4rem;
+    color: #15803d;
+    font-size: 0.85rem;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+  }
+  .objective p { margin: 0; font-size: 1rem; color: var(--text); }
+
+  .layer-mapping {
+    background: var(--surface-soft);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1rem 1.25rem;
+    margin: 1.5rem 0;
+    font-family: var(--font-mono);
+    font-size: 0.82rem;
+    line-height: 1.7;
+    overflow-x: auto;
+  }
+  .layer-mapping .lm-layer {
+    color: var(--accent);
+    font-weight: 600;
+  }
+  .layer-mapping .lm-done {
+    color: #15803d;
+  }
+  .layer-mapping .lm-next {
+    color: var(--accent);
+    font-weight: 600;
+  }
+</style>
+</head>
+<body>
+<article class="lesson">
+
+  <header class="lesson-header">
+    <div class="lesson-eyebrow">Roadmap · Disk to ELF execution</div>
+    <h1 class="lesson-title">How We Get to <code>exec()</code></h1>
+    <p class="lesson-subtitle">Twelve lessons from where we are now (memory-only VFS) to loading and running an externally-compiled binary from disk. Each layer of the storage stack gets its own concept-plus-build lesson — nothing skipped.</p>
+    <div class="lesson-meta">
+      <span><strong>Start</strong> Lesson 4</span>
+      <span><strong>End</strong> Lesson 15</span>
+      <span><strong>Status</strong> 1 of 12 done</span>
+    </div>
+  </header>
+
+  <div class="content">
+
+  <div class="objective">
+    <h3>Objective</h3>
+    <p>
+      A user program written in Rust, compiled externally as an ELF
+      (Executable and Linkable Format) binary, written to a raw disk
+      image, attached to QEMU via virtio-blk-pci, loaded by the kernel's
+      ext2 driver through a real block layer and page cache and VFS,
+      parsed by an ELF loader, mapped into a fresh address space, and
+      executed — replacing the hand-assembled <code>USER_PROGRAM</code>
+      we've been running so far. Every layer of the Linux storage stack
+      re-implemented, not skipped.
+    </p>
+  </div>
+
+  <p>
+    Twelve lessons. Each layer gets both a concept section (what it does
+    in Linux, why it exists, what tradeoffs it makes) and a build section
+    (concrete steps to re-implement it in mini-os). Two keystones along
+    the way: <strong>Lesson 8 — first disk read</strong> proves the
+    driver works end-to-end; <strong>Lesson 13 — first full-stack file
+    read</strong> proves the layering works end-to-end.
+  </p>
+
+  <div class="progress-banner">
+    <strong>Where we are:</strong> VFS foundation complete (Lessons 1–3).
+    User programs can open, read, write, close files by path against an
+    in-memory filesystem. <strong>Next:</strong> Lesson 5, attaching a
+    disk and finding it on the PCI bus.
+  </div>
+
+  <div class="layer-mapping">
+    <span class="lm-done">L1-L3</span>  VFS foundation           <span style="color: var(--text-faint)">— done</span>
+    <span class="lm-done">L4</span>     Shape of storage stack   <span style="color: var(--text-faint)">— concept</span>
+    <span class="lm-next">L5</span>     PCI bus enumeration      <span style="color: var(--text-faint)">— next</span>
+    <span class="lm-next">L6</span>     virtio device init
+    <span class="lm-next">L7</span>     Virtqueues
+    <span class="lm-next">L8</span>     First disk read          <span style="color: var(--accent); font-weight: 600">— keystone 1</span>
+    <span class="lm-next">L9</span>     Block layer
+    <span class="lm-next">L10</span>    Page cache
+    <span class="lm-next">L11</span>    ext2 on-disk format
+    <span class="lm-next">L12</span>    ext2 directory walking
+    <span class="lm-next">L13</span>    Mount + full-stack read  <span style="color: var(--accent); font-weight: 600">— keystone 2</span>
+    <span class="lm-next">L14</span>    ELF loader
+    <span class="lm-next">L15</span>    exec() syscall           <span style="color: #15803d; font-weight: 600">— objective</span>
+  </div>
+
+  <!-- ============================================================
+       LESSON 4
+       ============================================================ -->
+  <section class="roadmap-lesson done">
+    <div class="roadmap-lesson-head">
+      <span class="roadmap-lesson-num">L4</span>
+      <h2 class="roadmap-lesson-title">Shape of the Storage Stack</h2>
+      <span class="roadmap-lesson-status">Done · concept</span>
+    </div>
+    <p class="roadmap-lesson-body">
+      Overview of the seven layers between user code and disk bytes (VFS,
+      page cache, filesystem, block layer, device driver, PCI, hardware).
+      What each layer is for, how a <code>read()</code> call traverses
+      them, what we'll build in mini-os and what the Linux counterpart
+      is. Click-expandable pipeline diagram showing what happens at each
+      stage with the new terms (fops, virtqueue, bio, etc.) explained
+      inline.
+    </p>
+    <p class="roadmap-lesson-body">
+      <a href="0004-shape-of-storage-stack.html">Read the lesson →</a>
+    </p>
+  </section>
+
+  <!-- ============================================================
+       LESSON 5
+       ============================================================ -->
+  <section class="roadmap-lesson current">
+    <div class="roadmap-lesson-head">
+      <span class="roadmap-lesson-num">L5</span>
+      <h2 class="roadmap-lesson-title">PCI Bus Enumeration</h2>
+      <span class="roadmap-lesson-status">Next · concept + build</span>
+    </div>
+    <p class="roadmap-lesson-body">
+      How the kernel finds devices on the PCI (Peripheral Component
+      Interconnect) bus. PCI configuration space via I/O ports
+      <code>0xCF8</code> (address) and <code>0xCFC</code> (data). Walking
+      every bus/device/function, reading vendor and device IDs, listing
+      every device QEMU exposes. Identifying the virtio-blk device by its
+      vendor <code>0x1AF4</code> and device ID. Reading BARs (Base Address
+      Registers) to find the device's memory-mapped registers. Why PCI
+      exists as a discovery protocol separate from any specific device
+      driver.
+    </p>
+    <p class="roadmap-lesson-body"><strong>Build steps:</strong></p>
+    <ul class="roadmap-substeps">
+      <li><strong>5.1</strong> — Create the raw disk image (~1 MB) with a known signature at sector 0. Attach to QEMU via <code>-device virtio-blk-pci</code>. Verify QEMU accepts it.</li>
+      <li><strong>5.2</strong> — PCI config space access functions (<code>pci_config_read</code>, <code>pci_config_write</code>) via ports <code>0xCF8</code>/<code>0xCFC</code>.</li>
+      <li><strong>5.3</strong> — Walk bus 0, all 32 devices, all 8 functions. Print a table of vendor ID, device ID, class for each present device.</li>
+      <li><strong>5.4</strong> — Find the virtio-blk specifically. Read its BARs, print the MMIO region layout.</li>
+    </ul>
+    <p class="roadmap-linux-ref">
+      <strong>Linux counterparts:</strong>
+      <code>arch/x86/pci/direct.c</code> (PCI config space access),
+      <code>drivers/pci/probe.c</code> (bus enumeration),
+      <code>drivers/virtio/virtio_pci_modern_dev.c</code> (virtio PCI
+      modern layout).
+    </p>
+  </section>
+
+  <!-- ============================================================
+       LESSON 6
+       ============================================================ -->
+  <section class="roadmap-lesson upcoming">
+    <div class="roadmap-lesson-head">
+      <span class="roadmap-lesson-num">L6</span>
+      <h2 class="roadmap-lesson-title">virtio Device Initialization</h2>
+      <span class="roadmap-lesson-status">Upcoming · concept + build</span>
+    </div>
+    <p class="roadmap-lesson-body">
+      What virtio is (a paravirtualized device standard — devices designed
+      for VMs, with shared-memory communication instead of emulated
+      hardware registers). The virtio PCI modern transport: capability
+      list, common config region, ISR config, device-specific config.
+      The virtio handshake: reset, acknowledge, negotiate features,
+      FEATURES_OK, DRIVER_OK. Why the handshake exists — feature
+      negotiation lets old guests and new hosts coexist.
+    </p>
+    <p class="roadmap-lesson-body"><strong>Build steps:</strong></p>
+    <ul class="roadmap-substeps">
+      <li><strong>6.1</strong> — Read the virtio PCI capability list. Find common config, ISR, device config, notification structures.</li>
+      <li><strong>6.2</strong> — Reset the device, set ACKNOWLEDGE status bit, set DRIVER status bit.</li>
+      <li><strong>6.3</strong> — Read device features, write the subset we support (VIRTIO_BLK_F_BLK_SIZE etc.), set FEATURES_OK.</li>
+      <li><strong>6.4</strong> — Set DRIVER_OK. Device is now live.</li>
+    </ul>
+    <p class="roadmap-linux-ref">
+      <strong>Linux counterparts:</strong>
+      <code>drivers/virtio/virtio_pci_modern.c</code>,
+      <code>drivers/virtio/virtio.c</code>.
+      <strong>Spec:</strong>
+      <a href="https://docs.oasis-open.org/virtio/virtio/v1.2/virtio-v1.2.html">OASIS
+      VIRTIO 1.2</a>.
+    </p>
+  </section>
+
+  <!-- ============================================================
+       LESSON 7
+       ============================================================ -->
+  <section class="roadmap-lesson upcoming">
+    <div class="roadmap-lesson-head">
+      <span class="roadmap-lesson-num">L7</span>
+      <h2 class="roadmap-lesson-title">Virtqueues — The Ring Buffer Mechanism</h2>
+      <span class="roadmap-lesson-status">Upcoming · concept + build</span>
+    </div>
+    <p class="roadmap-lesson-body">
+      The data structure that makes virtio fast: shared-memory ring
+      buffers used to submit work to the device. Three regions: the
+      descriptor table (each entry points at a kernel buffer with a
+      length and flags), the available ring (kernel appends descriptor
+      indices to submit work), the used ring (device appends descriptor
+      indices to signal completion). Split virtqueue format vs packed
+      (modern alternative). Free-list management for descriptors. The
+      kick (notify device of new work) and the device's response
+      mechanism. Memory barriers — why they matter for shared-memory
+      protocols.
+    </p>
+    <p class="roadmap-lesson-body"><strong>Build steps:</strong></p>
+    <ul class="roadmap-substeps">
+      <li><strong>7.1</strong> — Allocate descriptor table, available ring, used ring. Each must be page-aligned and physically contiguous.</li>
+      <li><strong>7.2</strong> — Implement descriptor allocation from a free list.</li>
+      <li><strong>7.3</strong> — Implement <code>submit_chain(descriptors)</code> — write descriptors, append to available ring.</li>
+      <li><strong>7.4</strong> — Implement <code>poll_completion()</code> — check used ring for responses.</li>
+      <li><strong>7.5</strong> — Implement <code>kick()</code> — write to the queue notify register to wake the device.</li>
+    </ul>
+    <p class="roadmap-linux-ref">
+      <strong>Linux counterparts:</strong>
+      <code>drivers/virtio/virtio_ring.c</code> (the ring buffer
+      implementation — both split and packed),
+      <code>drivers/virtio/virtio_ring_split.c</code>.
+    </p>
+  </section>
+
+  <!-- ============================================================
+       LESSON 8 — KEYSTONE 1
+       ============================================================ -->
+  <section class="roadmap-lesson keystone">
+    <div class="roadmap-lesson-head">
+      <span class="roadmap-lesson-num">L8</span>
+      <h2 class="roadmap-lesson-title">First Disk Read — Keystone 1</h2>
+      <span class="roadmap-lesson-status">Keystone · build</span>
+    </div>
+    <p class="roadmap-lesson-body">
+      The end-to-end proof that the driver stack works. Build a
+      virtio-blk read request (sector 0, kernel buffer, read flag),
+      submit it through the virtqueue from Lesson 7, poll for completion,
+      verify the bytes match the signature written in Lesson 5.1. From
+      here on, every step above this layer is parsing and dispatch — the
+      bytes-flowing-from-disk problem is solved.
+    </p>
+    <p class="roadmap-lesson-body"><strong>Build steps:</strong></p>
+    <ul class="roadmap-substeps">
+      <li><strong>8.1</strong> — Define virtio-blk request header struct (sector, type, reserved).</li>
+      <li><strong>8.2</strong> — Submit a read of sector 0 into a 512-byte kernel buffer.</li>
+      <li><strong>8.3</strong> — Poll for completion, verify bytes match the disk signature.</li>
+      <li><strong>8.4</strong> — Generalize: <code>virtio_blk_read_sector(n, buf)</code>.</li>
+    </ul>
+    <p class="roadmap-linux-ref">
+      <strong>Linux counterparts:</strong>
+      <code>drivers/block/virtio_blk.c</code> — specifically
+      <code>virtblk_queue_rq</code> which builds and submits the request.
+    </p>
+  </section>
+
+  <!-- ============================================================
+       LESSON 9 — BLOCK LAYER (NEW)
+       ============================================================ -->
+  <section class="roadmap-lesson upcoming">
+    <div class="roadmap-lesson-head">
+      <span class="roadmap-lesson-num">L9</span>
+      <h2 class="roadmap-lesson-title">Block Layer — bio, Request Queue, Scheduler</h2>
+      <span class="roadmap-lesson-status">Upcoming · concept + build</span>
+    </div>
+    <p class="roadmap-lesson-body">
+      The block layer's job: take "read block N" requests from any
+      filesystem, queue them, optimize the order, and dispatch to device
+      drivers. Why it's not just a passthrough — merging adjacent
+      requests reduces device round-trips; scheduling prevents starvation
+      and respects priorities; multi-queue design scales across CPUs.
+      Linux's <code>struct bio</code> (the unit of work — sector,
+      length, buffer, completion callback), <code>struct request</code>
+      (merged bios ready for dispatch), <code>struct request_queue</code>
+      (per-device pipeline). I/O schedulers: elevator (sort by sector),
+      deadline (prevent starvation), BFQ (latency for desktops), Kyber,
+      none (for fast devices like NVMe). blk-mq multi-queue:
+      per-CPU software queues feeding per-device-hardware queues.
+    </p>
+    <p class="roadmap-lesson-body"><strong>Build steps:</strong></p>
+    <ul class="roadmap-substeps">
+      <li><strong>9.1</strong> — Define <code>Bio</code> struct: sector, length, buffer pointer, completion flag. Async by design — submission returns immediately.</li>
+      <li><strong>9.2</strong> — Define <code>Request</code>: a Bio (or merged chain of Bios) ready to dispatch.</li>
+      <li><strong>9.3</strong> — Per-device request queue: <code>Vec&lt;Request&gt;</code> with submit + drain operations.</li>
+      <li><strong>9.4</strong> — Adjacent-block merging: if incoming bio's sector follows the queue tail's, merge them.</li>
+      <li><strong>9.5</strong> — Simple elevator scheduler: sort pending requests by sector before dispatch.</li>
+      <li><strong>9.6</strong> — <code>submit_bio</code> public API: filesystems use this; queue handles the rest.</li>
+      <li><strong>9.7</strong> — <code>read_block(n)</code> becomes a thin synchronous wrapper that submits a bio, waits for completion.</li>
+    </ul>
+    <p class="roadmap-linux-ref">
+      <strong>Linux counterparts:</strong>
+      <code>block/blk-core.c</code>,
+      <code>block/bio.c</code> (struct bio),
+      <code>block/blk-mq.c</code> (multi-queue design),
+      <code>block/elevator.c</code>,
+      <code>block/mq-deadline.c</code>,
+      <code>include/linux/blkdev.h</code>.
+      <strong>Reading:</strong>
+      "<a href="https://www.kernel.org/doc/html/latest/block/index.html">The
+      Linux Kernel: Block Layer</a>" documentation.
+    </p>
+  </section>
+
+  <!-- ============================================================
+       LESSON 10 — PAGE CACHE (NEW)
+       ============================================================ -->
+  <section class="roadmap-lesson upcoming">
+    <div class="roadmap-lesson-head">
+      <span class="roadmap-lesson-num">L10</span>
+      <h2 class="roadmap-lesson-title">Page Cache — address_space and Page Lookup</h2>
+      <span class="roadmap-lesson-status">Upcoming · concept + build</span>
+    </div>
+    <p class="roadmap-lesson-body">
+      The page cache: the kernel's cache of recently-accessed 4 KB file
+      pages in RAM. Indexed by <code>(inode, page_offset)</code>. Hit:
+      return instantly from RAM. Miss: ask the filesystem to fill the
+      page from disk. <code>struct page</code> (represents one physical
+      page frame, with state flags — dirty, locked, writeback, etc.).
+      <code>struct address_space</code> (per-inode structure that holds
+      the page cache tree — historically a radix tree, modern kernels an
+      xarray). Dirty page tracking and writeback: writes go to the page
+      cache, marked dirty; a kernel thread eventually flushes them back
+      to disk. Read-ahead: predictively load sequential pages.
+    </p>
+    <p class="roadmap-lesson-body">
+      The mini-os design will use a simple <code>BTreeMap&lt;u64, Box&lt;[u8; 4096]&gt;&gt;</code>
+      per inode (page offset → page contents). The Vec&lt;u8&gt;-on-heap
+      from Lesson 2 retires — disk-backed inodes go through the page
+      cache. Ramfs inodes keep their heap-Vec shape (since the cache IS
+      the storage for ramfs).
+    </p>
+    <p class="roadmap-lesson-body"><strong>Build steps:</strong></p>
+    <ul class="roadmap-substeps">
+      <li><strong>10.1</strong> — Define <code>Page</code> struct: 4 KB byte array, dirty flag.</li>
+      <li><strong>10.2</strong> — Define <code>AddressSpace</code>: BTreeMap&lt;page_offset, Page&gt;, lock.</li>
+      <li><strong>10.3</strong> — <code>lookup_page(inode, offset)</code> — hit returns cached page, miss triggers fill.</li>
+      <li><strong>10.4</strong> — Fill path: allocate page, call filesystem's <code>readpage(inode, offset, page)</code> to populate from disk.</li>
+      <li><strong>10.5</strong> — Update disk-backed <code>Inode</code> to hold an <code>AddressSpace</code> instead of <code>Mutex&lt;Vec&lt;u8&gt;&gt;</code>.</li>
+      <li><strong>10.6</strong> — (Deferred to later) dirty page writeback via a kernel thread.</li>
+    </ul>
+    <p class="roadmap-linux-ref">
+      <strong>Linux counterparts:</strong>
+      <code>include/linux/pagemap.h</code>,
+      <code>mm/filemap.c</code> (file page cache operations),
+      <code>mm/page-writeback.c</code>,
+      <code>include/linux/fs.h</code> (struct address_space).
+    </p>
+  </section>
+
+  <!-- ============================================================
+       LESSON 11
+       ============================================================ -->
+  <section class="roadmap-lesson upcoming">
+    <div class="roadmap-lesson-head">
+      <span class="roadmap-lesson-num">L11</span>
+      <h2 class="roadmap-lesson-title">ext2 On-Disk Format — Superblock and Inodes</h2>
+      <span class="roadmap-lesson-status">Upcoming · concept + build</span>
+    </div>
+    <p class="roadmap-lesson-body">
+      ext2's on-disk byte layout. The disk is divided into fixed-size
+      <strong>blocks</strong> (1 KB or 4 KB). Blocks are organized into
+      <strong>block groups</strong>, each with its own superblock backup,
+      block group descriptor, block bitmap, inode bitmap, and inode
+      table. Superblock at offset 1024 — magic <code>0xEF53</code>, block
+      size, inodes per group, blocks per group, total inode count. Block
+      group descriptor table follows, one entry per group. Inode struct
+      (128 bytes for ext2 rev 0, 256 for rev 1): <code>i_mode</code>
+      (file type + permissions), <code>i_size</code>, <code>i_block</code>
+      array (12 direct pointers + 1 single-indirect + 1 double-indirect +
+      1 triple-indirect). Reading bytes 0–4095 of a file = read
+      <code>i_block[0]</code>; bytes 12 KB+ need indirect blocks.
+    </p>
+    <p class="roadmap-lesson-body"><strong>Build steps:</strong></p>
+    <ul class="roadmap-substeps">
+      <li><strong>11.1</strong> — Build an ext2 image with <code>mkfs.ext2</code>, attach to QEMU, replace the test disk.</li>
+      <li><strong>11.2</strong> — Parse superblock struct. Validate magic. Print block size, total blocks, inodes per group.</li>
+      <li><strong>11.3</strong> — Parse block group descriptor table. Print layout of block group 0.</li>
+      <li><strong>11.4</strong> — Implement <code>read_ext2_inode(ino) -&gt; Ext2Inode</code>. Compute block group, index within group, offset into inode table.</li>
+      <li><strong>11.5</strong> — Read inode 2 (root). Print its <code>i_mode</code>, <code>i_size</code>, <code>i_block</code> array.</li>
+    </ul>
+    <p class="roadmap-linux-ref">
+      <strong>Linux counterparts:</strong>
+      <code>fs/ext2/super.c</code>,
+      <code>fs/ext2/balloc.c</code>,
+      <code>fs/ext2/inode.c</code>,
+      <code>include/linux/ext2_fs.h</code>.
+      <strong>Reference:</strong>
+      <a href="https://www.nongnu.org/ext2-doc/ext2.html">Ext2 Disk Storage Structure</a>.
+    </p>
+  </section>
+
+  <!-- ============================================================
+       LESSON 12
+       ============================================================ -->
+  <section class="roadmap-lesson upcoming">
+    <div class="roadmap-lesson-head">
+      <span class="roadmap-lesson-num">L12</span>
+      <h2 class="roadmap-lesson-title">ext2 Directory Walking</h2>
+      <span class="roadmap-lesson-status">Upcoming · concept + build</span>
+    </div>
+    <p class="roadmap-lesson-body">
+      ext2 directory entries: variable-length records, each containing
+      <code>inode</code> (4 bytes), <code>rec_len</code> (2 bytes —
+      distance to next entry), <code>name_len</code> (1 byte),
+      <code>file_type</code> (1 byte — regular, dir, symlink, etc.), then
+      the name (no null terminator — <code>name_len</code> covers it).
+      This is a different format from the dirents we built in Lesson 3
+      (which were length-prefixed with a u64 inode) — ext2 uses a u32
+      inode and the record length doubles as the "advance to next"
+      pointer. Walking a directory means iterating its data blocks,
+      parsing each entry, checking the name. Path resolution:
+      <code>/foo/bar.txt</code> walks inode 2 → "foo" → inode N →
+      "bar.txt" → inode M.
+    </p>
+    <p class="roadmap-lesson-body"><strong>Build steps:</strong></p>
+    <ul class="roadmap-substeps">
+      <li><strong>12.1</strong> — Parse directory entries from an inode's data blocks.</li>
+      <li><strong>12.2</strong> — Implement <code>ext2_lookup(dir_inode, name) -&gt; Option&lt;u64&gt;</code> (returns child inode number).</li>
+      <li><strong>12.3</strong> — Implement path resolution: walk <code>/foo/bar/baz.txt</code> through ext2.</li>
+    </ul>
+    <p class="roadmap-linux-ref">
+      <strong>Linux counterparts:</strong>
+      <code>fs/ext2/dir.c</code>,
+      <code>fs/ext2/namei.c</code> (path lookup).
+    </p>
+  </section>
+
+  <!-- ============================================================
+       LESSON 13 — KEYSTONE 2
+       ============================================================ -->
+  <section class="roadmap-lesson keystone">
+    <div class="roadmap-lesson-head">
+      <span class="roadmap-lesson-num">L13</span>
+      <h2 class="roadmap-lesson-title">Mount ext2 and First Full-Stack Read — Keystone 2</h2>
+      <span class="roadmap-lesson-status">Keystone · build</span>
+    </div>
+    <p class="roadmap-lesson-body">
+      Wire ext2 into the existing VFS. Replace the lazy_static
+      <code>ROOT_INODE</code> with an ext2-backed root. Path resolution
+      calls through to ext2 directory walking; reads go through the page
+      cache; misses submit bios to the block layer; the block layer
+      dispatches to virtio-blk; virtio-blk talks to QEMU; bytes flow back
+      up the whole stack and land in the user buffer. The VFS API
+      (<code>open</code>, <code>read</code>, <code>write</code>,
+      <code>close</code>) stays identical — only the storage backend
+      changes. User programs that worked against ramfs keep working.
+    </p>
+    <p class="roadmap-lesson-body"><strong>Build steps:</strong></p>
+    <ul class="roadmap-substeps">
+      <li><strong>13.1</strong> — Add a <code>backend</code> field to <code>Inode</code>: <code>enum Backend { Ramfs(Vec&lt;u8&gt;), Ext2(Ext2Inode) }</code>.</li>
+      <li><strong>13.2</strong> — Replace <code>ROOT_INODE</code> with an ext2-backed inode. Read root directory from disk.</li>
+      <li><strong>13.3</strong> — Update <code>resolve_path</code> to walk ext2 directories when the root is ext2-backed.</li>
+      <li><strong>13.4</strong> — Add <code>/hello.txt</code> to the disk image. Boot, run a user program that reads it, verify bytes come back.</li>
+    </ul>
+    <p class="roadmap-linux-ref">
+      <strong>Linux counterparts:</strong>
+      <code>fs/super.c</code> (<code>mount</code>, <code>mount_bdev</code>),
+      <code>fs/ext2/super.c</code> (ext2's <code>mount</code> callback).
+    </p>
+  </section>
+
+  <!-- ============================================================
+       LESSON 14
+       ============================================================ -->
+  <section class="roadmap-lesson upcoming">
+    <div class="roadmap-lesson-head">
+      <span class="roadmap-lesson-num">L14</span>
+      <h2 class="roadmap-lesson-title">ELF Loader</h2>
+      <span class="roadmap-lesson-status">Upcoming · concept + build</span>
+    </div>
+    <p class="roadmap-lesson-body">
+      The ELF (Executable and Linkable Format) byte layout: ELF header
+      (magic <code>0x7F 'E' 'L' 'F'</code>, class, endianness, machine
+      type, entry point virtual address, program header table offset and
+      entry count), then program headers describing each segment.
+      <code>PT_LOAD</code> segments are the ones to map — they have a
+      file offset, a virtual address, sizes in file and in memory (the
+      difference being zero-fill). The loader reads headers, allocates a
+      fresh <code>AddressSpace</code>, maps each loadable segment at its
+      virtual address with the right permissions (R/W/X), and returns
+      the entry point address.
+    </p>
+    <p class="roadmap-lesson-body"><strong>Build steps:</strong></p>
+    <ul class="roadmap-substeps">
+      <li><strong>14.1</strong> — Parse ELF header struct. Validate magic and class (we want ELF64 little-endian x86-64).</li>
+      <li><strong>14.2</strong> — Parse program headers. Identify <code>PT_LOAD</code> segments.</li>
+      <li><strong>14.3</strong> — Allocate a fresh <code>AddressSpace</code>, map each <code>PT_LOAD</code> segment with permissions.</li>
+      <li><strong>14.4</strong> — Compile a tiny Rust user program as a static ELF (no dynamic linker). Load it from a file, verify segments land at expected addresses.</li>
+    </ul>
+    <p class="roadmap-linux-ref">
+      <strong>Linux counterparts:</strong>
+      <code>fs/binfmt_elf.c</code> (the ELF binary format handler —
+      specifically <code>load_elf_binary</code>),
+      <code>fs/exec.c</code> (<code>do_execve</code> common code).
+      <strong>Reference:</strong>
+      <a href="https://refspecs.linuxbase.org/elf/gabi4+/contents.html">ELF
+      format specification</a>.
+    </p>
+  </section>
+
+  <!-- ============================================================
+       LESSON 15 — OBJECTIVE
+       ============================================================ -->
+  <section class="roadmap-lesson objective">
+    <div class="roadmap-lesson-head">
+      <span class="roadmap-lesson-num">L15</span>
+      <h2 class="roadmap-lesson-title"><code>exec()</code> Syscall — The Objective</h2>
+      <span class="roadmap-lesson-status">Objective</span>
+    </div>
+    <p class="roadmap-lesson-body">
+      The culmination. <code>exec(path)</code> opens a file via VFS (now
+      reading from ext2 on disk), reads its bytes (through the page
+      cache, populated by the block layer, fetched by virtio-blk),
+      parses ELF, allocates a fresh address space, maps the segments,
+      sets up a fresh user stack, and <code>iretq</code>s into the entry
+      point. The current hand-assembled <code>USER_PROGRAM</code> is
+      gone — programs are now real Rust crates compiled externally,
+      written to the disk image, and loaded by the kernel at runtime.
+    </p>
+    <p class="roadmap-lesson-body"><strong>Build steps:</strong></p>
+    <ul class="roadmap-substeps">
+      <li><strong>15.1</strong> — Add <code>exec(path) -&gt; !</code> syscall. Body: open via VFS, read, parse ELF, switch address space, jump to entry.</li>
+      <li><strong>15.2</strong> — Build a Rust user-program crate that compiles to a static ELF. Cross-compile for our <code>x86_64-mini-os</code> target.</li>
+      <li><strong>15.3</strong> — Write the compiled ELF to the disk image as <code>/init</code>.</li>
+      <li><strong>15.4</strong> — Boot the kernel. Kernel calls <code>exec("/init")</code>. The external program runs.</li>
+    </ul>
+    <p class="roadmap-linux-ref">
+      <strong>Linux counterparts:</strong>
+      <code>fs/exec.c</code>,
+      <code>fs/binfmt_elf.c</code>. This is where everything we built
+      connects: VFS opens the file, page cache holds its bytes, ext2
+      parses its blocks, the block layer dispatches requests, virtio-blk
+      fetches them, the ELF loader maps segments, the scheduler transfers
+      control to the entry point.
+    </p>
+  </section>
+
+  <h2>After the objective</h2>
+
+  <p>
+    Reaching <code>exec()</code> is the objective, not the end of the
+    road. Natural follow-ups once disk-loaded ELF execution works:
+  </p>
+
+  <ul>
+    <li><strong>Shell.</strong> A user program that reads commands from stdin and <code>fork</code>+<code>exec</code>s them. Requires <code>fork</code> (already exists in mini-os) and <code>wait</code>.</li>
+    <li><strong>Argument passing.</strong> <code>exec(path, argv)</code> — push argv onto the new user stack.</li>
+    <li><strong>Multiple programs.</strong> Concurrent execution via the existing scheduler. Each runs from its own ELF on disk.</li>
+    <li><strong>Writeback.</strong> Extending <code>write()</code> to actually persist to disk via the virtqueue write path. Page cache dirty pages get flushed by a kernel thread.</li>
+    <li><strong><code>pipe()</code>, <code>mmap()</code>, signals.</strong> Each a lesson of its own.</li>
+  </ul>
+
+  <h2>How to use this roadmap</h2>
+
+  <p>
+    Each lesson is a discrete HTML file with a concept section and a build
+    section. The build section is broken into substeps (5.1, 5.2, etc.)
+    that are each independently committable — same convention as Lessons
+    2 and 3. A code tour companion (<code>tours/tour-NNNN-*.html</code>)
+    gets built alongside each lesson, showing the actual Rust that landed.
+  </p>
+
+  <p>
+    When you sit down to work, open this roadmap first to orient. Pick
+    the current lesson. Read its concept section. Drive the build steps
+    one at a time, committing each.
+  </p>
+
+  </div>
+
+  <footer class="lesson-footer">
+    <div class="footer-block">
+      <h4>Related files</h4>
+      <p style="margin:0;">
+        <a href="../MISSION.md">MISSION.md</a> — the mission this roadmap serves.
+        <a href="0004-shape-of-storage-stack.html">Lesson 4</a> — the
+        concept lesson this roadmap starts from.
+        <a href="../reference/vfs-glossary.html">Glossary</a> — vocabulary
+        earned through Lessons 1–3, will grow with each disk lesson.
+      </p>
+    </div>
+
+    <nav class="lesson-nav">
+      <a href="0004-shape-of-storage-stack.html">← Lesson 4: Shape of the Storage Stack</a>
+      <a href="../reference/vfs-glossary.html">Glossary ↑</a>
+    </nav>
+  </footer>
+
+</article>
+</body>
+</html>

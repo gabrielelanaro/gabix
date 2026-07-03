@@ -1,0 +1,379 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Lesson 2 — The File Descriptor Table</title>
+<link rel="stylesheet" href="../assets/lesson.css">
+<style>
+  .step {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1rem 1.25rem;
+    margin: 1.25rem 0;
+  }
+  .step-num {
+    font-family: var(--font-mono);
+    font-size: 0.78rem;
+    font-weight: 600;
+    color: var(--accent);
+    background: var(--accent-soft);
+    padding: 2px 8px;
+    border-radius: 3px;
+    margin-right: 0.5rem;
+  }
+  .step-title {
+    font-family: var(--font-sans);
+    font-weight: 600;
+    font-size: 1rem;
+    margin-bottom: 0.4rem;
+  }
+  .step-detail {
+    font-family: var(--font-serif);
+    font-size: 0.95rem;
+    color: var(--text);
+  }
+  .step-detail p:last-child { margin-bottom: 0; }
+
+  .decision {
+    border-left: 3px solid var(--accent);
+    padding: 0.4rem 0 0.4rem 1rem;
+    margin: 1rem 0;
+  }
+  .decision strong { color: var(--accent); }
+</style>
+</head>
+<body>
+<article class="lesson">
+
+  <header class="lesson-header">
+    <div class="lesson-eyebrow">Lesson 2 · M4 · 4.4 VFS layer</div>
+    <h1 class="lesson-title">The File Descriptor Table</h1>
+    <p class="lesson-subtitle">First slice of real VFS plumbing — a per-process FD table and the four core file syscalls.</p>
+    <div class="lesson-meta">
+      <span><strong>Read time</strong> ~15 min</span>
+      <span><strong>Build time</strong> ~45–60 min</span>
+      <span><strong>Prereq</strong> <a href="0001-shape-of-vfs.html">Lesson 1</a></span>
+    </div>
+  </header>
+
+  <div class="content">
+
+  <p class="lead">
+    Goal of this lesson: a user program calls <code>open("/test")</code>, gets back a file
+    descriptor, <code>read</code>s bytes from it, <code>write</code>s bytes to it, and
+    <code>close</code>s it. End-to-end. Real bytes, real cursor advancement, real FD
+    numbers in the syscall trace. The backing is a single hardcoded inode for now;
+    directories and multiple files come in Lesson 3.
+  </p>
+
+  <h2>The design — three types</h2>
+
+  <p>
+    Lesson 1 ended with the rule: <strong>inode</strong> = the file,
+    <strong>file</strong> = an open instance, <strong>FD</strong> = per-process integer
+    key. In Rust, with mini-os conventions (<code>Arc</code> for shared ownership,
+    <code>Mutex</code> for interior mutability), that becomes three small types:
+  </p>
+
+  <pre><span class="k">pub struct</span> <span class="t">Inode</span> {
+    <span class="k">pub</span> data: <span class="t">Mutex</span>&lt;<span class="t">Vec</span>&lt;<span class="t">u8</span>&gt;&gt;,
+}
+
+<span class="k">pub struct</span> <span class="t">File</span> {
+    <span class="k">pub</span> inode: <span class="t">Arc</span>&lt;<span class="t">Inode</span>&gt;,
+    <span class="k">pub</span> cursor: <span class="t">Mutex</span>&lt;<span class="t">u64</span>&gt;,
+}
+
+<span class="k">pub struct</span> <span class="t">FdTable</span> {
+    table: <span class="t">Vec</span>&lt;<span class="t">Option</span>&lt;<span class="t">Arc</span>&lt;<span class="t">File</span>&gt;&gt;&gt;,
+}</pre>
+
+  <div class="diagram">
+    <div class="stack">
+      <div class="stack-row user"><strong>Task</strong> &nbsp;·&nbsp; fd_table: FdTable</div>
+      <div class="stack-arrow">↓</div>
+      <div class="stack-row"><strong>FdTable</strong> &nbsp;·&nbsp; Vec&lt;Option&lt;Arc&lt;File&gt;&gt;&gt;</div>
+      <div class="stack-arrow">↓ indexes by integer</div>
+      <div class="stack-row"><strong>File</strong> &nbsp;·&nbsp; inode + cursor</div>
+      <div class="stack-arrow">↓ points at</div>
+      <div class="stack-row"><strong>Inode</strong> &nbsp;·&nbsp; Mutex&lt;Vec&lt;u8&gt;&gt; (shared!)</div>
+    </div>
+    <div class="diagram-caption">
+      Three layers because they have different sharing patterns. Two FDs from one open()
+      are independent Files sharing one Inode. Two FDs from one dup() share one File.
+    </div>
+  </div>
+
+  <p>
+    The <code>Arc</code> on <code>Inode</code> is what makes two independent
+    <code>open()</code> calls land on the same bytes — the File struct is fresh each time,
+    but the underlying Inode is shared. The <code>Arc</code> on <code>File</code> inside
+    the FD table is what makes <code>dup()</code> and <code>fork()</code> sharing work —
+    two FD numbers, one File, shared cursor.
+  </p>
+
+  <h2>The four syscalls</h2>
+
+  <p>
+    Four new syscalls, dispatched by number from <code>syscall_entry</code>:
+  </p>
+
+  <dl>
+    <dt><code>SYS_OPEN = 2</code> &nbsp;—&nbsp; <code>fn sys_open(name_ptr: u64) -&gt; u64</code></dt>
+    <dd>
+      For Lesson 2 we ignore <code>name_ptr</code> entirely — there is exactly one file in
+      the world, a hardcoded inode. The handler allocates a fresh <code>File</code> (cursor=0)
+      pointing at that inode, inserts it into the current task's <code>FdTable</code>, and
+      returns the FD number. Lesson 3 will actually parse <code>name_ptr</code> as a path.
+    </dd>
+
+    <dt><code>SYS_READ = 0</code> &nbsp;—&nbsp; <code>fn sys_read(fd, buf_ptr, len) -&gt; u64</code></dt>
+    <dd>
+      Look up the <code>File</code> for <code>fd</code>. Lock the inode's data and the
+      file's cursor. Compute how many bytes are available from cursor to end-of-data
+      (<code>data.len() - cursor</code>), cap at <code>len</code>, memcpy that many bytes
+      into the user buffer at <code>buf_ptr</code>, advance the cursor, return the count
+      actually read. Returns 0 at end-of-file.
+    </dd>
+
+    <dt><code>SYS_WRITE = 1</code> &nbsp;—&nbsp; <code>fn sys_write(fd, buf_ptr, len) -&gt; u64</code></dt>
+    <dd>
+      Already exists for FD=1 (stdout, serial). Extend it: if <code>fd == 1</code>, current
+      behavior (serial print). Otherwise, treat <code>fd</code> as a regular file — look up
+      the File, lock inode data and cursor, extend <code>data</code> with the bytes from
+      <code>buf_ptr</code> if writing past end, advance cursor, return count written.
+    </dd>
+
+    <dt><code>SYS_CLOSE = 3</code> &nbsp;—&nbsp; <code>fn sys_close(fd) -&gt; u64</code></dt>
+    <dd>
+      Remove the entry from <code>FdTable</code>. The <code>Arc&lt;File&gt;</code>'s
+      refcount drops; when it hits 0, the File drops; the File holds an <code>Arc&lt;Inode&gt;</code>
+      whose refcount drops; if that hits 0 the inode is freed (but for our hardcoded inode,
+      it never does — we hold a static <code>Arc</code> to it).
+    </dd>
+  </dl>
+
+  <div class="decision">
+    <strong>Design decision — stdio as files.</strong>
+    Eventually FD 0/1/2 should be Files pointing at a "terminal device" inode. For Lesson 2
+    we keep the existing serial-output path for FD=1 special-cased inside <code>sys_write</code>.
+    Lesson 5 or so will revisit and make stdin/stdout real Files. This keeps the lesson
+    scoped to one win: regular files work.
+  </div>
+
+  <h2>Integration points</h2>
+
+  <p>
+    Three places in the existing code get touched:
+  </p>
+
+  <ol>
+    <li>
+      <strong><code>src/fs.rs</code> (new file):</strong> the three types above, plus
+      <code>impl</code> blocks with <code>open</code>, <code>get</code>, <code>close</code>
+      methods on <code>FdTable</code>. Plus a global
+      <code>static HARDCODED_INODE: Lazy&lt;Arc&lt;Inode&gt;&gt;</code> initialized with some
+      bytes (say <code>b"hello vfs\n"</code>).
+    </li>
+    <li>
+      <strong><code>src/task.rs</code>:</strong> add <code>fd_table: FdTable</code> field
+      to <code>Task</code>. Initialize in <code>Task::new</code>. Expose an accessor that
+      returns <code>&amp;mut FdTable</code> for the current task.
+    </li>
+    <li>
+      <strong><code>src/syscall.rs</code>:</strong> add the four syscall numbers to the
+      dispatch match, write the four handlers, plus a <code>copy_bytes_from_user</code> /
+      <code>copy_bytes_to_user</code> helper (for now, just memcpy — no validation against
+      the user's address space yet, that's a security pass for later).
+    </li>
+  </ol>
+
+  <h2>Build steps — your turn</h2>
+
+  <p>
+    Per the hybrid track, here are six small slices. Each is a logical checkpoint you can
+    build, run, and verify before moving to the next. Drive them yourself, or ask me to
+    drive any of them while you review — both work.
+  </p>
+
+  <div class="step">
+    <div class="step-title"><span class="step-num">2.1</span>Create <code>src/fs.rs</code> with the three types</div>
+    <div class="step-detail">
+      <p>
+        Define <code>Inode</code>, <code>File</code>, <code>FdTable</code>. Implement
+        <code>FdTable::new()</code>, <code>FdTable::open(file) -&gt; u64</code> (returns
+        lowest free index), <code>FdTable::get(fd) -&gt; Option&lt;Arc&lt;File&gt;&gt;</code>,
+        <code>FdTable::close(fd) -&gt; bool</code>. Add a
+        <code>lazy_static!</code> <code>HARDCODED_INODE</code> with some test bytes.
+      </p>
+      <p>
+        Module goes in <code>main.rs</code>: <code>mod fs;</code>. No syscalls yet — just
+        types. Compile should succeed with no behavior change.
+      </p>
+    </div>
+  </div>
+
+  <div class="step">
+    <div class="step-title"><span class="step-num">2.2</span>Add <code>fd_table</code> to <code>Task</code></div>
+    <div class="step-detail">
+      <p>
+        Add the field, initialize it in <code>Task::new</code> via <code>FdTable::new()</code>.
+        Add a helper <code>with_current_fd_table(|t| ...)</code> in <code>task.rs</code>
+        that locks the scheduler and gives mutable access to the running task's FD table.
+      </p>
+      <p>
+        Still no syscalls. Compile should succeed; runtime behavior unchanged.
+      </p>
+    </div>
+  </div>
+
+  <div class="step">
+    <div class="step-title"><span class="step-num">2.3</span>Implement <code>sys_open</code></div>
+    <div class="step-detail">
+      <p>
+        Add <code>SYS_OPEN = 2</code> to the dispatch. Handler ignores the path argument,
+        creates <code>Arc::new(File { inode: HARDCODED_INODE.clone(), cursor: Mutex::new(0) })</code>,
+        calls <code>with_current_fd_table(|t| t.open(file))</code>, returns the FD number.
+      </p>
+      <p>
+        Add a <code>println!</code> trace so you can see the FD returned. Build, run the
+        existing user program (which still uses write/exit only), confirm nothing broke.
+      </p>
+    </div>
+  </div>
+
+  <div class="step">
+    <div class="step-title"><span class="step-num">2.4</span>Implement <code>sys_read</code></div>
+    <div class="step-detail">
+      <p>
+        Add <code>SYS_READ = 0</code>. Handler: look up File, lock inode data + cursor,
+        compute <code>available = data.len() - cursor</code>, <code>to_read = min(len, available)</code>,
+        memcpy from <code>data[cursor..cursor+to_read]</code> to <code>buf_ptr</code>,
+        advance cursor, return <code>to_read</code>.
+      </p>
+      <p>
+        Need a helper to convert a user virtual address to a kernel pointer. For now, a
+        raw <code>buf_ptr as *mut u8</code> cast works because user and kernel share the
+        same address space (post-<code>fork</code> the user code runs in its own AS, but
+        the syscall handler runs in kernel mode where the user's mappings are inherited).
+      </p>
+    </div>
+  </div>
+
+  <div class="step">
+    <div class="step-title"><span class="step-num">2.5</span>Extend <code>sys_write</code> + add <code>sys_close</code></div>
+    <div class="step-detail">
+      <p>
+        <code>SYS_WRITE</code> already handles FD=1 (serial). Add a branch: if
+        <code>fd != 1</code>, look up the File, extend the inode's data with the bytes
+        from <code>buf_ptr</code>, advance cursor, return count. <code>SYS_CLOSE</code>
+        just calls <code>FdTable::close</code> and returns 0/−1.
+      </p>
+    </div>
+  </div>
+
+  <div class="step">
+    <div class="step-title"><span class="step-num">2.6</span>Update <code>USER_PROGRAM</code> to exercise all four</div>
+    <div class="step-detail">
+      <p>
+        Write a new flat binary that does: <code>open("/test")</code> → returns FD (say 3).
+        <code>read(3, buf, 5)</code> → reads "hello" from the hardcoded inode.
+        <code>write(1, buf, 5)</code> → prints "hello" via serial.
+        <code>write(3, " world", 6)</code> → appends to the inode.
+        <code>close(3)</code> → frees the FD.
+        <code>exit(0)</code>.
+      </p>
+      <p>
+        The hand-assembled flat binary pattern is the same as the existing USER_PROGRAM —
+        copy the structure, change the syscalls. Test output should show
+        <code>[syscall] sys_open -> fd=3</code>, then <code>hello</code>, then exit.
+      </p>
+    </div>
+  </div>
+
+  <h2>Verification — what success looks like</h2>
+
+  <p>
+    Serial output of the test program should look roughly like:
+  </p>
+
+  <pre><span class="c">// ... boot stuff ...</span>
+[syscall] sys_open (ignored path) -> fd=3
+[syscall] sys_read fd=3 len=5 -> read 5 bytes
+hello
+[syscall] sys_write fd=1 len=5 -> wrote 5 bytes
+[syscall] sys_write fd=3 len=6 -> wrote 6 bytes (inode now 11 bytes)
+[syscall] sys_close fd=3 -> ok
+[syscall] sys_exit(0)</pre>
+
+  <p>
+    If you re-open the file in a second <code>open</code> call after closing, the inode
+    should still contain the bytes you wrote (it is the same <code>HARDCODED_INODE</code>).
+    That is Lesson 2's proof that we have a real (if tiny) filesystem underneath: writes
+    persist across opens.
+  </p>
+
+  <h2>Primary source</h2>
+
+  <p>
+    Skim <a href="https://elixir.bootlin.com/linux/latest/source/fs/read_write.c">fs/read_write.c</a>
+    in Linux — specifically <code>vfs_read</code> and <code>vfs_write</code>. They are the
+    real version of what our <code>sys_read</code> / <code>sys_write</code> become once
+    they grow up: take a <code>struct file *</code>, do permission checks, call
+    <code>file-&gt;f_op-&gt;read</code> or <code>-&gt;write</code>. We do not have the
+    function-pointer dispatch yet (we inline the inode access); Lesson 3's <code>fops</code>
+    table will introduce it.
+  </p>
+
+  <p>
+    For the FD table itself, <a href="https://elixir.bootlin.com/linux/latest/source/fs/file.c">fs/file.c</a>
+    is the canonical reference. <code>__alloc_fd</code> is the function that finds the
+    lowest free FD number — exactly what our <code>FdTable::open</code> does. Linux uses an
+    <code>fdt</code> with a bitmap for sparse tables; we use a flat <code>Vec</code> for
+    simplicity.
+  </p>
+
+  <div class="probe">
+    <div class="probe-title">Pause and think</div>
+    <p>
+      Two processes both call <code>open("/test")</code> at roughly the same time. Both
+      get FD 3 in their own tables. They each <code>read(3, buf, 5)</code>. Do they see
+      the same 5 bytes, or different bytes? Where exactly in the type definitions does the
+      answer live?
+    </p>
+  </div>
+
+  </div>
+
+  <footer class="lesson-footer">
+    <div class="footer-block">
+      <h4>Up next</h4>
+      <p style="margin:0;">
+        Lesson 3 — Real Inodes and Paths. Replace the hardcoded <code>HARDCODED_INODE</code>
+        with a path-indexed table (<code>HashMap&lt;&amp;'static str, Arc&lt;Inode&gt;&gt;</code>),
+        parse the path argument in <code>sys_open</code>, support multiple files. The
+        superblock concept lands here too as the "root" of the path table.
+      </p>
+    </div>
+
+    <div class="footer-block">
+      <h4>If anything was unclear</h4>
+      <p style="margin:0;">
+        Ask. Especially the <code>Arc</code> + <code>Mutex</code> pattern — if Rust's
+        ownership model is fighting you on the <code>FdTable</code> implementation, flag it
+        early. We can spend a sidebar on shared-ownership patterns in <code>no_std</code>
+        before continuing.
+      </p>
+    </div>
+
+    <nav class="lesson-nav">
+      <a href="0001-shape-of-vfs.html">← Lesson 1: Shape of VFS</a>
+      <a href="0003-real-inodes-and-paths.html">Lesson 3: Real Inodes and Paths →</a>
+    </nav>
+  </footer>
+
+</article>
+</body>
+</html>

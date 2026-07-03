@@ -1,0 +1,257 @@
+/* ============================================================
+   byte-layout.css — reusable visual for fixed-layout structs
+   Shows each field sized proportional to its byte width,
+   so you can see at a glance which fields dominate the layout.
+
+   Usage:
+     <div class="byte-layout">
+       <div class="byte-layout-header">
+         <span class="byte-layout-name">Descriptor entry</span>
+         <span class="byte-layout-size">16 bytes</span>
+       </div>
+       <div class="byte-bar">
+         <div class="byte-field type-u64" style="--bytes: 8">
+           <span class="byte-field-name">addr</span>
+           <span class="byte-field-meta">u64 · 8 B</span>
+           <span class="byte-field-range">0x00–0x07</span>
+         </div>
+         ... more fields ...
+       </div>
+       <div class="byte-layout-note">optional caption</div>
+     </div>
+
+   Field width is proportional to --bytes. Type classes color-code
+   by Rust type so repeated scans train the eye.
+
+   For variable-size arrays (ring[N]), set the array's --bytes to a
+   representative sample (e.g., 16 for 8 entries) and note the real
+   size in the metadata. Proportional-to-real-size makes fixed fields
+   unreadable when N is large.
+   ============================================================ */
+
+.byte-layout {
+  margin: 1.5rem 0;
+  font-family: var(--font-mono);
+  font-size: 0.82rem;
+}
+
+.byte-layout-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-bottom: 0.5rem;
+  font-family: var(--font-sans);
+}
+
+.byte-layout-name {
+  font-weight: 600;
+  font-size: 0.95rem;
+  color: var(--text);
+}
+
+.byte-layout-size {
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  color: var(--text-dim);
+  background: var(--surface-soft);
+  padding: 1px 8px;
+  border-radius: 3px;
+  border: 1px solid var(--border);
+}
+
+.byte-bar {
+  display: flex;
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+  background: var(--surface);
+}
+
+.byte-field {
+  flex-grow: var(--bytes, 1);
+  flex-basis: 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  padding: 0.55rem 0.4rem;
+  border-right: 1px solid rgba(255, 255, 255, 0.25);
+  text-align: center;
+  color: #ffffff;
+  line-height: 1.3;
+  gap: 1px;
+}
+
+.byte-field:last-child { border-right: none; }
+
+/* Type color coding — chosen to harmonize with the editorial
+   paper-cream palette. Saturated enough to read on; not neon. */
+.byte-field.type-u8    { background: #7e22ce; }   /* purple */
+.byte-field.type-u16   { background: #15803d; }   /* green  */
+.byte-field.type-u32   { background: #b45309; }   /* rust   */
+.byte-field.type-u64   { background: #1e40af; }   /* blue   */
+.byte-field.type-array { background: #be185d; }   /* rose   */
+.byte-field.type-struct { background: #475569; }  /* slate  */
+.byte-field.type-pad   { background: #9ca3af; color: #1c1917; } /* gray (padding) */
+
+.byte-field-name {
+  font-weight: 600;
+  font-size: 0.86rem;
+}
+
+.byte-field-meta {
+  font-size: 0.7rem;
+  opacity: 0.9;
+  font-family: var(--font-mono);
+}
+
+.byte-field-range {
+  font-size: 0.65rem;
+  opacity: 0.7;
+  font-family: var(--font-mono);
+  letter-spacing: 0.02em;
+}
+
+/* Variable-array indicator: show the representative sample,
+   real size goes in metadata. */
+.byte-field.type-array .byte-field-meta::before {
+  content: "× ";
+}
+
+.byte-layout-note {
+  margin-top: 0.5rem;
+  font-family: var(--font-sans);
+  font-size: 0.78rem;
+  color: var(--text-dim);
+  font-style: italic;
+}
+
+/* ============ FIELD REFERENCE (per-field detail) ============ */
+
+.field-reference {
+  margin: 0.75rem 0 0;
+  padding: 0.85rem 1.1rem;
+  background: var(--surface-soft);
+  border-radius: 4px;
+  border-left: 3px solid var(--border-bright);
+  font-family: var(--font-sans);
+  font-size: 0.88rem;
+}
+
+.field-reference dl {
+  margin: 0;
+  padding: 0;
+}
+
+.field-reference dt {
+  font-family: var(--font-mono);
+  font-weight: 600;
+  color: var(--text);
+  font-size: 0.86rem;
+  margin-top: 0.75rem;
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.field-reference dt:first-child { margin-top: 0; }
+
+.field-reference .type-tag {
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  color: #ffffff;
+  padding: 1px 7px;
+  border-radius: 3px;
+  font-weight: 500;
+}
+
+.type-tag.type-u8    { background: #7e22ce; }
+.type-tag.type-u16   { background: #15803d; }
+.type-tag.type-u32   { background: #b45309; }
+.type-tag.type-u64   { background: #1e40af; }
+.type-tag.type-array { background: #be185d; }
+.type-tag.type-struct { background: #475569; }
+
+.field-reference dd {
+  margin: 0.3rem 0 0 0;
+  padding: 0;
+  color: var(--text);
+  font-family: var(--font-serif);
+  font-size: 0.92rem;
+  line-height: 1.55;
+}
+
+.field-reference dd p { margin: 0 0 0.4rem; }
+.field-reference dd p:last-child { margin-bottom: 0; }
+
+.field-reference .example {
+  display: block;
+  margin-top: 0.4rem;
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  padding: 0.5rem 0.7rem;
+  border-radius: 3px;
+  color: var(--text);
+  white-space: pre-wrap;
+  line-height: 1.5;
+}
+
+.field-reference .example::before {
+  content: "example";
+  display: block;
+  font-family: var(--font-sans);
+  font-size: 0.68rem;
+  color: var(--accent);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  margin-bottom: 0.2rem;
+  font-weight: 600;
+}
+
+/* ============ LEGEND (optional) ============ */
+
+.byte-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem 1.2rem;
+  margin-top: 0.75rem;
+  font-family: var(--font-sans);
+  font-size: 0.75rem;
+  color: var(--text-dim);
+}
+
+.byte-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.byte-legend-swatch {
+  width: 12px;
+  height: 12px;
+  border-radius: 2px;
+  display: inline-block;
+}
+
+.byte-legend-swatch.s-u8    { background: #7e22ce; }
+.byte-legend-swatch.s-u16   { background: #15803d; }
+.byte-legend-swatch.s-u32   { background: #b45309; }
+.byte-legend-swatch.s-u64   { background: #1e40af; }
+.byte-legend-swatch.s-array { background: #be185d; }
+.byte-legend-swatch.s-struct { background: #475569; }
+
+/* ============ RESPONSIVE ============ */
+
+@media (max-width: 640px) {
+  .byte-field {
+    padding: 0.4rem 0.2rem;
+  }
+  .byte-field-name { font-size: 0.78rem; }
+  .byte-field-meta { font-size: 0.65rem; }
+  .byte-field-range { font-size: 0.6rem; }
+}

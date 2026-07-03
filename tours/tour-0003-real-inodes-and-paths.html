@@ -1,0 +1,1103 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Tour — Lesson 3 · Real Inodes and Paths</title>
+<link rel="stylesheet" href="../assets/lesson.css">
+<style>
+  .tour-step {
+    margin: 3rem 0;
+    padding-top: 1rem;
+    border-top: 1px solid var(--border);
+  }
+  .tour-step:first-of-type { border-top: none; padding-top: 0; }
+
+  .tour-step-num {
+    display: inline-block;
+    font-family: var(--font-mono);
+    font-size: 0.78rem;
+    font-weight: 600;
+    color: var(--accent);
+    background: var(--accent-soft);
+    padding: 2px 8px;
+    border-radius: 3px;
+    margin-right: 0.6rem;
+  }
+  .tour-step-title {
+    font-family: var(--font-sans);
+    font-weight: 700;
+    font-size: 1.3rem;
+    color: var(--text);
+    margin: 0 0 0.4rem;
+    display: inline;
+  }
+  .tour-step-h2 {
+    margin: 0 0 1rem;
+  }
+
+  .tour-files {
+    font-family: var(--font-mono);
+    font-size: 0.82rem;
+    color: var(--text-dim);
+    margin: 0.5rem 0 1.5rem;
+  }
+  .tour-files strong { color: var(--text); font-weight: 600; }
+
+  /* Per-snippet caption: filename + brief what-it-is */
+  .snippet-meta {
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
+    color: var(--text-dim);
+    margin: 1.5rem 0 0.35rem;
+    display: flex;
+    align-items: baseline;
+    gap: 0.6rem;
+  }
+  .snippet-meta .snippet-file {
+    color: var(--accent);
+    font-weight: 600;
+    background: var(--accent-soft);
+    padding: 1px 6px;
+    border-radius: 3px;
+  }
+  .snippet-meta .snippet-what {
+    color: var(--text-faint);
+    font-style: italic;
+  }
+  .snippet-meta + pre,
+  .snippet-meta + pre.tour-output {
+    margin-top: 0;
+  }
+
+  pre.tour-output {
+    background: #111827;
+    color: #e5e7eb;
+    border-left: 3px solid var(--accent);
+    padding: 1rem 1.25rem;
+    border-radius: 0 6px 6px 0;
+    font-size: 0.8rem;
+    line-height: 1.55;
+    margin: 1rem 0;
+  }
+  pre.tour-output .ann {
+    color: #9ca3af;
+    font-style: italic;
+  }
+  pre.tour-output .ok {
+    color: #86efac;
+  }
+  pre.tour-output .err {
+    color: #fca5a5;
+  }
+
+  .pull-quote {
+    border-left: 3px solid var(--accent);
+    padding: 0.4rem 0 0.4rem 1rem;
+    margin: 1.5rem 0;
+    font-style: italic;
+    color: var(--text-dim);
+  }
+</style>
+</head>
+<body>
+<article class="lesson">
+
+  <header class="lesson-header">
+    <div class="lesson-eyebrow">Tour · Lesson 3 · Companion to <a href="../lessons/0003-real-inodes-and-paths.html" style="color:inherit;">the lesson</a></div>
+    <h1 class="lesson-title">Code Tour — Real Inodes and Paths</h1>
+    <p class="lesson-subtitle">What the design looks like once it lands in Rust. Step by step, with the verification output that proved each one.</p>
+    <div class="lesson-meta">
+      <span><strong>Steps done</strong> 3.1 – 3.6 (complete)</span>
+      <span><strong>Last commit</strong> <code>c4f6101</code></span>
+    </div>
+  </header>
+
+  <div class="content">
+
+  <p class="lead">
+    The <a href="../lessons/0003-real-inodes-and-paths.html">lesson</a> explains the
+    <em>design</em> — why byte-format directories, why length-prefix, why inode numbers.
+    This page is the <em>code</em> — what each step actually added to <code>src/fs.rs</code>
+    and <code>src/main.rs</code>, with the serial output that proved it worked. Every
+    snippet is labeled with the file it came from.
+  </p>
+
+  <!-- ============================================================
+       STEP 3.1
+       ============================================================ -->
+  <section class="tour-step">
+    <h2 class="tour-step-h2">
+      <span class="tour-step-num">3.1</span><span class="tour-step-title">Inode shape: <code>ino</code>, <code>kind</code>, and the <code>REGISTRY</code></span>
+    </h2>
+    <div class="tour-files"><strong>Files touched:</strong> <code>src/fs.rs</code></div>
+
+    <p>
+      Before this step, <code>Inode</code> was just a wrapper around
+      <code>Mutex&lt;Vec&lt;u8&gt;&gt;</code> — pure bytes, no identity, no kind. The
+      hardcoded inode from Lesson 2 worked because there was exactly one of it. Step
+      3.1 grows <code>Inode</code> into something that can be <em>named</em> and
+      <em>looked up</em>.
+    </p>
+
+    <h3>The kind discriminant</h3>
+    <p>
+      A clean Rust enum replaces Linux's type-bitmask-in-<code>i_mode</code>. Two
+      variants for now; symlink/device/pipe/socket come in later lessons.
+    </p>
+
+    <div class="snippet-meta">
+      <span class="snippet-file">src/fs.rs</span>
+      <span class="snippet-what">— InodeKind enum</span>
+    </div>
+<pre><span class="k">pub enum</span> <span class="t">InodeKind</span> {
+    <span class="t">File</span>,  <span class="c">// bytes are file contents</span>
+    <span class="t">Dir</span>,   <span class="c">// bytes are dirent records</span>
+}</pre>
+
+    <p>
+      Derived traits: <code>Debug</code> for <code>println!</code>, <code>Clone + Copy</code>
+      because it's a 1-byte value, <code>PartialEq + Eq</code> for <code>==</code> in path
+      walk ("is this a directory?").
+    </p>
+
+    <h3>The grown Inode struct</h3>
+
+    <div class="snippet-meta">
+      <span class="snippet-file">src/fs.rs</span>
+      <span class="snippet-what">— Inode struct (with new ino and kind fields)</span>
+    </div>
+<pre><span class="k">pub struct</span> <span class="t">Inode</span> {
+    <span class="k">pub</span> ino: <span class="t">u64</span>,
+    <span class="k">pub</span> kind: <span class="t">InodeKind</span>,
+    <span class="k">pub</span> data: <span class="t">Mutex</span>&lt;<span class="t">Vec</span>&lt;<span class="t">u8</span>&gt;&gt;,
+}</pre>
+
+    <p>
+      <code>ino</code> is the stable identifier — what directory entries store, what
+      <code>stat()</code> returns. <code>kind</code> tells the kernel how to interpret
+      <code>data</code>. The <code>Mutex&lt;Vec&lt;u8&gt;&gt;&gt;</code> payload is
+      unchanged from Lesson 2.
+    </p>
+
+    <h3>Inode number allocation</h3>
+
+    <div class="snippet-meta">
+      <span class="snippet-file">src/fs.rs</span>
+      <span class="snippet-what">— NEXT_INO counter (module-level static)</span>
+    </div>
+<pre><span class="c">/// Monotonic counter. Starts at 1 — Linux reserves inode 0 as "no inode".</span>
+<span class="k">static</span> <span class="t">NEXT_INO</span>: <span class="t">AtomicU64</span> = <span class="t">AtomicU64</span>::new(<span class="n">1</span>);</pre>
+
+    <p>
+      <code>AtomicU64</code> is overkill on single-CPU QEMU but correct under any
+      future SMP configuration. <code>fetch_add(1, SeqCst)</code> returns the value
+      before the add, so the first allocated inode gets number 1.
+    </p>
+
+    <h3>Constructors that allocate + register</h3>
+
+    <div class="snippet-meta">
+      <span class="snippet-file">src/fs.rs</span>
+      <span class="snippet-what">— impl Inode (new_file, new_dir, alloc, lookup)</span>
+    </div>
+<pre><span class="k">impl</span> <span class="t">Inode</span> {
+    <span class="k">pub fn</span> <span class="f">new_file</span>(initial: &amp;[<span class="t">u8</span>]) -&gt; <span class="t">Arc</span>&lt;<span class="t">Inode</span>&gt; {
+        <span class="k">Self</span>::alloc(<span class="t">InodeKind</span>::File, <span class="t">Vec</span>::from(initial))
+    }
+
+    <span class="k">pub fn</span> <span class="f">new_dir</span>() -&gt; <span class="t">Arc</span>&lt;<span class="t">Inode</span>&gt; {
+        <span class="k">Self</span>::alloc(<span class="t">InodeKind</span>::Dir, <span class="t">Vec</span>::new())
+    }
+
+    <span class="k">fn</span> <span class="f">alloc</span>(kind: <span class="t">InodeKind</span>, data: <span class="t">Vec</span>&lt;<span class="t">u8</span>&gt;) -&gt; <span class="t">Arc</span>&lt;<span class="t">Inode</span>&gt; {
+        <span class="k">let</span> ino = <span class="t">NEXT_INO</span>.fetch_add(<span class="n">1</span>, <span class="t">Ordering</span>::SeqCst);
+        <span class="k">let</span> inode = <span class="t">Arc</span>::new(<span class="t">Inode</span> { ino, kind, data: <span class="t">Mutex</span>::new(data) });
+        <span class="t">REGISTRY</span>.lock().insert(ino, inode.clone());
+        inode
+    }
+
+    <span class="k">pub fn</span> <span class="f">lookup</span>(ino: <span class="t">u64</span>) -&gt; <span class="t">Option</span>&lt;<span class="t">Arc</span>&lt;<span class="t">Inode</span>&gt;&gt; {
+        <span class="t">REGISTRY</span>.lock().get(&amp;ino).cloned()
+    }
+}</pre>
+
+    <p>
+      The constructor returns <code>Arc&lt;Inode&gt;</code> rather than
+      <code>Self</code> because it has to register a clone in the <code>REGISTRY</code>
+      anyway. Callers get the same <code>Arc</code> back; future
+      <code>Inode::lookup(ino)</code> calls return clones of the same shared struct.
+    </p>
+
+    <h3>The registry itself</h3>
+
+    <div class="snippet-meta">
+      <span class="snippet-file">src/fs.rs</span>
+      <span class="snippet-what">— REGISTRY lazy_static</span>
+    </div>
+<pre><span class="k">use</span> <span class="t">alloc::collections</span>::BTreeMap;
+
+<span class="t">lazy_static</span>! {
+    <span class="k">pub static ref</span> <span class="t">REGISTRY</span>: <span class="t">Mutex</span>&lt;<span class="t">BTreeMap</span>&lt;<span class="t">u64</span>, <span class="t">Arc</span>&lt;<span class="t">Inode</span>&gt;&gt;&gt; =
+        <span class="t">Mutex</span>::new(<span class="t">BTreeMap</span>::new());
+}</pre>
+
+    <p>
+      <code>BTreeMap</code> over <code>HashMap</code> because we don't have a hashing
+      crate bundled; <code>BTreeMap</code> lives in <code>alloc::collections</code> with
+      no extra deps. Linux's analog is xarray-indexed; same shape, different data
+      structure.
+    </p>
+
+    <h3>HARDCODED_INODE migrated</h3>
+
+    <div class="snippet-meta">
+      <span class="snippet-file">src/fs.rs</span>
+      <span class="snippet-what">— HARDCODED_INODE before/after</span>
+    </div>
+<pre><span class="c">// Before (Lesson 2):</span>
+<span class="k">pub static ref</span> <span class="t">HARDCODED_INODE</span>: <span class="t">Arc</span>&lt;<span class="t">Inode</span>&gt; =
+    <span class="t">Arc</span>::new(<span class="t">Inode</span>::new(<span class="s">b"hello vfs\n"</span>));
+
+<span class="c">// After (3.1):</span>
+<span class="k">pub static ref</span> <span class="t">HARDCODED_INODE</span>: <span class="t">Arc</span>&lt;<span class="t">Inode</span>&gt; =
+    <span class="t">Inode</span>::new_file(<span class="s">b"hello vfs\n"</span>);</pre>
+
+    <p>
+      Same observable bytes, but the inode now lives in the registry under whatever
+      <code>ino</code> the counter handed it (1, since this is the first allocation).
+      Step 3.3 will replace this static entirely with a real root directory.
+    </p>
+
+    <h3>Verification</h3>
+    <p>
+      No new test — the existing USER_PROGRAM still prints "hello vfs" through the
+      migrated <code>HARDCODED_INODE</code>, proving the new allocation + registry
+      plumbing doesn't break the Lesson 2 path.
+    </p>
+
+    <div class="snippet-meta">
+      <span class="snippet-what">— Boot serial output</span>
+    </div>
+<pre class="tour-output"><span class="ok">[syscall]</span> sys_open(name_ptr=0x0) -&gt; fd=0
+<span class="ok">[syscall]</span> sys_read fd=0 buf=0x40000075 len=10 -&gt; read 10 bytes (inode 10 bytes, cursor 0-&gt;10)
+<span class="ok">hello vfs</span>
+<span class="ok">[syscall]</span> sys_write fd=1 -&gt; serial, 10 bytes
+<span class="ok">[syscall]</span> sys_close fd=0 -&gt; ok
+<span class="ok">[syscall]</span> sys_exit(0)</pre>
+
+    <p>
+      <span class="pull-quote">Commit <code>3b743cc</code>. Wall-clock time: ~110 seconds (read + edits + build + QEMU run).</span>
+    </p>
+  </section>
+
+  <!-- ============================================================
+       STEP 3.2
+       ============================================================ -->
+  <section class="tour-step">
+    <h2 class="tour-step-h2">
+      <span class="tour-step-num">3.2</span><span class="tour-step-title">Dirent byte format: encode and decode helpers</span>
+    </h2>
+    <div class="tour-files"><strong>Files touched:</strong> <code>src/fs.rs</code>, <code>src/main.rs</code> (test)</div>
+
+    <p>
+      Step 3.1 made inodes addressable by number; step 3.2 makes the
+      <em>directory format</em> real. The format we landed on in the design chat:
+    </p>
+
+    <div class="snippet-meta">
+      <span class="snippet-what">— Directory entry byte layout (conceptual diagram)</span>
+    </div>
+<pre><span class="c">+-----------+-----------------+----------------+</span>
+<span class="c">| name_len  | name [N bytes]  | ino [u64 LE]   |</span>
+<span class="c">+-----------+-----------------+----------------+</span>
+   <span class="n">1 byte</span>        name_len           <span class="n">8 bytes</span></pre>
+
+    <p>
+      Length-prefix lets the parser skip an entry without reading the name or the
+      ino field. Linux's <code>struct linux_dirent64</code> uses the same trick via
+      <code>d_reclen</code>.
+    </p>
+
+    <h3>encode_dirent</h3>
+
+    <div class="snippet-meta">
+      <span class="snippet-file">src/fs.rs</span>
+      <span class="snippet-what">— encode_dirent function</span>
+    </div>
+<pre><span class="k">pub fn</span> <span class="f">encode_dirent</span>(name: &amp;<span class="k">str</span>, ino: <span class="t">u64</span>) -&gt; <span class="t">Vec</span>&lt;<span class="t">u8</span>&gt; {
+    <span class="k">let</span> name_bytes = name.as_bytes();
+    <span class="k">assert!</span>(name_bytes.len() &lt;= <span class="t">u8</span>::MAX <span class="k">as</span> <span class="k">usize</span>, <span class="s">"dirent name too long"</span>);
+    <span class="k">let mut</span> out = <span class="t">Vec</span>::with_capacity(<span class="n">1</span> + name_bytes.len() + <span class="n">8</span>);
+    out.push(name_bytes.len() <span class="k">as</span> <span class="t">u8</span>);
+    out.extend_from_slice(name_bytes);
+    out.extend_from_slice(&amp;ino.to_le_bytes());
+    out
+}</pre>
+
+    <p>
+      <code>u8::MAX</code> = 255, matching Linux's <code>NAME_MAX</code>. The
+      <code>assert!</code> panics rather than returning a <code>Result</code> because
+      a kernel-internal <code>encode_dirent</code> calling itself with a 256-byte
+      name is a programmer bug, not a runtime error.
+    </p>
+
+    <h3>lookup_in_dir</h3>
+
+    <div class="snippet-meta">
+      <span class="snippet-file">src/fs.rs</span>
+      <span class="snippet-what">— lookup_in_dir function (linear scan)</span>
+    </div>
+<pre><span class="k">pub fn</span> <span class="f">lookup_in_dir</span>(dir_bytes: &amp;[<span class="t">u8</span>], name: &amp;<span class="k">str</span>) -&gt; <span class="t">Option</span>&lt;<span class="t">u64</span>&gt; {
+    <span class="k">let</span> name_bytes = name.as_bytes();
+    <span class="k">let mut</span> i = <span class="n">0</span>;
+    <span class="k">while</span> i &lt; dir_bytes.len() {
+        <span class="k">let</span> name_len = dir_bytes[i] <span class="k">as</span> <span class="k">usize</span>;
+        <span class="k">let</span> entry_size = <span class="n">1</span> + name_len + <span class="n">8</span>;
+        <span class="k">if</span> i + entry_size &gt; dir_bytes.len() {
+            <span class="k">return</span> <span class="t">None</span>; <span class="c">// truncated final entry — corrupted directory</span>
+        }
+        <span class="k">let</span> entry_name = &amp;dir_bytes[i + <span class="n">1</span> .. i + <span class="n">1</span> + name_len];
+        <span class="k">if</span> entry_name == name_bytes {
+            <span class="k">let</span> ino_start = i + <span class="n">1</span> + name_len;
+            <span class="k">let</span> ino_bytes: [<span class="t">u8</span>; <span class="n">8</span>] = dir_bytes[ino_start .. ino_start + <span class="n">8</span>].try_into().ok()?;
+            <span class="k">return</span> <span class="t">Some</span>(<span class="t">u64</span>::from_le_bytes(ino_bytes));
+        }
+        i += entry_size;
+    }
+    <span class="t">None</span>
+}</pre>
+
+    <p>
+      The <code>while</code> loop walks entries. The "skip to next" operation is
+      just <code>i += entry_size</code> — that's the O(1) advance we talked about
+      in the design chat. On a hit we <code>try_into</code> the 8 ino bytes into a
+      fixed array, parse little-endian, and return. On a miss or on truncation we
+      return <code>None</code>.
+    </p>
+
+    <div class="margin-note">
+      <strong>Why <code>?</code> on <code>try_into</code>.</strong>
+      The slice is exactly 8 bytes when we reach that line (we just
+      bounds-checked <code>i + entry_size</code>), so <code>try_into</code>
+      can only fail if our arithmetic is wrong. <code>?</code> propagates
+      the impossible case as <code>None</code>.
+    </div>
+
+    <h3>Boot-time test</h3>
+    <p>
+      Slotted between the existing frame-allocator test and the interrupt-enable
+      call. Encodes two entries, looks up four cases (two hits, one miss, empty
+      dir):
+    </p>
+
+    <div class="snippet-meta">
+      <span class="snippet-file">src/main.rs</span>
+      <span class="snippet-what">— Dirent encode/decode boot test (inside kernel_main)</span>
+    </div>
+<pre><span class="k">println!</span>(<span class="s">"[test] dirent encode/decode"</span>);
+{
+    <span class="k">use crate</span>::fs::{encode_dirent, lookup_in_dir};
+    <span class="k">let mut</span> dir = <span class="t">Vec</span>::new();
+    dir.extend_from_slice(&amp;encode_dirent(<span class="s">"foo.txt"</span>, <span class="n">17</span>));
+    dir.extend_from_slice(&amp;encode_dirent(<span class="s">"hello"</span>, <span class="n">42</span>));
+
+    <span class="k">let</span> foo_ino = lookup_in_dir(&amp;dir, <span class="s">"foo.txt"</span>);
+    <span class="k">let</span> hello_ino = lookup_in_dir(&amp;dir, <span class="s">"hello"</span>);
+    <span class="k">let</span> missing_ino = lookup_in_dir(&amp;dir, <span class="s">"missing"</span>);
+    <span class="k">let</span> empty_ino = lookup_in_dir(&amp;[], <span class="s">"anything"</span>);
+
+    <span class="k">println!</span>(<span class="s">"[test]   lookup foo.txt -&gt; {:?} (expect Some(17))"</span>, foo_ino);
+    <span class="c">// ... plus 3 more println!s ...</span>
+
+    <span class="k">assert_eq!</span>(foo_ino, <span class="t">Some</span>(<span class="n">17</span>));
+    <span class="k">assert_eq!</span>(hello_ino, <span class="t">Some</span>(<span class="n">42</span>));
+    <span class="k">assert_eq!</span>(missing_ino, <span class="t">None</span>);
+    <span class="k">assert_eq!</span>(empty_ino, <span class="t">None</span>);
+}</pre>
+
+    <p>
+      Required adding <code>use alloc::vec::Vec;</code> to the top of
+      <code>main.rs</code> — first time the boot code itself has needed <code>Vec</code>
+      directly (the existing heap-allocator test uses it through <code>Box</code>).
+    </p>
+
+    <h3>Verification</h3>
+
+    <div class="snippet-meta">
+      <span class="snippet-what">— Boot serial output</span>
+    </div>
+<pre class="tour-output"><span class="ann">[test]</span> dirent encode/decode
+<span class="ann">[test]</span>   lookup foo.txt -&gt; <span class="ok">Some(17)</span> (expect Some(17))
+<span class="ann">[test]</span>   lookup hello   -&gt; <span class="ok">Some(42)</span> (expect Some(42))
+<span class="ann">[test]</span>   lookup missing -&gt; <span class="ok">None</span> (expect None)
+<span class="ann">[test]</span>   lookup in empty -&gt; <span class="ok">None</span> (expect None)</pre>
+
+    <p>
+      All four <code>assert_eq!</code> macros passed (the kernel didn't panic —
+      the existing USER_PROGRAM still runs to completion afterwards).
+    </p>
+
+    <p class="pull-quote">
+      Commit <code>8307fd3</code>. Wall-clock time: ~160 seconds (includes a
+      one-cycle Vec-import fix).
+    </p>
+  </section>
+
+  <!-- ============================================================
+       STEP 3.3
+       ============================================================ -->
+  <section class="tour-step">
+    <h2 class="tour-step-h2">
+      <span class="tour-step-num">3.3</span><span class="tour-step-title">Root directory inode with one entry</span>
+    </h2>
+    <div class="tour-files"><strong>Files touched:</strong> <code>src/fs.rs</code>, <code>src/main.rs</code> (test)</div>
+
+    <p>
+      Steps 3.1 and 3.2 gave us the type system and the dirent byte format.
+      Step 3.3 uses both to actually <em>build a filesystem</em> — a root
+      directory containing one file.
+    </p>
+
+    <h3>Reserved inode numbers</h3>
+
+    <div class="snippet-meta">
+      <span class="snippet-file">src/fs.rs</span>
+      <span class="snippet-what">— Reserved inode number constants (module-level)</span>
+    </div>
+<pre><span class="k">pub const</span> <span class="t">ROOT_INO</span>: <span class="t">u64</span> = <span class="n">1</span>;
+<span class="k">const</span> <span class="t">HELLO_INO</span>: <span class="t">u64</span> = <span class="n">2</span>;</pre>
+
+    <p>
+      Hardcoded constants so the boot test can assert them specifically.
+      Linux's ext4 reserves inode 1 for a "bad blocks" list and uses inode 2
+      for the root; we don't have bad blocks, so root is inode 1.
+      <code>HELLO_INO</code> is private — only the root initializer needs it.
+    </p>
+
+    <h3>The root initializer</h3>
+
+    <div class="snippet-meta">
+      <span class="snippet-file">src/fs.rs</span>
+      <span class="snippet-what">— ROOT_INODE lazy_static initializer</span>
+    </div>
+<pre><span class="t">lazy_static</span>! {
+    <span class="k">pub static ref</span> <span class="t">ROOT_INODE</span>: <span class="t">Arc</span>&lt;<span class="t">Inode</span>&gt; = {
+        <span class="k">let</span> root = <span class="t">Inode</span>::new_dir();
+        <span class="k">debug_assert_eq!</span>(root.ino, <span class="t">ROOT_INO</span>,
+            <span class="s">"root must be the first inode allocated; something allocated first"</span>);
+
+        <span class="k">let</span> hello = <span class="t">Inode</span>::new_file(<span class="s">b"hello vfs\n"</span>);
+        <span class="k">debug_assert_eq!</span>(hello.ino, <span class="t">HELLO_INO</span>,
+            <span class="s">"hello.txt must be the second inode allocated"</span>);
+
+        <span class="c">// Append the directory entry: name="hello.txt", ino=hello.ino</span>
+        <span class="k">let</span> entry = <span class="f">encode_dirent</span>(<span class="s">"hello.txt"</span>, hello.ino);
+        root.data.lock().extend_from_slice(&amp;entry);
+
+        root
+    };
+}</pre>
+
+    <p>
+      Three things happen in this initializer, in order:
+    </p>
+
+    <ol>
+      <li>
+        <code>Inode::new_dir()</code> allocates an inode from
+        <code>NEXT_INO</code> (which is 1, since this is the first allocation),
+        registers it, returns the <code>Arc</code>.
+      </li>
+      <li>
+        <code>Inode::new_file(b"hello vfs\n")</code> allocates again — gets
+        ino=2 this time.
+      </li>
+      <li>
+        <code>encode_dirent("hello.txt", 2)</code> builds the dirent bytes
+        <code>[9][h,e,l,l,o,.,t,x,t][02 00 00 00 00 00 00 00]</code>, which
+        get appended to the root's data via the <code>Mutex</code>.
+      </li>
+    </ol>
+
+    <p>
+      The <code>debug_assert_eq!</code>s catch the case where some other code
+      allocates an inode before <code>ROOT_INODE</code> initializes — for
+      example, if <code>HARDCODED_INODE</code>'s old
+      <code>Inode::new_file(b"...")</code> initializer were still in place.
+      They're cheap assertions: fire only in debug builds, no runtime cost in
+      release.
+    </p>
+
+    <h3>HARDCODED_INODE becomes an alias</h3>
+
+    <div class="snippet-meta">
+      <span class="snippet-file">src/fs.rs</span>
+      <span class="snippet-what">— HARDCODED_INODE repurposed as registry lookup</span>
+    </div>
+<pre><span class="k">pub static ref</span> <span class="t">HARDCODED_INODE</span>: <span class="t">Arc</span>&lt;<span class="t">Inode</span>&gt; = {
+    <span class="c">// Force ROOT_INODE init first, so hello.txt (ino=2) is registered.</span>
+    <span class="k">let</span> _ = &amp;*<span class="t">ROOT_INODE</span>;
+    <span class="t">Inode</span>::lookup(<span class="t">HELLO_INO</span>).expect(
+        <span class="s">"hello.txt inode should be registered after ROOT_INODE init"</span>)
+};</pre>
+
+    <p>
+      Two design options existed here: (a) remove <code>HARDCODED_INODE</code>
+      entirely and rewrite <code>sys_open</code>'s call site, or (b) keep it
+      as an alias that looks up the same inode by number. Option (b) keeps
+      step 3.3 scoped — no <code>syscall.rs</code> changes, the existing
+      USER_PROGRAM still works. Step 3.4 will eliminate the alias when
+      <code>sys_open</code> gets real path resolution.
+    </p>
+
+    <p>
+      The <code>let _ = &amp;*ROOT_INODE;</code> line is the load-bearing trick:
+      <code>lazy_static</code> initializers run on first access, and
+      <code>&amp;*STATIC</code> is what counts as "access." This forces
+      <code>ROOT_INODE</code> to initialize first, which guarantees the hello
+      inode is in the registry before we try to look it up.
+    </p>
+
+    <h3>Boot-time test</h3>
+    <p>
+      Added after the 3.2 dirent test. Verifies the structure end-to-end:
+      root is a directory at ino 1, "hello.txt" resolves to ino 2, ino 2 is a
+      registered File inode with the right bytes, and HARDCODED_INODE points
+      at the same inode as "hello.txt" does.
+    </p>
+
+    <div class="snippet-meta">
+      <span class="snippet-file">src/main.rs</span>
+      <span class="snippet-what">— Filesystem setup boot test (inside kernel_main)</span>
+    </div>
+<pre><span class="k">println!</span>(<span class="s">"[test] filesystem setup (3.3)"</span>);
+{
+    <span class="k">use crate</span>::fs::{lookup_in_dir, Inode, InodeKind, HARDCODED_INODE, ROOT_INODE};
+
+    <span class="k">let</span> root = <span class="t">ROOT_INODE</span>.clone(); <span class="c">// triggers lazy_static init</span>
+    <span class="k">let</span> root_data = root.data.lock();
+    <span class="k">let</span> hello_ino_in_root = <span class="f">lookup_in_dir</span>(&amp;root_data, <span class="s">"hello.txt"</span>);
+    drop(root_data);
+
+    <span class="k">assert_eq!</span>(root.ino, <span class="n">1</span>);
+    <span class="k">assert_eq!</span>(root.kind, <span class="t">InodeKind</span>::Dir);
+    <span class="k">assert_eq!</span>(hello_ino_in_root, <span class="t">Some</span>(<span class="n">2</span>));
+
+    <span class="k">let</span> hello_inode = <span class="t">Inode</span>::lookup(<span class="n">2</span>).expect(<span class="s">"hello.txt inode should be registered"</span>);
+    <span class="k">let</span> hello_data = hello_inode.data.lock();
+    <span class="k">assert_eq!</span>(hello_inode.kind, <span class="t">InodeKind</span>::File);
+    <span class="k">assert_eq!</span>(&amp;*hello_data, <span class="s">b"hello vfs\n"</span>);
+
+    <span class="k">let</span> hardcoded = <span class="t">HARDCODED_INODE</span>.clone();
+    <span class="k">assert_eq!</span>(hardcoded.ino, <span class="n">2</span>);
+}</pre>
+
+    <h3>Verification</h3>
+
+    <div class="snippet-meta">
+      <span class="snippet-what">— Boot serial output</span>
+    </div>
+<pre class="tour-output"><span class="ann">[test]</span> filesystem setup (3.3)
+<span class="ann">[test]</span>   root inode: ino=<span class="ok">1</span> kind=<span class="ok">Dir</span>
+<span class="ann">[test]</span>   lookup 'hello.txt' in root -&gt; <span class="ok">Some(2)</span>
+<span class="ann">[test]</span>   inode 2: kind=<span class="ok">File</span>, 10 bytes: [104, 101, 108, 108, 111, 32, 118, 102, 115, 10]
+<span class="ann">[test]</span>   HARDCODED_INODE.ino = <span class="ok">2</span> (matches hello.txt)
+<span class="ann">...</span>
+<span class="ann">[syscall]</span> sys_open(name_ptr=0x0) -&gt; fd=0
+<span class="ann">[syscall]</span> sys_read fd=0 ... -&gt; read 10 bytes
+<span class="ok">hello vfs</span>
+<span class="ann">[syscall]</span> sys_write fd=1 -&gt; serial, 10 bytes</pre>
+
+    <p>
+      The byte array <code>[104, 101, 108, 108, 111, 32, 118, 102, 115, 10]</code>
+      is ASCII for <code>"hello vfs\n"</code> (104=<code>h</code>,
+      101=<code>e</code>, ..., 10=newline). Both the new filesystem test and
+      the existing USER_PROGRAM pass — the legacy code path still works because
+      <code>HARDCODED_INODE</code> is now just an alias for the same inode
+      the root directory points at.
+    </p>
+
+    <p class="pull-quote">
+      Commit <code>9917e71</code>. Wall-clock time: ~88 seconds. The filesystem
+      now exists; the next step teaches <code>sys_open</code> how to walk it.
+    </p>
+  </section>
+
+  <!-- ============================================================
+       STEP 3.4
+       ============================================================ -->
+  <section class="tour-step">
+    <h2 class="tour-step-h2">
+      <span class="tour-step-num">3.4</span><span class="tour-step-title">Path resolution in <code>sys_open</code></span>
+    </h2>
+    <div class="tour-files"><strong>Files touched:</strong> <code>src/fs.rs</code>, <code>src/syscall.rs</code>, <code>src/main.rs</code> (test)</div>
+
+    <p>
+      The Lesson 2 <code>sys_open</code> ignored its path argument and returned
+      the hardcoded inode. Step 3.4 replaces that stub with real path
+      resolution — read the path string from user memory, walk the directory
+      tree, return the resolved inode wrapped in a File.
+    </p>
+
+    <h3>The path walker</h3>
+
+    <div class="snippet-meta">
+      <span class="snippet-file">src/fs.rs</span>
+      <span class="snippet-what">— resolve_path function</span>
+    </div>
+<pre><span class="k">pub fn</span> <span class="f">resolve_path</span>(path: &amp;<span class="k">str</span>) -&gt; <span class="t">Option</span>&lt;<span class="t">Arc</span>&lt;<span class="t">Inode</span>&gt;&gt; {
+    <span class="k">if</span> !path.starts_with(<span class="s">'/'</span>) {
+        <span class="k">return</span> <span class="t">None</span>;
+    }
+
+    <span class="k">let mut</span> current = <span class="t">ROOT_INODE</span>.clone();
+
+    <span class="k">for</span> component <span class="k">in</span> path.split(<span class="s">'/'</span>).filter(|c| !c.is_empty()) {
+        <span class="k">if</span> current.kind != <span class="t">InodeKind</span>::Dir {
+            <span class="k">return</span> <span class="t">None</span>; <span class="c">// ENOTDIR</span>
+        }
+
+        <span class="k">let</span> dir_data = current.data.lock();
+        <span class="k">let</span> next_ino = <span class="f">lookup_in_dir</span>(&amp;dir_data, component)?;
+        drop(dir_data);
+
+        current = <span class="t">Inode</span>::lookup(next_ino)?;
+    }
+
+    <span class="t">Some</span>(current)
+}</pre>
+
+    <p>
+      Six-step walk, exactly as designed in the lesson:
+    </p>
+
+    <ol>
+      <li>Reject relative paths (must start with <code>/</code>).</li>
+      <li>Start at <code>ROOT_INODE</code>.</li>
+      <li>Split on <code>/</code>, drop empty components — this handles leading <code>/</code>, double <code>//</code>, and trailing <code>/</code> uniformly.</li>
+      <li>For each component: require current to be a directory (<code>ENOTDIR</code> otherwise), look up the name in current's bytes via <code>lookup_in_dir</code>, fetch the inode from the registry.</li>
+      <li>Descend: <code>current = looked_up_inode</code>.</li>
+      <li>Return whatever <code>current</code> ends up being. The final inode's kind isn't checked — that's the caller's responsibility (in Linux, <code>open()</code> on a directory has different semantics than on a file, but we don't model that yet).</li>
+    </ol>
+
+    <p>
+      <strong>Lock discipline.</strong> Each iteration locks the current
+      directory's data only long enough to read its entries, then drops the
+      guard before locking the <code>REGISTRY</code>. No nested locks, no
+      deadlock potential.
+    </p>
+
+    <h3>Reading the path from user memory</h3>
+
+    <div class="snippet-meta">
+      <span class="snippet-file">src/syscall.rs</span>
+      <span class="snippet-what">— read_user_path helper</span>
+    </div>
+<pre><span class="k">fn</span> <span class="f">read_user_path</span>(ptr: <span class="t">u64</span>) -&gt; <span class="t">Option</span>&lt;<span class="t">alloc::string::String</span>&gt; {
+    <span class="k">const</span> <span class="t">MAX_PATH</span>: <span class="t">usize</span> = <span class="n">256</span>;
+
+    <span class="k">if</span> ptr == <span class="n">0</span> {
+        <span class="k">return</span> <span class="t">None</span>;
+    }
+    <span class="k">if</span> !<span class="f">is_user_range</span>(ptr, <span class="t">MAX_PATH</span> <span class="k">as</span> <span class="t">u64</span>) {
+        <span class="k">return</span> <span class="t">None</span>;
+    }
+
+    <span class="c">// SAFETY: ptr is non-NULL and inside user range.</span>
+    <span class="k">let</span> bytes: &amp;[<span class="t">u8</span>] = <span class="k">unsafe</span> {
+        <span class="t">core::slice::from_raw_parts</span>(ptr <span class="k">as</span> *<span class="k">const</span> <span class="t">u8</span>, <span class="t">MAX_PATH</span>)
+    };
+    <span class="k">let</span> end = bytes.iter().position(|&amp;b| b == <span class="n">0</span>)?;
+    <span class="k">if</span> end == <span class="n">0</span> {
+        <span class="k">return</span> <span class="t">None</span>; <span class="c">// empty path</span>
+    }
+
+    <span class="k">let</span> s = <span class="t">core::str</span>::from_utf8(&amp;bytes[..end]).ok()?;
+    <span class="t">Some</span>(<span class="t">alloc::string::String</span>::from(s))
+}</pre>
+
+    <p>
+      Four failure modes: NULL pointer, out-of-range pointer, no null
+      terminator within 256 bytes, invalid UTF-8. The first one (NULL) is
+      what makes this step shippable on its own — the existing USER_PROGRAM
+      passes <code>0x0</code>, and without the NULL check, the unsafe slice
+      read would page-fault at address 0 and triple-fault the kernel.
+    </p>
+
+    <p>
+      The <em>in-range-but-unmapped</em> case (e.g., user passes
+      <code>0x1000</code> but never mapped that page) still page-faults.
+      Same limitation as <code>sys_read</code>/<code>sys_write</code> — see
+      learning-record 0005. Fixing it requires a page-fault handler, which
+      is its own future milestone.
+    </p>
+
+    <h3>The new sys_open</h3>
+
+    <div class="snippet-meta">
+      <span class="snippet-file">src/syscall.rs</span>
+      <span class="snippet-what">— sys_open (replaces Lesson 2 stub)</span>
+    </div>
+<pre><span class="k">fn</span> <span class="f">sys_open</span>(name_ptr: <span class="t">u64</span>) -&gt; <span class="t">u64</span> {
+    <span class="k">let</span> path = <span class="k">match</span> <span class="f">read_user_path</span>(name_ptr) {
+        <span class="t">Some</span>(p) =&gt; p,
+        <span class="t">None</span> =&gt; {
+            <span class="k">println!</span>(<span class="s">"[syscall] sys_open: bad path pointer 0x{:x}"</span>, name_ptr);
+            <span class="k">return</span> <span class="t">u64</span>::MAX;
+        }
+    };
+
+    <span class="k">let</span> inode = <span class="k">match</span> <span class="t">fs</span>::resolve_path(&amp;path) {
+        <span class="t">Some</span>(i) =&gt; i,
+        <span class="t">None</span> =&gt; {
+            <span class="k">println!</span>(<span class="s">"[syscall] sys_open: no such file: {:?}"</span>, path);
+            <span class="k">return</span> <span class="t">u64</span>::MAX;
+        }
+    };
+
+    <span class="k">let</span> file = <span class="t">Arc</span>::new(<span class="t">fs</span>::File::new(inode));
+    <span class="k">let</span> fd = <span class="k">crate</span>::task::with_current_fd_table(|fdt| fdt.open(file));
+    <span class="k">println!</span>(<span class="s">"[syscall] sys_open(path={:?}) -&gt; fd={}"</span>, path, fd);
+    fd
+}</pre>
+
+    <p>
+      Two distinct error returns: bad pointer (read failed) and no-such-file
+      (resolution failed). Linux would distinguish these as <code>EFAULT</code>
+      versus <code>ENOENT</code>; we collapse both to <code>u64::MAX</code>
+      (our generic -1 sentinel). When USER_PROGRAM passes a real path in
+      step 3.5, both branches become unreachable for the success case.
+    </p>
+
+    <h3>Boot-time test</h3>
+    <p>
+      Six cases covering the algorithm's branches:
+    </p>
+
+    <div class="snippet-meta">
+      <span class="snippet-file">src/main.rs</span>
+      <span class="snippet-what">— resolve_path boot test</span>
+    </div>
+<pre><span class="k">let</span> root = <span class="f">resolve_path</span>(<span class="s">"/"</span>);                       <span class="c">// root itself</span>
+<span class="k">let</span> hello = <span class="f">resolve_path</span>(<span class="s">"/hello.txt"</span>);            <span class="c">// simple absolute</span>
+<span class="k">let</span> missing = <span class="f">resolve_path</span>(<span class="s">"/missing"</span>);             <span class="c">// ENOENT</span>
+<span class="k">let</span> relative = <span class="f">resolve_path</span>(<span class="s">"hello.txt"</span>);          <span class="c">// relative, rejected</span>
+<span class="k">let</span> notdir = <span class="f">resolve_path</span>(<span class="s">"/hello.txt/foo"</span>);      <span class="c">// ENOTDIR</span>
+<span class="k">let</span> trailing = <span class="f">resolve_path</span>(<span class="s">"/hello.txt/"</span>);        <span class="c">// trailing slash</span>
+
+<span class="k">assert_eq!</span>(root.as_ref().map(|i| i.ino), <span class="t">Some</span>(<span class="n">1</span>));
+<span class="k">assert_eq!</span>(hello.as_ref().map(|i| i.ino), <span class="t">Some</span>(<span class="n">2</span>));
+<span class="k">assert!</span>(missing.is_none());
+<span class="k">assert!</span>(relative.is_none());
+<span class="k">assert!</span>(notdir.is_none());
+<span class="k">assert_eq!</span>(trailing.as_ref().map(|i| i.ino), <span class="t">Some</span>(<span class="n">2</span>));</pre>
+
+    <p>
+      The trailing-slash case <code>"/hello.txt/"</code> splits to
+      <code>["", "hello.txt", ""]</code>; filtering empties leaves
+      <code>["hello.txt"]</code> — same as <code>"/hello.txt"</code>. POSIX
+      would actually require <code>hello.txt</code> to be a directory for
+      the trailing slash to be valid; we don't enforce that yet.
+    </p>
+
+    <h3>Verification</h3>
+
+    <div class="snippet-meta">
+      <span class="snippet-what">— Boot serial output (path resolution test)</span>
+    </div>
+<pre class="tour-output"><span class="ann">[test]</span> path resolution (3.4)
+<span class="ann">[test]</span>   '/' -&gt; ino=<span class="ok">Some(1)</span> kind=<span class="ok">Some(Dir)</span> (expect ino=1, kind=Dir)
+<span class="ann">[test]</span>   '/hello.txt' -&gt; ino=<span class="ok">Some(2)</span> kind=<span class="ok">Some(File)</span> (expect ino=2, kind=File)
+<span class="ann">[test]</span>   '/missing' -&gt; is_none=<span class="ok">true</span> (expect true)
+<span class="ann">[test]</span>   'hello.txt' (relative) -&gt; is_none=<span class="ok">true</span> (expect true)
+<span class="ann">[test]</span>   '/hello.txt/foo' (ENOTDIR) -&gt; is_none=<span class="ok">true</span> (expect true)
+<span class="ann">[test]</span>   '/hello.txt/' (trailing slash) -&gt; ino=<span class="ok">Some(2)</span> (expect Some(2))</pre>
+
+    <p>
+      All six pass. But the existing USER_PROGRAM (which still passes NULL)
+      now fails end-to-end:
+    </p>
+
+    <div class="snippet-meta">
+      <span class="snippet-what">— Boot serial output (USER_PROGRAM now fails gracefully)</span>
+    </div>
+<pre class="tour-output"><span class="ann">[syscall]</span> sys_open: <span class="err">bad path pointer 0x0</span>
+<span class="ann">[syscall]</span> sys_read: <span class="err">bad fd=0</span>
+<span class="ann">[syscall]</span> sys_write fd=1 -&gt; serial, 10 bytes  <span class="ann">(writes 10 unmapped-buffer bytes — invisible on serial)</span>
+<span class="ann">[syscall]</span> sys_close fd=0 -&gt; <span class="err">bad</span>
+<span class="ann">[syscall]</span> sys_exit(0)
+<span class="ok">[sched]</span> task id=0 "main" marked Zombie (exit=0)
+<span class="ok">[sched]</span> no runnable tasks — halting</pre>
+
+    <p>
+      No triple fault, no reboot loop. The kernel exits cleanly. The
+      <code>hello vfs</code> print is gone because USER_PROGRAM never
+      successfully opened a file. Step 3.5 restores it by changing the
+      <code>xor rdi, rdi</code> (path = NULL) instruction in USER_PROGRAM
+      to load the address of a real <code>"/hello.txt"</code> string.
+    </p>
+
+    <p class="pull-quote">
+      Commit <code>b4e99d7</code>. Wall-clock time: ~10.5 minutes — the
+      longest step so far. Most of the time went into reading syscall.rs
+      and USER_PROGRAM and thinking through whether 3.4 alone could be
+      shippable without crashing the existing test program. The NULL guard
+      in <code>read_user_path</code> is what made that work.
+    </p>
+  </section>
+
+  <!-- ============================================================
+       STEP 3.5
+       ============================================================ -->
+  <section class="tour-step">
+    <h2 class="tour-step-h2">
+      <span class="tour-step-num">3.5</span><span class="tour-step-title">USER_PROGRAM calls <code>open("/hello.txt")</code></span>
+    </h2>
+    <div class="tour-files"><strong>Files touched:</strong> <code>src/user.rs</code></div>
+
+    <p>
+      Step 3.4 left USER_PROGRAM passing NULL — <code>sys_open</code>
+      returned <code>u64::MAX</code> and the chain failed with "bad fd".
+      Step 3.5 changes the test program to pass a real absolute path so
+      the whole flow exercises.
+    </p>
+
+    <h3>The instruction change</h3>
+
+    <div class="snippet-meta">
+      <span class="snippet-file">src/user.rs</span>
+      <span class="snippet-what">— USER_PROGRAM opening instruction (was xor, now mov)</span>
+    </div>
+<pre><span class="c">// Before (Lesson 2):</span>
+<span class="c">// 0x0A: xor rdi, rdi (path = NULL, 3 bytes)</span>
+0x48, 0x31, 0xFF,
+
+<span class="c">// After (3.5):</span>
+<span class="c">// 0x0A: mov rdi, 0x4000008C (path = "/hello.txt", 10 bytes)</span>
+0x48, 0xBF, 0x8C, 0x00, 0x00, 0x40, 0x00, 0x00, 0x00, 0x00,</pre>
+
+    <p>
+      Replacing a 3-byte instruction with a 10-byte one shifts every
+      offset after it by 7. BUF_OUT moved from <code>0x40000075</code> to
+      <code>0x4000007C</code>; both <code>mov rsi</code> references
+      updated. The path string itself is appended at the end of the
+      program at <code>0x4000008C</code>, 11 bytes including the null
+      terminator. Total program size: 133 → 151 bytes.
+    </p>
+
+    <h3>The path string</h3>
+
+    <div class="snippet-meta">
+      <span class="snippet-file">src/user.rs</span>
+      <span class="snippet-what">— Path string appended to USER_PROGRAM</span>
+    </div>
+<pre><span class="c">// 0x8C: "/hello.txt\0" (11 bytes — path string passed to sys_open)</span>
+0x2F, 0x68, 0x65, 0x6C, 0x6C, 0x6F, 0x2E, 0x74, 0x78, 0x74, 0x00,</pre>
+
+    <p>
+      <code>0x2F</code> = <code>/</code>, then ASCII for
+      <code>hello.txt</code>, then <code>0x00</code> null terminator.
+      This is what the kernel's <code>read_user_path</code> reads out of
+      user memory.
+    </p>
+
+    <h3>Verification</h3>
+
+    <div class="snippet-meta">
+      <span class="snippet-what">— Boot serial output (path resolution end-to-end)</span>
+    </div>
+<pre class="tour-output"><span class="ann">[syscall]</span> sys_open(path=<span class="ok">"/hello.txt"</span>) -&gt; fd=0
+<span class="ann">[syscall]</span> sys_read fd=0 buf=0x4000007c len=10 -&gt; read 10 bytes (inode 10 bytes, cursor 0-&gt;10)
+<span class="ok">hello vfs</span>
+<span class="ann">[syscall]</span> sys_write fd=1 -&gt; serial, 10 bytes
+<span class="ann">[syscall]</span> sys_close fd=0 -&gt; ok
+<span class="ann">[syscall]</span> sys_exit(0)</pre>
+
+    <p>
+      Compare to step 3.4's output for the same program — that one showed
+      <code>sys_open: bad path pointer 0x0</code> and cascaded to "bad
+      fd". Now the path parses, the walker resolves it, and "hello vfs"
+      prints again. The Lesson 2 win is back, achieved via real path
+      resolution instead of the hardcoded-inode stub.
+    </p>
+
+    <p class="pull-quote">
+      Commit <code>394e749</code>. Wall-clock time: ~100 seconds.
+    </p>
+  </section>
+
+  <!-- ============================================================
+       STEP 3.6
+       ============================================================ -->
+  <section class="tour-step">
+    <h2 class="tour-step-h2">
+      <span class="tour-step-num">3.6</span><span class="tour-step-title">Second file <code>secret.txt</code> proves resolution distinguishes files</span>
+    </h2>
+    <div class="tour-files"><strong>Files touched:</strong> <code>src/fs.rs</code>, <code>src/main.rs</code> (test), <code>src/user.rs</code></div>
+
+    <p>
+      The load-bearing test for Lesson 3. Without a second file, the
+      whole path resolution machinery could silently always return the
+      same inode and every test would still pass. Adding a second file
+      with different contents is the only way to prove the walker actually
+      looks at the path argument.
+    </p>
+
+    <h3>The new file in the root initializer</h3>
+
+    <div class="snippet-meta">
+      <span class="snippet-file">src/fs.rs</span>
+      <span class="snippet-what">— ROOT_INODE initializer now creates two files</span>
+    </div>
+<pre><span class="k">pub static ref</span> <span class="t">ROOT_INODE</span>: <span class="t">Arc</span>&lt;<span class="t">Inode</span>&gt; = {
+    <span class="k">let</span> root = <span class="t">Inode</span>::new_dir();
+    <span class="k">debug_assert_eq!</span>(root.ino, <span class="t">ROOT_INO</span>, ...);
+
+    <span class="k">let</span> hello = <span class="t">Inode</span>::new_file(<span class="s">b"hello vfs\n"</span>);
+    <span class="k">debug_assert_eq!</span>(hello.ino, <span class="t">HELLO_INO</span>, ...);
+
+    <span class="k">let</span> secret = <span class="t">Inode</span>::new_file(<span class="s">b"top secret\n"</span>);   <span class="c">// new</span>
+    <span class="k">debug_assert_eq!</span>(secret.ino, <span class="t">SECRET_INO</span>, ...); <span class="c">// new</span>
+
+    <span class="k">let mut</span> root_data = root.data.lock();
+    root_data.extend_from_slice(&amp;<span class="f">encode_dirent</span>(<span class="s">"hello.txt"</span>, hello.ino));
+    root_data.extend_from_slice(&amp;<span class="f">encode_dirent</span>(<span class="s">"secret.txt"</span>, secret.ino)); <span class="c">// new</span>
+    drop(root_data);
+
+    root
+};</pre>
+
+    <p>
+      Same pattern as the hello file: allocate inode (gets number 3),
+      append a dirent to root's bytes. The directory's data is now two
+      records concatenated: <code>(hello.txt, 2)</code> then
+      <code>(secret.txt, 3)</code>. The linear scan in
+      <code>lookup_in_dir</code> returns the first name match.
+    </p>
+
+    <h3>The kernel-internal proof</h3>
+
+    <div class="snippet-meta">
+      <span class="snippet-file">src/main.rs</span>
+      <span class="snippet-what">— Multiple-files boot test</span>
+    </div>
+<pre><span class="k">let</span> hello = <span class="f">resolve_path</span>(<span class="s">"/hello.txt"</span>).expect(<span class="s">"hello.txt should resolve"</span>);
+<span class="k">let</span> secret = <span class="f">resolve_path</span>(<span class="s">"/secret.txt"</span>).expect(<span class="s">"secret.txt should resolve"</span>);
+
+<span class="k">assert_ne!</span>(hello.ino, secret.ino);
+
+<span class="k">let</span> hello_data = hello.data.lock();
+<span class="k">let</span> secret_data = secret.data.lock();
+<span class="k">assert_eq!</span>(&amp;*hello_data, <span class="s">b"hello vfs\n"</span>);
+<span class="k">assert_eq!</span>(&amp;*secret_data, <span class="s">b"top secret\n"</span>);</pre>
+
+    <p>
+      Doesn't depend on USER_PROGRAM — directly resolves both paths and
+      checks both bytes. If the path resolver ever started ignoring the
+      argument and returning the same inode, both
+      <code>expect</code>s would still succeed but
+      <code>assert_ne!</code> would fail (inos equal) and
+      <code>assert_eq!</code> on bytes would fail (one of them would be
+      wrong).
+    </p>
+
+    <h3>The doubled USER_PROGRAM</h3>
+
+    <div class="snippet-meta">
+      <span class="snippet-file">src/user.rs</span>
+      <span class="snippet-what">— USER_PROGRAM now has two open/read/write/close cycles</span>
+    </div>
+<pre><span class="c">// Cycle 1: hello.txt (10 bytes)</span>
+0x00: mov rax, 2; mov rdi, <span class="s">"/hello.txt"</span>; syscall       <span class="c">// open</span>
+0x16: xor rdi, rdi; mov rsi, BUF_OUT; mov rdx, 10; xor rax, rax; syscall <span class="c">// read</span>
+0x32: mov rdi, 1; mov rsi, BUF_OUT; mov rdx, 10; mov rax, 1; syscall <span class="c">// write</span>
+0x5C: xor rdi, rdi; mov rax, 3; syscall                       <span class="c">// close</span>
+
+<span class="c">// Cycle 2: secret.txt (11 bytes)</span>
+0x6B: mov rax, 2; mov rdi, <span class="s">"/secret.txt"</span>; syscall       <span class="c">// open</span>
+0x81: xor rdi, rdi; mov rsi, BUF_OUT; mov rdx, 11; xor rax, rax; syscall <span class="c">// read</span>
+0x9D: mov rdi, 1; mov rsi, BUF_OUT; mov rdx, 11; mov rax, 1; syscall <span class="c">// write</span>
+0xC7: xor rdi, rdi; mov rax, 3; syscall                       <span class="c">// close</span>
+
+<span class="c">// Exit</span>
+0xD6: xor rdi, rdi; mov rax, 60; syscall                      <span class="c">// exit(0)</span></pre>
+
+    <p>
+      Both cycles share BUF_OUT since operations are sequential. Two path
+      strings live at the end of the program:
+      <code>"/hello.txt\0"</code> (11 bytes) and <code>"/secret.txt\0"</code>
+      (12 bytes). Total program size: 151 → 270 bytes.
+    </p>
+
+    <h3>Verification</h3>
+
+    <div class="snippet-meta">
+      <span class="snippet-what">— Boot serial output (full two-file end-to-end)</span>
+    </div>
+<pre class="tour-output"><span class="ann">[test]</span> multiple files (3.6)
+<span class="ann">[test]</span>   hello.txt ino=<span class="ok">2</span>, secret.txt ino=<span class="ok">3</span> (must differ)
+<span class="ann">[test]</span>   hello.txt bytes = [104, 101, 108, 108, 111, 32, 118, 102, 115, 10]
+<span class="ann">[test]</span>   secret.txt bytes = [116, 111, 112, 32, 115, 101, 99, 114, 101, 116, 10]
+<span class="ann">...</span>
+<span class="ann">[syscall]</span> sys_open(path=<span class="ok">"/hello.txt"</span>) -&gt; fd=0
+<span class="ann">[syscall]</span> sys_read fd=0 buf=0x400000e7 len=10 -&gt; read 10 bytes (inode 10 bytes, cursor 0-&gt;10)
+<span class="ok">hello vfs</span>
+<span class="ann">[syscall]</span> sys_write fd=1 -&gt; serial, 10 bytes
+<span class="ann">[syscall]</span> sys_close fd=0 -&gt; ok
+<span class="ann">[syscall]</span> sys_open(path=<span class="ok">"/secret.txt"</span>) -&gt; fd=0  <span class="ann">(fd=0 reused after close)</span>
+<span class="ann">[syscall]</span> sys_read fd=0 buf=0x400000e7 len=11 -&gt; read 11 bytes (inode 11 bytes, cursor 0-&gt;11)
+<span class="ok">top secret</span>
+<span class="ann">[syscall]</span> sys_write fd=1 -&gt; serial, 11 bytes
+<span class="ann">[syscall]</span> sys_close fd=0 -&gt; ok
+<span class="ann">[syscall]</span> sys_exit(0)</pre>
+
+    <p>
+      Two things worth noticing:
+    </p>
+
+    <ol>
+      <li>
+        <strong>fd=0 is reused</strong> for secret.txt after hello.txt is
+        closed. That's POSIX "lowest free fd" semantics — the freed slot
+        from <code>close(0)</code> is the first one
+        <code>FdTable::open</code> finds on the next open.
+      </li>
+      <li>
+        <strong>Cursor 0→11</strong> on the secret.txt read shows the
+        inode's data is exactly 11 bytes (<code>"top secret\n"</code>).
+        The cursor moved the right amount for the right file — silent
+        proof that path resolution didn't return the hello inode.
+      </li>
+    </ol>
+
+    <p class="pull-quote">
+      Commit <code>c4f6101</code>. Wall-clock time: ~220 seconds.
+      Lesson 3 complete — the kernel now has a real (two-file)
+      filesystem with real path resolution.
+    </p>
+  </section>
+
+  </div>
+
+  <footer class="lesson-footer">
+    <div class="footer-block">
+      <h4>How to use this page</h4>
+      <p style="margin:0;">
+        Revisit after stepping away from the lesson. The lesson teaches the
+        design; this page reminds you what the design <em>looks like</em> as Rust
+        code. Every code block carries its filename in the caption above it.
+        If you can read the code excerpts here and explain them without
+        referring back to the lesson, the concept has truly landed.
+      </p>
+    </div>
+
+    <nav class="lesson-nav">
+      <a href="../lessons/0003-real-inodes-and-paths.html">← Lesson 3</a>
+      <a href="../reference/vfs-glossary.html">Glossary ↑</a>
+    </nav>
+  </footer>
+
+</article>
+</body>
+</html>

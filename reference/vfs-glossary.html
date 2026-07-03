@@ -1,0 +1,396 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>VFS Glossary — Quick Reference</title>
+<link rel="stylesheet" href="../assets/lesson.css">
+<style>
+  .glossary-jump {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1rem 1.25rem;
+    margin: 1.5rem 0 2.5rem;
+    font-family: var(--font-sans);
+    font-size: 0.85rem;
+  }
+  .glossary-jump .jump-label {
+    font-weight: 600;
+    color: var(--text-dim);
+    margin-right: 0.5rem;
+    text-transform: uppercase;
+    font-size: 0.72rem;
+    letter-spacing: 0.1em;
+  }
+  .glossary-jump a {
+    color: var(--accent);
+    text-decoration: none;
+    margin-right: 1rem;
+  }
+  .glossary-jump a:hover { text-decoration: underline; }
+
+  .term-group {
+    margin: 2.5rem 0;
+  }
+  .term-group h2 { margin-top: 0; }
+
+  .term {
+    margin: 1.5rem 0;
+    padding-bottom: 1.5rem;
+    border-bottom: 1px solid var(--border);
+  }
+  .term:last-child { border-bottom: none; }
+
+  .term-name {
+    font-family: var(--font-sans);
+    font-weight: 700;
+    font-size: 1.1rem;
+    color: var(--text);
+    margin-bottom: 0.4rem;
+  }
+  .term-name .aka {
+    font-weight: 400;
+    font-style: italic;
+    color: var(--text-dim);
+    font-size: 0.9rem;
+    margin-left: 0.5rem;
+  }
+  .term-def {
+    margin: 0 0 0.5rem;
+    line-height: 1.55;
+  }
+  .term-avoid {
+    font-family: var(--font-sans);
+    font-size: 0.82rem;
+    color: var(--text-faint);
+    margin: 0.5rem 0 0;
+  }
+  .term-avoid strong { color: var(--accent); font-weight: 600; }
+
+  .pending {
+    background: var(--surface-soft);
+    border-left: 3px solid var(--border-bright);
+    padding: 0.85rem 1.1rem;
+    border-radius: 0 6px 6px 0;
+    margin: 2rem 0;
+    font-family: var(--font-sans);
+    font-size: 0.88rem;
+    color: var(--text-dim);
+  }
+  .pending strong { color: var(--text); }
+
+  @media print {
+    body { font-size: 11pt; background: white; color: black; }
+    .lesson { padding: 1cm; max-width: 100%; }
+    .term { page-break-inside: avoid; }
+    a { color: black; text-decoration: none; }
+    .glossary-jump { display: none; }
+  }
+</style>
+</head>
+<body>
+<article class="lesson">
+
+  <header class="lesson-header">
+    <div class="lesson-eyebrow">Reference · Quick lookup</div>
+    <h1 class="lesson-title">VFS Glossary</h1>
+    <p class="lesson-subtitle">Vocabulary earned through Lesson 1 + Lesson 2. Updated as understanding grows.</p>
+    <div class="lesson-meta">
+      <span><strong>Source</strong> GLOSSARY.md</span>
+      <span><strong>Lessons</strong> <a href="../lessons/0001-shape-of-vfs.html">1</a>, <a href="../lessons/0002-file-descriptor-table.html">2</a></span>
+      <span><strong>Print</strong> Cmd+P (paper-optimized)</span>
+    </div>
+  </header>
+
+  <div class="content">
+
+  <nav class="glossary-jump">
+    <span class="jump-label">Jump to</span>
+    <a href="#core">Core abstractions</a>
+    <a href="#lifecycle">Lifecycle fields</a>
+    <a href="#fd-ops">FD operations</a>
+    <a href="#memory">Memory layering</a>
+    <a href="#boundary">Syscall boundary</a>
+    <a href="#pending">Pending</a>
+  </nav>
+
+  <section class="term-group" id="core">
+    <h2>Core VFS abstractions</h2>
+
+    <div class="term">
+      <div class="term-name">VFS <span class="aka">(Virtual File System)</span></div>
+      <p class="term-def">
+        The kernel layer between user syscalls (<code>open</code>, <code>read</code>,
+        <code>write</code>, <code>close</code>) and filesystem-specific code (ext4, tmpfs,
+        procfs). Dispatches each syscall to the right backend via function-pointer tables
+        on the file and inode objects.
+      </p>
+      <p class="term-avoid"><strong>Avoid</strong> "filesystem" — a VFS is the dispatch layer; a filesystem is what gets dispatched to.</p>
+    </div>
+
+    <div class="term">
+      <div class="term-name">Superblock</div>
+      <p class="term-def">
+        A mounted filesystem instance. Holds global info (block size, free space, root
+        inode pointer) and the operations table for this filesystem. One per mount.
+      </p>
+    </div>
+
+    <div class="term">
+      <div class="term-name">Inode <span class="aka">(Index Node)</span></div>
+      <p class="term-def">
+        A file's identity. Holds metadata (size, owner uid, group gid, permissions,
+        timestamps, link count, allocated block count) and a way to fetch the data. Has no
+        name; multiple dentries can point at one inode.
+      </p>
+      <p class="term-avoid"><strong>Avoid</strong> "file" — a file is what an inode represents; the inode is the metadata object.</p>
+    </div>
+
+    <div class="term">
+      <div class="term-name">Dentry <span class="aka">(Directory Entry)</span></div>
+      <p class="term-def">
+        A name → inode link. Lives in the parent directory. Forms the directory tree.
+        Multiple dentries can point at the same inode (hard links).
+      </p>
+      <p class="term-avoid"><strong>Avoid</strong> "filename" — filename is the user-visible string; dentry is the kernel object.</p>
+    </div>
+
+    <div class="term">
+      <div class="term-name">File <span class="aka">(struct file)</span></div>
+      <p class="term-def">
+        An open instance of an inode. Holds the cursor (offset), access mode
+        (read/write), and a reference to the underlying inode. Private per <code>open()</code>
+        call; shared across <code>fork()</code> and <code>dup()</code>.
+      </p>
+    </div>
+
+    <div class="term">
+      <div class="term-name">File Descriptor <span class="aka">(FD)</span></div>
+      <p class="term-def">
+        A per-process integer index into the FD table. Maps to a <code>struct file</code>.
+        Always non-negative; 0/1/2 are reserved by convention for stdin/stdout/stderr.
+      </p>
+    </div>
+  </section>
+
+  <section class="term-group" id="lifecycle">
+    <h2>Lifecycle fields</h2>
+
+    <div class="term">
+      <div class="term-name">Link Count <span class="aka">(i_nlink)</span></div>
+      <p class="term-def">
+        The number of dentries pointing at an inode. Persisted on disk. When it reaches 0,
+        the inode's data blocks can be freed (subject to the reference count also being 0).
+      </p>
+    </div>
+
+    <div class="term">
+      <div class="term-name">Reference Count <span class="aka">(i_count)</span></div>
+      <p class="term-def">
+        The number of open <code>struct file</code> instances pointing at an inode.
+        In-memory only (not persisted). When it reaches 0, the kernel can drop the
+        in-memory inode (subject to the link count also being 0 for freeing data blocks).
+      </p>
+    </div>
+
+    <div class="term">
+      <div class="term-name">Hard Link</div>
+      <p class="term-def">
+        A second dentry pointing at an existing inode. Created by
+        <code>ln source target</code>. Both names refer to the same data; the inode's link
+        count goes up by one. Deleting one name does not delete the data; only when the
+        last dentry is removed does the inode become a candidate for freeing.
+      </p>
+    </div>
+
+    <div class="term">
+      <div class="term-name">atime / mtime / ctime</div>
+      <p class="term-def">
+        The three timestamps in an inode. <code>atime</code> = access time (updated on
+        read). <code>mtime</code> = modify time (updated on write to the data).
+        <code>ctime</code> = change time (updated on any inode metadata change — chmod,
+        chown, rename).
+      </p>
+    </div>
+  </section>
+
+  <section class="term-group" id="fd-ops">
+    <h2>FD-table operations</h2>
+
+    <div class="term">
+      <div class="term-name">dup</div>
+      <p class="term-def">
+        Duplicate an FD. Returns a new FD number pointing at the same
+        <code>struct file</code> as the original. Both FDs share the cursor and access
+        mode. <code>dup2(old, new)</code> lets you specify the target FD number — used by
+        shells for redirection (<code>&gt;</code>, <code>2&gt;&amp;1</code>) and pipelines
+        (<code>|</code>).
+      </p>
+      <p class="term-avoid"><strong>Avoid</strong> "copy" — the FD number is new; the underlying File is shared, not copied.</p>
+    </div>
+  </section>
+
+  <section class="term-group" id="memory">
+    <h2>Memory layering</h2>
+    <p style="font-family: var(--font-sans); font-size: 0.9rem; color: var(--text-dim);">
+      Earned during Lesson 2 sidebar on "where does file data live?" — stack, heap, and
+      frame allocator are different granularities over the same physical RAM, not separate
+      pools.
+    </p>
+
+    <div class="term">
+      <div class="term-name">Frame allocator</div>
+      <p class="term-def">
+        The lowest-level allocator — manages all of physical RAM as 4 KB frames. Returns
+        frame numbers (not pointers); caller maps the frame to a virtual address to use
+        it. mini-os's is a bitmap; Linux's analog is the buddy page allocator.
+      </p>
+    </div>
+
+    <div class="term">
+      <div class="term-name">Heap <span class="aka">(kernel heap)</span></div>
+      <p class="term-def">
+        Sub-page allocator layered on top of the frame allocator. mini-os's is
+        <code>linked_list_allocator</code> wrapped in <code>#[global_allocator]</code>,
+        managing a fixed 100 KB region (itself backed by 25 frames from the frame
+        allocator). Linux's analog is the slab allocator (<code>kmalloc</code>).
+      </p>
+      <p class="term-avoid"><strong>Avoid</strong> "the heap" as synonym for "memory" — heap is one consumer of frames, not a separate pool.</p>
+    </div>
+
+    <div class="term">
+      <div class="term-name"><code>#[global_allocator]</code></div>
+      <p class="term-def">
+        Rust attribute that registers a static as the allocator for all <code>Box</code>,
+        <code>Vec</code>, <code>String</code>, <code>Arc</code>, etc. in the crate. In
+        mini-os this is <code>ALLOCATOR: LockedHeap</code> in <code>src/allocator.rs</code>.
+        Without this attribute and an <code>init(start, size)</code> call,
+        <code>Box::new</code> panics.
+      </p>
+    </div>
+
+    <div class="term">
+      <div class="term-name">Direct map <span class="aka">(physical_memory_offset)</span></div>
+      <p class="term-def">
+        A virtual address range where every byte of physical RAM is reachable linearly:
+        <code>virt_addr = direct_map_base + phys_addr</code>. mini-os's
+        <code>PHYS_OFFSET</code> (set from <code>boot_info.physical_memory_offset</code>,
+        currently <code>0x180_0000_0000</code>) is the direct-map base. Used by
+        <code>phys_to_virt()</code> to reach physical frames (e.g., page tables) from
+        kernel code without setting up a translation.
+      </p>
+    </div>
+
+    <div class="term">
+      <div class="term-name">Page cache</div>
+      <p class="term-def">
+        In Linux, the kernel's cache of recently-accessed file pages in RAM. Indexed by
+        <code>(inode, page_offset)</code> in an <code>address_space</code> per inode. For
+        ramfs, the page cache IS the storage (no disk backup). For disk-backed filesystems,
+        the page cache is a window over the disk — pages get loaded on read miss, flushed
+        on writeback.
+      </p>
+      <p class="term-avoid"><strong>Avoid</strong> "the page cache is the heap" — different allocators. Page cache uses the buddy page allocator; heap (slab) is for small kernel objects.</p>
+    </div>
+  </section>
+
+  <section class="term-group" id="boundary">
+    <h2>Syscall / user-kernel boundary</h2>
+
+    <div class="term">
+      <div class="term-name"><code>USER_ADDR_LIMIT</code></div>
+      <p class="term-def">
+        Constant in mini-os (<code>0x0000_8000_0000_0000</code>, 2^47 — first
+        non-canonical address). Any pointer at or above this is in the kernel upper half
+        or the non-canonical hole. Used by <code>is_user_range()</code> to validate
+        syscall arguments.
+      </p>
+    </div>
+
+    <div class="term">
+      <div class="term-name"><code>is_user_range(ptr, len)</code></div>
+      <p class="term-def">
+        mini-os helper that returns <code>true</code> if <code>[ptr, ptr+len)</code> is
+        entirely within user space. Used by every syscall taking a user pointer
+        (<code>sys_read</code>, <code>sys_write</code>) to reject kernel-pointer attacks.
+        Returns <code>u64::MAX</code> (EFAULT sentinel) on failure. Does NOT catch
+        in-range-but-unmapped pointers — that requires a page-fault handler.
+      </p>
+    </div>
+  </section>
+
+  <section class="term-group" id="pending">
+    <h2>Pending — not yet promoted</h2>
+    <p style="font-family: var(--font-sans); font-size: 0.9rem; color: var(--text-dim);">
+      You have been exposed to these but have not yet demonstrated understanding. They
+      graduate into the sections above once you do.
+    </p>
+
+    <div class="pending">
+      <strong>Superblock operations table (<code>sb_ops</code>)</strong> — the function-pointer table on a superblock.
+    </div>
+    <div class="pending">
+      <strong>File operations table (<code>fops</code>)</strong> — the function-pointer table on File/Inode that VFS dispatches through.
+    </div>
+    <div class="pending">
+      <strong>Dentry cache (<code>dcache</code>)</strong> — in-memory cache of resolved paths.
+    </div>
+    <div class="pending">
+      <strong>ramfs</strong> — the simplest Linux filesystem, all in memory, no disk.
+    </div>
+    <div class="pending">
+      <strong><code>address_space</code></strong> — Linux's per-inode structure holding the page cache tree. Roughly <code>HashMap<page_offset, struct page></code> plus operations for the filesystem to populate/evict pages.
+    </div>
+    <div class="pending">
+      <strong>Buddy allocator</strong> — Linux's analog of our frame allocator; allocates 2^order pages.
+    </div>
+    <div class="pending">
+      <strong>Slab allocator</strong> — Linux's analog of our heap; sub-page allocs via object pools.
+    </div>
+    <div class="pending">
+      <strong><code>phys_to_virt()</code></strong> — mini-os helper that adds PHYS_OFFSET to a physical address.
+    </div>
+    <div class="pending">
+      <strong><code>ioctl</code></strong> — Input/Output Control syscall for device-specific operations beyond read/write.
+    </div>
+    <div class="pending">
+      <strong>TTY (TeleTYpewriter)</strong> — terminal device abstraction.
+    </div>
+    <div class="pending">
+      <strong><code>ptrace</code></strong> — process-trace primitive used by debuggers; can rewrite FDs of a running process.
+    </div>
+    <div class="pending">
+      <strong><code>TIOCSTI</code></strong> — Terminal I/O Control Simulate Terminal Input; pushes bytes into TTY input queue.
+    </div>
+  </section>
+
+  </div>
+
+  <footer class="lesson-footer">
+    <div class="footer-block">
+      <h4>How to use this page</h4>
+      <p style="margin:0;">
+        Skim before a session as a warm-up. Print it (Cmd+P — styled for paper) and pin
+        it next to your monitor while implementing. When you find yourself using a term
+        in code without looking it up here, that term has truly landed.
+      </p>
+    </div>
+
+    <div class="footer-block">
+      <h4>Source</h4>
+      <p style="margin:0;">
+        The canonical source is <a href="../GLOSSARY.md">GLOSSARY.md</a>. This HTML is a
+        rendering. Edits go in the markdown; the HTML gets regenerated when terms change.
+      </p>
+    </div>
+
+    <nav class="lesson-nav">
+      <a href="../lessons/0001-shape-of-vfs.html">← Lesson 1: Shape of VFS</a>
+      <a href="../lessons/0002-file-descriptor-table.html">Lesson 2: FD Table →</a>
+    </nav>
+  </footer>
+
+</article>
+</body>
+</html>
