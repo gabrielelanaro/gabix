@@ -375,6 +375,14 @@ pub extern "C" fn _start(boot_info: &'static BootInfo) -> ! {
                 // Return to a clean state
                 queue.free_descriptor(b);
                 queue.free_descriptor(c);
+
+                println!("[test] available ring submission (7.4)");
+                let head = queue.alloc_descriptor().expect("alloc should succeed");
+                // Write a dummy descriptor (zeroes are fine — Lesson 8 fills
+                // real fields; we're only verifying the ring mechanism here).
+                queue.write_descriptor(head, 0, 0, 0, 0);
+                queue.submit_chain(head);
+                // After this, avail->idx is 1. No kick yet — step 7.5 does that.
             } else {
                 println!("[virtio] failed to probe device");
             }

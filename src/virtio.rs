@@ -682,4 +682,54 @@ impl VirtQueue {
             write_volatile(&mut (*ptr).next, next);
         }
     }
+
+    /// Publish a chain head to the available ring and advance `idx`.
+    ///
+    /// The spec requires a write memory barrier between filling in the
+    /// descriptor data and bumping `idx` — otherwise the CPU may make
+    /// the new `idx` visible to the device *before* the descriptor
+    /// fields are visible, and the device would DMA from a half-written
+    /// descriptor.
+    ///
+    /// We achieve this with `AtomicU16::fetch_add(1, Ordering::Release)`
+    /// on `avail->idx`. Release ordering inserts the barrier for us.
+    ///
+    /// Returns the old `idx` value (i.e., the slot we just wrote into).
+    pub fn submit_chain(&self, head_index: u16) -> u16 {
+        let q = self.queue_size as u64;
+
+        // Pointer to avail->idx (offset 2 from the region base).
+        // SAFETY: avail_virt is the kernel-side address of a freshly
+        // allocated frame; +2 lands on the idx field inside it.
+        let idx_atomic: *const AtomicU16 =
+            (self.avail_virt + 2) as *const AtomicU16;
+
+        // Read current idx. Relaxed is fine here — no other publication
+        // depends on this read.
+        let old_idx = unsafe { (*idx_atomic).load(Ordering::Relaxed) };
+
+        // Write the head descriptor index into ring[old_idx % N].
+        // Offset 4 (past flags + idx) + slot * 2 bytes.
+        let slot = (old_idx as u64) % q;
+        let ring_entry_virt = self.avail_virt + 4 + slot * 2;
+        unsafe {
+            write_volatile(ring_entry_virt as *mut u16, head_index);
+        }
+
+        // Advance idx with Release ordering. This is the memory barrier:
+        // all prior writes (the ring entry AND the descriptor fields the
+        // caller filled in) become globally visible before the new idx
+        // does. The device, polling idx, will see the new value only
+        // after the data is on record.
+        let _new_idx = unsafe { (*idx_atomic).fetch_add(1, Ordering::Release) };
+
+        println!(
+            "[virtio] submit_chain({}): avail->idx {} -> {}",
+            head_index,
+            old_idx,
+            old_idx.wrapping_add(1)
+        );
+
+        old_idx
+    }
 }
