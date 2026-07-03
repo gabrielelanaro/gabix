@@ -28,7 +28,7 @@ kernel has a Linux counterpart we can read alongside.
 - [x] PCI bus enumeration from the kernel — list every device, read vendor/device IDs — Lesson 5
 - [x] Find the virtio-blk device on the PCI bus (vendor `0x1AF4`) — Lesson 5
 - [x] virtio PCI modern initialization — probe, negotiate features, enable — Lesson 6
-- [ ] Virtqueues set up — read/write requests submitted and completed — Lessons 7-8
+- [x] Virtqueues set up (allocation, configuration, free list, submit, kick, poll) — Lesson 7
 - [ ] Virtqueues set up — read/write requests submitted and completed — Lessons 7-8
 - [ ] First successful read of sector 0 (boot signature / known bytes) — Lesson 8 (keystone 1)
 - [ ] Block layer abstraction — `read_block(n) -> [u8; 512]` — Lesson 9
@@ -59,6 +59,7 @@ kernel has a Linux counterpart we can read alongside.
 - **Lesson 3** (real inodes and paths built): six steps across commits `3b743cc` → `c4f6101`. Filesystem has a real root directory with two files, path resolution walks the tree, USER_PROGRAM resolves paths end-to-end. See learning-records 0007.
 - **Lesson 5** (PCI bus enumeration): four steps across commits `7ec8c03` → `e05b0de`. Kernel walks bus 0, lists every device, identifies virtio-blk specifically, decodes its BAR layout. See learning-records 0008.
 - **Lesson 6** (virtio device initialization): four steps across commits `fc21746` → `d5f03d3`. Kernel parses the PCI capability list, maps the MMIO regions, walks through the full virtio handshake (reset → ACKNOWLEDGE → DRIVER → feature negotiation → FEATURES_OK → DRIVER_OK). Device is now live. See learning-records 0009.
+- **Lesson 7** (virtqueues): five steps across commits `49a9f79` → `a5ec3f7`. Kernel allocates the three regions (descriptor table, available ring, used ring) as page-aligned frames, configures the queue in common config, builds a descriptor free list, implements `submit_chain` with Release ordering, and adds `kick` + `poll_completion` (with Acquire). Queue is active; mechanics verified end-to-end. See learning-records 0010.
 
 ## Constraints
 - Rust on bare-metal x86-64 (`#![no_std]`)
