@@ -344,6 +344,9 @@ pub extern "C" fn _start(boot_info: &'static BootInfo) -> ! {
 
                 println!("[test] virtio handshake phase 3 — DRIVER_OK (6.4)");
                 virtio_dev.set_driver_ok();
+
+                println!("[test] virtqueue allocation (7.1)");
+                let _queue = virtio::VirtQueue::new(64);
             } else {
                 println!("[virtio] failed to probe device");
             }

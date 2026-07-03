@@ -16,6 +16,7 @@
 use crate::println;
 use crate::pci;
 use core::ptr::{read_volatile, write_volatile};
+use core::sync::atomic::{AtomicU16, Ordering};
 
 /// Offset of the capabilities pointer in PCI config space.
 const CAPABILITIES_POINTER_OFFSET: u8 = 0x34;
@@ -40,6 +41,14 @@ const COMMON_DRIVER_FEATURE: u8 = 0x0C;
 const COMMON_NUM_QUEUES: u8 = 0x12;
 const COMMON_DEVICE_STATUS: u8 = 0x14;
 const COMMON_CONFIG_GENERATION: u8 = 0x15;
+const COMMON_QUEUE_SELECT: u8 = 0x16;
+const COMMON_QUEUE_SIZE: u8 = 0x18;
+const COMMON_QUEUE_MSIX_VECTOR: u8 = 0x1A;
+const COMMON_QUEUE_ENABLE: u8 = 0x1C;
+const COMMON_QUEUE_NOTIFY_OFF: u8 = 0x1E;
+const COMMON_QUEUE_DESC: u8 = 0x20;
+const COMMON_QUEUE_AVAIL: u8 = 0x28;
+const COMMON_QUEUE_USED: u8 = 0x30;
 
 // ============================================================
 // Device status byte bits (the handshake)
@@ -391,5 +400,133 @@ impl VirtioBlk {
             "DRIVER_OK didn't stick — device rejected operational state"
         );
         println!("[virtio] device is live — ready for virtqueue setup");
+    }
+}
+
+// ============================================================
+// VirtQueue — the shared-memory ring buffer (Lesson 7)
+// ============================================================
+
+/// Bytes occupied by one descriptor entry: addr(8) + len(4) + flags(2) + next(2).
+const VIRTQ_DESC_SIZE: usize = 16;
+
+/// A split virtqueue: three regions in guest memory that the kernel and
+/// the device use to exchange requests.
+///
+/// Each region is allocated as a single 4 KiB frame from the frame allocator.
+/// That gives us page alignment and physical contiguity for free, both of
+/// which the device requires. The frame is reachable from kernel code via
+/// the bootloader's direct map (`phys_offset() + phys`).
+///
+/// For `queue_size <= 64`, each region fits in one frame:
+///   - descriptor table: 64 × 16 = 1024 B
+///   - available ring:    2 + 2 + (64 × 2) + 2 = 132 B
+///   - used ring:         2 + 2 + (64 × 8) + 2 = 518 B
+pub struct VirtQueue {
+    queue_size: u16,
+
+    // Frame numbers from the frame allocator. Kept so we can free them
+    // when VirtQueue is dropped (cleanup not implemented yet — kernel
+    // lives forever, queues live as long as the kernel does).
+    desc_frame: u64,
+    avail_frame: u64,
+    used_frame: u64,
+
+    // Virtual addresses — kernel-side access via the direct map.
+    desc_virt: u64,
+    avail_virt: u64,
+    used_virt: u64,
+
+    // Physical addresses — what we write into common config so the
+    // device knows where to DMA.
+    desc_phys: u64,
+    avail_phys: u64,
+    used_phys: u64,
+}
+
+impl VirtQueue {
+    /// Allocate the three regions for a queue of `queue_size` entries.
+    /// Each region gets its own 4 KiB frame, zeroed so the device starts
+    /// from a clean state.
+    pub fn new(queue_size: u16) -> Self {
+        let q = queue_size as usize;
+        let desc_bytes = q * VIRTQ_DESC_SIZE;
+        let avail_bytes = 6 + q * 2;  // flags + idx + ring + used_event
+        let used_bytes = 6 + q * 8;   // flags + idx + ring entries + avail_event
+
+        // Assert our single-frame-per-region assumption. Larger queues
+        // would need multi-frame allocations; we don't need that yet.
+        assert!(desc_bytes <= 4096, "descriptor table doesn't fit in one frame");
+        assert!(avail_bytes <= 4096, "available ring doesn't fit in one frame");
+        assert!(used_bytes <= 4096, "used ring doesn't fit in one frame");
+
+        let desc_frame = crate::frame_allocator::allocate()
+            .expect("out of frames for descriptor table");
+        let avail_frame = crate::frame_allocator::allocate()
+            .expect("out of frames for available ring");
+        let used_frame = crate::frame_allocator::allocate()
+            .expect("out of frames for used ring");
+
+        let offset = crate::memory::phys_offset();
+        let desc_phys = desc_frame * 4096;
+        let avail_phys = avail_frame * 4096;
+        let used_phys = used_frame * 4096;
+        let desc_virt = desc_phys + offset;
+        let avail_virt = avail_phys + offset;
+        let used_virt = used_phys + offset;
+
+        // Zero the regions. The spec assumes zeroed state — non-zero
+        // garbage in `avail->idx` or `used->idx` would desync the
+        // kernel and device from the start.
+        // SAFETY: frames are freshly allocated and reachable via the
+        // direct map. No aliases.
+        unsafe {
+            core::ptr::write_bytes(desc_virt as *mut u8, 0, 4096);
+            core::ptr::write_bytes(avail_virt as *mut u8, 0, 4096);
+            core::ptr::write_bytes(used_virt as *mut u8, 0, 4096);
+        }
+
+        println!("[virtio] virtqueue allocated (queue_size={})", queue_size);
+        println!(
+            "[virtio]   descriptor table: virt 0x{:X} phys 0x{:X} ({} bytes used / 4096)",
+            desc_virt, desc_phys, desc_bytes
+        );
+        println!(
+            "[virtio]   available ring:   virt 0x{:X} phys 0x{:X} ({} bytes used / 4096)",
+            avail_virt, avail_phys, avail_bytes
+        );
+        println!(
+            "[virtio]   used ring:        virt 0x{:X} phys 0x{:X} ({} bytes used / 4096)",
+            used_virt, used_phys, used_bytes
+        );
+
+        Self {
+            queue_size,
+            desc_frame,
+            avail_frame,
+            used_frame,
+            desc_virt,
+            avail_virt,
+            used_virt,
+            desc_phys,
+            avail_phys,
+            used_phys,
+        }
+    }
+
+    pub fn queue_size(&self) -> u16 {
+        self.queue_size
+    }
+
+    pub fn desc_phys(&self) -> u64 {
+        self.desc_phys
+    }
+
+    pub fn avail_phys(&self) -> u64 {
+        self.avail_phys
+    }
+
+    pub fn used_phys(&self) -> u64 {
+        self.used_phys
     }
 }
