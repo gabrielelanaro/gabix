@@ -591,6 +591,48 @@ struct VirtqDesc {
     next: u16,
 }
 
+// ============================================================
+// virtio-blk request format (Lesson 8)
+// ============================================================
+
+/// virtio-blk operation types — the `type` field of `VirtioBlkReq`.
+const VIRTIO_BLK_T_IN: u32 = 0;    // read
+const VIRTIO_BLK_T_OUT: u32 = 1;   // write
+const VIRTIO_BLK_T_FLUSH: u32 = 4; // flush cache
+
+/// virtio-blk status byte values — written by the device on completion.
+const VIRTIO_BLK_S_OK: u8 = 0;
+const VIRTIO_BLK_S_IOERR: u8 = 1;
+const VIRTIO_BLK_S_UNSUPP: u8 = 2;
+
+/// virtio-blk request header. Sent as the first buffer in every request.
+/// `repr(C)` so fields land at the spec-mandated offsets.
+///
+/// After this struct, the chain continues with the data buffer (for the
+/// bytes being read or written) and a one-byte status field. The device
+/// reads the header, performs the operation, fills the data buffer (for
+/// reads), and writes the status byte.
+#[repr(C)]
+#[derive(Debug)]
+pub struct VirtioBlkReq {
+    /// Operation code (VIRTIO_BLK_T_IN, _OUT, _FLUSH).
+    pub type_: u32,
+    /// Reserved by the spec; driver must zero, device ignores.
+    pub reserved: u32,
+    /// Starting sector number (sectors are always 512 B for virtio-blk).
+    pub sector: u64,
+}
+
+impl VirtioBlkReq {
+    pub fn new_read(sector: u64) -> Self {
+        Self {
+            type_: VIRTIO_BLK_T_IN,
+            reserved: 0,
+            sector,
+        }
+    }
+}
+
 /// A split virtqueue: three regions in guest memory that the kernel and
 /// the device use to exchange requests.
 ///

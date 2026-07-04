@@ -168,6 +168,23 @@ Worked example: virtio's `device_status` byte changes when the device
 accepts our features — without NO_CACHE, we'd read the cached "before
 FEATURES_OK" value and the handshake would never see acceptance.
 
+**IOMMU (Input/Output Memory Management Unit)**:
+The device-side analog of the CPU's MMU (Memory Management Unit).
+Where the CPU's MMU translates virtual addresses to physical for code
+running on the CPU, the IOMMU translates addresses for devices doing
+DMA (Direct Memory Access). Without one, a device's DMA reaches
+physical RAM directly at whatever address the driver gave it — the
+device can touch anything. With one, every DMA address passes through
+a translation table (analogous to a page table) that the kernel
+pre-programs with the device's allowed pages; anything outside the
+allow-list is rejected. The classic use case is PCI passthrough:
+handing a real PCI device to a virtual machine would be a security
+hole without an IOMMU, because the VM could DMA into host memory and
+read other VMs. mini-os has no IOMMU (QEMU's virtio devices are
+trusted); real Linux on real hardware always has one. Drivers
+typically use a DMA API (`dma_map` / `dma_unmap`) that abstracts
+whether an IOMMU is present.
+
 ## Syscall / user-kernel boundary
 
 **`USER_ADDR_LIMIT`**:

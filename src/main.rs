@@ -399,6 +399,16 @@ pub extern "C" fn _start(boot_info: &'static BootInfo) -> ! {
                     println!("[virtio]   no completion observed (expected — descriptor has bogus data)");
                     println!("[virtio]   Lesson 8 sends a real virtio-blk request that completes");
                 }
+
+                println!("[test] virtio-blk request header struct (8.1)");
+                {
+                    use core::mem::{size_of, align_of};
+                    let sz = size_of::<virtio::VirtioBlkReq>();
+                    let al = align_of::<virtio::VirtioBlkReq>();
+                    println!("[virtio]   size = {} bytes (expect 16)", sz);
+                    println!("[virtio]   align = {} bytes", al);
+                    assert_eq!(sz, 16, "VirtioBlkReq must be 16 bytes per the spec");
+                }
             } else {
                 println!("[virtio] failed to probe device");
             }
