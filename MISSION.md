@@ -38,7 +38,7 @@ kernel has a Linux counterpart we can read alongside.
 - [x] Block group descriptor table walked — Lesson 12
 - [x] Inode lookup by number (root inode = 2 by ext2 convention) — Lesson 12
 - [x] ext2 directory entries parsed — different byte format from our VFS dirents — Lesson 13
-- [ ] ext2 mounted as the root filesystem, replacing `ROOT_INODE` lazy_static
+- [x] ext2 mounted as the root filesystem, replacing `ROOT_INODE` lazy_static — Lesson 14
 
 ### ELF execution
 - [ ] ELF header parser (magic, class, endianness, program headers)
