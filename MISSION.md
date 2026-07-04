@@ -41,7 +41,7 @@ kernel has a Linux counterpart we can read alongside.
 - [x] ext2 mounted as the root filesystem, replacing `ROOT_INODE` lazy_static — Lesson 14
 
 ### ELF execution
-- [ ] ELF header parser (magic, class, endianness, program headers)
+- [x] ELF header parser (magic, class, endianness, program headers) — Lesson 15
 - [ ] PT_LOAD segments mapped into a fresh `AddressSpace`
 - [ ] `exec(path)` syscall — load ELF from filesystem, replace current process image
 - [ ] A user program compiled externally, written to the disk image, loaded and executed by the kernel
@@ -65,6 +65,7 @@ kernel has a Linux counterpart we can read alongside.
 - **Lesson 10** (ext2 superblock parser): four commits `f7cc83e` (mkfs.ext2 the disk) → `34a7e78` (verify magic + fields). New `src/ext2.rs` module with `Superblock` struct + parser using `from_le_bytes`. Reads sectors 2 and 3, concatenates 1024 bytes, parses. Magic = 0xEF53, block_size = 1024, 128 inodes, 1024 blocks. Filesystem phase begins. See learning-records 0013.
 - **Lesson 12** (ext2 inode lookup): two commits `ba06f20` (superblock extras) → `571ebba` (BGD + Inode + read_inode). Extended Superblock with `inodes_per_group` and `inode_size`. Added `BlockGroupDescriptor` (32 bytes), `Inode` (128 bytes parsed), `read_block_group_descriptor`, `read_inode`. Verified inode 2 is the root directory at block 40 with mode 0x41ED. See learning-records 0014.
 - **Lesson 13** (ext2 directory walk): single commit `2fdc4cc` (Dirent + read_block + walk_directory + lookup_in_dir). Variable-length dirent parser, linked-list traversal via rec_len. Root directory contents: `.`, `..`, `lost+found` all verified. `lookup_in_dir` finds lost+found → inode 11, returns None for missing names. See learning-records 0015.
+- **Lesson 15** (ELF header parser): four commits `fb36235` → `f480577`. New `src/elf.rs` module with `ElfHeader` (64-byte parse) + `ProgramHeader` (56-byte parse) + constants for ET_EXEC/EM_X86_64/PT_LOAD/PF_*. The `make-disk.sh` script cross-compiles a 4-line `x86_64-unknown-none` binary (`rustc -C relocation-model=static`) and writes it to `/hello.elf`. Kernel reads /hello.elf via VFS, parses header + walks PHT, confirms entry 0x201190 inside an r-x LOAD segment. See learning-records 0016.
 
 ## Constraints
 - Rust on bare-metal x86-64 (`#![no_std]`)

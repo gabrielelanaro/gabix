@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Tour — Lesson 15 · ELF Header Parser</title>
+<link rel="stylesheet" href="../assets/lesson.css">
+<link rel="stylesheet" href="../assets/byte-layout.css">
+<link rel="stylesheet" href="../assets/explorable.css">
+<style>
+  .tour-step { margin: 3rem 0; padding-top: 1rem; border-top: 1px solid var(--border); }
+  .tour-step:first-of-type { border-top: none; padding-top: 0; }
+  .tour-step-num {
+    display: inline-block; font-family: var(--font-mono); font-size: 0.78rem;
+    font-weight: 600; color: var(--accent); background: var(--accent-soft);
+    padding: 2px 8px; border-radius: 3px; margin-right: 0.6rem;
+  }
+  .tour-step-title {
+    font-family: var(--font-sans); font-weight: 700; font-size: 1.3rem;
+    color: var(--text); margin: 0 0 0.4rem; display: inline;
+  }
+  .tour-step-h2 { margin: 0 0 1rem; }
+  .tour-files { font-family: var(--font-mono); font-size: 0.82rem; color: var(--text-dim); margin: 0.5rem 0 1.5rem; }
+  .tour-files strong { color: var(--text); font-weight: 600; }
+  .snippet-meta { font-family: var(--font-mono); font-size: 0.72rem; color: var(--text-dim); margin: 1.5rem 0 0.35rem; display: flex; align-items: baseline; gap: 0.6rem; }
+  .snippet-meta .snippet-file { color: var(--accent); font-weight: 600; background: var(--accent-soft); padding: 1px 6px; border-radius: 3px; }
+  .snippet-meta .snippet-what { color: var(--text-faint); font-style: italic; }
+  .snippet-meta + pre, .snippet-meta + pre.tour-output { margin-top: 0; }
+  pre.tour-output { background: #111827; color: #e5e7eb; border-left: 3px solid var(--accent); padding: 1rem 1.25rem; border-radius: 0 6px 6px 0; font-size: 0.8rem; line-height: 1.55; margin: 1rem 0; overflow-x: auto; }
+  pre.tour-output .ann { color: #9ca3af; font-style: italic; }
+  pre.tour-output .ok { color: #86efac; }
+  pre.tour-output .keystone { color: #fbbf24; font-weight: bold; }
+  .pull-quote { border-left: 3px solid var(--accent); padding: 0.4rem 0 0.4rem 1rem; margin: 1.5rem 0; font-style: italic; color: var(--text-dim); }
+</style>
+</head>
+<body>
+<article class="lesson">
+  <header class="lesson-header">
+    <div class="lesson-eyebrow">Tour · Lesson 15 · Companion to <a href="../lessons/0015-elf-header.html" style="color:inherit;">the lesson</a></div>
+    <h1 class="lesson-title">Code Tour — ELF Header Parser</h1>
+    <p class="lesson-subtitle">The bridge from "file of bytes" to "loadable program." A new <code>src/elf.rs</code> module parses the 64-byte ELF header and 56-byte program headers, validates them, and confirms the entry point sits inside an executable segment.</p>
+    <div class="lesson-meta">
+      <span><strong>Steps done</strong> 15.1 – 15.4 (complete)</span>
+      <span><strong>Commits</strong> <code>fb36235</code> → <code>f480577</code></span>
+    </div>
+  </header>
+  <div class="content">
+  <p class="lead">
+    Lesson 15 is the second-to-last step of the mission. Lessons 1–14
+    built the path from "block on disk" to "file in VFS." Lesson 15
+    turns that file into a structured description the kernel can
+    actually execute — and Lesson 16 maps its segments and jumps to
+    entry, completing <code>exec()</code>.
+  </p>
+  <div class="pull-quote">
+    The conceptual unlock: code can't be relocated because addresses
+    are baked into the instruction bytes themselves. ELF exists to
+    carry the map saying "these bytes go to this virtual address, with
+    these permissions." Once that lands, the parser itself is
+    mechanical — same shape as the ext2 superblock parser.
+  </div>
+
+  <!-- ============================================================ -->
+  <div class="tour-step">
+    <h2 class="tour-step-h2"><span class="tour-step-num">15.1</span><span class="tour-step-title">Cross-compile a tiny ELF onto the disk</span></h2>
+    <div class="tour-files"><strong>File:</strong> <code>scripts/make-disk.sh</code></div>
+    <p>The disk image needed a real ELF on it. <code>rustc</code> compiles a 4-line freestanding program for the bare-metal x86-64 target, then <code>debugfs</code> writes it into the ext2 filesystem alongside <code>hello.txt</code>.</p>
+    <div class="snippet-meta"><span class="snippet-file">scripts/make-disk.sh</span><span class="snippet-what">— the 4-line Rust source compiled into /hello.elf</span></div>
+<pre><span class="k">#![no_std]</span>
+<span class="k">#![no_main]</span>
+<span class="k">#[no_mangle]</span>
+<span class="k">pub extern "C" fn</span> _start() -&gt; ! { <span class="k">loop</span> {} }
+<span class="k">#[panic_handler]</span>
+<span class="k">fn</span> panic(_: &amp;<span class="t">core::panic::PanicInfo</span>) -&gt; ! { <span class="k">loop</span> {} }</pre>
+    <p>Two <code>rustc</code> flags matter. <code>--target x86_64-unknown-none</code> produces a bare-metal ELF (no host OS ABI). <code>-C relocation-model=static</code> forces <code>ET_EXEC</code> (fixed addresses) instead of the default <code>ET_DYN</code> (position-independent). Lesson 16 won't handle dynamic relocations; <code>ET_EXEC</code> lets us skip that.</p>
+    <p>The script sanity-checks via <code>file</code> before writing, so a future toolchain regression fails loudly at <code>make-disk</code> time rather than mysteriously at boot time.</p>
+  </div>
+
+  <!-- ============================================================ -->
+  <div class="tour-step">
+    <h2 class="tour-step-h2"><span class="tour-step-num">15.2</span><span class="tour-step-title">ElfHeader struct + 64-byte parser</span></h2>
+    <div class="tour-files"><strong>File:</strong> <code>src/elf.rs</code> (new, 165 lines)</div>
+    <p>A new kernel module. Constants for every value we validate against, then a struct modeling every load-bearing field of <code>Elf64_Ehdr</code> at its spec-mandated offset.</p>
+    <div class="snippet-meta"><span class="snippet-file">src/elf.rs</span><span class="snippet-what">— the constants and the header struct</span></div>
+<pre><span class="k">pub const</span> ELF_MAGIC: [<span class="t">u8</span>; <span class="n">4</span>] = [<span class="n">0x7F</span>, <span class="n">0x45</span>, <span class="n">0x4C</span>, <span class="n">0x46</span>]; <span class="c">// 0x7F 'E' 'L' 'F'</span>
+<span class="k">pub const</span> ELFCLASS64:   <span class="t">u8</span>  = <span class="n">2</span>;
+<span class="k">pub const</span> ELFDATA2LSB:  <span class="t">u8</span>  = <span class="n">1</span>;
+<span class="k">pub const</span> ET_EXEC:      <span class="t">u16</span> = <span class="n">2</span>;
+<span class="k">pub const</span> ET_DYN:       <span class="t">u16</span> = <span class="n">3</span>;
+<span class="k">pub const</span> EM_X86_64:    <span class="t">u16</span> = <span class="n">0x3E</span>;
+
+<span class="k">pub struct</span> <span class="t">ElfHeader</span> {
+    <span class="k">pub</span> class: <span class="t">u8</span>,           <span class="c">// 2 = 64-bit</span>
+    <span class="k">pub</span> data:  <span class="t">u8</span>,          <span class="c">// 1 = little-endian</span>
+    <span class="k">pub</span> version: <span class="t">u8</span>,
+    <span class="k">pub</span> osabi: <span class="t">u8</span>,
+    <span class="k">pub</span> e_type: <span class="t">u16</span>,         <span class="c">// 2 = ET_EXEC</span>
+    <span class="k">pub</span> machine: <span class="t">u16</span>,        <span class="c">// 0x3E = x86-64</span>
+    <span class="k">pub</span> entry: <span class="t">u64</span>,           <span class="c">// jump target after loading</span>
+    <span class="k">pub</span> phoff: <span class="t">u64</span>,           <span class="c">// file offset of program header table</span>
+    <span class="k">pub</span> shoff: <span class="t">u64</span>,           <span class="c">// ignored — sections are a linker concern</span>
+    <span class="k">pub</span> flags: <span class="t">u32</span>,
+    <span class="k">pub</span> ehsize: <span class="t">u16</span>,
+    <span class="k">pub</span> phentsize: <span class="t">u16</span>,      <span class="c">// 56 for ELF64</span>
+    <span class="k">pub</span> phnum: <span class="t">u16</span>,
+    <span class="k">pub</span> shentsize: <span class="t">u16</span>,
+    <span class="k">pub</span> shnum: <span class="t">u16</span>,
+    <span class="k">pub</span> shstrndx: <span class="t">u16</span>,
+}</pre>
+    <p>The parser mirrors <code>Superblock::parse</code> from Lesson 10: closure-based <code>u16_at</code> / <code>u32_at</code> / <code>u64_at</code> helpers reading via <code>from_le_bytes</code>, with magic check up front and <code>Option</code>-typed failure.</p>
+    <div class="snippet-meta"><span class="snippet-file">src/elf.rs</span><span class="snippet-what">— the one-line validation helper Lesson 16 will lean on</span></div>
+<pre><span class="k">pub fn</span> is_x86_64_exec(&amp;<span class="k">self</span>) -&gt; <span class="t">bool</span> {
+    <span class="k">self</span>.class    == <span class="t">ELFCLASS64</span>
+        &amp;&amp; <span class="k">self</span>.data     == <span class="t">ELFDATA2LSB</span>
+        &amp;&amp; <span class="k">self</span>.e_type   == <span class="t">ET_EXEC</span>
+        &amp;&amp; <span class="k">self</span>.machine  == <span class="t">EM_X86_64</span>
+}</pre>
+    <p>Wired in via <code>mod elf;</code> in <code>src/main.rs</code>.</p>
+  </div>
+
+  <!-- ============================================================ -->
+  <div class="tour-step">
+    <h2 class="tour-step-h2"><span class="tour-step-num">15.3</span><span class="tour-step-title">ProgramHeader struct + 56-byte parser</span></h2>
+    <div class="tour-files"><strong>File:</strong> <code>src/elf.rs</code> (+114 lines)</div>
+    <p>Same file, second struct. Constants for the <code>p_type</code> values we recognize and the <code>p_flags</code> permission bits.</p>
+    <div class="snippet-meta"><span class="snippet-file">src/elf.rs</span><span class="snippet-what">— the PT_* / PF_* constants</span></div>
+<pre><span class="c">// p_type — only PT_LOAD causes memory mapping</span>
+<span class="k">pub const</span> PT_LOAD:      <span class="t">u32</span> = <span class="n">1</span>;
+<span class="k">pub const</span> PT_DYNAMIC:   <span class="t">u32</span> = <span class="n">2</span>;  <span class="c">// dynamic-link table (for ld.so)</span>
+<span class="k">pub const</span> PT_INTERP:    <span class="t">u32</span> = <span class="n">3</span>;  <span class="c">// path to dynamic linker</span>
+<span class="k">pub const</span> PT_NOTE:      <span class="t">u32</span> = <span class="n">4</span>;  <span class="c">// build-id, ABI hints</span>
+<span class="k">pub const</span> PT_PHDR:      <span class="t">u32</span> = <span class="n">6</span>;  <span class="c">// the PHT itself, as a segment</span>
+<span class="k">pub const</span> PT_GNU_STACK: <span class="t">u32</span> = <span class="n">0x6474E551</span>;  <span class="c">// stack-permission hint</span>
+
+<span class="c">// p_flags — permission bits</span>
+<span class="k">pub const</span> PF_R: <span class="t">u32</span> = <span class="n">0x4</span>;
+<span class="k">pub const</span> PF_W: <span class="t">u32</span> = <span class="n">0x2</span>;
+<span class="k">pub const</span> PF_X: <span class="t">u32</span> = <span class="n">0x1</span>;</pre>
+    <p>The struct models all 8 fields of <code>Elf64_Phdr</code>. Parser uses the same closure pattern as <code>ElfHeader::parse</code>.</p>
+    <div class="snippet-meta"><span class="snippet-file">src/elf.rs</span><span class="snippet-what">— three helpers for the Lesson 16 loader and for printing</span></div>
+<pre><span class="k">pub fn</span> is_load(&amp;<span class="k">self</span>) -&gt; <span class="t">bool</span> { <span class="k">self</span>.p_type == <span class="t">PT_LOAD</span> }
+
+<span class="k">pub fn</span> perms_str(&amp;<span class="k">self</span>) -&gt; &amp;<span class="k">'static str</span> {
+    <span class="k">let</span> (r, w, x) = (
+        <span class="k">self</span>.p_flags &amp; <span class="t">PF_R</span> != <span class="n">0</span>,
+        <span class="k">self</span>.p_flags &amp; <span class="t">PF_W</span> != <span class="n">0</span>,
+        <span class="k">self</span>.p_flags &amp; <span class="t">PF_X</span> != <span class="n">0</span>,
+    );
+    <span class="k">match</span> (r, w, x) {
+        (<span class="k">true</span>,  <span class="k">false</span>, <span class="k">true</span> ) =&gt; <span class="s">"r-x"</span>,
+        (<span class="k">true</span>,  <span class="k">true</span>,  <span class="k">false</span>) =&gt; <span class="s">"rw-"</span>,
+        <span class="c">// ... 6 more arms</span>
+        _ =&gt; <span class="s">"???"</span>,
+    }
+}
+
+<span class="k">pub fn</span> type_str(&amp;<span class="k">self</span>) -&gt; &amp;<span class="k">'static str</span> { <span class="c">/* LOAD / DYN / INTRP / NOTE / PHDR / GSTK / OTHER */</span> }</pre>
+  </div>
+
+  <!-- ============================================================ -->
+  <div class="tour-step">
+    <h2 class="tour-step-h2"><span class="tour-step-num">15.4</span><span class="tour-step-title">Parse /hello.elf via VFS + verify structure</span></h2>
+    <div class="tour-files"><strong>File:</strong> <code>src/main.rs</code> (+65 lines)</div>
+    <p>The test block sits after Lesson 14's mount. It uses the existing VFS path — no special ELF I/O — so the bytes flow <code>resolve_path</code> → <code>read_file</code> → ext2 → virtio-blk → disk. The ELF parser sees an opaque <code>Vec&lt;u8&gt;</code>.</p>
+    <div class="snippet-meta"><span class="snippet-file">src/main.rs</span><span class="snippet-what">— the dispatch: VFS hands bytes to the ELF parser</span></div>
+<pre><span class="k">let</span> elf_inode = fs::resolve_path(<span class="s">"/hello.elf"</span>).expect(<span class="s">"should resolve"</span>);
+<span class="k">let</span> bytes = elf_inode.data.lock();
+<span class="k">let</span> header = elf::<span class="t">ElfHeader</span>::parse(&amp;bytes).expect(<span class="s">"magic check"</span>);
+<span class="k">assert!</span>(header.is_x86_64_exec());
+
+<span class="k">for</span> i <span class="k">in</span> <span class="n">0</span>..header.phnum {
+    <span class="k">let</span> off = header.phoff <span class="k">as</span> <span class="t">usize</span> + i <span class="k">as</span> <span class="t">usize</span> * header.phentsize <span class="k">as</span> <span class="t">usize</span>;
+    <span class="k">let</span> ph = elf::<span class="t">ProgramHeader</span>::parse(&amp;bytes[off..]).expect(<span class="s">"ph parse"</span>);
+    <span class="c">// ... print + count PT_LOADs</span>
+}
+
+<span class="c">// Entry-point sanity check</span>
+<span class="k">let</span> entry_in_r_x = (<span class="n">0</span>..header.phnum).map(|i| { <span class="c">/* ... */</span> })
+    .any(|ph| ph.is_load() &amp;&amp; ph.p_flags &amp; elf::<span class="t">PF_X</span> != <span class="n">0</span>
+              &amp;&amp; header.entry &gt;= ph.p_vaddr
+              &amp;&amp; header.entry &lt;  ph.p_vaddr + ph.p_memsz);
+<span class="k">assert!</span>(entry_in_r_x, <span class="s">"entry not inside any r-x PT_LOAD"</span>);</pre>
+    <p>Two assertions deserve explanation. The directory-walk assertion bumped from 5 to 6 entries (hello.elf joined the root). The entry-point assertion checks something subtle: the address in <code>e_entry</code> must actually fall inside a mapped executable segment. If the linker produced a binary where the entry pointed at non-code, jumping there would crash. Catching it at load time beats a page-fault in user mode.</p>
+    <div class="snippet-meta"><span class="snippet-file">qemu serial output</span><span class="snippet-what">— what the kernel prints for /hello.elf</span></div>
+<pre class="tour-output"><span class="ann">[test] ELF header parser (15.1-15.4)</span>
+[elf] /hello.elf: 1344 bytes
+[elf] parsed ELF header:
+[elf]   class        = 2 (64-bit)
+[elf]   data         = 1 (little-endian)
+[elf]   osabi        = 0
+[elf]   e_type       = 2 (ET_EXEC)
+[elf]   machine      = 0x3E (x86-64)
+[elf]   entry        = 0x201190
+[elf]   phoff        = 64
+[elf]   phentsize    = 56
+[elf]   phnum        = 5
+[elf]   is_x86_64_exec = true
+[elf] program headers (5 entries):
+[elf]    [0] PHDR  off=0x000040 vaddr=0x000200040 filesz=  280 memsz=  280 r--
+[elf]   <span class="keystone">★[1] LOAD  off=0x000000 vaddr=0x000200000 filesz=  388 memsz=  388 r--</span>
+[elf]   <span class="keystone">★[2] LOAD  off=0x000190 vaddr=0x000201190 filesz=    4 memsz=    4 r-x</span>
+[elf]    [3] OTHER off=0x000158 vaddr=0x000200158 filesz=   12 memsz=   12 r--
+[elf]    [4] GSTK  off=0x000000 vaddr=0x000000000 filesz=    0 memsz=    0 rw-
+[elf] 2 loadable segment(s) — Lesson 16 will map these
+[elf] entry 0x201190 <span class="ok">✓ inside an r-x PT_LOAD segment</span>
+<span class="keystone">[elf] *** ELF header parsed — ready for exec() (Lesson 16) ***</span></pre>
+    <p>The two <code>★</code> rows are what Lesson 16 maps. <code>[1]</code> is the rodata segment — 388 bytes starting at file offset 0, landing at <code>0x200000</code> with read-only permission. Note this segment <em>includes</em> the ELF header and PHT themselves — common for static binaries, since the linker lays them out together. <code>[2]</code> is the code segment — 4 bytes (just <code>_start: jmp .</code>) at <code>0x201190</code> with read+execute permission, and that address matches <code>e_entry</code>.</p>
+  </div>
+
+  <h2>What was removed / changed</h2>
+  <ul>
+    <li>Directory-walk assertion in <code>main.rs</code> bumped from 5 to 6 entries (hello.elf joined the ext2 root).</li>
+    <li><code>scripts/make-disk.sh</code> now requires <code>rustup target add x86_64-unknown-none</code>; the script checks and errors out clearly if missing.</li>
+  </ul>
+  <p>Nothing in the existing kernel was rewritten. The Lesson 14 VFS / mount design paid off here: the ELF parser doesn't know about ext2 or virtio-blk — it consumes a <code>Vec&lt;u8&gt;</code>, which is what <code>resolve_path</code> already returned. Clean layering.</p>
+
+  <h2>Commits</h2>
+  <ul>
+    <li><code>fb36235</code> — Lesson 15 step 15.1: cross-compile hello.elf and add to disk image</li>
+    <li><code>8403ef8</code> — Lesson 15 step 15.2: ElfHeader struct + 64-byte parser</li>
+    <li><code>414704d</code> — Lesson 15 step 15.3: ProgramHeader struct + 56-byte parser</li>
+    <li><code>f480577</code> — Lesson 15 step 15.4: parse hello.elf via VFS + verify structure</li>
+  </ul>
+  </div>
+  <footer class="lesson-footer">
+    <div class="footer-block"><h4>Up next</h4><p style="margin:0;">Lesson 16 — <code>exec()</code>. For each <code>PT_LOAD</code>, allocate frames, map them at <code>p_vaddr</code> in a fresh <code>AddressSpace</code> with the segment's permissions, copy <code>p_filesz</code> bytes from the file, zero the <code>p_memsz - p_filesz</code> tail (that's <code>.bss</code>), set up a user stack, set <code>rip = e_entry</code>, and <code>iretq</code> to user mode. The mission lands.</p></div>
+    <nav class="lesson-nav">
+      <a href="../lessons/0015-elf-header.html">↑ Lesson 15</a>
+      <a href="tour-0014-mount-ext2.html">← Tour 14</a>
+    </nav>
+  </footer>
+</article>
+</body>
+</html>
