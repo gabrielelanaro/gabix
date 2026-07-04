@@ -412,7 +412,20 @@ pub extern "C" fn _start(boot_info: &'static BootInfo) -> ! {
 
                 println!("[test] allocate DMA buffers (8.2)");
                 let buffers = virtio::BlkBuffers::new();
-                let _ = buffers.header_phys; // silence dead-code warning
+
+                println!("[test] build descriptor chain (8.3)");
+                let req = virtio::VirtioBlkReq::new_read(0);
+                buffers.write_header(&req);
+                println!(
+                    "[virtio] header written: type={} (IN=read), sector={}",
+                    req.type_, req.sector
+                );
+                let head = queue.build_read_chain(
+                    buffers.header_phys,
+                    buffers.data_phys,
+                    buffers.status_phys,
+                );
+                println!("[virtio] chain head descriptor = {}", head);
             } else {
                 println!("[virtio] failed to probe device");
             }

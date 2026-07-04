@@ -940,6 +940,65 @@ impl VirtQueue {
         }
     }
 
+    /// Step 8.3: build a 3-descriptor chain for a virtio-blk read.
+    ///
+    /// Layout (matches the lesson's chain-flow diagram):
+    ///   desc[head] addr=header_phys  len=16   flags=F_NEXT          next=mid
+    ///   desc[mid]  addr=data_phys    len=512  flags=F_NEXT|F_WRITE  next=tail
+    ///   desc[tail] addr=status_phys  len=1    flags=F_WRITE         next=0
+    ///
+    /// The header has no F_WRITE (device reads it). Data and status
+    /// have F_WRITE (device writes them on completion).
+    ///
+    /// Returns the head descriptor index — pass this to `submit_chain`.
+    pub fn build_read_chain(
+        &mut self,
+        header_phys: u64,
+        data_phys: u64,
+        status_phys: u64,
+    ) -> u16 {
+        let head = self.alloc_descriptor().expect("no free descriptors");
+        let mid = self.alloc_descriptor().expect("no free descriptors");
+        let tail = self.alloc_descriptor().expect("no free descriptors");
+
+        self.write_descriptor(
+            head,
+            header_phys,
+            16,
+            VIRTQ_DESC_F_NEXT,
+            mid,
+        );
+        self.write_descriptor(
+            mid,
+            data_phys,
+            512,
+            VIRTQ_DESC_F_NEXT | VIRTQ_DESC_F_WRITE,
+            tail,
+        );
+        self.write_descriptor(
+            tail,
+            status_phys,
+            1,
+            VIRTQ_DESC_F_WRITE,
+            0,
+        );
+
+        println!(
+            "[virtio]   desc[head={}] addr=0x{:X} len=16  flags=0x{:02X} (F_NEXT)         next={}",
+            head, header_phys, VIRTQ_DESC_F_NEXT, mid
+        );
+        println!(
+            "[virtio]   desc[mid ={}] addr=0x{:X} len=512 flags=0x{:02X} (F_NEXT|F_WRITE) next={}",
+            mid, data_phys, VIRTQ_DESC_F_NEXT | VIRTQ_DESC_F_WRITE, tail
+        );
+        println!(
+            "[virtio]   desc[tail={}] addr=0x{:X} len=1   flags=0x{:02X} (F_WRITE)        next=0",
+            tail, status_phys, VIRTQ_DESC_F_WRITE
+        );
+
+        head
+    }
+
     /// Publish a chain head to the available ring and advance `idx`.
     ///
     /// The spec requires a write memory barrier between filling in the
