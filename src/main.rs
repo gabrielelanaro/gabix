@@ -363,8 +363,8 @@ pub extern "C" fn _start(boot_info: &'static BootInfo) -> ! {
                 let entries = ext2::walk_directory(&mut virtio_dev, &root_inode);
                 println!("[ext2] walk complete: {} live entries", entries.len());
 
-                // Verify we got exactly the 3 mkfs-default entries
-                assert_eq!(entries.len(), 5, "expected 5 entries (., .., lost+found, hello.txt, secret.txt)");
+                // Verify we got exactly the 6 entries mkfs + Lesson 14 + Lesson 15 created
+                assert_eq!(entries.len(), 6, "expected 6 entries (., .., lost+found, hello.txt, secret.txt, hello.elf)");
 
                 // Find by name to verify each
                 let dot = entries.iter().find(|e| e.name == b".").expect("missing .");
@@ -429,6 +429,69 @@ pub extern "C" fn _start(boot_info: &'static BootInfo) -> ! {
                 println!("[ext2] second resolve_path(\"/hello.txt\") → cache hit ✓");
 
                 println!("[ext2] *** ext2 mounted via trait — VFS is filesystem-agnostic ***");
+
+                println!("[test] ELF header parser (15.1-15.4)");
+                {
+                    let elf_inode = fs::resolve_path("/hello.elf")
+                        .expect("resolve_path(\"/hello.elf\") should succeed");
+                    assert_eq!(elf_inode.kind, fs::InodeKind::File,
+                        "hello.elf should be a regular file");
+                    let bytes = elf_inode.data.lock();
+                    println!("[elf] /hello.elf: {} bytes", bytes.len());
+
+                    let header = elf::ElfHeader::parse(&bytes)
+                        .expect("ELF header parse failed — magic mismatch or short read");
+                    header.print();
+
+                    assert!(header.is_x86_64_exec(),
+                        "not a 64-bit little-endian ET_EXEC x86-64 ELF \
+                         (class={}, data={}, e_type={}, machine=0x{:X})",
+                        header.class, header.data, header.e_type, header.machine);
+                    assert_eq!(header.phentsize, 56,
+                        "ELF64 program headers must be 56 bytes, got {}", header.phentsize);
+                    assert!(header.phnum > 0, "expected at least one program header");
+
+                    // Walk the PHT. Each entry is at e_phoff + i * e_phentsize.
+                    println!("[elf] program headers ({} entries):", header.phnum);
+                    let mut loadable = 0u16;
+                    for i in 0..header.phnum {
+                        let off = header.phoff as usize
+                            + (i as usize) * (header.phentsize as usize);
+                        let ph = elf::ProgramHeader::parse(&bytes[off..])
+                            .expect("program header parse failed — short read");
+
+                        let kind = ph.type_str();
+                        let marker = if ph.is_load() { "★" } else { " " };
+                        println!(
+                            "[elf]   {}[{}] {:<5} off=0x{:>06X} vaddr=0x{:>09X} filesz={:>5} memsz={:>5} {}",
+                            marker, i, kind, ph.p_offset, ph.p_vaddr,
+                            ph.p_filesz, ph.p_memsz, ph.perms_str()
+                        );
+                        if ph.is_load() {
+                            loadable += 1;
+                        }
+                    }
+
+                    println!("[elf] {} loadable segment(s) — Lesson 16 will map these", loadable);
+                    assert!(loadable >= 1, "expected at least one PT_LOAD segment");
+
+                    // Sanity: entry point should fall inside a loadable + executable segment.
+                    let entry_in_r_x = (0..header.phnum)
+                        .map(|i| {
+                            let off = header.phoff as usize
+                                + (i as usize) * (header.phentsize as usize);
+                            elf::ProgramHeader::parse(&bytes[off..]).unwrap()
+                        })
+                        .any(|ph| ph.is_load()
+                            && ph.p_flags & elf::PF_X != 0
+                            && header.entry >= ph.p_vaddr
+                            && header.entry < ph.p_vaddr + ph.p_memsz);
+                    assert!(entry_in_r_x,
+                        "e_entry (0x{:X}) not inside any r-x PT_LOAD segment", header.entry);
+
+                    println!("[elf] entry 0x{:X} ✓ inside an r-x PT_LOAD segment", header.entry);
+                    println!("[elf] *** ELF header parsed — ready for exec() (Lesson 16) ***");
+                }
             } else {
                 println!("[virtio] failed to probe device");
             }
