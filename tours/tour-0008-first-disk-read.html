@@ -86,6 +86,86 @@
     font-style: italic;
     color: var(--text-dim);
   }
+
+  .codebase-map {
+    background: var(--surface-soft);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 1rem 1.25rem;
+    margin: 1.5rem 0;
+    overflow-x: auto;
+  }
+  .codebase-map-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    margin-bottom: 0.6rem;
+    padding-bottom: 0.4rem;
+    border-bottom: 1px solid var(--border);
+    font-family: var(--font-sans);
+  }
+  .codebase-map-title {
+    font-weight: 600;
+    color: var(--text);
+    font-size: 0.9rem;
+  }
+  .codebase-map-meta {
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+    color: var(--text-dim);
+  }
+  .codebase-map-tree {
+    font-family: var(--font-mono);
+    font-size: 0.78rem;
+    line-height: 1.7;
+    color: var(--text);
+    white-space: pre;
+    margin: 0;
+  }
+  .codebase-map-tree .group-label {
+    color: var(--text-faint);
+    font-style: italic;
+  }
+  .codebase-map-tree .filename {
+    color: var(--text);
+    font-weight: 600;
+  }
+  .codebase-map-tree .lines {
+    color: var(--text-faint);
+  }
+  .codebase-map-tree .desc {
+    color: var(--text-dim);
+  }
+  .codebase-map-tree .chip {
+    display: inline-block;
+    padding: 0 5px;
+    border-radius: 3px;
+    font-size: 0.68rem;
+    font-weight: 700;
+    color: white;
+    margin-right: 0.4rem;
+    min-width: 36px;
+    text-align: center;
+  }
+  .codebase-map-tree .chip.new { background: #15803d; }
+  .codebase-map-tree .chip.mod { background: var(--accent); }
+  .codebase-map-tree .chip.ctx { background: transparent; color: var(--text-faint); }
+  .codebase-map-legend {
+    margin-top: 0.6rem;
+    padding-top: 0.4rem;
+    border-top: 1px solid var(--border);
+    font-family: var(--font-sans);
+    font-size: 0.75rem;
+    color: var(--text-dim);
+    display: flex;
+    gap: 1rem;
+    flex-wrap: wrap;
+  }
+  .codebase-map-legend span {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+  }
 </style>
 </head>
 <body>
@@ -120,6 +200,70 @@
     real request never got processed until we removed that bogus
     submission. Captured in step 8.4 below.
   </div>
+
+  <h2>Codebase map — what's in <code>src/</code> right now</h2>
+
+  <p>
+    Quick orientation before the per-step walkthrough. Every Rust file
+    in the kernel, grouped by area, with line counts and one-line
+    descriptions. Files marked <span class="chip mod" style="display:inline-block;padding:0 5px;border-radius:3px;font-size:0.68rem;font-weight:700;color:white;background:var(--accent);">MOD</span>
+    were changed in Lesson 8; nothing was added fresh.
+  </p>
+
+  <div class="codebase-map">
+    <div class="codebase-map-header">
+      <span class="codebase-map-title">src/ — kernel sources</span>
+      <span class="codebase-map-meta">6,277 lines total · 16 files</span>
+    </div>
+<pre class="codebase-map-tree"><span class="group-label">// --- disk path (current focus: Lessons 5-8) ---</span>
+├── <span class="chip mod">MOD</span><span class="filename">virtio.rs</span>          <span class="lines"> 1,114</span>  <span class="desc">virtio-blk driver + virtqueue (L5-L8)</span>
+├── <span class="chip mod">MOD</span><span class="filename">main.rs</span>            <span class="lines">   539</span>  <span class="desc">kernel entry; per-lesson test blocks</span>
+├──      <span class="filename">pci.rs</span>             <span class="lines">   273</span>  <span class="desc">PCI config + bus enumeration (L5)</span>
+
+<span class="group-label">// --- memory layer ---</span>
+├── <span class="chip mod">MOD</span><span class="filename">memory.rs</span>          <span class="lines">   674</span>  <span class="desc">page tables, MMIO mapping, AddressSpace</span>
+├──      <span class="filename">frame_allocator.rs</span> <span class="lines">   157</span>  <span class="desc">bitmap frame allocator</span>
+├──      <span class="filename">allocator.rs</span>       <span class="lines">    22</span>  <span class="desc">heap (linked_list_allocator wrapper)</span>
+
+<span class="group-label">// --- VFS (Lessons 1-3) ---</span>
+├──      <span class="filename">fs.rs</span>              <span class="lines">   385</span>  <span class="desc">Inode, File, FdTable, ROOT_INODE</span>
+
+<span class="group-label">// --- scheduling + user/kernel boundary ---</span>
+├──      <span class="filename">task.rs</span>            <span class="lines"> 1,045</span>  <span class="desc">scheduler, task states, fork/exit</span>
+├──      <span class="filename">syscall.rs</span>         <span class="lines"> 1,006</span>  <span class="desc">syscall dispatch (open/read/write/...)</span>
+├──      <span class="filename">user.rs</span>            <span class="lines">   376</span>  <span class="desc">user-mode entry, ring 3 transition</span>
+
+<span class="group-label">// --- hardware / low-level ---</span>
+├──      <span class="filename">interrupts.rs</span>      <span class="lines">   246</span>  <span class="desc">IDT, handlers (timer, page fault, ...)</span>
+├──      <span class="filename">vga_buffer.rs</span>      <span class="lines">   191</span>  <span class="desc">VGA text mode + print!/println! macros</span>
+├──      <span class="filename">gdt.rs</span>             <span class="lines">   111</span>  <span class="desc">GDT, TSS, segment selectors</span>
+├──      <span class="filename">serial.rs</span>          <span class="lines">    50</span>  <span class="desc">serial port output (port 0x3F8)</span>
+├──      <span class="filename">pic.rs</span>             <span class="lines">    45</span>  <span class="desc">8259 PIC remap</span>
+└──      <span class="filename">pit.rs</span>             <span class="lines">    43</span>  <span class="desc">programmable interval timer (100Hz)</span>
+</pre>
+
+    <div class="codebase-map-legend">
+      <span><span class="chip new" style="display:inline-block;padding:0 5px;border-radius:3px;font-size:0.68rem;font-weight:700;color:white;background:#15803d;min-width:36px;text-align:center;">NEW</span> added this lesson</span>
+      <span><span class="chip mod" style="display:inline-block;padding:0 5px;border-radius:3px;font-size:0.68rem;font-weight:700;color:white;background:var(--accent);min-width:36px;text-align:center;">MOD</span> modified this lesson</span>
+      <span>no chip = unchanged context</span>
+    </div>
+  </div>
+
+  <p>
+    Lesson 8 only touched <code>virtio.rs</code> (the driver — added
+    the request-header struct, <code>BlkBuffers</code>,
+    <code>build_read_chain</code>, <code>debug_state</code>) and
+    <code>main.rs</code> (the test block). Everything else stayed
+    frozen — Lesson 8 builds on top of the layers below, doesn't
+    touch them. Adjacent files to know about:
+    <code>pci.rs</code> (sibling driver dependency —
+    <code>find_virtio_blk</code>, <code>bar_base</code>,
+    <code>config_read</code>), <code>memory.rs</code>
+    (<code>phys_offset</code> + <code>map_mmio</code> — the bridge
+    between physical and virtual addresses),
+    <code>frame_allocator.rs</code> (<code>allocate</code> — gives us
+    page-aligned frames for DMA-able buffers).
+  </p>
 
   <!-- ============================================================ -->
   <!-- STEP 8.1                                                     -->
