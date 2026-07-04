@@ -1,0 +1,1762 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Lesson 15 — ELF Header Parser</title>
+<link rel="stylesheet" href="../assets/lesson.css">
+<link rel="stylesheet" href="../assets/byte-layout.css">
+<link rel="stylesheet" href="../assets/explorable.css">
+<style>
+  .layer-stack {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1.25rem 1.5rem;
+    margin: 1.5rem 0;
+    font-family: var(--font-mono);
+    font-size: 0.82rem;
+  }
+  .layer-row {
+    display: grid;
+    grid-template-columns: 1fr 2fr;
+    gap: 1rem;
+    padding: 0.4rem 0;
+    border-bottom: 1px dashed var(--border);
+  }
+  .layer-row:last-child { border-bottom: none; }
+  .layer-name { color: var(--accent); font-weight: 600; }
+  .layer-desc {
+    color: var(--text);
+    font-family: var(--font-serif);
+    font-size: 0.88rem;
+  }
+  .layer-row.current {
+    background: var(--accent-soft);
+    margin: 0 -0.5rem;
+    padding: 0.4rem 0.5rem;
+    border-radius: 3px;
+    border-bottom: none;
+  }
+  .layer-row.future {
+    opacity: 0.55;
+  }
+
+  .elf-callout {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-left: 4px solid var(--accent);
+    padding: 1rem 1.25rem;
+    border-radius: 0 6px 6px 0;
+    margin: 1.5rem 0;
+    font-family: var(--font-mono);
+    font-size: 0.85rem;
+    line-height: 1.6;
+  }
+  .elf-callout strong { color: var(--accent); }
+
+  .step {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1rem 1.25rem;
+    margin: 1.25rem 0;
+  }
+  .step-num {
+    font-family: var(--font-mono);
+    font-size: 0.78rem;
+    font-weight: 600;
+    color: var(--accent);
+    background: var(--accent-soft);
+    padding: 2px 8px;
+    border-radius: 3px;
+    margin-right: 0.5rem;
+  }
+  .step-title {
+    font-family: var(--font-sans);
+    font-weight: 600;
+    font-size: 1rem;
+    margin-bottom: 0.4rem;
+  }
+  .step-detail {
+    font-family: var(--font-serif);
+    font-size: 0.95rem;
+    color: var(--text);
+  }
+  .step-detail p:last-child { margin-bottom: 0; }
+
+  /* Wrap two byte-layouts so they read as a pair */
+  .elf-layouts .byte-layout + .byte-layout {
+    margin-top: 2.5rem;
+  }
+
+  /* ============================================================
+     ELF anatomy diagram — two columns: file vs memory
+     ============================================================ */
+  .elf-anatomy {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1.5rem;
+    margin: 1.5rem 0;
+    font-family: var(--font-mono);
+    font-size: 0.78rem;
+  }
+  .elf-anatomy-grid {
+    display: grid;
+    grid-template-columns: 1fr 60px 1fr;
+    gap: 0;
+    align-items: stretch;
+  }
+  .anatomy-col {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .anatomy-col-header {
+    font-family: var(--font-sans);
+    font-size: 0.78rem;
+    font-weight: 600;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    text-align: center;
+    padding-bottom: 0.5rem;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 0.6rem;
+  }
+  .anatomy-row {
+    padding: 0.45rem 0.7rem;
+    border-radius: 4px;
+    background: var(--surface-soft);
+    border: 1px solid var(--border);
+    line-height: 1.4;
+    color: var(--text);
+    font-size: 0.78rem;
+  }
+  .anatomy-row.offset {
+    font-family: var(--font-mono);
+    font-size: 0.7rem;
+    color: var(--text-faint);
+    background: transparent;
+    border: none;
+    padding: 0.2rem 0.7rem;
+    text-align: right;
+  }
+  .anatomy-row.header { background: #fef3c7; border-color: var(--accent); }
+  .anatomy-row.load-r { background: #dbeafe; border-color: #1e40af; }
+  .anatomy-row.load-rx { background: #dbeafe; border-color: #1e40af; }
+  .anatomy-row.nonload { background: var(--surface-soft); border-color: var(--border); opacity: 0.75; }
+  .anatomy-row.mem-r { background: #dbeafe; border-color: #1e40af; }
+  .anatomy-row.mem-rx { background: #dbeafe; border-color: #1e40af; }
+
+  .anatomy-row .row-label {
+    font-family: var(--font-sans);
+    font-weight: 600;
+    font-size: 0.74rem;
+    color: var(--text);
+    display: block;
+  }
+  .anatomy-row .row-bytes {
+    color: var(--text-dim);
+    font-size: 0.7rem;
+    display: block;
+    margin-top: 1px;
+  }
+
+  /* Middle column — arrows showing the file→memory mapping */
+  .anatomy-arrows {
+    display: flex;
+    flex-direction: column;
+    justify-content: space-around;
+    align-items: center;
+    font-family: var(--font-sans);
+    font-size: 0.7rem;
+    color: var(--text-dim);
+    padding: 1.5rem 0;
+  }
+  .arrow-cell {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--accent);
+    font-size: 1.2rem;
+    line-height: 1;
+    padding: 0.4rem 0;
+  }
+  .arrow-cell.muted { color: var(--text-faint); font-size: 0.9rem; opacity: 0.6; }
+  .arrow-label {
+    font-size: 0.65rem;
+    color: var(--text-dim);
+    font-family: var(--font-mono);
+    text-align: center;
+    margin-top: 2px;
+  }
+
+  .anatomy-legend {
+    margin-top: 1rem;
+    padding-top: 0.75rem;
+    border-top: 1px dashed var(--border);
+    display: flex;
+    gap: 1.5rem;
+    font-family: var(--font-sans);
+    font-size: 0.78rem;
+    color: var(--text-dim);
+    flex-wrap: wrap;
+  }
+  .anatomy-legend-item {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+  }
+  .legend-swatch {
+    width: 14px; height: 14px;
+    border-radius: 2px;
+    border: 1px solid var(--border);
+  }
+  .legend-swatch.s-header { background: #fef3c7; border-color: var(--accent); }
+  .legend-swatch.s-load { background: #dbeafe; border-color: #1e40af; }
+  .legend-swatch.s-nonload { background: var(--surface-soft); opacity: 0.75; }
+
+  @media (max-width: 640px) {
+    .elf-anatomy-grid {
+      grid-template-columns: 1fr;
+      gap: 1rem;
+    }
+    .anatomy-arrows {
+      flex-direction: row;
+      padding: 0.5rem 0;
+      flex-wrap: wrap;
+    }
+    .arrow-cell { padding: 0 0.5rem; transform: rotate(90deg); }
+  }
+
+  /* Demo controls + state */
+  .elf-anatomy-demo {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1.5rem;
+    margin: 1.5rem 0;
+  }
+  .demo-controls {
+    display: flex;
+    gap: 0.6rem;
+    align-items: center;
+    margin-bottom: 0.75rem;
+    flex-wrap: wrap;
+  }
+  .demo-btn {
+    font-family: var(--font-sans);
+    font-size: 0.82rem;
+    font-weight: 600;
+    background: var(--accent);
+    color: #ffffff;
+    border: none;
+    padding: 0.4rem 0.9rem;
+    border-radius: 4px;
+    cursor: pointer;
+    letter-spacing: 0.03em;
+  }
+  .demo-btn:hover { background: #92400e; }
+  .demo-btn:disabled {
+    background: var(--surface-soft);
+    color: var(--text-faint);
+    border: 1px solid var(--border);
+    cursor: not-allowed;
+    opacity: 0.6;
+  }
+  .demo-btn:disabled:hover { background: var(--surface-soft); }
+  .demo-btn.demo-reset-btn {
+    background: var(--surface);
+    color: var(--text-dim);
+    border: 1px solid var(--border);
+  }
+  .demo-btn.demo-reset-btn:hover {
+    background: var(--surface-soft);
+    color: var(--text);
+  }
+  .demo-state-label {
+    font-family: var(--font-sans);
+    font-size: 0.8rem;
+    color: var(--text-dim);
+    margin-left: 0.4rem;
+  }
+  .demo-step-num {
+    font-family: var(--font-mono);
+    color: var(--accent);
+    font-weight: 700;
+  }
+  .demo-explanation {
+    background: var(--surface-soft);
+    border-left: 3px solid var(--accent);
+    padding: 0.85rem 1rem;
+    border-radius: 0 4px 4px 0;
+    margin-bottom: 1.25rem;
+    font-family: var(--font-serif);
+    font-size: 0.92rem;
+    line-height: 1.55;
+    color: var(--text);
+    min-height: 70px;
+  }
+  .demo-explanation strong { color: var(--accent); }
+  .demo-explanation code {
+    background: var(--surface);
+    padding: 0.05em 0.35em;
+    border-radius: 2px;
+    color: var(--accent);
+  }
+
+  /* Step-highlighted regions */
+  .anatomy-row.active {
+    outline: 3px solid var(--accent);
+    outline-offset: 1px;
+    transform: scale(1.02);
+    box-shadow: 0 4px 12px rgba(180, 83, 9, 0.15);
+    z-index: 5;
+    transition: outline 0.2s, transform 0.2s, box-shadow 0.2s;
+  }
+  .arrow-cell.active {
+    color: var(--accent);
+    font-weight: 700;
+    transform: scale(1.3);
+    transition: transform 0.2s, color 0.2s;
+  }
+  .anatomy-row.done {
+    opacity: 0.55;
+  }
+
+  .summary-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 1rem;
+    margin: 1.5rem 0;
+    font-family: var(--font-sans);
+    font-size: 0.88rem;
+  }
+  .summary-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 0.85rem 1rem;
+  }
+  .summary-card h4 {
+    margin: 0 0 0.4rem;
+    font-size: 0.85rem;
+    color: var(--accent);
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+  }
+  .summary-card p { margin: 0; font-family: var(--font-serif); font-size: 0.9rem; }
+</style>
+</head>
+<body>
+<article class="lesson">
+
+  <header class="lesson-header">
+    <div class="lesson-eyebrow">Lesson 15 · ELF phase — bridge from filesystem to execution</div>
+    <h1 class="lesson-title">ELF Header Parser</h1>
+    <p class="lesson-subtitle">Read an ELF (Executable and Linkable Format) file from disk through VFS. Parse its 64-byte header and 56-byte program headers. Next lesson, map its <code>PT_LOAD</code> segments and <code>exec()</code>.</p>
+    <div class="lesson-meta">
+      <span><strong>Read time</strong> ~25 min</span>
+      <span><strong>Build time</strong> ~30–45 min</span>
+      <span><strong>Prereq</strong> <a href="0014-mount-ext2.html">Lesson 14</a></span>
+    </div>
+  </header>
+
+  <div class="content">
+
+  <p class="lead">
+    Lesson 14 ended with the kernel reading a file from disk via VFS.
+    The file's bytes came back as a <code>Vec&lt;u8&gt;</code>. Lesson 15
+    asks the next question: <em>what bytes?</em> A user program is a
+    file. To execute it, the kernel has to know how that file is laid
+    out — where the code lives, where to put it in memory, where
+    execution starts. On Linux, that layout is ELF.
+  </p>
+
+  <h2>Where we are in the storage stack</h2>
+
+  <div class="layer-stack">
+    <div class="layer-row">
+      <span class="layer-name">VFS (resolve_path, read_file)</span>
+      <span class="layer-desc">returns file bytes as Vec&lt;u8&gt;</span>
+    </div>
+    <div class="layer-row current">
+      <span class="layer-name">ELF parser ← Lesson 15</span>
+      <span class="layer-desc">turn raw bytes into header + program headers</span>
+    </div>
+    <div class="layer-row future">
+      <span class="layer-name">ELF loader ← Lesson 16</span>
+      <span class="layer-desc">map PT_LOAD segments, jump to entry point</span>
+    </div>
+    <div class="layer-row">
+      <span class="layer-name">Filesystem trait + ext2</span>
+      <span class="layer-desc">Lessons 10–14</span>
+    </div>
+    <div class="layer-row">
+      <span class="layer-name">block layer + virtio-blk</span>
+      <span class="layer-desc">Lessons 5–9</span>
+    </div>
+  </div>
+
+  <h2>What ELF is</h2>
+
+  <p>
+    ELF (Executable and Linkable Format) is a file format for
+    binaries. The kernel uses it for one specific job: knowing
+    <em>which bytes from the file go where in memory</em> when
+    running a program.
+  </p>
+
+  <p>
+    The same container holds four kinds of artifact. The
+    <code>e_type</code> field in the header says which:
+  </p>
+
+  <ul>
+    <li>
+      <strong>Relocatable object files</strong> (<code>.o</code>):
+      compiler output before linking. Contains code and data but
+      no fixed addresses — the linker stitches many of these
+      together into an executable.
+    </li>
+    <li>
+      <strong>Executables</strong>: a finished program, ready to
+      run. Has fixed virtual addresses. This is what
+      <code>exec()</code> loads.
+    </li>
+    <li>
+      <strong>Shared libraries</strong> (<code>.so</code>): code
+      that multiple processes map into their address space at
+      runtime. Same format, just consumed differently.
+    </li>
+    <li>
+      <strong>Core dumps</strong>: a snapshot of a crashed process's
+      memory, saved for debugging. Same container so the same tools
+      can introspect it.
+    </li>
+  </ul>
+
+  <p>
+    ELF's design goal: a binary should describe <em>how to load
+    itself</em>. The kernel reads the header, finds the program
+    headers (a table of <em>segments</em> — contiguous byte ranges
+    that go into memory), and for each loadable segment it copies
+    bytes from <code>p_offset</code> in the file to
+    <code>p_vaddr</code> in memory. Then it jumps to
+    <code>e_entry</code>. That's <code>exec()</code> in three
+    sentences.
+  </p>
+
+  <div class="elf-callout">
+    <strong>Segments vs sections.</strong> Two different ways to
+    slice the same file. <em>Segments</em> are for the loader —
+    "what bytes go into memory." <em>Sections</em> are for the
+    linker and debugger — finer-grained regions like
+    <code>.text</code> (code), <code>.data</code> (initialized
+    globals), <code>.rodata</code> (read-only constants),
+    <code>.bss</code> (zero-initialized globals — takes no file
+    space, just a memory-size hint). The kernel reads segments;
+    it ignores sections entirely.
+  </div>
+
+  <div class="elf-callout">
+    <strong>Linux counterpart:</strong> the kernel's ELF loader
+    lives in <code>fs/binfmt_elf.c</code>. It opens the file via
+    VFS (the same path we just built), reads the header, validates
+    the magic, walks the program headers, and maps each
+    <code>PT_LOAD</code> segment into the new process's address
+    space. Our Lesson 15 + 16 mirrors this path, just smaller.
+  </div>
+
+  <h2>Anatomy of an ELF file — a worked example</h2>
+
+  <p>
+    A concrete binary makes the abstract layout tangible. Below is
+    the structure of <code>hello.elf</code> from step 15.1: the file
+    on the left, the new process's memory on the right. The arrows
+    show which file bytes land at which memory address.
+  </p>
+
+  <div class="elf-anatomy-demo" id="elf-anatomy-demo">
+    <div class="demo-controls">
+      <button class="demo-btn demo-back-btn" type="button">← Back</button>
+      <button class="demo-btn demo-step-btn" type="button">Forward →</button>
+      <button class="demo-btn demo-reset-btn" type="button">Reset</button>
+      <span class="demo-state-label">Step <span class="demo-step-num">0</span> / 6</span>
+    </div>
+    <div class="demo-explanation">
+      Press <strong>Step</strong> to walk through how
+      <code>exec("/hello.elf")</code> turns file bytes into a running
+      process. Each step highlights what the kernel reads and where
+      it puts it.
+    </div>
+
+    <div class="elf-anatomy-grid">
+      <div class="anatomy-col anatomy-file">
+        <div class="anatomy-col-header">hello.elf — 1328 bytes on disk</div>
+        <div class="anatomy-row offset" data-region="file-header-offset">offset 0</div>
+        <div class="anatomy-row header" data-region="file-header">
+          <span class="row-label">ELF header (Elf64_Ehdr)</span>
+          <span class="row-bytes">64 bytes · magic + entry + phoff + phnum</span>
+        </div>
+        <div class="anatomy-row offset">offset 64</div>
+        <div class="anatomy-row nonload" data-region="file-phdr">
+          <span class="row-label">PHT[0] PT_PHDR</span>
+          <span class="row-bytes">56 bytes · "the PHT itself"</span>
+        </div>
+        <div class="anatomy-row nonload" data-region="file-load1-header">
+          <span class="row-label">PHT[1] PT_LOAD (rodata)</span>
+          <span class="row-bytes">56 bytes · p_offset=0, p_vaddr=0x200000, p_filesz=388</span>
+        </div>
+        <div class="anatomy-row nonload" data-region="file-load2-header">
+          <span class="row-label">PHT[2] PT_LOAD (code)</span>
+          <span class="row-bytes">56 bytes · p_offset=0x190, p_vaddr=0x201190, p_filesz=4</span>
+        </div>
+        <div class="anatomy-row offset">offset 344</div>
+        <div class="anatomy-row load-r" data-region="file-load1-data">
+          <span class="row-label">rodata bytes (file 0–387)</span>
+          <span class="row-bytes">388 bytes · includes the ELF header itself</span>
+        </div>
+        <div class="anatomy-row offset">offset 0x190 (400)</div>
+        <div class="anatomy-row load-rx" data-region="file-load2-data">
+          <span class="row-label">code bytes (file 400–403)</span>
+          <span class="row-bytes">4 bytes · <code>_start: jmp .</code></span>
+        </div>
+        <div class="anatomy-row offset">… rest is notes + section headers</div>
+      </div>
+
+      <div class="anatomy-arrows">
+        <div class="arrow-cell muted" data-arrow="arrow-1">—</div>
+        <div class="arrow-cell" data-arrow="arrow-2">↘</div>
+        <div class="arrow-cell" data-arrow="arrow-3">↘</div>
+        <div class="arrow-cell muted" data-arrow="arrow-4">—</div>
+      </div>
+
+      <div class="anatomy-col anatomy-mem">
+        <div class="anatomy-col-header">new process virtual memory</div>
+        <div class="anatomy-row offset">vaddr 0x000000 (unmapped)</div>
+        <div class="anatomy-row offset" style="opacity:0.4;">⋮</div>
+        <div class="anatomy-row offset">vaddr 0x200000</div>
+        <div class="anatomy-row mem-r" data-region="mem-load1">
+          <span class="row-label">rodata segment (388 B)</span>
+          <span class="row-bytes">r-- · mapped from file[0..388]</span>
+        </div>
+        <div class="anatomy-row offset">vaddr 0x200184</div>
+        <div class="anatomy-row offset" style="opacity:0.4;">⋮ gap — not mapped</div>
+        <div class="anatomy-row offset">vaddr 0x201190</div>
+        <div class="anatomy-row mem-rx" data-region="mem-load2">
+          <span class="row-label">code segment (4 B)</span>
+          <span class="row-bytes">r-x · entry point (rip → 0x201190)</span>
+        </div>
+        <div class="anatomy-row offset">vaddr 0x201194</div>
+        <div class="anatomy-row offset" style="opacity:0.4;">⋮</div>
+      </div>
+    </div>
+
+    <div class="anatomy-legend">
+      <div class="anatomy-legend-item">
+        <span class="legend-swatch s-header"></span>
+        <span>ELF header</span>
+      </div>
+      <div class="anatomy-legend-item">
+        <span class="legend-swatch s-load"></span>
+        <span>PT_LOAD segment (gets mapped)</span>
+      </div>
+      <div class="anatomy-legend-item">
+        <span class="legend-swatch s-nonload"></span>
+        <span>Other PHT entries (read but not mapped)</span>
+      </div>
+    </div>
+  </div>
+
+  <p>
+    The diagram shows the load-bearing pieces. Real binaries have
+    more program headers (notes, GNU property, GNU stack — Lesson 16
+    ignores those). The kernel's <code>exec()</code> reads the
+    header, walks the PHT (Program Header Table), and for each
+    <code>PT_LOAD</code> entry: allocates frames, copies
+    <code>p_filesz</code> bytes from <code>p_offset</code> to
+    <code>p_vaddr</code>, zeros the rest if
+    <code>p_memsz &gt; p_filesz</code> (that's how
+    <code>.bss</code> works), then jumps to <code>e_entry</code>.
+  </p>
+
+  <h2>The 64-byte ELF header</h2>
+
+  <p>
+    Click any field below to see what it does. The bar is sized
+    proportional to byte count, so the layout matches what the kernel
+    sees when it reads the first 64 bytes of an ELF file.
+  </p>
+
+  <div class="elf-layouts">
+
+  <div class="byte-layout">
+    <div class="byte-layout-header">
+      <span class="byte-layout-name">ELF64 header (Elf64_Ehdr)</span>
+      <span class="byte-layout-size">64 bytes total</span>
+    </div>
+
+    <div class="explorable">
+      <div class="byte-bar">
+        <div class="byte-field type-array" style="--bytes: 4" data-reveals="elf-magic"
+             data-tip="0x7F 'E' 'L' 'F' · 4B">
+          <span class="byte-field-name">e_ident[0..4]</span>
+          <span class="byte-field-meta">magic · 4 B</span>
+          <span class="byte-field-range">0x00–0x03</span>
+        </div>
+        <div class="byte-field type-u8" style="--bytes: 1" data-reveals="elf-class"
+             data-tip="EI_CLASS · 1B · 2 = 64-bit">
+          <span class="byte-field-name">EI_CLASS</span>
+          <span class="byte-field-meta">u8 · 1 B</span>
+          <span class="byte-field-range">0x04</span>
+        </div>
+        <div class="byte-field type-u8" style="--bytes: 1" data-reveals="elf-data"
+             data-tip="EI_DATA · 1B · 1 = little-endian">
+          <span class="byte-field-name">EI_DATA</span>
+          <span class="byte-field-meta">u8 · 1 B</span>
+          <span class="byte-field-range">0x05</span>
+        </div>
+        <div class="byte-field type-u8" style="--bytes: 1" data-reveals="elf-version"
+             data-tip="EI_VERSION · 1B · always 1">
+          <span class="byte-field-name">EI_VERSION</span>
+          <span class="byte-field-meta">u8 · 1 B</span>
+          <span class="byte-field-range">0x06</span>
+        </div>
+        <div class="byte-field type-u8" style="--bytes: 1" data-reveals="elf-osabi"
+             data-tip="EI_OSABI · 1B · 0 = System V">
+          <span class="byte-field-name">EI_OSABI</span>
+          <span class="byte-field-meta">u8 · 1 B</span>
+          <span class="byte-field-range">0x07</span>
+        </div>
+        <div class="byte-field type-pad" style="--bytes: 8" data-reveals="elf-pad"
+             data-tip="padding · 8B · reserved, set to 0">
+          <span class="byte-field-name">e_ident[8..16]</span>
+          <span class="byte-field-meta">pad · 8 B</span>
+          <span class="byte-field-range">0x08–0x0F</span>
+        </div>
+        <div class="byte-field type-u16" style="--bytes: 2" data-reveals="elf-type"
+             data-tip="e_type · 2B · 2 = executable">
+          <span class="byte-field-name">e_type</span>
+          <span class="byte-field-meta">u16 · 2 B</span>
+          <span class="byte-field-range">0x10</span>
+        </div>
+        <div class="byte-field type-u16" style="--bytes: 2" data-reveals="elf-machine"
+             data-tip="e_machine · 2B · 0x3E = x86-64">
+          <span class="byte-field-name">e_machine</span>
+          <span class="byte-field-meta">u16 · 2 B</span>
+          <span class="byte-field-range">0x12</span>
+        </div>
+        <div class="byte-field type-u32" style="--bytes: 4" data-reveals="elf-eversion"
+             data-tip="e_version · 4B · always 1">
+          <span class="byte-field-name">e_version</span>
+          <span class="byte-field-meta">u32 · 4 B</span>
+          <span class="byte-field-range">0x14</span>
+        </div>
+        <div class="byte-field type-u64" style="--bytes: 8" data-reveals="elf-entry"
+             data-tip="e_entry · 8B · virtual address to jump to">
+          <span class="byte-field-name">e_entry</span>
+          <span class="byte-field-meta">u64 · 8 B</span>
+          <span class="byte-field-range">0x18</span>
+        </div>
+        <div class="byte-field type-u64" style="--bytes: 8" data-reveals="elf-phoff"
+             data-tip="e_phoff · 8B · file offset of program headers">
+          <span class="byte-field-name">e_phoff</span>
+          <span class="byte-field-meta">u64 · 8 B</span>
+          <span class="byte-field-range">0x20</span>
+        </div>
+        <div class="byte-field type-u64" style="--bytes: 8" data-reveals="elf-shoff"
+             data-tip="e_shoff · 8B · file offset of section headers">
+          <span class="byte-field-name">e_shoff</span>
+          <span class="byte-field-meta">u64 · 8 B</span>
+          <span class="byte-field-range">0x28</span>
+        </div>
+        <div class="byte-field type-u32" style="--bytes: 4" data-reveals="elf-flags"
+             data-tip="e_flags · 4B · 0 on x86-64">
+          <span class="byte-field-name">e_flags</span>
+          <span class="byte-field-meta">u32 · 4 B</span>
+          <span class="byte-field-range">0x30</span>
+        </div>
+        <div class="byte-field type-u16" style="--bytes: 2" data-reveals="elf-ehsize"
+             data-tip="e_ehsize · 2B · header size = 64">
+          <span class="byte-field-name">e_ehsize</span>
+          <span class="byte-field-meta">u16 · 2 B</span>
+          <span class="byte-field-range">0x34</span>
+        </div>
+        <div class="byte-field type-u16" style="--bytes: 2" data-reveals="elf-phentsize"
+             data-tip="e_phentsize · 2B · program header entry size = 56">
+          <span class="byte-field-name">e_phentsize</span>
+          <span class="byte-field-meta">u16 · 2 B</span>
+          <span class="byte-field-range">0x36</span>
+        </div>
+        <div class="byte-field type-u16" style="--bytes: 2" data-reveals="elf-phnum"
+             data-tip="e_phnum · 2B · how many program headers">
+          <span class="byte-field-name">e_phnum</span>
+          <span class="byte-field-meta">u16 · 2 B</span>
+          <span class="byte-field-range">0x38</span>
+        </div>
+        <div class="byte-field type-u16" style="--bytes: 2" data-reveals="elf-shentsize"
+             data-tip="e_shentsize · 2B · section header entry size">
+          <span class="byte-field-name">e_shentsize</span>
+          <span class="byte-field-meta">u16 · 2 B</span>
+          <span class="byte-field-range">0x3A</span>
+        </div>
+        <div class="byte-field type-u16" style="--bytes: 2" data-reveals="elf-shnum"
+             data-tip="e_shnum · 2B · how many section headers">
+          <span class="byte-field-name">e_shnum</span>
+          <span class="byte-field-meta">u16 · 2 B</span>
+          <span class="byte-field-range">0x3C</span>
+        </div>
+        <div class="byte-field type-u16" style="--bytes: 2" data-reveals="elf-shstrndx"
+             data-tip="e_shstrndx · 2B · section name string table index">
+          <span class="byte-field-name">e_shstrndx</span>
+          <span class="byte-field-meta">u16 · 2 B</span>
+          <span class="byte-field-range">0x3E</span>
+        </div>
+      </div>
+
+      <div class="detail-panel">
+        <div class="detail-empty">Click a field for what it does…</div>
+        <div class="detail-content"></div>
+      </div>
+
+      <template id="elf-magic">
+        <h4 class="detail-title">e_ident[0..4] — the ELF magic</h4>
+        <div class="detail-body">
+          <p>
+            The four bytes <code>0x7F 'E' 'L' 'F'</code>. Always. The
+            kernel reads these first to check whether the file is an
+            ELF at all — if the magic mismatches, <code>exec()</code>
+            returns <code>ENOEXEC</code> and the shell tries the next
+            candidate in its <code>#!</code> / format-handler list.
+          </p>
+          <p>
+            <strong>Mini-os check:</strong> compare
+            <code>bytes[0..4] == [0x7F, 'E', 'L', 'F']</code>. If
+            false, refuse to load.
+          </p>
+        </div>
+      </template>
+
+      <template id="elf-class">
+        <h4 class="detail-title">EI_CLASS — 32-bit vs 64-bit</h4>
+        <div class="detail-body">
+          <p>
+            <code>1</code> = 32-bit (ELF32), <code>2</code> = 64-bit
+            (ELF64). The whole header layout differs between the two:
+            ELF32 uses 4-byte addresses, ELF64 uses 8-byte addresses,
+            and program-header entries are 32 vs 56 bytes.
+          </p>
+          <p>
+            <strong>Mini-os choice:</strong> support ELF64 only. x86-64
+            long mode is 64-bit; refuse ELF32 with <code>ENOEXEC</code>.
+          </p>
+        </div>
+      </template>
+
+      <template id="elf-data">
+        <h4 class="detail-title">EI_DATA — endianness</h4>
+        <div class="detail-body">
+          <p>
+            <code>1</code> = little-endian (ELFDATA2LSB), <code>2</code>
+            = big-endian (ELFDATA2MSB). The kernel reads multi-byte
+            integers in this endianness throughout the file.
+          </p>
+          <p>
+            <strong>Mini-os choice:</strong> x86-64 is little-endian,
+            so we use <code>from_le_bytes</code> throughout. If the
+            data byte is <code>2</code>, refuse — that's a big-endian
+            binary from a different architecture.
+          </p>
+        </div>
+      </template>
+
+      <template id="elf-version">
+        <h4 class="detail-title">EI_VERSION — always 1</h4>
+        <div class="detail-body">
+          <p>
+            Set to <code>1</code> for every ELF file in the wild. The
+            field exists for future-proofing that never materialized.
+            We sanity-check it equals 1; mismatch would mean a
+            corrupted or experimental file.
+          </p>
+        </div>
+      </template>
+
+      <template id="elf-osabi">
+        <h4 class="detail-title">EI_OSABI — which OS this binary targets</h4>
+        <div class="detail-body">
+          <p>
+            <code>0</code> = System V ABI (the historical default;
+            Linux uses this). <code>3</code> = Linux. <code>6</code>
+            = Solaris. The distinction matters for some syscall
+            numbering and signal semantics; for our purposes, both 0
+            and 3 mean "runs on Linux."
+          </p>
+        </div>
+      </template>
+
+      <template id="elf-pad">
+        <h4 class="detail-title">e_ident[8..16] — padding</h4>
+        <div class="detail-body">
+          <p>
+            Eight bytes reserved, set to zero. The whole 16-byte
+            <code>e_ident</code> region is designed to be
+            self-describing — even if you don't know whether the file
+            is 32-bit or 64-bit, you can read these 16 bytes
+            identically. The padding leaves room for future ident
+            fields without breaking old parsers.
+          </p>
+        </div>
+      </template>
+
+      <template id="elf-type">
+        <h4 class="detail-title">e_type — what kind of ELF is this</h4>
+        <div class="detail-body">
+          <p>
+            <code>1</code> = ET_REL (relocatable, <code>.o</code>
+            file), <code>2</code> = ET_EXEC (executable), <code>3</code>
+            = ET_DYN (shared library or position-independent
+            executable), <code>4</code> = ET_CORE (core dump).
+          </p>
+          <p>
+            <strong>Mini-os choice:</strong> load ET_EXEC only.
+            Position-independent executables (ET_DYN) need a runtime
+            relocation step we haven't built.
+          </p>
+        </div>
+      </template>
+
+      <template id="elf-machine">
+        <h4 class="detail-title">e_machine — target architecture</h4>
+        <div class="detail-body">
+          <p>
+            <code>0x3</code> = x86, <code>0x3E</code> = x86-64,
+            <code>0xB7</code> = AArch64, <code>0xF3</code> = RISC-V,
+            etc. Standardized in the ELF specification.
+          </p>
+          <p>
+            <strong>Mini-os check:</strong> <code>e_machine == 0x3E</code>
+            (EM_X86_64). Otherwise refuse — we can't execute ARM code
+            on x86.
+          </p>
+        </div>
+      </template>
+
+      <template id="elf-eversion">
+        <h4 class="detail-title">e_version — again, always 1</h4>
+        <div class="detail-body">
+          <p>
+            Same value as <code>EI_VERSION</code> in the ident region,
+            duplicated here for parsers that skip the ident.
+            Always <code>1</code>.
+          </p>
+        </div>
+      </template>
+
+      <template id="elf-entry">
+        <h4 class="detail-title">e_entry — the kernel's jump target</h4>
+        <div class="detail-body">
+          <p>
+            The virtual address where execution begins. After the
+            kernel maps all <code>PT_LOAD</code> segments and zeroes
+            <code>.bss</code>, it pushes the user stack pointer to
+            <code>rsp</code>, sets <code>rip = e_entry</code>, and
+            transfers control. From the CPU's perspective, this is
+            just a far jump — the rest is the kernel getting ready for
+            it.
+          </p>
+          <p>
+            For a typical small C program, <code>e_entry</code> points
+            at <code>_start</code> in <code>libc</code> (which sets up
+            the runtime and calls <code>main</code>). For a
+            freestanding Rust binary, it points at whatever symbol
+            you've named <code>_start</code>.
+          </p>
+        </div>
+      </template>
+
+      <template id="elf-phoff">
+        <h4 class="detail-title">e_phoff — where the program header table lives</h4>
+        <div class="detail-body">
+          <p>
+            Byte offset within the file where the array of program
+            headers begins. Usually <code>0x40</code> (= 64) —
+            immediately after this 64-byte ELF header. The kernel
+            reads <code>e_phnum</code> entries of size
+            <code>e_phentsize</code> starting at this offset.
+          </p>
+        </div>
+      </template>
+
+      <template id="elf-shoff">
+        <h4 class="detail-title">e_shoff — section header table offset</h4>
+        <div class="detail-body">
+          <p>
+            Byte offset of the section header table. Sections
+            (<code>.text</code>, <code>.data</code>, <code>.rodata</code>,
+            <code>.symtab</code>, etc.) are finer-grained than
+            segments — used by linkers and debuggers, not by the
+            loader. The kernel ignores <code>e_shoff</code> entirely
+            at runtime.
+          </p>
+          <p>
+            <strong>Mini-os:</strong> we won't read section headers.
+            Stripped binaries omit them entirely
+            (<code>e_shoff = 0</code>); our parser doesn't care.
+          </p>
+        </div>
+      </template>
+
+      <template id="elf-flags">
+        <h4 class="detail-title">e_flags — architecture-specific flags</h4>
+        <div class="detail-body">
+          <p>
+            Zero on x86-64. Meaningful on architectures with
+            ABI-relevant flags (e.g., MIPS <code>EF_MIPS_NOREORDER</code>,
+            ARM <code>EF_ARM_EABI_VER5</code>). We read and ignore.
+          </p>
+        </div>
+      </template>
+
+      <template id="elf-ehsize">
+        <h4 class="detail-title">e_ehsize — ELF header size</h4>
+        <div class="detail-body">
+          <p>
+            Always <code>64</code> for ELF64. Exists so a parser can
+            sanity-check itself before reading further. The kernel
+            usually reads exactly 64 bytes for the ELF header anyway;
+            this field is a holdover from the spec.
+          </p>
+        </div>
+      </template>
+
+      <template id="elf-phentsize">
+        <h4 class="detail-title">e_phentsize — one program header's size</h4>
+        <div class="detail-body">
+          <p>
+            <code>56</code> for ELF64. The kernel reads
+            <code>e_phentsize × e_phnum</code> bytes total for the
+            program header table. If <code>e_phentsize</code> ever
+            differs from what the kernel expects (e.g., a future
+            extension defines a larger entry), the loader should
+            handle it gracefully — Linux uses
+            <code>min(e_phentsize, sizeof(Elf64_Phdr))</code> for
+            safety.
+          </p>
+        </div>
+      </template>
+
+      <template id="elf-phnum">
+        <h4 class="detail-title">e_phnum — how many program headers</h4>
+        <div class="detail-body">
+          <p>
+            The count of entries in the program header table. Each
+            entry describes one segment: a loadable region, a note,
+            a dynamic-link table, etc. A typical static executable
+            has 2–4 <code>PT_LOAD</code> segments (code, rodata, data
+            + bss) plus a few non-loadable entries.
+          </p>
+        </div>
+      </template>
+
+      <template id="elf-shentsize">
+        <h4 class="detail-title">e_shentsize — section header entry size</h4>
+        <div class="detail-body">
+          <p>
+            <code>64</code> for ELF64. Like <code>e_phentsize</code>
+            but for sections. We ignore this — sections are a linker
+            concern.
+          </p>
+        </div>
+      </template>
+
+      <template id="elf-shnum">
+        <h4 class="detail-title">e_shnum — how many section headers</h4>
+        <div class="detail-body">
+          <p>
+            Count of entries in the section header table. We don't
+            care; mentioned for completeness.
+          </p>
+        </div>
+      </template>
+
+      <template id="elf-shstrndx">
+        <h4 class="detail-title">e_shstrndx — section-name string-table index</h4>
+        <div class="detail-body">
+          <p>
+            Which section (by index) holds the strings that name the
+            other sections. A linker reads this so its dump output
+            can say <code>.text</code> instead of "section 4." We
+            ignore it.
+          </p>
+        </div>
+      </template>
+    </div>
+  </div>
+
+  <h2>The 56-byte program header</h2>
+
+  <p>
+    Each entry in the program header table describes one segment.
+    For Lesson 15, the load-bearing fields are
+    <code>p_type</code> (is this loadable?), <code>p_offset</code>
+    (where in the file), <code>p_vaddr</code> (where in memory),
+    <code>p_filesz</code> and <code>p_memsz</code> (how much to copy,
+    how much to zero).
+  </p>
+
+  <div class="byte-layout">
+    <div class="byte-layout-header">
+      <span class="byte-layout-name">ELF64 program header (Elf64_Phdr)</span>
+      <span class="byte-layout-size">56 bytes — one entry</span>
+    </div>
+
+    <div class="explorable">
+      <div class="byte-bar">
+        <div class="byte-field type-u32" style="--bytes: 4" data-reveals="ph-type"
+             data-tip="p_type · 4B · 1 = PT_LOAD">
+          <span class="byte-field-name">p_type</span>
+          <span class="byte-field-meta">u32 · 4 B</span>
+          <span class="byte-field-range">0x00</span>
+        </div>
+        <div class="byte-field type-u32" style="--bytes: 4" data-reveals="ph-flags"
+             data-tip="p_flags · 4B · R/W/X permission bits">
+          <span class="byte-field-name">p_flags</span>
+          <span class="byte-field-meta">u32 · 4 B</span>
+          <span class="byte-field-range">0x04</span>
+        </div>
+        <div class="byte-field type-u64" style="--bytes: 8" data-reveals="ph-offset"
+             data-tip="p_offset · 8B · where in the file">
+          <span class="byte-field-name">p_offset</span>
+          <span class="byte-field-meta">u64 · 8 B</span>
+          <span class="byte-field-range">0x08</span>
+        </div>
+        <div class="byte-field type-u64" style="--bytes: 8" data-reveals="ph-vaddr"
+             data-tip="p_vaddr · 8B · virtual address to map at">
+          <span class="byte-field-name">p_vaddr</span>
+          <span class="byte-field-meta">u64 · 8 B</span>
+          <span class="byte-field-range">0x10</span>
+        </div>
+        <div class="byte-field type-u64" style="--bytes: 8" data-reveals="ph-paddr"
+             data-tip="p_paddr · 8B · physical address (unused on Linux)">
+          <span class="byte-field-name">p_paddr</span>
+          <span class="byte-field-meta">u64 · 8 B</span>
+          <span class="byte-field-range">0x18</span>
+        </div>
+        <div class="byte-field type-u64" style="--bytes: 8" data-reveals="ph-filesz"
+             data-tip="p_filesz · 8B · bytes in the file">
+          <span class="byte-field-name">p_filesz</span>
+          <span class="byte-field-meta">u64 · 8 B</span>
+          <span class="byte-field-range">0x20</span>
+        </div>
+        <div class="byte-field type-u64" style="--bytes: 8" data-reveals="ph-memsz"
+             data-tip="p_memsz · 8B · bytes in memory (extra is zeroed)">
+          <span class="byte-field-name">p_memsz</span>
+          <span class="byte-field-meta">u64 · 8 B</span>
+          <span class="byte-field-range">0x28</span>
+        </div>
+        <div class="byte-field type-u64" style="--bytes: 8" data-reveals="ph-align"
+             data-tip="p_align · 8B · alignment (usually page size)">
+          <span class="byte-field-name">p_align</span>
+          <span class="byte-field-meta">u64 · 8 B</span>
+          <span class="byte-field-range">0x30</span>
+        </div>
+      </div>
+
+      <div class="detail-panel">
+        <div class="detail-empty">Click a field for what it does…</div>
+        <div class="detail-content"></div>
+      </div>
+
+      <template id="ph-type">
+        <h4 class="detail-title">p_type — segment kind (4 bytes)</h4>
+        <div class="detail-body">
+          <p>
+            The segment's purpose. The values we care about:
+          </p>
+          <p>
+            <code>1</code> = <strong>PT_LOAD</strong> ("loadable") —
+            the kernel maps this segment into the new process's
+            memory. The only type that gets mapped in Lesson 16.
+            A typical static binary has 2–4 of these: one for code,
+            one for read-only data, one for writable data.
+          </p>
+          <p>
+            Other types appear in real binaries. We skip them:
+          </p>
+          <ul>
+            <li>
+              <code>2</code> <strong>PT_DYNAMIC</strong> — points at
+              the table the dynamic linker (<code>ld.so</code>) walks
+              to resolve external symbols. Present in shared libraries
+              and dynamically-linked executables.
+            </li>
+            <li>
+              <code>3</code> <strong>PT_INTERP</strong> — the path
+              string (e.g., <code>/lib64/ld-linux-x86-64.so.2</code>)
+              of the dynamic linker to invoke at startup. The kernel
+              loads that program too, hands it the binary, and the
+              linker stitches together the runtime symbol table.
+            </li>
+            <li>
+              <code>4</code> <strong>PT_NOTE</strong> —
+              meta-information the loader doesn't need at runtime:
+              build-id (a hash identifying the exact build), ABI
+              hints, property records.
+            </li>
+            <li>
+              <code>6</code> <strong>PT_PHDR</strong> — the program
+              header table itself, as a segment. Lets a running
+              program locate its own headers without re-reading the
+              file.
+            </li>
+            <li>
+              <code>0x6474e551</code> <strong>PT_GNU_STACK</strong> —
+              a single flag: should the stack be executable? Almost
+              always "no" on modern systems. The kernel reads this to
+              decide whether to set the executable bit on stack pages.
+            </li>
+          </ul>
+        </div>
+      </template>
+
+      <template id="ph-flags">
+        <h4 class="detail-title">p_flags — permission bits</h4>
+        <div class="detail-body">
+          <p>
+            Three bits: <code>PF_X = 1</code> (execute),
+            <code>PF_W = 2</code> (write), <code>PF_R = 4</code> (read).
+            A typical code segment has <code>PF_R | PF_X = 5</code>;
+            a typical data segment has <code>PF_R | PF_W = 6</code>;
+            rodata is <code>PF_R = 4</code>.
+          </p>
+          <p>
+            These map directly to page-table bits in Lesson 16.
+            Setting the writable bit on a code page, or the executable
+            bit on a writable data page, is the classic W^X protection
+            mechanism that blocks code injection.
+          </p>
+        </div>
+      </template>
+
+      <template id="ph-offset">
+        <h4 class="detail-title">p_offset — file position of the segment bytes</h4>
+        <div class="detail-body">
+          <p>
+            The segment's bytes start at this offset in the file. The
+            kernel reads <code>p_filesz</code> bytes starting at
+            <code>p_offset</code> and copies them to
+            <code>p_vaddr</code> in the new process's address space.
+          </p>
+        </div>
+      </template>
+
+      <template id="ph-vaddr">
+        <h4 class="detail-title">p_vaddr — virtual address to map at</h4>
+        <div class="detail-body">
+          <p>
+            Where in the new process's virtual memory the segment
+            should appear. For ET_EXEC binaries (which we support),
+            this is a fixed virtual address chosen at link time —
+            often <code>0x400000</code> on Linux for the first
+            segment.
+          </p>
+          <p>
+            In Lesson 16, the kernel allocates frames, maps them at
+            <code>p_vaddr</code> in the new <code>AddressSpace</code>,
+            and copies the segment bytes in.
+          </p>
+        </div>
+      </template>
+
+      <template id="ph-paddr">
+        <h4 class="detail-title">p_paddr — physical address (mostly unused)</h4>
+        <div class="detail-body">
+          <p>
+            On some embedded systems, segments are loaded to a fixed
+            <em>physical</em> address (no MMU (Memory Management
+            Unit)). Linux ignores <code>p_paddr</code> entirely —
+            virtual addresses are what matter under paging.
+          </p>
+          <p>
+            We read and discard it.
+          </p>
+        </div>
+      </template>
+
+      <template id="ph-filesz">
+        <h4 class="detail-title">p_filesz — bytes actually in the file</h4>
+        <div class="detail-body">
+          <p>
+            How many bytes of the segment exist on disk. The kernel
+            copies <code>p_filesz</code> bytes from <code>p_offset</code>
+            to <code>p_vaddr</code>.
+          </p>
+        </div>
+      </template>
+
+      <template id="ph-memsz">
+        <h4 class="detail-title">p_memsz — bytes the segment occupies in memory</h4>
+        <div class="detail-body">
+          <p>
+            The segment's in-memory size. If
+            <code>p_memsz &gt; p_filesz</code>, the extra bytes
+            (between <code>p_vaddr + p_filesz</code> and
+            <code>p_vaddr + p_memsz</code>) are zeroed. This is how
+            uninitialized globals (<code>.bss</code>) work: the
+            on-disk file has no bytes for them, but the in-memory
+            image needs zeros, so the kernel provides them.
+          </p>
+          <p>
+            A typical data segment has
+            <code>p_filesz = a few hundred bytes</code> and
+            <code>p_memsz = filesz + bss_size</code>.
+          </p>
+        </div>
+      </template>
+
+      <template id="ph-align">
+        <h4 class="detail-title">p_align — alignment constraint</h4>
+        <div class="detail-body">
+          <p>
+            <code>p_vaddr</code> and <code>p_offset</code> must be
+            congruent modulo <code>p_align</code>. For
+            <code>PT_LOAD</code> segments, this is usually the page
+            size (4096 on x86-64) — the kernel can then map whole
+            pages instead of stitching fragments.
+          </p>
+          <p>
+            <strong>Mini-os:</strong> page-align <code>p_vaddr</code>
+            when mapping in Lesson 16. We get this for free because
+            the page allocator hands out page-aligned frames.
+          </p>
+        </div>
+      </template>
+    </div>
+  </div>
+
+  </div>
+
+  <h2>The four load-bearing facts</h2>
+
+  <div class="summary-grid">
+    <div class="summary-card">
+      <h4>Magic</h4>
+      <p>First 4 bytes must be <code>0x7F 'E' 'L' 'F'</code>. Otherwise the file isn't ELF.</p>
+    </div>
+    <div class="summary-card">
+      <h4>Class &amp; data</h4>
+      <p><code>class=2</code> (64-bit) and <code>data=1</code> (little-endian) — x86-64 binaries.</p>
+    </div>
+    <div class="summary-card">
+      <h4>Entry point</h4>
+      <p><code>e_entry</code> is the virtual address to jump to after loading.</p>
+    </div>
+    <div class="summary-card">
+      <h4>Segments</h4>
+      <p><code>e_phoff</code> + <code>e_phnum</code> + <code>e_phentsize</code> locate the program headers. Each <code>PT_LOAD</code> becomes a mapped region.</p>
+    </div>
+  </div>
+
+  <h2>Build steps — your turn</h2>
+
+  <p>
+    Four steps. 15.1 puts an ELF on disk. 15.2 parses the 64-byte
+    header. 15.3 parses the program headers. 15.4 reads the ELF
+    through VFS and validates everything end-to-end.
+  </p>
+
+  <div class="step">
+    <div class="step-title"><span class="step-num">15.1</span>Put a hello.elf on the disk image</div>
+    <div class="step-detail">
+      <p>
+        Update <code>scripts/make-disk.sh</code> to cross-compile a
+        tiny x86-64 ELF and write it to the ext2 filesystem. The
+        binary doesn't need to do anything useful — we're parsing
+        its header, not running it yet (that's Lesson 16).
+      </p>
+<pre><span class="c"># Lesson 15: cross-compile a tiny x86-64 ELF and add it to the disk.</span>
+HELLO_ELF_SRC=$(mktemp /tmp/mini-os-hello-user.XXXXXX.rs)
+<span class="k">cat</span> &gt; <span class="s">"$HELLO_ELF_SRC"</span> &lt;&lt;<span class="s">'EOF'</span>
+<span class="k">#![no_std]</span>
+<span class="k">#![no_main]</span>
+<span class="k">#[no_mangle]</span>
+<span class="k">pub extern "C" fn</span> _start() -&gt; ! { <span class="k">loop</span> {} }
+<span class="k">#[panic_handler]</span> <span class="k">fn</span> panic(_: &amp;<span class="t">core::panic::PanicInfo</span>) -&gt; ! { <span class="k">loop</span> {} }
+EOF
+
+HELLO_ELF=$(mktemp /tmp/mini-os-hello-user.XXXXXX.elf)
+
+<span class="c"># Two flags matter:</span>
+<span class="c">#   --target x86_64-unknown-none  → bare-metal ELF, no host OS ABI</span>
+<span class="c">#   -C relocation-model=static    → ET_EXEC (fixed addresses), not PIE</span>
+<span class="c"># Without -C relocation-model=static rustc emits ET_DYN, which would</span>
+<span class="c"># force us to handle dynamic relocations in Lesson 16. We skip that.</span>
+rustc --target x86_64-unknown-none --edition 2021 \
+      -C relocation-model=static \
+      -o <span class="s">"$HELLO_ELF"</span> <span class="s">"$HELLO_ELF_SRC"</span>
+
+<span class="c"># Verify it's a real ELF.</span>
+file <span class="s">"$HELLO_ELF"</span>   <span class="c"># → ELF 64-bit LSB executable, x86-64</span>
+
+<span class="c"># Write into ext2 via debugfs, same pattern as hello.txt.</span>
+printf <span class="s">'write %s /hello.elf\nquit\n'</span> <span class="s">"$HELLO_ELF"</span> \
+    | <span class="s">"$DEBUGFS"</span> -w <span class="s">"$DISK_IMG"</span>
+rm -f <span class="s">"$HELLO_ELF_SRC"</span> <span class="s">"$HELLO_ELF"</span></pre>
+      <div class="callout">
+        <div class="callout-title">Prerequisite</div>
+        <p style="margin:0;">
+          <code>x86_64-unknown-none</code> Rust target must be
+          installed: <code>rustup target add x86_64-unknown-none</code>.
+          The make-disk script should check for it and error out with
+          a clear message if missing.
+        </p>
+      </div>
+      <p>
+        Run <code>./scripts/make-disk.sh</code> to rebuild the image.
+        <code>file disk.img</code> won't help (it's a filesystem, not
+        an ELF); instead, use
+        <code>debugfs -R "ls /" disk.img</code> to confirm
+        <code>hello.elf</code> appears alongside
+        <code>hello.txt</code>.
+      </p>
+    </div>
+  </div>
+
+  <div class="step">
+    <div class="step-title"><span class="step-num">15.2</span>ElfHeader struct + parse + validate</div>
+    <div class="step-detail">
+      <p>
+        Create <code>src/elf.rs</code>. Define an <code>ElfHeader</code>
+        struct holding the load-bearing fields. Parse from
+        <code>&amp;[u8]</code> with <code>from_le_bytes</code> at fixed
+        offsets.
+      </p>
+<pre><span class="c">// src/elf.rs — Lesson 15</span>
+<span class="k">use</span> alloc::string::String;
+
+<span class="k">pub const</span> ELF_MAGIC: [<span class="t">u8</span>; <span class="n">4</span>] = [<span class="n">0x7F</span>, <span class="n">0x45</span>, <span class="n">0x4C</span>, <span class="n">0x46</span>]; <span class="c">// 0x7F 'E' 'L' 'F'</span>
+<span class="k">pub const</span> ELFCLASS64: <span class="t">u8</span> = <span class="n">2</span>;
+<span class="k">pub const</span> ELFDATA2LSB: <span class="t">u8</span> = <span class="n">1</span>; <span class="c">// little-endian</span>
+<span class="k">pub const</span> ET_EXEC:  <span class="t">u16</span> = <span class="n">2</span>;
+<span class="k">pub const</span> EM_X86_64: <span class="t">u16</span> = <span class="n">0x3E</span>;
+
+<span class="k">pub struct</span> <span class="t">ElfHeader</span> {
+    <span class="k">pub</span> class: <span class="t">u8</span>,         <span class="c">// must be ELFCLASS64</span>
+    <span class="k">pub</span> data: <span class="t">u8</span>,          <span class="c">// must be ELFDATA2LSB</span>
+    <span class="k">pub</span> osabi: <span class="t">u8</span>,
+    <span class="k">pub</span> e_type: <span class="t">u16</span>,       <span class="c">// must be ET_EXEC</span>
+    <span class="k">pub</span> machine: <span class="t">u16</span>,      <span class="c">// must be EM_X86_64</span>
+    <span class="k">pub</span> entry: <span class="t">u64</span>,         <span class="c">// e_entry — the kernel's jump target</span>
+    <span class="k">pub</span> phoff: <span class="t">u64</span>,         <span class="c">// file offset of program header table</span>
+    <span class="k">pub</span> shoff: <span class="t">u64</span>,         <span class="c">// ignored at load time</span>
+    <span class="k">pub</span> flags: <span class="t">u32</span>,
+    <span class="k">pub</span> ehsize: <span class="t">u16</span>,
+    <span class="k">pub</span> phentsize: <span class="t">u16</span>,    <span class="c">// should be 56</span>
+    <span class="k">pub</span> phnum: <span class="t">u16</span>,         <span class="c">// number of program headers</span>
+    <span class="k">pub</span> shentsize: <span class="t">u16</span>,
+    <span class="k">pub</span> shnum: <span class="t">u16</span>,
+    <span class="k">pub</span> shstrndx: <span class="t">u16</span>,
+}
+
+<span class="k">impl</span> <span class="t">ElfHeader</span> {
+    <span class="k">pub fn</span> parse(bytes: &amp;[<span class="t">u8</span>]) -&gt; <span class="t">Option</span>&lt;<span class="t">Self</span>&gt; {
+        <span class="k">if</span> bytes.len() &lt; <span class="n">64</span> { <span class="k">return</span> <span class="t">None</span>; }
+        <span class="k">if</span> &amp;bytes[<span class="n">0</span>..<span class="n">4</span>] != <span class="t">ELF_MAGIC</span> { <span class="k">return</span> <span class="t">None</span>; }
+
+        <span class="k">let</span> u16_at = |off: <span class="t">usize</span>| <span class="t">u16::from_le_bytes</span>(bytes[off..off+<span class="n">2</span>].try_into().ok()?);
+        <span class="k">let</span> u32_at = |off: <span class="t">usize</span>| <span class="t">u32::from_le_bytes</span>(bytes[off..off+<span class="n">4</span>].try_into().ok()?);
+        <span class="k">let</span> u64_at = |off: <span class="t">usize</span>| <span class="t">u64::from_le_bytes</span>(bytes[off..off+<span class="n">8</span>].try_into().ok()?);
+
+        <span class="t">Some</span>(<span class="t">Self</span> {
+            class:      bytes[<span class="n">4</span>],
+            data:       bytes[<span class="n">5</span>],
+            osabi:      bytes[<span class="n">7</span>],
+            e_type:     u16_at(<span class="n">0x10</span>),
+            machine:    u16_at(<span class="n">0x12</span>),
+            entry:      u64_at(<span class="n">0x18</span>),
+            phoff:      u64_at(<span class="n">0x20</span>),
+            shoff:      u64_at(<span class="n">0x28</span>),
+            flags:      u32_at(<span class="n">0x30</span>),
+            ehsize:     u16_at(<span class="n">0x34</span>),
+            phentsize:  u16_at(<span class="n">0x36</span>),
+            phnum:      u16_at(<span class="n">0x38</span>),
+            shentsize:  u16_at(<span class="n">0x3A</span>),
+            shnum:      u16_at(<span class="n">0x3C</span>),
+            shstrndx:   u16_at(<span class="n">0x3E</span>),
+        })
+    }
+
+    <span class="k">pub fn</span> is_x86_64_exec(&amp;<span class="k">self</span>) -&gt; <span class="t">bool</span> {
+        <span class="k">self</span>.class == <span class="t">ELFCLASS64</span>
+            &amp;&amp; <span class="k">self</span>.data == <span class="t">ELFDATA2LSB</span>
+            &amp;&amp; <span class="k">self</span>.e_type == <span class="t">ET_EXEC</span>
+            &amp;&amp; <span class="k">self</span>.machine == <span class="t">EM_X86_64</span>
+    }
+}</pre>
+      <p>
+        Don't forget to declare <code>mod elf;</code> in
+        <code>src/main.rs</code> and <code>extern crate alloc;</code>
+        at the top of <code>elf.rs</code> if you use
+        <code>String</code> / <code>Vec</code>.
+      </p>
+    </div>
+  </div>
+
+  <div class="step">
+    <div class="step-title"><span class="step-num">15.3</span>ProgramHeader struct + parse</div>
+    <div class="step-detail">
+      <p>
+        Same file <code>src/elf.rs</code>. Add the program-header
+        struct and constants for the <code>p_type</code> values we
+        recognize.
+      </p>
+<pre><span class="k">pub const</span> PT_LOAD:  <span class="t">u32</span> = <span class="n">1</span>;
+<span class="k">pub const</span> PT_DYNAMIC: <span class="t">u32</span> = <span class="n">2</span>;
+<span class="k">pub const</span> PT_INTERP:  <span class="t">u32</span> = <span class="n">3</span>;
+<span class="k">pub const</span> PT_NOTE:    <span class="t">u32</span> = <span class="n">4</span>;
+<span class="k">pub const</span> PT_PHDR:     <span class="t">u32</span> = <span class="n">6</span>;
+
+<span class="k">pub const</span> PF_X: <span class="t">u32</span> = <span class="n">0x1</span>; <span class="c">// execute</span>
+<span class="k">pub const</span> PF_W: <span class="t">u32</span> = <span class="n">0x2</span>; <span class="c">// write</span>
+<span class="k">pub const</span> PF_R: <span class="t">u32</span> = <span class="n">0x4</span>; <span class="c">// read</span>
+
+<span class="k">pub struct</span> <span class="t">ProgramHeader</span> {
+    <span class="k">pub</span> p_type:   <span class="t">u32</span>,
+    <span class="k">pub</span> p_flags:  <span class="t">u32</span>,
+    <span class="k">pub</span> p_offset: <span class="t">u64</span>,
+    <span class="k">pub</span> p_vaddr:  <span class="t">u64</span>,
+    <span class="k">pub</span> p_paddr:  <span class="t">u64</span>,  <span class="c">// ignored</span>
+    <span class="k">pub</span> p_filesz: <span class="t">u64</span>,
+    <span class="k">pub</span> p_memsz:  <span class="t">u64</span>,
+    <span class="k">pub</span> p_align:  <span class="t">u64</span>,
+}
+
+<span class="k">impl</span> <span class="t">ProgramHeader</span> {
+    <span class="k">pub fn</span> parse(bytes: &amp;[<span class="t">u8</span>]) -&gt; <span class="t">Option</span>&lt;<span class="t">Self</span>&gt; {
+        <span class="k">if</span> bytes.len() &lt; <span class="n">56</span> { <span class="k">return</span> <span class="t">None</span>; }
+        <span class="k">let</span> u32_at = |off: <span class="t">usize</span>| <span class="t">u32::from_le_bytes</span>(bytes[off..off+<span class="n">4</span>].try_into().ok()?);
+        <span class="k">let</span> u64_at = |off: <span class="t">usize</span>| <span class="t">u64::from_le_bytes</span>(bytes[off..off+<span class="n">8</span>].try_into().ok()?);
+
+        <span class="t">Some</span>(<span class="t">Self</span> {
+            p_type:   u32_at(<span class="n">0x00</span>),
+            p_flags:  u32_at(<span class="n">0x04</span>),
+            p_offset: u64_at(<span class="n">0x08</span>),
+            p_vaddr:  u64_at(<span class="n">0x10</span>),
+            p_paddr:  u64_at(<span class="n">0x18</span>),
+            p_filesz: u64_at(<span class="n">0x20</span>),
+            p_memsz:  u64_at(<span class="n">0x28</span>),
+            p_align:  u64_at(<span class="n">0x30</span>),
+        })
+    }
+
+    <span class="k">pub fn</span> is_load(&amp;<span class="k">self</span>) -&gt; <span class="t">bool</span> { <span class="k">self</span>.p_type == <span class="t">PT_LOAD</span> }
+
+    <span class="k">pub fn</span> perms_str(&amp;<span class="k">self</span>) -&gt; &amp;<span class="k">'static str</span> {
+        <span class="k">let</span> r = <span class="k">self</span>.p_flags &amp; <span class="t">PF_R</span> != <span class="n">0</span>;
+        <span class="k">let</span> w = <span class="k">self</span>.p_flags &amp; <span class="t">PF_W</span> != <span class="n">0</span>;
+        <span class="k">let</span> x = <span class="k">self</span>.p_flags &amp; <span class="t">PF_X</span> != <span class="n">0</span>;
+        <span class="k">match</span> (r, w, x) {
+            (<span class="k">false</span>, <span class="k">false</span>, <span class="k">false</span>) =&gt; <span class="s">"---"</span>,
+            (<span class="k">false</span>, <span class="k">false</span>, <span class="k">true</span> ) =&gt; <span class="s">"--x"</span>,
+            (<span class="k">false</span>, <span class="k">true</span>,  <span class="k">false</span>) =&gt; <span class="s">"-w-"</span>,
+            (<span class="k">false</span>, <span class="k">true</span>,  <span class="k">true</span> ) =&gt; <span class="s">"-wx"</span>,
+            (<span class="k">true</span>,  <span class="k">false</span>, <span class="k">false</span>) =&gt; <span class="s">"r--"</span>,
+            (<span class="k">true</span>,  <span class="k">false</span>, <span class="k">true</span> ) =&gt; <span class="s">"r-x"</span>,
+            (<span class="k">true</span>,  <span class="k">true</span>,  <span class="k">false</span>) =&gt; <span class="s">"rw-"</span>,
+            (<span class="k">true</span>,  <span class="k">true</span>,  <span class="k">true</span> ) =&gt; <span class="s">"rwx"</span>,
+        }
+    }
+}</pre>
+    </div>
+  </div>
+
+  <div class="step">
+    <div class="step-title"><span class="step-num">15.4</span>Read ELF via VFS, parse, validate, print</div>
+    <div class="step-detail">
+      <p>
+        In <code>src/main.rs</code>, after the Lesson 14 mount block,
+        add a Lesson 15 verification block. The bytes come from VFS —
+        the ELF parser doesn't know or care that they came from ext2
+        over virtio-blk.
+      </p>
+<pre><span class="k">println!</span>(<span class="s">"[test] ELF header parser (15.1-15.4)"</span>);
+{
+    <span class="k">let</span> elf_inode = fs::resolve_path(<span class="s">"/hello.elf"</span>)
+        .expect(<span class="s">"hello.elf should resolve"</span>);
+    <span class="k">let</span> bytes = elf_inode.data.lock();
+
+    <span class="k">println!</span>(<span class="s">"[elf] /hello.elf: {} bytes"</span>, bytes.len());
+
+    <span class="k">let</span> header = elf::<span class="t">ElfHeader</span>::parse(&amp;bytes)
+        .expect(<span class="s">"ELF header parse failed"</span>);
+
+    <span class="c">// Validate</span>
+    <span class="k">assert!</span>(header.is_x86_64_exec(),
+        <span class="s">"not an x86-64 ET_EXEC ELF"</span>);
+    <span class="k">assert_eq!</span>(header.phentsize, <span class="n">56</span>, <span class="s">"expected 56-byte program headers"</span>);
+
+    <span class="c">// Print</span>
+    <span class="k">println!</span>(<span class="s">"[elf]   e_type   = {} (ET_EXEC)"</span>, header.e_type);
+    <span class="k">println!</span>(<span class="s">"[elf]   machine  = 0x{:X} (x86-64)"</span>, header.machine);
+    <span class="k">println!</span>(<span class="s">"[elf]   entry    = 0x{:X}"</span>, header.entry);
+    <span class="k">println!</span>(<span class="s">"[elf]   phoff    = {}"</span>, header.phoff);
+    <span class="k">println!</span>(<span class="s">"[elf]   phnum    = {}"</span>, header.phnum);
+
+    <span class="c">// Walk program headers</span>
+    <span class="k">let mut</span> loadable = <span class="n">0</span>;
+    <span class="k">for</span> i <span class="k">in</span> <span class="n">0</span>..header.phnum {
+        <span class="k">let</span> off = header.phoff <span class="k">as</span> <span class="t">usize</span> + i <span class="k">as</span> <span class="t">usize</span> * header.phentsize <span class="k">as</span> <span class="t">usize</span>;
+        <span class="k">let</span> ph = elf::<span class="t">ProgramHeader</span>::parse(&amp;bytes[off..])
+            .expect(<span class="s">"program header parse failed"</span>);
+
+        <span class="k">let</span> kind = <span class="k">if</span> ph.is_load() { <span class="s">"LOAD"</span> } <span class="k">else</span> { <span class="s">"    "</span> };
+        <span class="k">println!</span>(
+            <span class="s">"[elf]   [{}] {} off=0x{:X} vaddr=0x{:X} filesz={} memsz={} {}"</span>,
+            i, kind, ph.p_offset, ph.p_vaddr, ph.p_filesz, ph.p_memsz, ph.perms_str()
+        );
+        <span class="k">if</span> ph.is_load() { loadable += <span class="n">1</span>; }
+    }
+
+    <span class="k">println!</span>(<span class="s">"[elf] {} loadable segments (Lesson 16 will map these)"</span>, loadable);
+    <span class="k">println!</span>(<span class="s">"[elf] *** ELF header parsed — ready for exec() ***"</span>);
+}</pre>
+    </div>
+  </div>
+
+  <h2>Verification — what success looks like</h2>
+
+<pre>[test] ELF header parser (15.1-15.4)
+[ext2] resolve_path("/hello.elf") → ino=14, 1328 bytes
+[elf] /hello.elf: 1328 bytes
+[elf]   e_type   = 2 (ET_EXEC)
+[elf]   machine  = 0x3E (x86-64)
+[elf]   entry    = 0x201190
+[elf]   phoff    = 64
+[elf]   phnum    = 5
+[elf]   [0]      off=0x040 vaddr=0x200040 filesz=280 memsz=280 r--   (PT_PHDR)
+[elf]   [1] LOAD off=0x000 vaddr=0x200000 filesz=388 memsz=388 r--   (rodata)
+[elf]   [2] LOAD off=0x190 vaddr=0x201190 filesz=4   memsz=4   r-x   (code, == entry)
+[elf]   [3]      off=0x158 vaddr=0x200158 filesz=12  memsz=12  r--   (PT_GNU_PROPERTY)
+[elf]   [4]      off=0x000 vaddr=0x000000 filesz=0   memsz=0   r--   (PT_GNU_STACK)
+[elf] 2 loadable segments (Lesson 16 will map these)
+[elf] *** ELF header parsed — ready for exec() ***</pre>
+
+  <p>
+    The exact numbers will differ — rustc version and optimization
+    level change sizes. What matters: <code>e_type</code> = 2,
+    <code>machine</code> = 0x3E, at least one <code>LOAD</code>
+    segment, <code>entry</code> inside one of the loadable ranges.
+  </p>
+
+  <h2>Primary source</h2>
+
+  <p>
+    The ELF format is specified in the
+    <a href="https://refspecs.linuxbase.org/elf/gabi4+/contents.html">System V ABI Generic Introduction</a>
+    (the "gABI"). A more readable walkthrough is
+    <a href="https://linux.die.net/man 5/elf">the elf(5) man page</a>,
+    which documents both <code>Elf64_Ehdr</code> and
+    <code>Elf64_Phdr</code> with field-by-field comments.
+  </p>
+
+  <p>
+    The Linux counterpart of our parser is
+    <a href="https://elixir.bootlin.com/linux/latest/source/fs/binfmt_elf.c">fs/binfmt_elf.c</a>,
+    specifically <code>load_elf_binary()</code> (~300 lines, very
+    dense). It does what we do — read header, walk program headers,
+    map <code>PT_LOAD</code> segments — plus dynamic linking, BPF
+    annotations, and credential handling.
+  </p>
+
+  <p>
+    A nice companion: run <code>readelf -l hello.elf</code> on the
+    cross-compiled binary. The output is the same program-header
+    table the kernel parses, formatted for humans.
+  </p>
+
+  <div class="probe">
+    <div class="probe-title">Pause and think</div>
+    <p>
+      A static <code>"hello world"</code> C binary on Linux has
+      roughly 4 program headers but only 2 of them are
+      <code>PT_LOAD</code>. The others are <code>PT_PHDR</code>,
+      <code>PT_NOTE</code>, <code>PT_GNU_STACK</code>. Why doesn't
+      the kernel map those? What would go wrong if it did?
+    </p>
+  </div>
+
+  </div>
+
+  <footer class="lesson-footer">
+    <div class="footer-block">
+      <h4>Code tour</h4>
+      <p style="margin:0;">
+        Once you start building, the
+        <a href="../tours/tour-0015-elf-header.html">tour of changes</a>
+        will be the companion to this lesson.
+      </p>
+    </div>
+
+    <div class="footer-block">
+      <h4>Up next</h4>
+      <p style="margin:0;">
+        Lesson 16 — exec(). For each <code>PT_LOAD</code> segment,
+        allocate frames, map them at <code>p_vaddr</code> in a fresh
+        <code>AddressSpace</code>, copy bytes from
+        <code>p_offset</code>, zero the
+        <code>memsz - filesz</code> tail, set <code>rip = entry</code>,
+        jump to user mode. That's the mission.
+      </p>
+    </div>
+
+    <div class="footer-block">
+      <h4>If anything was unclear</h4>
+      <p style="margin:0;">
+        Ask. Especially the byte-offset arithmetic, the
+        <code>p_filesz</code> vs <code>p_memsz</code> distinction,
+        or why the parser refuses anything but ELF64 + x86-64 +
+        ET_EXEC.
+      </p>
+    </div>
+
+    <nav class="lesson-nav">
+      <a href="0014-mount-ext2.html">← Lesson 14: Mount ext2</a>
+      <a href="roadmap-disk-to-exec.html">Roadmap ↑</a>
+    </nav>
+  </footer>
+
+</article>
+
+<script src="../assets/explorable.js"></script>
+<script>
+(function () {
+  const demo = document.getElementById('elf-anatomy-demo');
+  if (!demo) return;
+
+  const stepNumEl = demo.querySelector('.demo-step-num');
+  const explanationEl = demo.querySelector('.demo-explanation');
+  const backBtn = demo.querySelector('.demo-back-btn');
+  const stepBtn = demo.querySelector('.demo-step-btn');
+  const resetBtn = demo.querySelector('.demo-reset-btn');
+  const allRows = demo.querySelectorAll('[data-region]');
+  const allArrows = demo.querySelectorAll('[data-arrow]');
+
+  // Step definitions: which regions/arrows to highlight, what text to show.
+  const steps = [
+    {
+      text: '<strong>Step 1 — Read the ELF header.</strong> The kernel opens <code>/hello.elf</code> via VFS (Lesson 14’s path) and reads the first <strong>64 bytes</strong> into memory. That’s the entire <code>Elf64_Ehdr</code> struct.',
+      active: ['file-header'],
+    },
+    {
+      text: '<strong>Step 2 — Validate the magic.</strong> Check <code>bytes[0..4] == [0x7F, "E", "L", "F"]</code>. Also check <code>e_ident[EI_CLASS] == 2</code> (64-bit), <code>e_ident[EI_DATA] == 1</code> (little-endian), <code>e_type == 2</code> (ET_EXEC), <code>e_machine == 0x3E</code> (x86-64). Any mismatch → <code>ENOEXEC</code>, the file isn\'t an executable we can run.',
+      active: ['file-header'],
+    },
+    {
+      text: '<strong>Step 3 — Read the program-header table location.</strong> The header tells us: <code>e_phoff = 64</code>, <code>e_phentsize = 56</code>, <code>e_phnum = 5</code>. So the PHT (Program Header Table) is 5 entries × 56 bytes = 280 bytes starting at file offset 64. The kernel reads them all.',
+      active: ['file-phdr', 'file-load1-header', 'file-load2-header'],
+    },
+    {
+      text: '<strong>Step 4 — Walk the PHT, find PT_LOAD entries.</strong> Of 5 entries, two have <code>p_type == PT_LOAD</code> (value 1). The kernel ignores the others (PT_PHDR, PT_GNU_PROPERTY, PT_GNU_STACK). For each PT_LOAD, it records <code>(p_offset, p_vaddr, p_filesz, p_memsz, p_flags)</code>.',
+      active: ['file-load1-header', 'file-load2-header', 'arrow-2', 'arrow-3'],
+    },
+    {
+      text: '<strong>Step 5 — Map the first PT_LOAD.</strong> Allocate frames, map them at <code>p_vaddr = 0x200000</code> with <code>r--</code> permissions. Copy <code>p_filesz = 388</code> bytes from <code>p_offset = 0</code> in the file. Note: this segment <em>includes</em> the ELF header and PHT themselves — common for static binaries.',
+      active: ['file-load1-data', 'arrow-2', 'mem-load1'],
+    },
+    {
+      text: '<strong>Step 6 — Map the second PT_LOAD.</strong> Same dance at <code>p_vaddr = 0x201190</code> with <code>r-x</code> permissions. 4 bytes from <code>p_offset = 0x190</code>. Then set <code>rip = e_entry = 0x201190</code>, push a fresh user stack, and <code>iretq</code> to user mode. The process is running.',
+      active: ['file-load2-data', 'arrow-3', 'mem-load2'],
+    },
+  ];
+
+  let current = 0;
+
+  function clearAll() {
+    allRows.forEach((r) => {
+      r.classList.remove('active', 'done');
+    });
+    allArrows.forEach((a) => {
+      a.classList.remove('active');
+      a.classList.add('muted');
+    });
+  }
+
+  function render() {
+    clearAll();
+    stepNumEl.textContent = current;
+
+    // Enable/disable the nav buttons at the bounds
+    backBtn.disabled = (current === 0);
+    stepBtn.disabled = (current === steps.length);
+
+    if (current === 0) {
+      explanationEl.innerHTML = 'Press <strong>Forward</strong> to walk through how <code>exec("/hello.elf")</code> turns file bytes into a running process. Each step highlights what the kernel reads and where it puts it.';
+      return;
+    }
+
+    const step = steps[current - 1];
+
+    // Mark earlier regions as done (subtly faded)
+    for (let i = 0; i < current - 1; i++) {
+      steps[i].active.forEach((id) => {
+        if (id.startsWith('arrow-')) return;
+        const el = demo.querySelector('[data-region="' + id + '"]');
+        if (el) el.classList.add('done');
+      });
+    }
+
+    // Activate current step's regions
+    step.active.forEach((id) => {
+      if (id.startsWith('arrow-')) {
+        const el = demo.querySelector('[data-arrow="' + id + '"]');
+        if (el) {
+          el.classList.add('active');
+          el.classList.remove('muted');
+        }
+      } else {
+        const el = demo.querySelector('[data-region="' + id + '"]');
+        if (el) el.classList.add('active');
+      }
+    });
+
+    explanationEl.innerHTML = step.text;
+  }
+
+  stepBtn.addEventListener('click', () => {
+    if (current < steps.length) {
+      current++;
+      render();
+    }
+  });
+
+  backBtn.addEventListener('click', () => {
+    if (current > 0) {
+      current--;
+      render();
+    }
+  });
+
+  resetBtn.addEventListener('click', () => {
+    current = 0;
+    render();
+  });
+
+  // Arrow-key shortcuts: ← back, → forward
+  document.addEventListener('keydown', (e) => {
+    // Don't hijack typing in inputs
+    if (document.activeElement && document.activeElement.tagName === 'INPUT') return;
+    if (e.key === 'ArrowLeft') { backBtn.click(); }
+    else if (e.key === 'ArrowRight') { stepBtn.click(); }
+  });
+
+  render();
+})();
+</script>
+
+</body>
+</html>

@@ -132,6 +132,17 @@
   margin: 0 0 0.4rem;
 }
 
+/* When the JS copies a cell's type-X class onto the detail-title,
+   the title color matches the cell color in the diagram. The two-
+   class selector beats the single-class default above. */
+.detail-title.type-u8     { color: #7e22ce; }   /* purple */
+.detail-title.type-u16    { color: #15803d; }   /* green  */
+.detail-title.type-u32    { color: #b45309; }   /* rust   */
+.detail-title.type-u64    { color: #1e40af; }   /* blue   */
+.detail-title.type-array  { color: #be185d; }   /* rose   */
+.detail-title.type-pad    { color: #6b7280; }   /* gray   */
+.detail-title.type-struct { color: #475569; }   /* slate  */
+
 .detail-body {
   font-family: var(--font-serif);
   font-size: 0.92rem;

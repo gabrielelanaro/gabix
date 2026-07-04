@@ -1,0 +1,566 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Lesson 16 — exec()</title>
+<link rel="stylesheet" href="../assets/lesson.css">
+<link rel="stylesheet" href="../assets/byte-layout.css">
+<link rel="stylesheet" href="../assets/explorable.css">
+<style>
+  .layer-stack {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1.25rem 1.5rem;
+    margin: 1.5rem 0;
+    font-family: var(--font-mono);
+    font-size: 0.82rem;
+  }
+  .layer-row {
+    display: grid;
+    grid-template-columns: 1fr 2fr;
+    gap: 1rem;
+    padding: 0.4rem 0;
+    border-bottom: 1px dashed var(--border);
+  }
+  .layer-row:last-child { border-bottom: none; }
+  .layer-name { color: var(--accent); font-weight: 600; }
+  .layer-desc {
+    color: var(--text);
+    font-family: var(--font-serif);
+    font-size: 0.88rem;
+  }
+  .layer-row.current {
+    background: var(--accent-soft);
+    margin: 0 -0.5rem;
+    padding: 0.4rem 0.5rem;
+    border-radius: 3px;
+    border-bottom: none;
+  }
+
+  .recipe {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1.25rem 1.5rem;
+    margin: 1.5rem 0;
+    font-family: var(--font-mono);
+    font-size: 0.82rem;
+    line-height: 1.65;
+  }
+  .recipe-step {
+    display: grid;
+    grid-template-columns: 30px 1fr;
+    gap: 0.8rem;
+    padding: 0.3rem 0;
+  }
+  .recipe-step + .recipe-step::before {
+    content: "↓";
+    color: var(--accent);
+    text-align: center;
+    margin-left: 8px;
+    grid-column: 1 / -1;
+  }
+  .recipe-num { color: var(--accent); font-weight: 700; text-align: right; }
+  .recipe-body { color: var(--text); }
+  .recipe-body code { color: var(--accent); }
+
+  .step {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1rem 1.25rem;
+    margin: 1.25rem 0;
+  }
+  .step-num {
+    font-family: var(--font-mono);
+    font-size: 0.78rem;
+    font-weight: 600;
+    color: var(--accent);
+    background: var(--accent-soft);
+    padding: 2px 8px;
+    border-radius: 3px;
+    margin-right: 0.5rem;
+  }
+  .step-title {
+    font-family: var(--font-sans);
+    font-weight: 600;
+    font-size: 1rem;
+    margin-bottom: 0.4rem;
+  }
+  .step-detail {
+    font-family: var(--font-serif);
+    font-size: 0.95rem;
+    color: var(--text);
+  }
+  .step-detail p:last-child { margin-bottom: 0; }
+</style>
+</head>
+<body>
+<article class="lesson">
+
+  <header class="lesson-header">
+    <div class="lesson-eyebrow">Lesson 16 · M5 · exec — the mission lands</div>
+    <h1 class="lesson-title">exec()</h1>
+    <p class="lesson-subtitle">Take a parsed ELF, map its <code>PT_LOAD</code> segments into a fresh <code>AddressSpace</code>, set up a user stack, jump to <code>e_entry</code>. Plug in a disk, load a binary, run it. The mission.</p>
+    <div class="lesson-meta">
+      <span><strong>Read time</strong> ~25 min</span>
+      <span><strong>Build time</strong> ~40–60 min</span>
+      <span><strong>Prereq</strong> <a href="0015-elf-header.html">Lesson 15</a></span>
+    </div>
+  </header>
+
+  <div class="content">
+
+  <p class="lead">
+    Lesson 15 ended with the kernel holding a parsed ELF: header
+    validated, program headers walked, entry point confirmed inside
+    an r-x segment. Lesson 16 actually runs it. Four pieces of
+    existing infrastructure come together: the ELF parser
+    (<code>src/elf.rs</code>), the <code>AddressSpace</code> type
+    from the memory layer, the frame allocator, and the user-mode
+    entry path. None of them are new — Lesson 16 just wires them
+    into one function.
+  </p>
+
+  <h2>Where we are in the storage stack</h2>
+
+  <div class="layer-stack">
+    <div class="layer-row">
+      <span class="layer-name">VFS (resolve_path)</span>
+      <span class="layer-desc">returns the ELF file's bytes as Vec&lt;u8&gt;</span>
+    </div>
+    <div class="layer-row">
+      <span class="layer-name">ELF parser (Lesson 15)</span>
+      <span class="layer-desc">turns bytes into ElfHeader + ProgramHeaders</span>
+    </div>
+    <div class="layer-row current">
+      <span class="layer-name">ELF loader ← Lesson 16</span>
+      <span class="layer-desc">map PT_LOAD segments, jump to e_entry</span>
+    </div>
+    <div class="layer-row">
+      <span class="layer-name">AddressSpace + frame allocator</span>
+      <span class="layer-desc">M2 — already built</span>
+    </div>
+    <div class="layer-row">
+      <span class="layer-name">user-mode entry (iretq)</span>
+      <span class="layer-desc">M3 — already built</span>
+    </div>
+  </div>
+
+  <h2>What exec() does — the four-step recipe</h2>
+
+  <p>
+    <code>exec(path)</code> in Linux replaces the current process's
+    image with a new program loaded from a file. The old code, data,
+    and stack are discarded; a fresh address space is built from the
+    ELF; the CPU jumps to <code>e_entry</code> as if the process had
+    just been born.
+  </p>
+
+  <p>
+    For mini-os, "the current process" is the kernel itself (we have
+    no real process table yet). So <code>exec_elf(path)</code> for us
+    means: <em>build a new user address space from the ELF, switch to
+    it, jump to user mode at <code>e_entry</code></em>. The recipe:
+  </p>
+
+  <div class="recipe">
+    <div class="recipe-step">
+      <div class="recipe-num">1</div>
+      <div class="recipe-body">
+        <strong>Parse</strong> — read the file via VFS, run
+        <code>ElfHeader::parse</code> + walk the PHT (Lesson 15).
+      </div>
+    </div>
+    <div class="recipe-step">
+      <div class="recipe-num">2</div>
+      <div class="recipe-body">
+        <strong>Map</strong> — for each <code>PT_LOAD</code> segment:
+        create a fresh <code>AddressSpace</code>, allocate frames for
+        each page in <code>[p_vaddr, p_vaddr + p_memsz)</code>, map
+        them with the segment's permissions.
+      </div>
+    </div>
+    <div class="recipe-step">
+      <div class="recipe-num">3</div>
+      <div class="recipe-body">
+        <strong>Copy + zero</strong> — for each mapped segment, copy
+        <code>p_filesz</code> bytes from <code>p_offset</code> in the
+        file into the new memory. Then zero the
+        <code>p_memsz − p_filesz</code> tail (this is how
+        <code>.bss</code> appears — no file bytes, just zeros).
+      </div>
+    </div>
+    <div class="recipe-step">
+      <div class="recipe-num">4</div>
+      <div class="recipe-body">
+        <strong>Stack + jump</strong> — map a few pages of user
+        stack at a high virtual address with <code>rw-</code>.
+        Switch to the new <code>AddressSpace</code>. Push the user
+        state (<code>ss</code>, <code>rsp</code>, <code>rflags</code>,
+        <code>cs</code>, <code>rip = e_entry</code>) and
+        <code>iretq</code>. The CPU is now running the program.
+      </div>
+    </div>
+  </div>
+
+  <h2>The <code>p_memsz &gt; p_filesz</code> trick (how <code>.bss</code> works)</h2>
+
+  <p>
+    Programs have global variables that start at zero. The C
+    declaration <code>static int counter;</code> (no initializer)
+    doesn't waste file bytes storing zeros — the linker just records
+    "this segment needs N bytes of zero at the end." The ELF encodes
+    this as <code>p_filesz &lt; p_memsz</code>: <code>p_filesz</code>
+    bytes come from the file, the remaining
+    <code>p_memsz − p_filesz</code> bytes get zeroed by the loader.
+  </p>
+
+  <p>
+    <code>hello.elf</code> doesn't use this trick (its two segments
+    have <code>p_filesz == p_memsz</code> — no uninitialized globals).
+    But a real program would, and the loader has to handle it
+    correctly. Lesson 16's <code>map_segment</code> helper will:
+    copy <code>p_filesz</code> bytes, then explicitly zero the rest
+    of the last page (and any additional pages).
+  </p>
+
+  <h2>The user stack</h2>
+
+  <p>
+    The ELF doesn't say where the stack goes — that's the kernel's
+    call. Linux puts it near the top of the user half of the address
+    space (typically <code>0x7fff_ffff_xxxx</code>) and grows it
+    downward. We'll do the same: allocate a few frames, map them as
+    <code>rw-</code> at a high address, point <code>rsp</code> at the
+    top.
+  </p>
+
+  <p>
+    <em>Arguments and environment</em> would normally live on the
+    stack at startup. <code>hello.elf</code>'s <code>_start</code>
+    loops forever and ignores them, so we can skip that for now and
+    come back when a program actually reads <code>argc</code> /
+    <code>argv</code>.
+  </p>
+
+  <h2>Build steps — your turn</h2>
+
+  <p>
+    Four steps. 16.1 writes the per-segment mapper. 16.2 wraps it in
+    a full <code>exec_elf(path)</code> driver. 16.3 adds the stack.
+    16.4 switches address space and jumps.
+  </p>
+
+  <div class="step">
+    <div class="step-title"><span class="step-num">16.1</span><code>map_segment</code> — allocate, map, copy, zero one PT_LOAD</div>
+    <div class="step-detail">
+      <p>
+        In <code>src/elf.rs</code> (or a new <code>src/exec.rs</code>,
+        your call), add a helper that takes a parsed
+        <code>ProgramHeader</code>, the raw file bytes, and a target
+        <code>&amp;AddressSpace</code>, then installs the segment:
+      </p>
+<pre><span class="c">// Map one PT_LOAD segment into `aspace`. Returns total bytes copied.</span>
+<span class="k">pub fn</span> map_segment(
+    aspace: &amp;<span class="t">memory::AddressSpace</span>,
+    ph: &amp;<span class="t">ProgramHeader</span>,
+    file_bytes: &amp;[<span class="t">u8</span>],
+) -&gt; <span class="t">Result</span>&lt;<span class="t">u64</span>, &amp;<span class="k">'static str</span>&gt; {
+    <span class="k">assert!</span>(ph.is_load(), <span class="s">"map_segment called on non-LOAD"</span>);
+
+    <span class="c">// Page-align the segment's memory range. The ELF spec guarantees</span>
+    <span class="c">// p_vaddr ≡ p_offset (mod p_align), but the segment may start</span>
+    <span class="c">// mid-page. Round down to the page containing p_vaddr.</span>
+    <span class="k">const</span> PAGE: <span class="t">u64</span> = <span class="n">4096</span>;
+    <span class="k">let</span> page_start = ph.p_vaddr &amp; !(PAGE - <span class="n">1</span>);
+    <span class="k">let</span> page_end   = (ph.p_vaddr + ph.p_memsz + PAGE - <span class="n">1</span>) &amp; !(PAGE - <span class="n">1</span>);
+    <span class="k">let</span> num_pages  = (page_end - page_start) / PAGE;
+
+    <span class="c">// Translate p_flags to x86-64 page-table flags. PRESENT + USER</span>
+    <span class="c">// always; WRITABLE and NO_EXECUTE conditional.</span>
+    <span class="k">let mut</span> flags = <span class="t">PageTableFlags</span>::PRESENT | <span class="t">PageTableFlags</span>::USER;
+    <span class="k">if</span> ph.p_flags &amp; <span class="t">PF_W</span> != <span class="n">0</span> { flags |= <span class="t">PageTableFlags</span>::WRITABLE; }
+    <span class="c">// NX bit needs the CPU to support it — check via CPUID earlier.</span>
+    <span class="c">// If supported: if ph.p_flags &amp; PF_X == 0, flags |= NO_EXECUTE.</span>
+
+    <span class="k">for</span> i <span class="k">in</span> <span class="n">0</span>..num_pages {
+        <span class="k">let</span> vaddr = page_start + i * PAGE;
+        <span class="k">let</span> frame = <span class="t">frame_allocator::allocate</span>()
+            .ok_or(<span class="s">"out of frames during exec"</span>)?;
+        <span class="k">unsafe</span> { aspace.map_to(vaddr.into(), frame.start_address(), flags)?; }
+
+        <span class="c">// Zero the whole frame first — handles .bss tail automatically.</span>
+        <span class="t">memory::write_to_frame</span>(frame.start_address(), &amp;[<span class="n">0u8</span>; PAGE][..]);
+
+        <span class="c">// Overlay file bytes that fall inside this page.</span>
+        <span class="k">let</span> file_range_start = ph.p_offset;
+        <span class="k">let</span> file_range_end   = ph.p_offset + ph.p_filesz;
+        <span class="k">let</span> mem_page_start  = page_start + i * PAGE;
+        <span class="k">let</span> mem_page_end    = mem_page_start + PAGE;
+
+        <span class="c">// Where does this page fall in the segment's memory range?</span>
+        <span class="k">let</span> copy_mem_start = mem_page_start.max(ph.p_vaddr);
+        <span class="k">let</span> copy_mem_end   = mem_page_end.min(ph.p_vaddr + ph.p_filesz);
+        <span class="k">if</span> copy_mem_start &gt;= copy_mem_end { <span class="k">continue</span>; }  <span class="c">// nothing in this page</span>
+
+        <span class="c">// Translate the memory range back to a file range.</span>
+        <span class="k">let</span> copy_off = file_range_start + (copy_mem_start - ph.p_vaddr);
+        <span class="k">let</span> copy_len = (copy_mem_end - copy_mem_start) <span class="k">as</span> <span class="t">usize</span>;
+        <span class="k">let</span> file_slice = &amp;file_bytes[copy_off <span class="k">as</span> <span class="t">usize</span>..copy_off <span class="k">as</span> <span class="t">usize</span> + copy_len];
+
+        <span class="c">// Write into the frame at the right page offset.</span>
+        <span class="k">let</span> page_offset = (copy_mem_start - mem_page_start) <span class="k">as</span> <span class="t">usize</span>;
+        <span class="t">memory::write_to_frame_at</span>(frame.start_address(), page_offset, file_slice);
+    }
+
+    <span class="t">Ok</span>(ph.p_filesz)
+}</pre>
+      <p>
+        Two helpers (<code>memory::write_to_frame</code>,
+        <code>write_to_frame_at</code>) already exist or are easy
+        single-frame helpers to add. The shape: <em>allocate one
+        frame per page, zero it, overlay the file bytes that fall
+        inside it</em>. Doing it per-page keeps the
+        <code>p_filesz</code> &lt; <code>p_memsz</code> case trivial
+        — pages past the file range just stay zeroed.
+      </p>
+    </div>
+  </div>
+
+  <div class="step">
+    <div class="step-title"><span class="step-num">16.2</span><code>exec_elf(path)</code> — drive the whole load</div>
+    <div class="step-detail">
+      <p>
+        In <code>src/main.rs</code> (or a new module), a function
+        that takes a path, returns nothing on success. It chains
+        VFS → parser → mapper:
+      </p>
+<pre><span class="k">pub fn</span> exec_elf(path: &amp;<span class="t">str</span>) -&gt; <span class="t">Result</span>&lt;(), &amp;<span class="k">'static str</span>&gt; {
+    <span class="c">// 1. Resolve + read via VFS (Lesson 14 path).</span>
+    <span class="k">let</span> inode = <span class="t">fs::resolve_path</span>(path).ok_or(<span class="s">"no such file"</span>)?;
+    <span class="k">let</span> bytes = inode.data.lock();
+    <span class="k">let</span> bytes: &amp;[<span class="t">u8</span>] = &amp;bytes;
+
+    <span class="c">// 2. Parse header + validate (Lesson 15).</span>
+    <span class="k">let</span> header = <span class="t">elf::ElfHeader</span>::parse(bytes).ok_or(<span class="s">"not ELF"</span>)?;
+    <span class="k">if</span> !header.is_x86_64_exec() { <span class="k">return</span> <span class="t">Err</span>(<span class="s">"not x86-64 ET_EXEC"</span>); }
+
+    <span class="c">// 3. Fresh address space — clean slate.</span>
+    <span class="k">let</span> aspace = <span class="t">memory::AddressSpace</span>::new();
+
+    <span class="c">// 4. Walk PHT, map each PT_LOAD into the new AS.</span>
+    <span class="k">let mut</span> mapped = <span class="n">0</span>;
+    <span class="k">for</span> i <span class="k">in</span> <span class="n">0</span>..header.phnum {
+        <span class="k">let</span> off = header.phoff <span class="k">as</span> <span class="t">usize</span> + i <span class="k">as</span> <span class="t">usize</span> * header.phentsize <span class="k">as</span> <span class="t">usize</span>;
+        <span class="k">let</span> ph = <span class="t">elf::ProgramHeader</span>::parse(&amp;bytes[off..]).ok_or(<span class="s">"ph parse"</span>)?;
+        <span class="k">if</span> ph.is_load() {
+            map_segment(&amp;aspace, &amp;ph, bytes)?;
+            mapped += <span class="n">1</span>;
+        }
+    }
+    <span class="k">if</span> mapped == <span class="n">0</span> { <span class="k">return</span> <span class="t">Err</span>(<span class="s">"no PT_LOAD segments"</span>); }
+
+    <span class="c">// 5. Set up the user stack (16.3).</span>
+    <span class="k">let</span> stack_top = setup_user_stack(&amp;aspace)?;
+
+    <span class="c">// 6. Switch to the new AS, jump to entry (16.4).</span>
+    aspace.switch_to();
+    enter_user_at(header.entry, stack_top);  <span class="c">// never returns</span>
+}</pre>
+      <p>
+        Note <code>inode.data.lock()</code> borrows the bytes via
+        <code>MutexGuard</code>; the slice into <code>&amp;bytes</code>
+        works as long as the guard lives. Don't <code>clone()</code>
+        the file — it's already in kernel memory via Lesson 14's
+        <code>resolve_path</code>.
+      </p>
+    </div>
+  </div>
+
+  <div class="step">
+    <div class="step-title"><span class="step-num">16.3</span>Set up the user stack</div>
+    <div class="step-detail">
+      <p>
+        The ELF doesn't say where the stack goes — the kernel picks
+        a high address. Two pages is plenty for a program that does
+        nothing but loop:
+      </p>
+<pre><span class="c">// Map `num_pages` rw- user frames at a fixed high address.</span>
+<span class="c">// Returns the top-of-stack virtual address.</span>
+<span class="k">fn</span> setup_user_stack(aspace: &amp;<span class="t">memory::AddressSpace</span>) -&gt; <span class="t">Result</span>&lt;<span class="t">u64</span>, &amp;<span class="k">'static str</span>&gt; {
+    <span class="k">const</span> STACK_TOP:   <span class="t">u64</span> = <span class="n">0x7fff_ffff_f000</span>;
+    <span class="k">const</span> STACK_PAGES: <span class="t">usize</span> = <span class="n">2</span>;
+    <span class="k">const</span> PAGE:       <span class="t">u64</span> = <span class="n">4096</span>;
+
+    <span class="k">let</span> flags = <span class="t">PageTableFlags</span>::PRESENT
+            | <span class="t">PageTableFlags</span>::WRITABLE
+            | <span class="t">PageTableFlags</span>::USER;
+
+    <span class="k">for</span> i <span class="k">in</span> <span class="n">0</span>..STACK_PAGES {
+        <span class="k">let</span> vaddr = STACK_TOP - (STACK_PAGES - i) <span class="k">as</span> <span class="t">u64</span> * PAGE;
+        <span class="k">let</span> frame = <span class="t">frame_allocator::allocate</span>()
+            .ok_or(<span class="s">"out of frames for stack"</span>)?;
+        <span class="k">unsafe</span> { aspace.map_to(vaddr.into(), frame.start_address(), flags)?; }
+        <span class="t">memory::write_to_frame</span>(frame.start_address(), &amp;[<span class="n">0u8</span>; PAGE <span class="k">as</span> <span class="t">usize</span>][..]);
+    }
+
+    <span class="t">Ok</span>(STACK_TOP)  <span class="c">// first push will land just below this</span>
+}</pre>
+      <p>
+        Pointing <code>rsp</code> at the very top of the highest
+        mapped page is fine — the first <code>push</code> decrements
+        <code>rsp</code> before writing, so it lands inside the
+        mapped region.
+      </p>
+    </div>
+  </div>
+
+  <div class="step">
+    <div class="step-title"><span class="step-num">16.4</span>Switch address space + jump to entry</div>
+    <div class="step-detail">
+      <p>
+        Reuse the M3 user-mode entry path, just with a different
+        <code>rip</code>:
+      </p>
+<pre><span class="k">fn</span> enter_user_at(entry: <span class="t">u64</span>, stack_top: <span class="t">u64</span>) -&gt; ! {
+    <span class="c">// Build the iretq frame on the kernel stack:</span>
+    <span class="c">//   ss:rsp:rflags:cs:rip</span>
+    <span class="c">// ss = user data segment (DPL 3)</span>
+    <span class="c">// cs = user code segment (DPL 3)</span>
+    <span class="c">// rflags = interrupts enabled</span>
+    <span class="c">// rip = entry</span>
+    <span class="c">// rsp = stack_top</span>
+    <span class="k">unsafe</span> {
+        <span class="t">core::arch::asm!</span>(
+            <span class="s">"push rax"</span>,                <span class="c">// ss</span>
+            <span class="s">"push rdi"</span>,                <span class="c">// rsp</span>
+            <span class="s">"push 0x202"</span>,              <span class="c">// rflags: IF set</span>
+            <span class="s">"push rbx"</span>,                <span class="c">// cs</span>
+            <span class="s">"push rsi"</span>,                <span class="c">// rip</span>
+            <span class="s">"iretq"</span>,
+            in(<span class="s">"rax"</span>) <span class="n">0x18</span> | <span class="n">3</span>,         <span class="c">// user data seg (GDT entry 3, DPL 3)</span>
+            in(<span class="s">"rdi"</span>) stack_top,
+            in(<span class="s">"rbx"</span>) <span class="n">0x10</span> | <span class="n">3</span>,         <span class="c">// user code seg (GDT entry 2, DPL 3)</span>
+            in(<span class="s">"rsi"</span>) entry,
+            options(noreturn),
+        );
+    }
+}</pre>
+      <p>
+        Exact GDT entry numbers depend on what's in
+        <code>src/gdt.rs</code> from M2/M3 — check there before
+        copy-pasting the segment selectors.
+      </p>
+    </div>
+  </div>
+
+  <h2>Verification — what success looks like</h2>
+
+<pre>[test] exec /hello.elf
+[elf] /hello.elf: 1344 bytes
+[elf] parsed: entry=0x201190, 2 PT_LOAD segments
+[exec] mapping segment 1: vaddr=0x200000 size=388 perms=r--
+[exec] mapping segment 2: vaddr=0x201190 size=4   perms=r-x
+[exec] user stack mapped at 0x7ffffffe000 (2 pages)
+[exec] switching to new address space (CR3=0x...)
+[exec] jumping to entry 0x201190
+<span class="keystone">[user] running in user mode at rip=0x201190</span></pre>
+
+  <p>
+    <code>hello.elf</code>'s body is just <code>jmp .</code> — an
+    infinite loop. There's no observable output. The success signal
+    is that the kernel doesn't crash: no page fault, no GP fault, no
+    triple-fault. To prove user-mode is actually running, instrument
+    a syscall or a timer tick that preempts the user process and
+    prints "still running."
+  </p>
+
+  <p>
+    The deeper success signal: change <code>hello.elf</code>'s
+    source to call <code>syscall</code> with a magic number the
+    kernel recognizes, and have the kernel print "[user] syscall
+    received." That closes the loop — disk → ELF → user mode →
+    syscall → kernel. End-to-end proof that exec landed.
+  </p>
+
+  <h2>Primary source</h2>
+
+  <p>
+    Linux's <code>execve</code> implementation lives in
+    <a href="https://elixir.bootlin.com/linux/latest/source/fs/exec.c">fs/exec.c</a>,
+    and the ELF-specific loader is
+    <a href="https://elixir.bootlin.com/linux/latest/source/fs/binfmt_elf.c">fs/binfmt_elf.c</a>
+    (specifically <code>load_elf_binary</code>). Both are large —
+    they handle credentials, auxv, coredump headers, ASLR,
+    <code>ld.so</code> bootstrapping. Read them as "the production
+    version of what we just wrote."
+  </p>
+
+  <p>
+    The x86-64 iretq frame layout (ss / rsp / rflags / cs / rip) is
+    documented in the
+    <a href="https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html">Intel SDM, volume 3</a>,
+    "Interrupt and Exception Handling." Same layout the bootloader
+    used to enter the kernel; we're just doing it again with user
+    segments.
+  </p>
+
+  <div class="probe">
+    <div class="probe-title">Pause and think</div>
+    <p>
+      After <code>exec_elf</code> returns from <code>aspace.switch_to()</code>,
+      the kernel's own stack, heap, and code are still mapped in the
+      new address space's high half. Why is that essential? What
+      would break if <code>AddressSpace::new()</code> produced a
+      completely empty PML4?
+    </p>
+  </div>
+
+  </div>
+
+  <footer class="lesson-footer">
+    <div class="footer-block">
+      <h4>Code tour</h4>
+      <p style="margin:0;">
+        Once you start building, the
+        <a href="../tours/tour-0016-exec.html">tour of changes</a>
+        will be the companion to this lesson.
+      </p>
+    </div>
+
+    <div class="footer-block">
+      <h4>Mission status</h4>
+      <p style="margin:0;">
+        When Lesson 16 lands, the mission
+        (<a href="../MISSION.md">"plug in a disk, load an ELF, execute it"</a>)
+        is complete. Beyond here: real processes (fork, scheduling),
+        a real syscall ABI, multiple binaries on disk, maybe an
+        interactive shell.
+      </p>
+    </div>
+
+    <div class="footer-block">
+      <h4>If anything was unclear</h4>
+      <p style="margin:0;">
+        Ask. Especially the <code>p_memsz &gt; p_filesz</code>
+        zero-fill dance, the page-alignment arithmetic in
+        <code>map_segment</code>, or the <code>iretq</code> frame
+        layout.
+      </p>
+    </div>
+
+    <nav class="lesson-nav">
+      <a href="0015-elf-header.html">← Lesson 15: ELF Header Parser</a>
+      <a href="roadmap-disk-to-exec.html">Roadmap ↑</a>
+    </nav>
+  </footer>
+
+</article>
+
+<script src="../assets/explorable.js"></script>
+
+</body>
+</html>

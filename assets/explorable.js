@@ -51,6 +51,23 @@
         const item = document.createElement('div');
         item.className = 'detail-item';
         item.appendChild(tpl.content.cloneNode(true));
+
+        // Copy type classes (type-u8, type-u16, etc.) from the cell
+        // that reveals this template, so the detail-title color
+        // matches the cell color in the diagram.
+        const cellId = tpl.id;
+        const matchingCell = container.querySelector(
+          '[data-reveals="' + CSS.escape(cellId) + '"]'
+        );
+        if (matchingCell) {
+          const title = item.querySelector('.detail-title');
+          if (title) {
+            const typeClasses = Array.from(matchingCell.classList)
+              .filter((c) => c.startsWith('type-'));
+            title.classList.add(...typeClasses);
+          }
+        }
+
         content.appendChild(item);
       });
       if (empty) empty.style.display = 'none';
@@ -81,6 +98,15 @@
 
         content.innerHTML = '';
         content.appendChild(tpl.content.cloneNode(true));
+
+        // Copy type classes from the clicked cell to the detail-title,
+        // so the title color matches the cell color in the diagram.
+        const title = content.querySelector('.detail-title');
+        if (title) {
+          const typeClasses = Array.from(cell.classList)
+            .filter((c) => c.startsWith('type-'));
+          title.classList.add(...typeClasses);
+        }
 
         if (empty) empty.style.display = 'none';
         content.classList.add('visible');
