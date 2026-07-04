@@ -37,7 +37,7 @@ kernel has a Linux counterpart we can read alongside.
 - [x] Superblock parsed (offset 1024, fields validated) — Lesson 10
 - [x] Block group descriptor table walked — Lesson 12
 - [x] Inode lookup by number (root inode = 2 by ext2 convention) — Lesson 12
-- [ ] ext2 directory entries parsed — different byte format from our VFS dirents
+- [x] ext2 directory entries parsed — different byte format from our VFS dirents — Lesson 13
 - [ ] ext2 mounted as the root filesystem, replacing `ROOT_INODE` lazy_static
 
 ### ELF execution
@@ -64,6 +64,7 @@ kernel has a Linux counterpart we can read alongside.
 - **Lesson 9** (block layer abstraction): single commit `6875d9b` (refactor + new method + test form one cohesive change). VirtioBlk now owns the VirtQueue; `setup_queue(64)` allocates and configures in one call. New `read_sector(sector) -> [u8; 512]` method hides the full descriptor-chain + DMA + submit/kick/poll dance behind one synchronous call. ext2 can mount on top. See learning-records 0012.
 - **Lesson 10** (ext2 superblock parser): four commits `f7cc83e` (mkfs.ext2 the disk) → `34a7e78` (verify magic + fields). New `src/ext2.rs` module with `Superblock` struct + parser using `from_le_bytes`. Reads sectors 2 and 3, concatenates 1024 bytes, parses. Magic = 0xEF53, block_size = 1024, 128 inodes, 1024 blocks. Filesystem phase begins. See learning-records 0013.
 - **Lesson 12** (ext2 inode lookup): two commits `ba06f20` (superblock extras) → `571ebba` (BGD + Inode + read_inode). Extended Superblock with `inodes_per_group` and `inode_size`. Added `BlockGroupDescriptor` (32 bytes), `Inode` (128 bytes parsed), `read_block_group_descriptor`, `read_inode`. Verified inode 2 is the root directory at block 40 with mode 0x41ED. See learning-records 0014.
+- **Lesson 13** (ext2 directory walk): single commit `2fdc4cc` (Dirent + read_block + walk_directory + lookup_in_dir). Variable-length dirent parser, linked-list traversal via rec_len. Root directory contents: `.`, `..`, `lost+found` all verified. `lookup_in_dir` finds lost+found → inode 11, returns None for missing names. See learning-records 0015.
 
 ## Constraints
 - Rust on bare-metal x86-64 (`#![no_std]`)
