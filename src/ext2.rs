@@ -75,6 +75,14 @@ pub struct Superblock {
     pub magic: u16,
     /// Filesystem state. 1 = clean, 2 = has errors. mkfs leaves it 1.
     pub state: u16,
+    /// How many inodes per block group. Used to compute which group
+    /// contains a given inode number: group = (N-1) / inodes_per_group.
+    /// For our 1 MB disk: 128 (matches total inodes since we have 1 group).
+    pub inodes_per_group: u32,
+    /// Size of each on-disk inode in bytes. Default 128; mkfs may use
+    /// 256+ for newer revisions to fit extended attributes. Used to
+    /// compute byte offset within the inode table: idx * inode_size.
+    pub inode_size: u16,
 }
 
 impl Superblock {
@@ -112,6 +120,8 @@ impl Superblock {
             block_size,
             magic:              u16_at(56),
             state:              u16_at(58),
+            inodes_per_group:   u32_at(40),
+            inode_size:         u16_at(88),
         }
     }
 
@@ -137,5 +147,7 @@ impl Superblock {
         println!("[ext2]   state         = {} ({})",
             self.state,
             if self.state == 1 { "clean" } else { "needs check" });
+        println!("[ext2]   inodes/group  = {}", self.inodes_per_group);
+        println!("[ext2]   inode_size    = {} bytes", self.inode_size);
     }
 }
