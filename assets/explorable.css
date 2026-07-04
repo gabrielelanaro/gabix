@@ -1,0 +1,160 @@
+/* ============================================================
+   explorable.css — reusable "click to reveal detail" pattern
+   ============================================================
+   Use this when you have a visual with multiple labeled parts
+   (a byte-layout bar, a block grid, a chain of steps, etc.) and
+   want clicking each part to populate a detail panel below.
+
+   Markup pattern:
+
+     <div class="explorable">
+       <!-- visual with clickable cells -->
+       <div class="byte-bar">
+         <div class="byte-field" data-reveals="mode">
+           <span class="byte-field-name">i_mode</span>
+           ...
+         </div>
+         ...
+       </div>
+
+       <!-- detail panel gets populated on click -->
+       <div class="detail-panel">
+         <div class="detail-empty">Click a field...</div>
+         <div class="detail-content"></div>
+       </div>
+
+       <!-- one template per clickable item, ID matches data-reveals -->
+       <template id="mode">
+         <h4 class="detail-title">i_mode (offset 0)</h4>
+         <div class="detail-body">
+           <p>Two packed fields: file type + permissions.</p>
+         </div>
+       </template>
+     </div>
+
+   Then include ../assets/explorable.js (auto-wires everything).
+   ============================================================ */
+
+/* Any element with data-reveals is interactive */
+.explorable [data-reveals] {
+  cursor: pointer;
+  transition: outline 0.1s ease, transform 0.1s ease;
+}
+
+/* Subtle hover hint */
+.explorable [data-reveals]:hover {
+  transform: translateY(-1px);
+}
+
+/* Active = clicked most recently */
+.explorable [data-reveals].active {
+  outline: 3px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* Detail panel — populated on click */
+.detail-panel {
+  background: var(--surface-soft);
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--accent);
+  border-radius: 0 6px 6px 0;
+  padding: 1rem 1.25rem;
+  margin: 1rem 0 1.5rem;
+  min-height: 80px;
+  position: relative;
+}
+
+.detail-toggle {
+  position: absolute;
+  top: 0.5rem;
+  right: 0.6rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  padding: 0.25rem 0.7rem;
+  border-radius: 4px;
+  font-family: var(--font-sans);
+  font-size: 0.72rem;
+  color: var(--text-dim);
+  cursor: pointer;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  font-weight: 600;
+  transition: background 0.1s, color 0.1s;
+}
+
+.detail-toggle:hover {
+  background: var(--accent-soft);
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.detail-empty {
+  font-family: var(--font-sans);
+  font-style: italic;
+  color: var(--text-faint);
+  text-align: center;
+  padding: 0.8rem 0;
+  padding-right: 5rem; /* leave room for toggle button */
+}
+
+.detail-content {
+  display: none;
+}
+
+.detail-content.visible {
+  display: block;
+}
+
+/* "Show all" mode — render every template as a list of items */
+.detail-panel.show-all .detail-empty {
+  display: none;
+}
+
+.detail-item {
+  padding: 0.7rem 0;
+  border-bottom: 1px dashed var(--border);
+}
+
+.detail-item:first-child {
+  padding-top: 0;
+}
+
+.detail-item:last-child {
+  padding-bottom: 0;
+  border-bottom: none;
+}
+
+.detail-title {
+  font-family: var(--font-sans);
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--accent);
+  margin: 0 0 0.4rem;
+}
+
+.detail-body {
+  font-family: var(--font-serif);
+  font-size: 0.92rem;
+  line-height: 1.55;
+  color: var(--text);
+}
+
+.detail-body p { margin: 0 0 0.6rem; }
+.detail-body p:last-child { margin-bottom: 0; }
+
+.detail-body code {
+  background: var(--surface);
+  padding: 0.05em 0.35em;
+  border-radius: 2px;
+  color: var(--accent);
+}
+
+.detail-body strong {
+  color: var(--text);
+  font-weight: 600;
+}
+
+/* Templates are invisible by default (browser behavior, but explicit) */
+template {
+  display: none;
+}
