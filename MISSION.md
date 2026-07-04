@@ -34,7 +34,7 @@ kernel has a Linux counterpart we can read alongside.
 - [x] Block layer abstraction — `read_sector(n) -> [u8; 512]` — Lesson 9
 
 ### ext2 filesystem
-- [ ] Superblock parsed (offset 1024, fields validated)
+- [x] Superblock parsed (offset 1024, fields validated) — Lesson 10
 - [ ] Block group descriptor table walked
 - [ ] Inode lookup by number (root inode = 2 by ext2 convention)
 - [ ] ext2 directory entries parsed — different byte format from our VFS dirents
@@ -62,6 +62,7 @@ kernel has a Linux counterpart we can read alongside.
 - **Lesson 7** (virtqueues): five steps across commits `49a9f79` → `a5ec3f7`. Kernel allocates the three regions (descriptor table, available ring, used ring) as page-aligned frames, configures the queue in common config, builds a descriptor free list, implements `submit_chain` with Release ordering, and adds `kick` + `poll_completion` (with Acquire). Queue is active; mechanics verified end-to-end. See learning-records 0010.
 - **Lesson 8** (first disk read — Keystone 1): five steps across commits `233f4dd` → `d42e82a`. Built a 3-descriptor virtio-blk read chain (header + data + status), submitted, kicked, polled, verified bytes. The kernel reads sector 0 and confirms `MINIOS_DISK_v0\n` + 497 trailing zeros. Bytes flow from disk for the first time. See learning-records 0011.
 - **Lesson 9** (block layer abstraction): single commit `6875d9b` (refactor + new method + test form one cohesive change). VirtioBlk now owns the VirtQueue; `setup_queue(64)` allocates and configures in one call. New `read_sector(sector) -> [u8; 512]` method hides the full descriptor-chain + DMA + submit/kick/poll dance behind one synchronous call. ext2 can mount on top. See learning-records 0012.
+- **Lesson 10** (ext2 superblock parser): four commits `f7cc83e` (mkfs.ext2 the disk) → `34a7e78` (verify magic + fields). New `src/ext2.rs` module with `Superblock` struct + parser using `from_le_bytes`. Reads sectors 2 and 3, concatenates 1024 bytes, parses. Magic = 0xEF53, block_size = 1024, 128 inodes, 1024 blocks. Filesystem phase begins. See learning-records 0013.
 
 ## Constraints
 - Rust on bare-metal x86-64 (`#![no_std]`)
