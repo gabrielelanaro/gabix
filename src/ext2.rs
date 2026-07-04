@@ -12,6 +12,7 @@
 
 use crate::println;
 use crate::virtio::VirtioBlk;
+use alloc::vec::Vec;
 
 /// ext2 magic number — appears at byte offset 56 of the superblock
 /// (byte offset 1080 of the disk, = sector 2 byte 56). If this isn't
@@ -150,4 +151,253 @@ impl Superblock {
         println!("[ext2]   inodes/group  = {}", self.inodes_per_group);
         println!("[ext2]   inode_size    = {} bytes", self.inode_size);
     }
+}
+
+// ============================================================
+// Block Group Descriptor (Lesson 12.2)
+// ============================================================
+
+/// One entry in the Block Group Descriptor Table. 32 bytes on disk.
+///
+/// The BGDT is a global table that describes every block group in the
+/// filesystem. Each entry tells us where that group's bitmaps and inode
+/// table live. For Lesson 12, only `inode_table` matters — it gives the
+/// block number where this group's inode array starts.
+#[derive(Debug)]
+pub struct BlockGroupDescriptor {
+    /// Block number of this group's block bitmap (1 bit per data block).
+    pub block_bitmap: u32,
+    /// Block number of this group's inode bitmap (1 bit per inode).
+    pub inode_bitmap: u32,
+    /// Block number where this group's inode table starts. The load-bearing
+    /// field for inode lookup.
+    pub inode_table: u32,
+    /// Free blocks in this group.
+    pub free_blocks_count: u16,
+    /// Free inodes in this group.
+    pub free_inodes_count: u16,
+    /// Number of directories in this group (used by the allocator to
+    /// spread directories across groups for locality).
+    pub used_dirs_count: u16,
+}
+
+impl BlockGroupDescriptor {
+    /// Parse 32 bytes into a BlockGroupDescriptor. Per the ext2 spec.
+    pub fn parse(bytes: &[u8]) -> Self {
+        assert!(bytes.len() >= 32, "BGD needs 32 bytes, got {}", bytes.len());
+
+        let u32_at = |off: usize| -> u32 {
+            u32::from_le_bytes(bytes[off..off + 4].try_into().unwrap())
+        };
+        let u16_at = |off: usize| -> u16 {
+            u16::from_le_bytes(bytes[off..off + 2].try_into().unwrap())
+        };
+
+        Self {
+            block_bitmap:       u32_at(0),
+            inode_bitmap:       u32_at(4),
+            inode_table:        u32_at(8),
+            free_blocks_count:  u16_at(12),
+            free_inodes_count:  u16_at(14),
+            used_dirs_count:    u16_at(16),
+        }
+    }
+
+    pub fn print(&self, group_index: u32) {
+        println!("[ext2] parsed block group descriptor {}:", group_index);
+        println!("[ext2]   block_bitmap  = {}", self.block_bitmap);
+        println!("[ext2]   inode_bitmap  = {}", self.inode_bitmap);
+        println!("[ext2]   inode_table   = {}    ← load-bearing", self.inode_table);
+        println!("[ext2]   free_blocks   = {}", self.free_blocks_count);
+        println!("[ext2]   free_inodes   = {}", self.free_inodes_count);
+        println!("[ext2]   used_dirs     = {}", self.used_dirs_count);
+    }
+}
+
+// ============================================================
+// Inode (Lesson 12.4)
+// ============================================================
+
+/// i_mode top-4-bit file-type masks.
+pub const S_IFMT:   u16 = 0xF000;
+pub const S_IFREG:  u16 = 0x8000; // regular file
+pub const S_IFDIR:  u16 = 0x4000; // directory
+pub const S_IFLNK:  u16 = 0xA000; // symbolic link
+pub const S_IFBLK:  u16 = 0x6000; // block device
+pub const S_IFCHR:  u16 = 0x2000; // character device
+pub const S_IFIFO:  u16 = 0x1000; // FIFO
+pub const S_IFSOCK: u16 = 0xC000; // socket
+
+/// The parsed on-disk inode. We model the 10 fields a teaching kernel
+/// needs: file type/permissions, size, link count, block count, and
+/// the 15 block pointers.
+#[derive(Debug)]
+pub struct Inode {
+    /// Packed file type (top 4 bits) + permissions (bottom 12 bits).
+    pub mode: u16,
+    /// Owner user ID (lower 16 bits; upper 16 in osd2 for 32-bit UIDs).
+    pub uid: u16,
+    /// File size in bytes.
+    pub size: u32,
+    /// Last-access time (Unix epoch seconds).
+    pub atime: u32,
+    /// Inode-change time (metadata modification).
+    pub ctime: u32,
+    /// Data-modification time.
+    pub mtime: u32,
+    /// Deletion time (0 if not deleted).
+    pub dtime: u32,
+    /// Owning group ID.
+    pub gid: u16,
+    /// Hard-link count (how many dirents point at this inode).
+    pub links_count: u16,
+    /// Number of 512-byte sectors used (NOT ext2 blocks).
+    pub blocks: u32,
+    /// 15 block pointers: 12 direct, 1 indirect, 1 double, 1 triple.
+    /// We don't dereference these in Lesson 12; that's Lesson 13.
+    pub block_pointers: [u32; 15],
+}
+
+impl Inode {
+    /// Parse the first 128 bytes of an on-disk inode into our struct.
+    /// We model the standard 128-byte struct even when s_inode_size is
+    /// larger (256+); bytes 128+ are extended attributes we don't touch.
+    pub fn parse(bytes: &[u8]) -> Self {
+        assert!(bytes.len() >= 128, "inode needs 128 bytes, got {}", bytes.len());
+
+        let u32_at = |off: usize| -> u32 {
+            u32::from_le_bytes(bytes[off..off + 4].try_into().unwrap())
+        };
+        let u16_at = |off: usize| -> u16 {
+            u16::from_le_bytes(bytes[off..off + 2].try_into().unwrap())
+        };
+
+        let mut block_pointers = [0u32; 15];
+        for i in 0..15 {
+            block_pointers[i] = u32_at(40 + i * 4);
+        }
+
+        Self {
+            mode:         u16_at(0),
+            uid:          u16_at(2),
+            size:         u32_at(4),
+            atime:        u32_at(8),
+            ctime:        u32_at(12),
+            mtime:        u32_at(16),
+            dtime:        u32_at(20),
+            gid:          u16_at(24),
+            links_count:  u16_at(26),
+            blocks:       u32_at(28),
+            block_pointers,
+        }
+    }
+
+    /// What kind of file is this? Returns the type mask (e.g., S_IFDIR).
+    pub fn file_type(&self) -> u16 {
+        self.mode & S_IFMT
+    }
+
+    pub fn is_dir(&self) -> bool { self.file_type() == S_IFDIR }
+    pub fn is_reg(&self) -> bool { self.file_type() == S_IFREG }
+    pub fn is_lnk(&self) -> bool { self.file_type() == S_IFLNK }
+
+    /// Human-readable file type label.
+    pub fn type_name(&self) -> &'static str {
+        match self.file_type() {
+            S_IFREG  => "regular file",
+            S_IFDIR  => "directory",
+            S_IFLNK  => "symlink",
+            S_IFBLK  => "block device",
+            S_IFCHR  => "char device",
+            S_IFIFO  => "fifo",
+            S_IFSOCK => "socket",
+            _        => "unknown",
+        }
+    }
+
+    pub fn print(&self, inode_num: u32) {
+        println!("[ext2] parsed inode {}:", inode_num);
+        println!(
+            "[ext2]   mode          = 0x{:04X}  ({}, perms 0o{:o})",
+            self.mode, self.type_name(), self.mode & 0o7777
+        );
+        println!("[ext2]   uid:gid       = {}:{}", self.uid, self.gid);
+        println!("[ext2]   size          = {} bytes", self.size);
+        println!("[ext2]   blocks        = {} sectors ({} ext2 blocks)",
+            self.blocks, self.blocks / 2);
+        println!("[ext2]   links_count   = {}", self.links_count);
+        let direct: Vec<u32> = self.block_pointers.iter().take(12)
+            .filter(|&&b| b != 0).copied().collect();
+        println!("[ext2]   block_ptrs    = direct {:?}, indirect={}, double={}, triple={}",
+            direct, self.block_pointers[12], self.block_pointers[13], self.block_pointers[14]);
+    }
+}
+
+/// Look up inode `inode_num` on disk and return its parsed struct.
+///
+/// Arithmetic:
+///   group      = (inode_num - 1) / inodes_per_group
+///   local_idx  = (inode_num - 1) % inodes_per_group
+///   byte_offset = bg_inode_table[group] * block_size + local_idx * inode_size
+///
+/// For inode 2 on our disk: group 0, local_idx 1, bg_inode_table = 5,
+/// block_size 1024, inode_size 256. Byte offset = 5*1024 + 1*256 = 5376.
+pub fn read_inode(
+    dev: &mut VirtioBlk,
+    sb: &Superblock,
+    bgd: &BlockGroupDescriptor,
+    inode_num: u32,
+) -> Inode {
+    assert!(inode_num >= 1, "inode numbers are 1-indexed");
+
+    let local_idx = (inode_num - 1) % sb.inodes_per_group;
+    let inode_byte = bgd.inode_table as u64 * sb.block_size as u64
+        + local_idx as u64 * sb.inode_size as u64;
+
+    println!(
+        "[ext2] reading inode {} (group 0, index {}, byte {})",
+        inode_num, local_idx, inode_byte
+    );
+
+    // The 128-byte inode may straddle a sector boundary. Read the two
+    // sectors that contain it, then index in.
+    let start_sector = inode_byte / 512;
+    let offset_in_buf = (inode_byte % 512) as usize;
+    let sector_a = dev.read_sector(start_sector);
+    let sector_b = dev.read_sector(start_sector + 1);
+    let mut buf = [0u8; 1024];
+    buf[..512].copy_from_slice(&sector_a);
+    buf[512..].copy_from_slice(&sector_b);
+
+    Inode::parse(&buf[offset_in_buf..offset_in_buf + 128])
+}
+///
+/// The BGDT lives in the block right after the superblock. For 1024-byte
+/// block filesystems, that's block 2 (superblock is block 1). Each entry
+/// is 32 bytes; entry N is at byte offset N * 32 within the BGDT block.
+///
+/// For our 1 MB disk with one block group, only `group_index = 0`
+/// makes sense — but the math generalizes to multi-group disks.
+pub fn read_block_group_descriptor(
+    dev: &mut VirtioBlk,
+    sb: &Superblock,
+    group_index: u32,
+) -> BlockGroupDescriptor {
+    let bgdt_block = sb.first_data_block + 1;
+    let bgdt_byte = bgdt_block as u64 * sb.block_size as u64;
+    let entry_byte = bgdt_byte + (group_index as u64) * 32;
+
+    println!(
+        "[ext2] reading block group descriptor {} (BGDT block {}, byte {})",
+        group_index, bgdt_block, entry_byte
+    );
+
+    // The 32-byte entry may straddle a sector boundary. For our disk
+    // (entry at byte 2048, sectors are 512 B), it doesn't. Read the
+    // containing sector, index into it.
+    let sector = (entry_byte / 512) as u64;
+    let offset_in_sector = (entry_byte % 512) as usize;
+    let sector_bytes = dev.read_sector(sector);
+
+    BlockGroupDescriptor::parse(&sector_bytes[offset_in_sector..offset_in_sector + 32])
 }

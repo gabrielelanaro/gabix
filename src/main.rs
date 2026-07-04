@@ -418,6 +418,27 @@ pub extern "C" fn _start(boot_info: &'static BootInfo) -> ! {
                     "blocks_count {} looks wrong", sb.blocks_count);
 
                 println!("[ext2] *** superblock parsed — ext2 filesystem recognized ***");
+
+                println!("[test] ext2 inode lookup (12.2-12.5)");
+                let bgd = ext2::read_block_group_descriptor(&mut virtio_dev, &sb, 0);
+                bgd.print(0);
+
+                assert!(bgd.inode_table != 0, "BGD inode_table must be non-zero");
+                assert!(bgd.free_inodes_count > 0, "should have free inodes");
+
+                let root_ino = ext2::EXT2_ROOT_INO;
+                let root_inode = ext2::read_inode(&mut virtio_dev, &sb, &bgd, root_ino);
+                root_inode.print(root_ino);
+
+                assert!(root_inode.is_dir(),
+                    "inode 2 should be a directory, got mode 0x{:04X} ({})",
+                    root_inode.mode, root_inode.type_name());
+                assert!(root_inode.size > 0, "root directory should be non-empty");
+                assert!(root_inode.block_pointers[0] != 0,
+                    "root directory needs at least one data block");
+
+                println!("[ext2] *** inode {} is the root directory — ready to walk (Lesson 13) ***",
+                    root_ino);
             } else {
                 println!("[virtio] failed to probe device");
             }
