@@ -63,8 +63,16 @@ pub fn exec_elf(path: &str) -> Result<ExecContext, &'static str> {
         header.entry, header.phnum, header.phentsize
     );
 
-    // 3. Fresh address space (kernel half deep-cloned in `new`).
-    let aspace = AddressSpace::new();
+    // 3. Fresh address space. `new()` copies entries 256–511 (kernel
+    //    high half) from current CR3. We also call `deep_clone_from_current`
+    //    to share the low-half kernel mappings (heap at 0x4444_4444_0000,
+    //    VGA buffer at 0xb8000, physical-memory direct map at
+    //    0x180_0000_0000). Without those, any kernel code that touches
+    //    heap/VGA/direct-map after switch_to() will page-fault — and
+    //    println! touches heap (allocates a String), so it'd crash
+    //    immediately.
+    let mut aspace = AddressSpace::new();
+    aspace.deep_clone_from_current();
 
     // 4. Walk the PHT, map each PT_LOAD.
     let mut load_count = 0u16;

@@ -510,10 +510,51 @@ pub extern "C" fn _start(boot_info: &'static BootInfo) -> ! {
     // request kernel services.
     syscall::init();
 
-    // M3 slice 3.6.b/c: jump to user mode. main does NOT return from this
-    // call — enter_user_mode is `-> !` because iretq transfers control
-    // to user code, which runs until it loops forever or page-faults.
-    user::enter_user_mode();
+    // ========================================================
+    // Lesson 16: exec /hello.elf
+    // ========================================================
+    // This is the mission landing. The kernel:
+    //   1. Resolves /hello.elf via VFS (Lessons 1-14)
+    //   2. Parses its header (Lesson 15)
+    //   3. Maps PT_LOAD segments into a fresh AddressSpace (Lesson 16)
+    //   4. Maps a user stack
+    //   5. Switches CR3 and iretqs to e_entry
+    // The program runs in ring 3 from a binary that came from disk.
+    println!("[test] exec /hello.elf (16.1-16.4) — the mission");
+    let ctx = match exec::exec_elf("/hello.elf") {
+        Ok(c) => c,
+        Err(e) => {
+            panic!("[exec] failed: {}", e);
+        }
+    };
+
+    // Switch CR3 to the new AS, then iretq to user mode.
+    ctx.aspace.switch_to();
+    println!("[exec] CR3 := new AS; jumping to user mode at rip=0x{:X}", ctx.entry);
+    println!("[exec] *** mission running: disk → ext2 → VFS → ELF → ring 3 ***");
+
+    // Disable interrupts during the iretq setup. The RFLAGS value
+    // pushed in the iretq frame re-enables them in user mode.
+    x86_64::instructions::interrupts::disable();
+
+    // Same iretq frame layout as user.rs: SS, RSP, RFLAGS, CS, RIP.
+    // Seg selectors 0x23/0x1B match the slice 4.5 GDT layout
+    // (USER_CODE64 = index 4 = 0x20 | RPL 3 = 0x23,
+    //  USER_DATA  = index 3 = 0x18 | RPL 3 = 0x1B).
+    unsafe {
+        core::arch::asm!(
+            "push 0x1B",            // SS (user data | RPL=3)
+            "push {rsp}",           // RSP (top of user stack)
+            "push 0x202",           // RFLAGS (reserved bit 1 + IF)
+            "push 0x23",            // CS (user code | RPL=3)
+            "push {rip}",           // RIP (= e_entry)
+            "iretq",
+            rsp = in(reg) ctx.stack_top,
+            rip = in(reg) ctx.entry,
+            options(nostack, nomem, preserves_flags),
+        );
+    }
+    unreachable!("iretq transfers control to user mode");
 }
 
 /// Counter incremented by worker_a every loop iteration. Atomic so it's
