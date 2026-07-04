@@ -42,9 +42,9 @@ kernel has a Linux counterpart we can read alongside.
 
 ### ELF execution
 - [x] ELF header parser (magic, class, endianness, program headers) — Lesson 15
-- [ ] PT_LOAD segments mapped into a fresh `AddressSpace`
-- [ ] `exec(path)` syscall — load ELF from filesystem, replace current process image
-- [ ] A user program compiled externally, written to the disk image, loaded and executed by the kernel
+- [x] PT_LOAD segments mapped into a fresh `AddressSpace` — Lesson 16
+- [x] `exec(path)` syscall — load ELF from filesystem, replace current process image — Lesson 16
+- [x] A user program compiled externally, written to the disk image, loaded and executed by the kernel — Lesson 16
 
 ### Polish (deferred — not on critical path)
 - [ ] `creat`, `mkdir`, `unlink` for runtime filesystem mutation (was Lesson 4 plan)
@@ -66,6 +66,7 @@ kernel has a Linux counterpart we can read alongside.
 - **Lesson 12** (ext2 inode lookup): two commits `ba06f20` (superblock extras) → `571ebba` (BGD + Inode + read_inode). Extended Superblock with `inodes_per_group` and `inode_size`. Added `BlockGroupDescriptor` (32 bytes), `Inode` (128 bytes parsed), `read_block_group_descriptor`, `read_inode`. Verified inode 2 is the root directory at block 40 with mode 0x41ED. See learning-records 0014.
 - **Lesson 13** (ext2 directory walk): single commit `2fdc4cc` (Dirent + read_block + walk_directory + lookup_in_dir). Variable-length dirent parser, linked-list traversal via rec_len. Root directory contents: `.`, `..`, `lost+found` all verified. `lookup_in_dir` finds lost+found → inode 11, returns None for missing names. See learning-records 0015.
 - **Lesson 15** (ELF header parser): four commits `fb36235` → `f480577`. New `src/elf.rs` module with `ElfHeader` (64-byte parse) + `ProgramHeader` (56-byte parse) + constants for ET_EXEC/EM_X86_64/PT_LOAD/PF_*. The `make-disk.sh` script cross-compiles a 4-line `x86_64-unknown-none` binary (`rustc -C relocation-model=static`) and writes it to `/hello.elf`. Kernel reads /hello.elf via VFS, parses header + walks PHT, confirms entry 0x201190 inside an r-x LOAD segment. See learning-records 0016.
+- **Lesson 16** (exec): three commits `9f2049a` → `407905f`. New `src/exec.rs` module: `exec_elf(path)` chains VFS → parser → `map_segment` for each PT_LOAD → `setup_user_stack`. main.rs calls it, switches CR3 to the new `AddressSpace`, and `iretq`s to ring 3 at `e_entry=0x201190`. Two new helpers in `src/memory.rs` (`zero_frame`, `write_to_frame_at`). Verified end-to-end: kernel reads ELF from disk, maps it into a fresh AS, jumps to user mode, timer interrupts prove round-trip ring transitions work. **Mission: plug in a disk, load an ELF, execute it — done.**
 
 ## Constraints
 - Rust on bare-metal x86-64 (`#![no_std]`)
