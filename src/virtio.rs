@@ -596,14 +596,14 @@ struct VirtqDesc {
 // ============================================================
 
 /// virtio-blk operation types — the `type` field of `VirtioBlkReq`.
-const VIRTIO_BLK_T_IN: u32 = 0;    // read
-const VIRTIO_BLK_T_OUT: u32 = 1;   // write
-const VIRTIO_BLK_T_FLUSH: u32 = 4; // flush cache
+pub const VIRTIO_BLK_T_IN: u32 = 0;    // read
+pub const VIRTIO_BLK_T_OUT: u32 = 1;   // write
+pub const VIRTIO_BLK_T_FLUSH: u32 = 4; // flush cache
 
 /// virtio-blk status byte values — written by the device on completion.
-const VIRTIO_BLK_S_OK: u8 = 0;
-const VIRTIO_BLK_S_IOERR: u8 = 1;
-const VIRTIO_BLK_S_UNSUPP: u8 = 2;
+pub const VIRTIO_BLK_S_OK: u8 = 0;
+pub const VIRTIO_BLK_S_IOERR: u8 = 1;
+pub const VIRTIO_BLK_S_UNSUPP: u8 = 2;
 
 /// virtio-blk request header. Sent as the first buffer in every request.
 /// `repr(C)` so fields land at the spec-mandated offsets.
@@ -912,6 +912,18 @@ impl VirtQueue {
     /// Number of descriptors currently free.
     pub fn num_free(&self) -> usize {
         self.free_list.len()
+    }
+
+    /// Diagnostic: snapshot of (avail_idx, used_idx, last_used_idx) for
+    /// debugging queue state. Useful when a request seems to vanish.
+    pub fn debug_state(&self) -> (u16, u16, u16) {
+        let avail_idx_atomic: *const AtomicU16 =
+            (self.avail_virt + 2) as *const AtomicU16;
+        let used_idx_atomic: *const AtomicU16 =
+            (self.used_virt + 2) as *const AtomicU16;
+        let avail = unsafe { (*avail_idx_atomic).load(Ordering::Acquire) };
+        let used = unsafe { (*used_idx_atomic).load(Ordering::Acquire) };
+        (avail, used, self.last_used_idx)
     }
 
     /// Write the four fields of descriptor `idx`. Used by future steps

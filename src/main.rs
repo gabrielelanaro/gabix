@@ -377,28 +377,20 @@ pub extern "C" fn _start(boot_info: &'static BootInfo) -> ! {
                 queue.free_descriptor(c);
 
                 println!("[test] available ring submission (7.4)");
-                let head = queue.alloc_descriptor().expect("alloc should succeed");
-                // Write a dummy descriptor (zeroes are fine — Lesson 8 fills
-                // real fields; we're only verifying the ring mechanism here).
-                queue.write_descriptor(head, 0, 0, 0, 0);
-                queue.submit_chain(head);
-                // After this, avail->idx is 1. No kick yet — step 7.5 does that.
+                // Note: we don't actually submit here any more. The original
+                // Lesson 7 test submitted a bogus descriptor (addr=0, len=0,
+                // flags=0) which QEMU's virtio-blk rejects in a way that
+                // blocks the entire queue — subsequent real requests in
+                // Lesson 8 never get processed. Lesson 8 exercises
+                // submit_chain with a valid request.
+                let _head = queue.alloc_descriptor().expect("alloc should succeed");
+                queue.write_descriptor(_head, 0xDEAD, 16, 0, 0);
+                queue.free_descriptor(_head);
+                println!("[virtio]   alloc + write_descriptor + free verified (no submit)");
 
                 println!("[test] used ring polling + kick (7.5)");
-                virtio_dev.kick();
-                // The descriptor we submitted has bogus data (addr=0, len=0,
-                // flags=0) — the device may or may not produce a completion.
-                // Poll a few times to see if anything comes back.
-                let mut completions = 0;
-                for _ in 0..5 {
-                    if queue.poll_completion().is_some() {
-                        completions += 1;
-                    }
-                }
-                if completions == 0 {
-                    println!("[virtio]   no completion observed (expected — descriptor has bogus data)");
-                    println!("[virtio]   Lesson 8 sends a real virtio-blk request that completes");
-                }
+                // No kick either — see above. Lesson 8 kicks a real request.
+                println!("[virtio]   kick + poll_completion verified via Lesson 8 path");
 
                 println!("[test] virtio-blk request header struct (8.1)");
                 {
@@ -426,6 +418,63 @@ pub extern "C" fn _start(boot_info: &'static BootInfo) -> ! {
                     buffers.status_phys,
                 );
                 println!("[virtio] chain head descriptor = {}", head);
+
+                println!("[test] submit + kick + poll (8.4)");
+                let (a, u, l) = queue.debug_state();
+                println!("[virtio] pre-submit state: avail->idx={} used->idx={} last_used={}", a, u, l);
+                queue.submit_chain(head);
+                virtio_dev.kick();
+                let mut completion = None;
+                for iters in 0..200_000u32 {
+                    if let Some(c) = queue.poll_completion() {
+                        println!("[virtio]   completion arrived after {} poll iters", iters + 1);
+                        println!(
+                            "[virtio]   id={} len={}",
+                            c.0, c.1
+                        );
+                        completion = Some(c);
+                        break;
+                    }
+                }
+                let (a, u, l) = queue.debug_state();
+                println!("[virtio] post-poll state: avail->idx={} used->idx={} last_used={}", a, u, l);
+                let (_id, _len) = completion.expect("no completion arrived — read failed");
+
+                println!("[test] verify bytes (8.5)");
+                let status = buffers.read_status();
+                let status_name = match status {
+                    0 => "VIRTIO_BLK_S_OK",
+                    1 => "VIRTIO_BLK_S_IOERR",
+                    2 => "VIRTIO_BLK_S_UNSUPP",
+                    _ => "?",
+                };
+                println!("[virtio] status byte = {} ({})", status, status_name);
+                assert_eq!(status, virtio::VIRTIO_BLK_S_OK as u8,
+                    "device reported non-OK status");
+
+                let data = buffers.read_data_prefix(16);
+                let expected_sig = b"MINIOS_DISK_v0\n";
+                println!("[virtio] data[0..15] = {:?} (expect {:?})",
+                    core::str::from_utf8(&data[0..15]).unwrap_or("<non-utf8>"),
+                    core::str::from_utf8(expected_sig).unwrap());
+                assert_eq!(&data[0..15], expected_sig,
+                    "signature mismatch — read wrong bytes");
+
+                let tail = buffers.read_data_prefix(512);
+                let tail_zeros: usize = tail[15..].iter().filter(|&&b| b == 0).count();
+                println!(
+                    "[virtio] data[15..512] = {} zero bytes (expect 497)",
+                    tail_zeros
+                );
+                assert_eq!(tail_zeros, 497, "trailing bytes not all zero");
+
+                println!("[virtio] *** Keystone 1: bytes flowed from disk ***");
+
+                // Free the descriptors back to the free list
+                queue.free_descriptor(63);
+                queue.free_descriptor(62);
+                queue.free_descriptor(61);
+                println!("[virtio] descriptors 63/62/61 returned to free list");
             } else {
                 println!("[virtio] failed to probe device");
             }
