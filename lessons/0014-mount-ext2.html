@@ -1,0 +1,513 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Lesson 14 — Mount ext2 via Filesystem Trait</title>
+<link rel="stylesheet" href="../assets/lesson.css">
+<link rel="stylesheet" href="../assets/byte-layout.css">
+<link rel="stylesheet" href="../assets/explorable.css">
+<style>
+  .layer-stack {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1.25rem 1.5rem;
+    margin: 1.5rem 0;
+    font-family: var(--font-mono);
+    font-size: 0.82rem;
+  }
+  .layer-row {
+    display: grid;
+    grid-template-columns: 1fr 2fr;
+    gap: 1rem;
+    padding: 0.4rem 0;
+    border-bottom: 1px dashed var(--border);
+  }
+  .layer-row:last-child { border-bottom: none; }
+  .layer-name { color: var(--accent); font-weight: 600; }
+  .layer-desc {
+    color: var(--text);
+    font-family: var(--font-serif);
+    font-size: 0.88rem;
+  }
+  .layer-row.current {
+    background: var(--accent-soft);
+    margin: 0 -0.5rem;
+    padding: 0.4rem 0.5rem;
+    border-radius: 3px;
+    border-bottom: none;
+  }
+
+  .ondemand-flow {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1.25rem 1.5rem;
+    margin: 1.5rem 0;
+    font-family: var(--font-mono);
+    font-size: 0.82rem;
+    line-height: 1.65;
+  }
+  .flow-step {
+    display: grid;
+    grid-template-columns: 24px 1fr;
+    gap: 0.8rem;
+    padding: 0.3rem 0;
+  }
+  .flow-step + .flow-step::before {
+    content: "↓";
+    color: var(--accent);
+    text-align: center;
+    margin-left: 8px;
+    grid-column: 1 / -1;
+  }
+  .flow-num {
+    color: var(--accent);
+    font-weight: 700;
+    text-align: right;
+  }
+  .flow-body { color: var(--text); }
+  .flow-body code { color: var(--accent); }
+
+  .step {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1rem 1.25rem;
+    margin: 1.25rem 0;
+  }
+  .step-num {
+    font-family: var(--font-mono);
+    font-size: 0.78rem;
+    font-weight: 600;
+    color: var(--accent);
+    background: var(--accent-soft);
+    padding: 2px 8px;
+    border-radius: 3px;
+    margin-right: 0.5rem;
+  }
+  .step-title {
+    font-family: var(--font-sans);
+    font-weight: 600;
+    font-size: 1rem;
+    margin-bottom: 0.4rem;
+  }
+  .step-detail {
+    font-family: var(--font-serif);
+    font-size: 0.95rem;
+    color: var(--text);
+  }
+  .step-detail p:last-child { margin-bottom: 0; }
+</style>
+</head>
+<body>
+<article class="lesson">
+
+  <header class="lesson-header">
+    <div class="lesson-eyebrow">Lesson 14 · M5 · ext2 phase — VFS becomes filesystem-agnostic</div>
+    <h1 class="lesson-title">Mount ext2 via Filesystem Trait</h1>
+    <p class="lesson-subtitle">Define a <code>Filesystem</code> trait. ext2 implements it. VFS becomes generic — could mount a RAM disk alongside, plug in FAT later, etc.</p>
+    <div class="lesson-meta">
+      <span><strong>Read time</strong> ~25 min</span>
+      <span><strong>Build time</strong> ~35–50 min</span>
+      <span><strong>Prereq</strong> <a href="0013-ext2-directory-walk.html">Lesson 13</a></span>
+    </div>
+  </header>
+
+  <div class="content">
+
+  <p class="lead">
+    Lessons 10–13 built the ext2 reading layer. Lesson 14 plugs it
+    into VFS via a <code>Filesystem</code> trait &mdash; the same
+    abstraction Linux uses (<code>struct super_operations</code>,
+    <code>struct inode_operations</code>, <code>struct file_operations</code>).
+    The VFS layer stops knowing about ext2 specifically; it just
+    calls trait methods. ext2 provides the implementation. Future
+    filesystems implement the same trait.
+  </p>
+
+  <h2>Where we are in the storage stack</h2>
+
+  <div class="layer-stack">
+    <div class="layer-row">
+      <span class="layer-name">VFS (open / read / write)</span>
+      <span class="layer-desc">calls Filesystem trait &mdash; agnostic to backend</span>
+    </div>
+    <div class="layer-row current">
+      <span class="layer-name">Filesystem trait ← Lesson 14</span>
+      <span class="layer-desc">lookup, inode_kind, list_dir, read_file</span>
+    </div>
+    <div class="layer-row">
+      <span class="layer-name">ext2 implementation</span>
+      <span class="layer-desc"><code>impl Filesystem for Ext2</code> &mdash; Lessons 10–13</span>
+    </div>
+    <div class="layer-row">
+      <span class="layer-name">block layer + virtio-blk</span>
+      <span class="layer-desc">Lessons 5–9</span>
+    </div>
+  </div>
+
+  <h2>The trait</h2>
+
+  <p>
+    A filesystem is anything that can answer these four questions:
+  </p>
+
+<pre><span class="k">pub trait</span> <span class="t">Filesystem</span> {
+    <span class="c">/// What kind of thing is inode N? File, dir, or doesn't exist?</span>
+    <span class="k">fn</span> inode_kind(&amp;<span class="k">self</span>, ino: <span class="t">u64</span>) -&gt; <span class="t">Option</span>&lt;<span class="t">InodeKind</span>&gt;;
+
+    <span class="c">/// Find a child by name in a directory. Returns child's inode number.</span>
+    <span class="k">fn</span> lookup(&amp;<span class="k">self</span>, dir_ino: <span class="t">u64</span>, name: &amp;<span class="t">str</span>) -&gt; <span class="t">Option</span>&lt;<span class="t">u64</span>&gt;;
+
+    <span class="c">/// List a directory's entries: (name, inode_number) pairs.</span>
+    <span class="c">/// Used for caching translated dirents at the VFS layer.</span>
+    <span class="k">fn</span> list_dir(&amp;<span class="k">self</span>, dir_ino: <span class="t">u64</span>) -&gt; <span class="t">Option</span>&lt;<span class="t">Vec</span>&lt;(<span class="t">String</span>, <span class="t">u64</span>)&gt;&gt;;
+
+    <span class="c">/// Read a file's bytes.</span>
+    <span class="k">fn</span> read_file(&amp;<span class="k">self</span>, ino: <span class="t">u64</span>) -&gt; <span class="t">Option</span>&lt;<span class="t">Vec</span>&lt;<span class="t">u8</span>&gt;&gt;;
+}</pre>
+
+  <p>
+    That's it. Anything that can answer those four questions is a
+    filesystem the VFS can mount. The trait lives in
+    <code>fs.rs</code>; <code>fs.rs</code> has no knowledge of ext2.
+  </p>
+
+  <h2>The mounted-filesystem slot</h2>
+
+  <p>
+    One global holds the currently-mounted filesystem:
+  </p>
+
+<pre><span class="k">lazy_static!</span> {
+    <span class="k">pub static ref</span> MOUNTED_FS: <span class="t">Mutex</span>&lt;<span class="t">Option</span>&lt;<span class="t">Box</span>&lt;<span class="k">dyn</span> <span class="t">Filesystem</span>&gt;&gt;&gt; = <span class="t">Mutex</span>::new(<span class="t">None</span>);
+}
+
+<span class="k">pub fn</span> mount(fs: <span class="t">Box</span>&lt;<span class="k">dyn</span> <span class="t">Filesystem</span>&gt;) {
+    *<span class="t">MOUNTED_FS</span>.lock() = <span class="t">Some</span>(fs);
+}</pre>
+
+  <p>
+    One filesystem at a time. (Linux supports many mounts
+    simultaneously &mdash; we don't need that yet.)
+  </p>
+
+  <h2>The on-demand walk</h2>
+
+  <p>
+    <code>resolve_path</code> no longer walks an in-memory tree. It
+    calls the trait:
+  </p>
+
+  <div class="ondemand-flow">
+    <div class="flow-step">
+      <div class="flow-num">1</div>
+      <div class="flow-body">
+        Lock <code>MOUNTED_FS</code>, get the trait object. Start at
+        ext2 inode 2 (root, by convention).
+      </div>
+    </div>
+    <div class="flow-step">
+      <div class="flow-num">2</div>
+      <div class="flow-body">
+        For each path component: check
+        <code>inode_kind(current_ino) == Dir</code>, then call
+        <code>lookup(current_ino, component)</code> to get the child's
+        inode number.
+      </div>
+    </div>
+    <div class="flow-step">
+      <div class="flow-num">3</div>
+      <div class="flow-body">
+        At the leaf: check <code>REGISTRY</code> cache. On hit, return
+        cached <code>Arc&lt;Inode&gt;</code>. On miss, build fresh.
+      </div>
+    </div>
+    <div class="flow-step">
+      <div class="flow-num">4</div>
+      <div class="flow-body">
+        Building fresh: for a directory, call <code>list_dir</code>
+        and re-encode in fs.rs's dirent format (cached). For a file,
+        call <code>read_file</code> and store the bytes.
+      </div>
+    </div>
+    <div class="flow-step">
+      <div class="flow-num">5</div>
+      <div class="flow-body">
+        Insert into <code>REGISTRY</code> keyed by inode number,
+        return. Next call hits the cache.
+      </div>
+    </div>
+  </div>
+
+  <p>
+    The cache (REGISTRY) is the VFS layer's responsibility. The
+    filesystem implementation just answers trait queries. Clean
+    separation.
+  </p>
+
+  <h2>Ext2 as a struct, not free functions</h2>
+
+  <p>
+    Lesson 13's readers are free functions taking
+    <code>&amp;mut VirtioBlk</code>. Lesson 14 wraps them in a struct
+    that owns the device + parsed superblock + BGD:
+  </p>
+
+<pre><span class="k">pub struct</span> <span class="t">Ext2</span> {
+    dev: <span class="t">Mutex</span>&lt;<span class="t">VirtioBlk</span>&gt;,
+    sb: <span class="t">Superblock</span>,
+    bgd0: <span class="t">BlockGroupDescriptor</span>,
+}
+
+<span class="k">impl</span> <span class="t">Ext2</span> {
+    <span class="k">pub fn</span> new(mut dev: <span class="t">VirtioBlk</span>) -&gt; <span class="t">Self</span> {
+        <span class="k">let</span> sb = read_superblock(&amp;<span class="k">mut</span> dev);
+        <span class="k">let</span> bgd0 = read_block_group_descriptor(&amp;<span class="k">mut</span> dev, &amp;sb, <span class="n">0</span>);
+        <span class="t">Self</span> { dev: <span class="t">Mutex</span>::new(dev), sb, bgd0 }
+    }
+}
+
+<span class="k">impl</span> <span class="t">Filesystem</span> <span class="k">for</span> <span class="t">Ext2</span> {
+    <span class="k">fn</span> inode_kind(&amp;<span class="k">self</span>, ino: <span class="t">u64</span>) -&gt; <span class="t">Option</span>&lt;<span class="t">InodeKind</span>&gt; {
+        <span class="k">let</span> inode = <span class="k">self</span>.read_inode(ino <span class="k">as</span> <span class="t">u32</span>)?;
+        <span class="t">Some</span>(<span class="k">if</span> inode.is_dir() { <span class="t">InodeKind</span>::<span class="t">Dir</span> } <span class="k">else</span> { <span class="t">InodeKind</span>::<span class="t">File</span> })
+    }
+
+    <span class="k">fn</span> lookup(&amp;<span class="k">self</span>, dir_ino: <span class="t">u64</span>, name: &amp;<span class="t">str</span>) -&gt; <span class="t">Option</span>&lt;<span class="t">u64</span>&gt; {
+        <span class="k">let</span> dir = <span class="k">self</span>.read_inode(dir_ino <span class="k">as</span> <span class="t">u32</span>)?;
+        <span class="k">let</span> entries = <span class="k">self</span>.walk_directory(&amp;dir);
+        entries.iter().find(|e| e.name == name.as_bytes())
+               .map(|e| e.inode <span class="k">as</span> <span class="t">u64</span>)
+    }
+
+    <span class="c">// ... list_dir, read_file similarly</span>
+}</pre>
+
+  <p>
+    The old free functions become methods on <code>Ext2</code> (or
+    private helpers called from them). Callers in main.rs build an
+    <code>Ext2</code>, mount it, then VFS sees it as
+    <code>Box&lt;dyn Filesystem&gt;</code>.
+  </p>
+
+  <h2>Build steps — your turn</h2>
+
+  <p>
+    Four substeps. Step 14.1 puts a real file on disk. 14.2 defines
+    the trait + Ext2 struct. 14.3 wires VFS to use it. 14.4 verifies.
+  </p>
+
+  <div class="step">
+    <div class="step-title"><span class="step-num">14.1</span>Add a hello.txt file to the disk image</div>
+    <div class="step-detail">
+      <p>
+        Update <code>scripts/make-disk.sh</code> to use
+        <code>debugfs</code> (ships with e2fsprogs) to write a file:
+      </p>
+<pre><span class="c"># After mkfs.ext2 -F disk.img:</span>
+echo <span class="s">"hello from disk"</span> &gt; /tmp/hello.txt
+debugfs -w disk.img -R <span class="s">"write /tmp/hello.txt hello.txt"</span></pre>
+      <p>
+        Verify with <code>debugfs -R "ls /" disk.img</code>.
+      </p>
+    </div>
+  </div>
+
+  <div class="step">
+    <div class="step-title"><span class="step-num">14.2</span>Define Filesystem trait + Ext2 struct + impl</div>
+    <div class="step-detail">
+      <p>
+        In <code>src/fs.rs</code>: add the <code>Filesystem</code>
+        trait, the <code>MOUNTED_FS</code> global,
+        <code>mount(fs)</code> function. Around 30 lines.
+      </p>
+      <p>
+        In <code>src/ext2.rs</code>: add the <code>Ext2</code>
+        struct (holds <code>Mutex&lt;VirtioBlk&gt;</code> +
+        <code>Superblock</code> + <code>BlockGroupDescriptor</code>),
+        a <code>new(dev)</code> constructor, an <code>impl
+        Filesystem for Ext2</code> block. The existing readers
+        (read_inode, walk_directory, etc.) become methods on Ext2,
+        taking <code>&amp;self</code> instead of
+        <code>&amp;mut dev, &amp;sb, &amp;bgd</code>.
+      </p>
+      <p>
+        Add <code>read_file_data(&amp;self, ino) -&gt; Vec&lt;u8&gt;</code>
+        &mdash; reads an inode's data via direct block pointers.
+        Truncates to <code>inode.size</code> bytes.
+      </p>
+    </div>
+  </div>
+
+  <div class="step">
+    <div class="step-title"><span class="step-num">14.3</span>Rewrite resolve_path for the trait</div>
+    <div class="step-detail">
+      <p>
+        In <code>src/fs.rs</code>, replace the body of
+        <code>resolve_path</code>:
+      </p>
+<pre><span class="k">pub fn</span> resolve_path(path: &amp;<span class="t">str</span>) -&gt; <span class="t">Option</span>&lt;<span class="t">Arc</span>&lt;<span class="t">Inode</span>&gt;&gt; {
+    <span class="k">if</span> !path.starts_with(<span class="s">'/'</span>) { <span class="k">return None</span>; }
+
+    <span class="k">let</span> fs_guard = <span class="t">MOUNTED_FS</span>.lock();
+    <span class="k">let</span> fs = fs_guard.as_ref()?;
+
+    <span class="k">let mut</span> current_ino: <span class="t">u64</span> = <span class="n">2</span>;  <span class="c">// root by ext2 convention</span>
+    <span class="k">for</span> component <span class="k">in</span> path.split(<span class="s">'/'</span>).filter(|c| !c.is_empty()) {
+        <span class="k">let</span> kind = fs.inode_kind(current_ino)?;
+        <span class="k">if</span> kind != <span class="t">InodeKind</span>::<span class="t">Dir</span> { <span class="k">return None</span>; }
+        current_ino = fs.lookup(current_ino, component)?;
+    }
+
+    <span class="c">// Cache check</span>
+    <span class="k">if let Some</span>(cached) = <span class="t">REGISTRY</span>.lock().get(&amp;current_ino) {
+        <span class="k">return Some</span>(cached.clone());
+    }
+
+    <span class="c">// Cache miss: build fresh</span>
+    <span class="k">let</span> kind = fs.inode_kind(current_ino)?;
+    <span class="k">let</span> data = <span class="k">match</span> kind {
+        <span class="t">InodeKind</span>::<span class="t">Dir</span> =&gt; {
+            <span class="k">let</span> entries = fs.list_dir(current_ino)?;
+            <span class="k">let mut</span> bytes = <span class="t">Vec</span>::new();
+            <span class="k">for</span> (name, ino) <span class="k">in</span> entries {
+                bytes.extend(<span class="t">encode_dirent</span>(&amp;name, ino));
+            }
+            bytes
+        }
+        <span class="t">InodeKind</span>::<span class="t">File</span> =&gt; fs.read_file(current_ino)?,
+    };
+
+    <span class="k">let</span> inode = <span class="t">Arc</span>::new(<span class="t">Inode</span> {
+        ino: current_ino, kind, data: <span class="t">Mutex</span>::new(data),
+    });
+    <span class="t">REGISTRY</span>.lock().insert(current_ino, inode.clone());
+    <span class="t">Some</span>(inode)
+}</pre>
+    </div>
+  </div>
+
+  <div class="step">
+    <div class="step-title"><span class="step-num">14.4</span>Mount at boot + verify</div>
+    <div class="step-detail">
+      <p>
+        In <code>src/main.rs</code>, after the existing ext2 setup:
+      </p>
+<pre><span class="c">// Move ownership of virtio_dev into Ext2 struct, then mount it</span>
+<span class="k">let</span> ext2 = ext2::<span class="t">Ext2</span>::new(virtio_dev);
+<span class="k">let</span> mounted: <span class="t">Box</span>&lt;<span class="k">dyn</span> fs::<span class="t">Filesystem</span>&gt; = <span class="t">Box</span>::new(ext2);
+fs::mount(mounted);
+
+<span class="c">// Verify</span>
+<span class="k">let</span> hello = fs::resolve_path(<span class="s">"/hello.txt"</span>).expect(<span class="s">"should resolve"</span>);
+<span class="k">let</span> data = hello.data.lock();
+<span class="k">assert_eq!</span>(&amp;data[..], <span class="s">b"hello from disk\n"</span>);</pre>
+      <p>
+        Also verify:
+      </p>
+      <ul>
+        <li><code>resolve_path("/")</code> returns the root directory inode</li>
+        <li><code>resolve_path("/missing")</code> returns None</li>
+        <li>Calling <code>resolve_path("/hello.txt")</code> twice: second call hits cache, no ext2 walk</li>
+      </ul>
+    </div>
+  </div>
+
+  <h2>Verification — what success looks like</h2>
+
+<pre><span class="c">// ... Lesson 13 directory walk verified ...</span>
+[test] mount ext2 via Filesystem trait (14.1-14.4)
+[ext2] Ext2::new: read sb (magic=0xEF53), bgd0 (inode_table=8)
+[fs] mount: installed Filesystem implementation
+[test] resolve_path("/hello.txt") via on-demand walk
+[ext2] inode_kind(2) → Dir
+[ext2] lookup(2, "hello.txt") → walking dirents... found inode 12
+[ext2] inode_kind(12) → File
+[ext2] read_file(12) → 17 bytes via block_pointers[0]=41
+[fs] cached inode 12 in REGISTRY
+[test]   → ino=12, File, 17 bytes: "hello from disk\n"
+[test] resolve_path("/hello.txt") again (cache hit)
+[fs]   REGISTRY hit for inode 12 — no ext2 walk
+[test]   → ino=12 (cached)
+[test] resolve_path("/missing") → None
+[fs] *** ext2 mounted via trait — VFS is filesystem-agnostic ***</pre>
+
+  <p>
+    Note the second call hits cache. No disk reads. The trait makes
+    this clean &mdash; fs.rs doesn't even know it's ext2.
+  </p>
+
+  <h2>Primary source</h2>
+
+  <p>
+    Linux's VFS layer is documented in
+    <a href="https://www.kernel.org/doc/html/latest/filesystems/vfs.html">Documentation/filesystems/vfs.html</a>.
+    The trait corresponds roughly to <code>struct super_operations</code>
+    + <code>struct inode_operations</code> + <code>struct file_operations</code>
+    (we collapse them into one for simplicity).
+  </p>
+
+  <p>
+    Each Linux filesystem implements these structs: ext2 in
+    <a href="https://elixir.bootlin.com/linux/latest/source/fs/ext2/super.c">fs/ext2/super.c</a>,
+    ext4 in fs/ext4/, FAT in fs/fat/, etc. Adding a new filesystem
+    doesn't require touching VFS code &mdash; same trait-based
+    plug-in design we're using.
+  </p>
+
+  <div class="probe">
+    <div class="probe-title">Pause and think</div>
+    <p>
+      Our <code>Filesystem</code> trait has 4 methods. Linux's
+      <code>inode_operations</code> alone has 30+. What operations
+      is our trait missing that real-world use would need? Hint:
+      think about <code>create</code>, <code>unlink</code>,
+      <code>rename</code>, <code>mkdir</code>, <code>stat</code>.
+    </p>
+  </div>
+
+  </div>
+
+  <footer class="lesson-footer">
+    <div class="footer-block">
+      <h4>Code tour</h4>
+      <p style="margin:0;">
+        Once you start building, the
+        <a href="../tours/tour-0014-mount-ext2.html">tour of changes</a>
+        will be the companion to this lesson.
+      </p>
+    </div>
+
+    <div class="footer-block">
+      <h4>Up next</h4>
+      <p style="margin:0;">
+        Lesson 15 — ELF header parser. With files readable from disk
+        via VFS, parse an ELF binary's header (magic, class,
+        endianness, program headers). Lesson 16 maps its segments
+        into a fresh AddressSpace and exec it.
+      </p>
+    </div>
+
+    <div class="footer-block">
+      <h4>If anything was unclear</h4>
+      <p style="margin:0;">
+        Ask. Especially the trait design, the Box&lt;dyn&gt; pattern,
+        or how caching sits at the VFS layer vs inside the filesystem.
+      </p>
+    </div>
+
+    <nav class="lesson-nav">
+      <a href="0013-ext2-directory-walk.html">← Lesson 13: ext2 Directory Walk</a>
+      <a href="roadmap-disk-to-exec.html">Roadmap ↑</a>
+    </nav>
+  </footer>
+
+</article>
+
+<script src="../assets/explorable.js"></script>
+
+</body>
+</html>

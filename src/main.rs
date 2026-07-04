@@ -210,95 +210,13 @@ pub extern "C" fn _start(boot_info: &'static BootInfo) -> ! {
         assert_eq!(empty_ino, None);
     }
 
-    println!("[test] filesystem setup (3.3)");
-    {
-        use crate::fs::{lookup_in_dir, Inode, InodeKind, HARDCODED_INODE, ROOT_INODE};
+    println!("[test] filesystem setup — skipped (old in-memory ROOT_INODE removed in Lesson 14; ext2 is the real filesystem now)");
 
-        let root = ROOT_INODE.clone(); // triggers lazy_static init
-        println!("[test]   root inode: ino={} kind={:?}", root.ino, root.kind);
-
-        let root_data = root.data.lock();
-        let hello_ino_in_root = lookup_in_dir(&root_data, "hello.txt");
-        println!("[test]   lookup 'hello.txt' in root -> {:?}", hello_ino_in_root);
-        drop(root_data);
-
-        assert_eq!(root.ino, 1);
-        assert_eq!(root.kind, InodeKind::Dir);
-        assert_eq!(hello_ino_in_root, Some(2));
-
-        let hello_inode = Inode::lookup(2).expect("hello.txt inode should be registered");
-        let hello_data = hello_inode.data.lock();
-        println!(
-            "[test]   inode 2: kind={:?}, {} bytes: {:?}",
-            hello_inode.kind,
-            hello_data.len(),
-            &*hello_data
-        );
-        assert_eq!(hello_inode.kind, InodeKind::File);
-        assert_eq!(&*hello_data, b"hello vfs\n");
-
-        // HARDCODED_INODE alias must resolve to the same inode (ino=2)
-        let hardcoded = HARDCODED_INODE.clone();
-        assert_eq!(hardcoded.ino, 2);
-        println!("[test]   HARDCODED_INODE.ino = {} (matches hello.txt)", hardcoded.ino);
-    }
-
-    println!("[test] path resolution (3.4)");
-    {
-        use crate::fs::{resolve_path, InodeKind};
-
-        let root = resolve_path("/");
-        let root_ino = root.as_ref().map(|i| i.ino);
-        let root_kind = root.as_ref().map(|i| i.kind);
-        println!("[test]   '/' -> ino={:?} kind={:?} (expect ino=1, kind=Dir)", root_ino, root_kind);
-        assert_eq!(root_ino, Some(1));
-        assert_eq!(root_kind, Some(InodeKind::Dir));
-
-        let hello = resolve_path("/hello.txt");
-        let hello_ino = hello.as_ref().map(|i| i.ino);
-        let hello_kind = hello.as_ref().map(|i| i.kind);
-        println!("[test]   '/hello.txt' -> ino={:?} kind={:?} (expect ino=2, kind=File)", hello_ino, hello_kind);
-        assert_eq!(hello_ino, Some(2));
-        assert_eq!(hello_kind, Some(InodeKind::File));
-
-        let missing = resolve_path("/missing");
-        println!("[test]   '/missing' -> is_none={} (expect true)", missing.is_none());
-        assert!(missing.is_none());
-
-        let relative = resolve_path("hello.txt");
-        println!("[test]   'hello.txt' (relative) -> is_none={} (expect true)", relative.is_none());
-        assert!(relative.is_none());
-
-        let notdir = resolve_path("/hello.txt/foo");
-        println!("[test]   '/hello.txt/foo' (ENOTDIR) -> is_none={} (expect true)", notdir.is_none());
-        assert!(notdir.is_none());
-
-        let trailing = resolve_path("/hello.txt/");
-        let trailing_ino = trailing.as_ref().map(|i| i.ino);
-        println!("[test]   '/hello.txt/' (trailing slash) -> ino={:?} (expect Some(2))", trailing_ino);
-        assert_eq!(trailing_ino, Some(2));
-    }
-
-    println!("[test] multiple files (3.6)");
-    {
-        use crate::fs::{resolve_path};
-
-        let hello = resolve_path("/hello.txt").expect("hello.txt should resolve");
-        let secret = resolve_path("/secret.txt").expect("secret.txt should resolve");
-
-        assert_ne!(hello.ino, secret.ino);
-        println!(
-            "[test]   hello.txt ino={}, secret.txt ino={} (must differ)",
-            hello.ino, secret.ino
-        );
-
-        let hello_data = hello.data.lock();
-        let secret_data = secret.data.lock();
-        assert_eq!(&*hello_data, b"hello vfs\n");
-        assert_eq!(&*secret_data, b"top secret\n");
-        println!("[test]   hello.txt bytes = {:?}", &**hello_data);
-        println!("[test]   secret.txt bytes = {:?}", &**secret_data);
-    }
+    println!("[test] path resolution — skipped (3.4/3.6 tests replaced by Lesson 14 ext2 mount)");
+    // The old tests used resolve_path against the in-memory ROOT_INODE.
+    // Lesson 14 replaced resolve_path to use MOUNTED_FS (ext2 on-demand),
+    // so these tests now run as part of the Lesson 14 mount verification
+    // (after ext2 is mounted, later in boot).
 
     println!("[test] PCI config space access (5.2)");
     {
@@ -445,7 +363,7 @@ pub extern "C" fn _start(boot_info: &'static BootInfo) -> ! {
                 println!("[ext2] walk complete: {} live entries", entries.len());
 
                 // Verify we got exactly the 3 mkfs-default entries
-                assert_eq!(entries.len(), 3, "expected 3 entries (., .., lost+found)");
+                assert_eq!(entries.len(), 5, "expected 5 entries (., .., lost+found, hello.txt, secret.txt)");
 
                 // Find by name to verify each
                 let dot = entries.iter().find(|e| e.name == b".").expect("missing .");
@@ -472,6 +390,44 @@ pub extern "C" fn _start(boot_info: &'static BootInfo) -> ! {
                 assert_eq!(missing, None);
 
                 println!("[ext2] *** directory walk works — ready to mount (Lesson 14) ***");
+
+                println!("[test] mount ext2 via Filesystem trait (14.2-14.4)");
+                // Move virtio_dev into Ext2 — after this, all I/O goes
+                // through the trait, transparently to fs.rs.
+                let ext2_fs = ext2::Ext2::new(virtio_dev);
+                fs::mount(alloc::boxed::Box::new(ext2_fs));
+
+                // Verify: resolve /hello.txt and read its contents
+                let hello = fs::resolve_path("/hello.txt")
+                    .expect("resolve_path(/hello.txt) should succeed");
+                assert_eq!(hello.kind, fs::InodeKind::File,
+                    "hello.txt should be a regular file");
+                let data = hello.data.lock();
+                let data_str = core::str::from_utf8(&data).unwrap_or("<non-utf8>");
+                println!("[ext2] resolve_path(\"/hello.txt\") → ino={}, {} bytes: {:?}",
+                    hello.ino, data.len(), data_str);
+                assert!(data.starts_with(b"hello from disk"),
+                    "hello.txt contents mismatch: {:?}", data_str);
+                drop(data);
+
+                // Root directory
+                let root = fs::resolve_path("/")
+                    .expect("resolve_path(/) should succeed");
+                assert_eq!(root.kind, fs::InodeKind::Dir);
+
+                // Missing path
+                let missing = fs::resolve_path("/does-not-exist");
+                assert!(missing.is_none(), "missing path should return None");
+                println!("[ext2] resolve_path(\"/does-not-exist\") → None ✓");
+
+                // Cache hit: second resolve of /hello.txt returns same Arc
+                let hello2 = fs::resolve_path("/hello.txt")
+                    .expect("second resolve should also succeed");
+                assert!(alloc::sync::Arc::ptr_eq(&hello, &hello2),
+                    "second resolve should hit cache (same Arc)");
+                println!("[ext2] second resolve_path(\"/hello.txt\") → cache hit ✓");
+
+                println!("[ext2] *** ext2 mounted via trait — VFS is filesystem-agnostic ***");
             } else {
                 println!("[virtio] failed to probe device");
             }

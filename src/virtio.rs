@@ -288,8 +288,7 @@ impl VirtioBlk {
     ///   8. Free the descriptors
     ///   9. Copy the 512 bytes out of the DMA buffer into a stack array
     pub fn read_sector(&mut self, sector: u64) -> [u8; 512] {
-        println!("[virtio] read_sector(sector={})", sector);
-
+        println!("[virtio] read_sector({})", sector);
         let buffers = BlkBuffers::new();
         let req = VirtioBlkReq::new_read(sector);
         buffers.write_header(&req);
@@ -323,9 +322,6 @@ impl VirtioBlk {
         let mut block = [0u8; 512];
         let data_view = buffers.read_data_prefix(512);
         block.copy_from_slice(&data_view);
-
-        println!("[virtio]   read_sector(sector={}) complete ({} bytes)", sector, completion.1);
-
         block
     }
 
@@ -643,10 +639,10 @@ impl VirtioBlk {
             write_volatile(notify_addr as *mut u16, 0);
         }
 
-        println!(
-            "[virtio] kick: wrote queue 0 to notify register at virt 0x{:X} (notify_off={} * mult={})",
-            notify_addr, queue_notify_off, self.notify_off_multiplier
-        );
+        // println!(
+        //     "[virtio] kick: wrote queue 0 to notify register at virt 0x{:X} (notify_off={} * mult={})",
+        //     notify_addr, queue_notify_off, self.notify_off_multiplier
+        // );
     }
 }
 
@@ -773,20 +769,6 @@ impl BlkBuffers {
             core::ptr::write_bytes(data_virt as *mut u8, 0, 4096);
             core::ptr::write_bytes(status_virt as *mut u8, 0, 4096);
         }
-
-        println!("[virtio] blk buffers allocated (1 frame each)");
-        println!(
-            "[virtio]   header:  virt 0x{:X} phys 0x{:X}",
-            header_virt, header_phys
-        );
-        println!(
-            "[virtio]   data:    virt 0x{:X} phys 0x{:X}",
-            data_virt, data_phys
-        );
-        println!(
-            "[virtio]   status:  virt 0x{:X} phys 0x{:X}",
-            status_virt, status_phys
-        );
 
         Self {
             header_virt,
@@ -1077,18 +1059,18 @@ impl VirtQueue {
             0,
         );
 
-        println!(
-            "[virtio]   desc[head={}] addr=0x{:X} len=16  flags=0x{:02X} (F_NEXT)         next={}",
-            head, header_phys, VIRTQ_DESC_F_NEXT, mid
-        );
-        println!(
-            "[virtio]   desc[mid ={}] addr=0x{:X} len=512 flags=0x{:02X} (F_NEXT|F_WRITE) next={}",
-            mid, data_phys, VIRTQ_DESC_F_NEXT | VIRTQ_DESC_F_WRITE, tail
-        );
-        println!(
-            "[virtio]   desc[tail={}] addr=0x{:X} len=1   flags=0x{:02X} (F_WRITE)        next=0",
-            tail, status_phys, VIRTQ_DESC_F_WRITE
-        );
+        // println!(
+        //     "[virtio]   desc[head={}] addr=0x{:X} len=16  flags=0x{:02X} (F_NEXT)         next={}",
+        //     head, header_phys, VIRTQ_DESC_F_NEXT, mid
+        // );
+        // println!(
+        //     "[virtio]   desc[mid ={}] addr=0x{:X} len=512 flags=0x{:02X} (F_NEXT|F_WRITE) next={}",
+        //     mid, data_phys, VIRTQ_DESC_F_NEXT | VIRTQ_DESC_F_WRITE, tail
+        // );
+        // println!(
+        //     "[virtio]   desc[tail={}] addr=0x{:X} len=1   flags=0x{:02X} (F_WRITE)        next=0",
+        //     tail, status_phys, VIRTQ_DESC_F_WRITE
+        // );
 
         (head, mid, tail)
     }
@@ -1133,12 +1115,12 @@ impl VirtQueue {
         // after the data is on record.
         let _new_idx = unsafe { (*idx_atomic).fetch_add(1, Ordering::Release) };
 
-        println!(
-            "[virtio] submit_chain({}): avail->idx {} -> {}",
-            head_index,
-            old_idx,
-            old_idx.wrapping_add(1)
-        );
+        // println!(
+        //     "[virtio] submit_chain({}): avail->idx {} -> {}",
+        //     head_index,
+        //     old_idx,
+        //     old_idx.wrapping_add(1)
+        // );
 
         old_idx
     }
@@ -1183,13 +1165,14 @@ impl VirtQueue {
         };
 
         self.last_used_idx = self.last_used_idx.wrapping_add(1);
-        println!(
-            "[virtio] poll_completion: used->idx {} -> {}, id={} len={}",
-            self.last_used_idx.wrapping_sub(1),
-            current,
-            id,
-            len
-        );
+
+        // println!(
+        //     "[virtio] poll_completion: used->idx {} -> {}, id={} len={}",
+        //     self.last_used_idx.wrapping_sub(1),
+        //     current,
+        //     id,
+        //     len
+        // );
 
         Some((id, len))
     }

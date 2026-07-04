@@ -15,7 +15,9 @@
 //! hand `Arc<File>` clones out so the scheduler and the syscall handler can
 //! both touch the same File without aliasing.
 
+use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
+use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
@@ -183,48 +185,71 @@ pub fn lookup_in_dir(dir_bytes: &[u8], name: &str) -> Option<u64> {
 
 /// Resolve an absolute path to the inode it points at.
 ///
-/// Returns `Some(Arc<Inode>)` on success, `None` on any failure:
-///   - path doesn't start with `/` (relative paths not supported yet)
-///   - intermediate component isn't a directory (`ENOTDIR`)
-///   - component name not found in the parent directory (`ENOENT`)
-///   - inode number not registered (shouldn't happen with our registry design)
+/// On-demand walk via the mounted filesystem trait. For each path
+/// component, ask the trait to look it up in the current directory.
+/// At the leaf, check the REGISTRY cache; on miss, build a fresh
+/// `Arc<Inode>` from the trait's data.
 ///
 /// Algorithm:
-///   1. Path must start with `/`. We don't support relative paths yet.
-///   2. Start at `ROOT_INODE`.
-///   3. Split on `/`, drop empty components (handles leading `/`, `//`,
-///      trailing `/`).
-///   4. For each component:
-///        a. Current must be `InodeKind::Dir`, else `ENOTDIR`.
-///        b. Look up the component name in current's bytes via `lookup_in_dir`.
-///        c. Look up the returned inode number in `REGISTRY` via `Inode::lookup`.
-///        d. Descend.
-///   5. Return the final inode (kind unchecked — caller decides whether to
-///      care that it's a file or directory).
+///   1. Path must start with `/`. Relative paths not supported.
+///   2. Start at ext2 inode 2 (root, by convention).
+///   3. For each component:
+///        a. Check `inode_kind(current) == Dir`, else ENOTDIR.
+///        b. `lookup(current, component)` returns child's inode number.
+///   4. At leaf: check REGISTRY cache. Hit → return cached.
+///   5. Miss: build a fresh `Arc<Inode>`. For directories, call
+///      `list_dir` and re-encode in fs.rs dirent format. For files,
+///      call `read_file` and store the bytes. Insert into REGISTRY,
+///      return.
 ///
-/// Lock discipline: locks each directory's data only as long as needed to
-/// read its entries, then drops the guard before locking the `REGISTRY`. No
-/// nested locks.
+/// Subsequent calls for the same path hit the cache — no disk reads.
 pub fn resolve_path(path: &str) -> Option<Arc<Inode>> {
     if !path.starts_with('/') {
         return None;
     }
 
-    let mut current = ROOT_INODE.clone();
+    // Lock the mounted filesystem for the duration of the walk.
+    // Single-threaded kernel, so no contention.
+    let fs_guard = MOUNTED_FS.lock();
+    let fs = fs_guard.as_ref()?;
+
+    let mut current_ino: u64 = 2; // ext2 root, by convention
 
     for component in path.split('/').filter(|c| !c.is_empty()) {
-        if current.kind != InodeKind::Dir {
+        // Current must be a directory.
+        let kind = fs.inode_kind(current_ino)?;
+        if kind != InodeKind::Dir {
             return None; // ENOTDIR
         }
-
-        let dir_data = current.data.lock();
-        let next_ino = lookup_in_dir(&dir_data, component)?;
-        drop(dir_data);
-
-        current = Inode::lookup(next_ino)?;
+        current_ino = fs.lookup(current_ino, component)?;
     }
 
-    Some(current)
+    // Cache check.
+    if let Some(cached) = REGISTRY.lock().get(&current_ino) {
+        return Some(cached.clone());
+    }
+
+    // Cache miss: build fresh.
+    let kind = fs.inode_kind(current_ino)?;
+    let data: Vec<u8> = match kind {
+        InodeKind::Dir => {
+            let entries = fs.list_dir(current_ino)?;
+            let mut bytes = Vec::new();
+            for (name, child_ino) in entries {
+                bytes.extend(encode_dirent(&name, child_ino));
+            }
+            bytes
+        }
+        InodeKind::File => fs.read_file(current_ino)?,
+    };
+
+    let inode = Arc::new(Inode {
+        ino: current_ino,
+        kind,
+        data: Mutex::new(data),
+    });
+    REGISTRY.lock().insert(current_ino, inode.clone());
+    Some(inode)
 }
 
 // ============================================================
@@ -326,60 +351,51 @@ impl FdTable {
 // The filesystem itself — root directory and its initial contents
 // ============================================================
 
-/// Reserved inode number for the root directory. Linux's ext4 uses inode 2
-/// for the root of a fresh filesystem; we use 1 for simplicity (Linux reserves
-/// inode 1 for its "bad blocks" list, which we don't have).
-pub const ROOT_INO: u64 = 1;
+/// Reserved inode number for the root directory. ext2 uses inode 2.
+/// (Lesson 1-3 used inode 1 for the old in-memory ROOT_INODE; that
+/// was replaced by ext2 mount in Lesson 14.)
+pub const ROOT_INO: u64 = 2;
 
-/// Reserved inode number for the `hello.txt` file. Hardcoded so the boot test
-/// in step 3.3 can assert it specifically. Step 3.6 adds `secret.txt` at ino 3.
-const HELLO_INO: u64 = 2;
+// ============================================================
+// Filesystem trait — VFS becomes filesystem-agnostic (Lesson 14)
+// ============================================================
 
-/// Reserved inode number for the `secret.txt` file. Step 3.6 adds this so we
-/// can prove path resolution distinguishes between multiple files.
-const SECRET_INO: u64 = 3;
+/// A filesystem is anything that can answer these four questions.
+///
+/// VFS calls trait methods; specific filesystems (ext2 now, future
+/// ones later) implement them. This is the same pattern Linux uses
+/// with `struct super_operations` + `struct inode_operations`
+/// + `struct file_operations` (we collapse them into one for
+/// simplicity).
+///
+/// Inode numbers (`u64`) are opaque to VFS — each filesystem
+/// assigns them per its own convention. ext2 uses 2 for root.
+pub trait Filesystem {
+    /// What kind of thing is inode N? Returns `None` if it doesn't exist.
+    fn inode_kind(&self, ino: u64) -> Option<InodeKind>;
 
+    /// Find a child by name in a directory. Returns the child's
+    /// inode number, or `None` if not found.
+    fn lookup(&self, dir_ino: u64, name: &str) -> Option<u64>;
+
+    /// List a directory's entries as (name, inode_number) pairs.
+    /// Used by VFS to cache translated dirents.
+    fn list_dir(&self, dir_ino: u64) -> Option<Vec<(String, u64)>>;
+
+    /// Read a regular file's bytes. Returns `None` on I/O error
+    /// or if `ino` isn't a regular file.
+    fn read_file(&self, ino: u64) -> Option<Vec<u8>>;
+}
+
+/// The currently-mounted filesystem. One at a time (Linux supports
+/// many simultaneous mounts; we don't need that yet).
 lazy_static::lazy_static! {
-    /// The root directory of the mini-os filesystem.
-    ///
-    /// Initialized lazily on first access. The initializer:
-    ///   1. Allocates the root inode (`Inode::new_dir`), which gets `ino=1`.
-    ///   2. Allocates `hello.txt` (`Inode::new_file(b"hello vfs\n")`), ino=2.
-    ///   3. Allocates `secret.txt` (`Inode::new_file(b"top secret\n")`), ino=3.
-    ///   4. Appends two dirent records to root's bytes.
-    ///
-    /// After this runs, the filesystem has two files: `/hello.txt` and
-    /// `/secret.txt`.
-    pub static ref ROOT_INODE: Arc<Inode> = {
-        let root = Inode::new_dir();
-        debug_assert_eq!(root.ino, ROOT_INO,
-            "root must be the first inode allocated; something allocated first");
+    pub static ref MOUNTED_FS: Mutex<Option<Box<dyn Filesystem + Send + Sync>>> =
+        Mutex::new(None);
+}
 
-        let hello = Inode::new_file(b"hello vfs\n");
-        debug_assert_eq!(hello.ino, HELLO_INO,
-            "hello.txt must be the second inode allocated");
-
-        let secret = Inode::new_file(b"top secret\n");
-        debug_assert_eq!(secret.ino, SECRET_INO,
-            "secret.txt must be the third inode allocated");
-
-        // Append both directory entries to root's data
-        let mut root_data = root.data.lock();
-        root_data.extend_from_slice(&encode_dirent("hello.txt", hello.ino));
-        root_data.extend_from_slice(&encode_dirent("secret.txt", secret.ino));
-        drop(root_data);
-
-        root
-    };
-
-    /// Legacy alias for step 3.3 — points at the same `Arc<Inode>` as the
-    /// `hello.txt` entry in the root directory. Step 3.4 replaces the
-    /// `sys_open` call site that uses this with real path resolution.
-    pub static ref HARDCODED_INODE: Arc<Inode> = {
-        // Force ROOT_INODE initialization first, so hello.txt (ino=2) is
-        // registered in the REGISTRY before we look it up below.
-        let _ = &*ROOT_INODE;
-        Inode::lookup(HELLO_INO).expect(
-            "hello.txt inode should be registered after ROOT_INODE init")
-    };
+/// Install `fs` as the mounted filesystem. Subsequent `resolve_path`
+/// calls dispatch to it via the trait.
+pub fn mount(fs: Box<dyn Filesystem + Send + Sync>) {
+    *MOUNTED_FS.lock() = Some(fs);
 }

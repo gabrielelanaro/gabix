@@ -42,14 +42,16 @@ fi
 truncate -s "${SIZE_MB}M" "$DISK_IMG"
 "$MKFS_EXT2" -F "$DISK_IMG" 2>&1 | grep -E '(ext2|blocks|inodes)' | head -5
 
-# Lesson 14: write hello.txt into the ext2 filesystem.
+# Lesson 14: write hello.txt and secret.txt into the ext2 filesystem.
 # debugfs's `write` command copies a host file into the ext2 filesystem.
-# We pipe commands via stdin and end with `quit` to exit cleanly
-# (debugfs stays interactive after -R runs a single command).
+# We pipe commands via stdin and end with `quit` to exit cleanly.
 HELLO_SRC=$(mktemp /tmp/mini-os-hello.XXXXXX.txt)
+SECRET_SRC=$(mktemp /tmp/mini-os-secret.XXXXXX.txt)
 echo "hello from disk" > "$HELLO_SRC"
-printf 'write %s /hello.txt\nquit\n' "$HELLO_SRC" | "$DEBUGFS" -w "$DISK_IMG" 2>&1 | grep -E '(inode|error)' || true
-rm -f "$HELLO_SRC"
+echo "top secret" > "$SECRET_SRC"
+printf 'write %s /hello.txt\nwrite %s /secret.txt\nquit\n' "$HELLO_SRC" "$SECRET_SRC" \
+    | "$DEBUGFS" -w "$DISK_IMG" 2>&1 | grep -E '(inode|error)' || true
+rm -f "$HELLO_SRC" "$SECRET_SRC"
 
 # Verify
 echo "Created $DISK_IMG ($SIZE_MB MB, ext2)"

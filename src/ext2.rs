@@ -12,7 +12,10 @@
 
 use crate::println;
 use crate::virtio::VirtioBlk;
+use crate::fs::{Filesystem, InodeKind};
+use alloc::string::String;
 use alloc::vec::Vec;
+use spin::Mutex;
 
 /// ext2 magic number — appears at byte offset 56 of the superblock
 /// (byte offset 1080 of the disk, = sector 2 byte 56). If this isn't
@@ -531,6 +534,151 @@ pub fn lookup_in_dir(dev: &mut VirtioBlk, dir_inode: &Inode, name: &[u8]) -> Opt
         }
     }
     None
+}
+
+// ============================================================
+// Ext2 struct — owns device + parsed superblock + bgd0 (Lesson 14)
+// ============================================================
+
+/// Read a regular file's bytes via its direct block pointers
+/// (block_pointers[0..12]). For Lesson 14: doesn't follow
+/// indirect/double/triple — files we care about (ELF binaries) fit
+/// in 12 KiB.
+pub fn read_file_data(dev: &mut VirtioBlk, file_inode: &Inode) -> Vec<u8> {
+    let mut data = Vec::new();
+    for &block_n in file_inode.block_pointers.iter().take(12) {
+        if block_n == 0 {
+            break;
+        }
+        let block = read_block(dev, block_n);
+        data.extend_from_slice(&block);
+    }
+    // Truncate to actual file size — the last block is likely partial.
+    data.truncate(file_inode.size as usize);
+    data
+}
+
+/// A mounted ext2 filesystem instance. Owns the device + parsed
+/// superblock + block group 0 descriptor. All reads go through
+/// methods on this struct, which lock `dev` for the duration.
+///
+/// For our 1 MB disk there's one block group, so storing `bgd0` is
+/// enough. Multi-group disks would store a Vec<BlockGroupDescriptor>
+/// instead.
+pub struct Ext2 {
+    dev: Mutex<VirtioBlk>,
+    sb: Superblock,
+    bgd0: BlockGroupDescriptor,
+}
+
+impl Ext2 {
+    /// Take ownership of a VirtioBlk (already through the Lesson 6
+    /// handshake + Lesson 7 queue setup), read superblock and BGD 0,
+    /// return a mounted filesystem ready for reads.
+    pub fn new(mut dev: VirtioBlk) -> Self {
+        let sb = read_superblock(&mut dev);
+        assert!(sb.is_ext2(), "Ext2::new: disk isn't ext2 (magic=0x{:04X})", sb.magic);
+
+        let bgd0 = read_block_group_descriptor(&mut dev, &sb, 0);
+        println!("[ext2] Ext2::new: magic=0x{:04X}, block_size={}, bgd0.inode_table={}",
+            sb.magic, sb.block_size, bgd0.inode_table);
+
+        Self {
+            dev: Mutex::new(dev),
+            sb,
+            bgd0,
+        }
+    }
+
+    /// Borrow the parsed superblock (read-only).
+    pub fn superblock(&self) -> &Superblock { &self.sb }
+
+    /// Borrow block group 0's descriptor.
+    pub fn bgd0(&self) -> &BlockGroupDescriptor { &self.bgd0 }
+
+    /// Lock the device and run `f` with mutable access. Internal helper.
+    fn with_dev<R>(&self, f: impl FnOnce(&mut VirtioBlk) -> R) -> R {
+        let mut guard = self.dev.lock();
+        f(&mut *guard)
+    }
+
+    /// Read inode `inode_num` from disk. Thin wrapper around the
+    /// free-function helper.
+    pub fn read_inode(&self, inode_num: u32) -> Inode {
+        self.with_dev(|dev| read_inode(dev, &self.sb, &self.bgd0, inode_num))
+    }
+
+    /// Walk a directory inode's entries.
+    pub fn walk_directory(&self, dir_inode: &Inode) -> Vec<Dirent> {
+        self.with_dev(|dev| walk_directory(dev, dir_inode))
+    }
+
+    /// Read a regular file's bytes.
+    pub fn read_file_data(&self, file_inode: &Inode) -> Vec<u8> {
+        self.with_dev(|dev| read_file_data(dev, file_inode))
+    }
+}
+
+/// Implement the VFS trait. This is what makes ext2 mountable
+/// without fs.rs knowing anything about ext2 internals.
+impl Filesystem for Ext2 {
+    fn inode_kind(&self, ino: u64) -> Option<InodeKind> {
+        let inode = self.read_inode(ino as u32);
+        if inode.is_dir() {
+            Some(InodeKind::Dir)
+        } else if inode.is_reg() {
+            Some(InodeKind::File)
+        } else {
+            None
+        }
+    }
+
+    fn lookup(&self, dir_ino: u64, name: &str) -> Option<u64> {
+        let dir = self.read_inode(dir_ino as u32);
+        if !dir.is_dir() {
+            return None;
+        }
+        let entries = self.walk_directory(&dir);
+        for entry in entries {
+            if entry.name == name.as_bytes() {
+                return Some(entry.inode as u64);
+            }
+        }
+        None
+    }
+
+    fn list_dir(&self, dir_ino: u64) -> Option<Vec<(String, u64)>> {
+        let dir = self.read_inode(dir_ino as u32);
+        if !dir.is_dir() {
+            return None;
+        }
+        let entries = self.walk_directory(&dir);
+        let mut out = Vec::new();
+        for entry in entries {
+            // Skip . and .. — they're conventional, not real entries
+            // for VFS to walk through. The kernel knows implicitly
+            // that "/" resolves to itself.
+            if entry.name == b"." || entry.name == b".." {
+                continue;
+            }
+            let name = String::from_utf8(entry.name.clone()).ok()?;
+            out.push((name, entry.inode as u64));
+        }
+        Some(out)
+    }
+
+    fn read_file(&self, ino: u64) -> Option<Vec<u8>> {
+        println!("[ext2] read_file({})", ino);
+        let inode = self.read_inode(ino as u32);
+        println!("[ext2] read_file: inode mode=0x{:04X} is_reg={}", inode.mode, inode.is_reg());
+        if !inode.is_reg() {
+            return None;
+        }
+        let data = self.read_file_data(&inode);
+        println!("[ext2] read_file: got {} bytes, first 4: {:?}",
+            data.len(), &data.get(..4).unwrap_or(b"<short>"));
+        Some(data)
+    }
 }
 ///
 /// The BGDT lives in the block right after the superblock. For 1024-byte
