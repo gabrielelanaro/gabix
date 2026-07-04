@@ -23,3 +23,20 @@ This file is the project's spine. It serves three purposes:
 ### Other files
 
 (Nothing else yet. As the kernel takes shape, update this section with the layout: `kernel/`, `boot/`, etc.)
+
+## Writing style
+
+Lessons, tours, code comments, and chat replies all follow the same rule: **direct statements, no contrastive-opener tics.**
+
+Banned constructions (LLM-isms the user has called out):
+- "It does not X. It does Y." / "It's not X — it's Y." / "Not X, but Y."
+- "stop being X and start being Y" / "stops being X, becomes Y"
+- "no longer X, now Y" / "not just X — Y"
+- "less about X, more about Y"
+- "where X gives way to Y" / "the shift from X to Y" (as a rhetorical frame)
+- "It's worth noting", "Notice that", "In essence", "At its core", "It's important to understand"
+
+State the positive claim directly. If a contrast is genuinely load-bearing (e.g., comparing two approaches the user is choosing between), write it as a clean comparison — both sides stated, no rhetorical switchback.
+
+Audit every draft before sending. The user reads these tics as condescension — being told what to think before being given the thought.
+
