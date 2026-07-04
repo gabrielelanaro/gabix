@@ -46,12 +46,58 @@ kernel has a Linux counterpart we can read alongside.
 - [x] `exec(path)` syscall — load ELF from filesystem, replace current process image — Lesson 16
 - [x] A user program compiled externally, written to the disk image, loaded and executed by the kernel — Lesson 16
 
-### Polish (deferred — not on critical path)
-- [ ] `creat`, `mkdir`, `unlink` for runtime filesystem mutation (was Lesson 4 plan)
-- [ ] Frame-backed inode data instead of heap-backed (true page-cache shape)
-- [ ] Fork inherits parent's file descriptor table (POSIX semantics)
-- [ ] Permissions, ownership, ACLs (Access Control Lists)
-- [ ] Reading Linux's `fs/read_write.c`, `block/`, `fs/ext2/`, `fs/exec.c` and the patterns making sense
+---
+
+## Beyond the mission — future phases
+
+The original mission (plug in a disk, load an ELF, execute it) is complete as of 2026-07-04. What follows are the natural next phases, in recommended order. Pick what excites you.
+
+### Phase 1 — Real processes (multi-program OS)
+The kernel currently runs one program then halts. This phase turns mini-os into an actual multi-process OS.
+- [ ] **Process table** — `fork()`, `wait()`, real scheduler, per-process state (PID, PPID, exit code, FD table)
+- [ ] **FD inheritance** — fork copies parent's file descriptor table (POSIX semantics)
+- [ ] **Signal delivery** — `SIGCHLD` when a child exits, `SIGINT` on Ctrl-C
+- **Why first:** every later phase benefits from multi-process. Networking wants concurrent connections. A shell needs fork+exec. Even a richer test harness wants to spawn helpers.
+- **Estimated:** ~5–8 lessons.
+- **Linux sources:** `kernel/fork.c`, `kernel/exit.c`, `kernel/sched/`
+
+### Phase 2 — Networking (parallel of the disk path)
+Same shape as Lessons 5–14 but for the network: discover device, init driver, build abstractions, send/receive.
+- [ ] PCI find virtio-net (Lesson 5 parallel)
+- [ ] virtio-net modern transport + RX/TX virtqueues (Lessons 6–8 parallel)
+- [ ] Ethernet frame parsing
+- [ ] ARP for L2 address resolution
+- [ ] IP for L3 routing
+- [ ] ICMP echo (ping) — the first network "hello world"
+- [ ] TCP or UDP for L4
+- [ ] Sockets API + syscalls
+- **Why second:** big satisfying parallel to the disk path. Lands a second hello-world (ping response or TCP echo). Lots of conceptual transfer from existing virtio work.
+- **Estimated:** ~8–12 lessons.
+- **Linux sources:** `net/`, `drivers/net/`, `net/socket.c`
+
+### Phase 3 — Page cache
+Internal cleanup that makes everything faster and unblocks mmap.
+- [ ] Frame-backed inode data (currently heap-backed via `Vec<u8>`)
+- [ ] `(inode, offset) → frame` cache shared across processes
+- [ ] `mmap` syscall (file-backed memory mapping)
+- **Why third:** invisible to users (no new features) but makes the existing system feel snappier and unlocks future work (shared memory, file-backed IPC).
+- **Estimated:** ~3–5 lessons.
+- **Linux sources:** `mm/filemap.c`, `mm/mmap.c`
+
+### Phase 4 — Dynamic linking
+Handle `ET_DYN` binaries (shared libraries + PIE).
+- [ ] `PT_DYNAMIC` processing
+- [ ] Load-time relocations
+- [ ] `PT_INTERP` handling (load `ld.so` as interpreter)
+- [ ] Auxiliary vector (`auxv`) setup
+- **Why fourth:** only valuable once you have user programs that *want* to share code. Without multiple user binaries that share libc, dynamic linking is overhead with no benefit.
+- **Estimated:** ~5–7 lessons.
+- **Linux sources:** `fs/binfmt_elf.c` (revisited), glibc `elf/dl-load.c`
+
+### Side quests (whenever you want a break)
+- [ ] **Other binary formats** — script (`#!/usr/bin/env python`) and `binfmt_misc`-style handlers. ~1–2 lessons. Small, fun, not load-bearing.
+- [ ] **Filesystem mutation** — `creat`, `mkdir`, `unlink`, `rename`. Was Lesson 4's plan; ext2 mount is RW-capable now. ~2–3 lessons.
+- [ ] **Permissions and ownership** — POSIX file modes, uid/gid, ACLs (Access Control Lists). ~2 lessons. Polish only.
 
 ## Progress
 - **Lesson 1** (concept foundation): four abstractions absorbed. See learning-records 0001.
