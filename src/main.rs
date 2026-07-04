@@ -336,7 +336,7 @@ pub extern "C" fn _start(boot_info: &'static BootInfo) -> ! {
             println!("[virtio]   found {} virtio caps", caps.len());
 
             println!("[test] virtio handshake phase 1 — reset + ACK + DRIVER (6.2)");
-            if let Some(virtio_dev) = virtio::VirtioBlk::probe() {
+            if let Some(mut virtio_dev) = virtio::VirtioBlk::probe() {
                 virtio_dev.reset_and_acknowledge();
 
                 println!("[test] virtio handshake phase 2 — feature negotiation (6.3)");
@@ -345,136 +345,56 @@ pub extern "C" fn _start(boot_info: &'static BootInfo) -> ! {
                 println!("[test] virtio handshake phase 3 — DRIVER_OK (6.4)");
                 virtio_dev.set_driver_ok();
 
-                println!("[test] virtqueue allocation (7.1)");
-                let queue = virtio::VirtQueue::new(64);
+                println!("[test] virtqueue allocation + configuration (7.1 + 7.2 + 9.1)");
+                virtio_dev.setup_queue(64);
 
-                println!("[test] configure virtqueue in common config (7.2)");
-                virtio_dev.configure_queue(&queue);
-
-                println!("[test] descriptor free list (7.3)");
-                let mut queue = queue;
-                println!(
-                    "[virtio] free list size: {} (expect {})",
-                    queue.num_free(),
-                    queue.queue_size()
-                );
-                let a = queue.alloc_descriptor().expect("alloc should succeed");
-                let b = queue.alloc_descriptor().expect("alloc should succeed");
-                println!(
-                    "[virtio]   alloc_descriptor() = {}, {} (expect 63, 62 — LIFO)",
-                    a, b
-                );
-                println!("[virtio]   free list size after allocs: {}", queue.num_free());
-                queue.free_descriptor(a);
-                println!("[virtio]   free_descriptor({})", a);
-                let c = queue.alloc_descriptor().expect("alloc should succeed");
-                println!(
-                    "[virtio]   alloc_descriptor() = {} (expect {} — stack reuse)",
-                    c, a
-                );
-                // Return to a clean state
-                queue.free_descriptor(b);
-                queue.free_descriptor(c);
-
-                println!("[test] available ring submission (7.4)");
-                // Note: we don't actually submit here any more. The original
-                // Lesson 7 test submitted a bogus descriptor (addr=0, len=0,
-                // flags=0) which QEMU's virtio-blk rejects in a way that
-                // blocks the entire queue — subsequent real requests in
-                // Lesson 8 never get processed. Lesson 8 exercises
-                // submit_chain with a valid request.
-                let _head = queue.alloc_descriptor().expect("alloc should succeed");
-                queue.write_descriptor(_head, 0xDEAD, 16, 0, 0);
-                queue.free_descriptor(_head);
-                println!("[virtio]   alloc + write_descriptor + free verified (no submit)");
-
-                println!("[test] used ring polling + kick (7.5)");
-                // No kick either — see above. Lesson 8 kicks a real request.
-                println!("[virtio]   kick + poll_completion verified via Lesson 8 path");
+                println!("[test] descriptor free list smoke test (7.3)");
+                {
+                    let queue = virtio_dev.queue_mut();
+                    println!(
+                        "[virtio] free list size: {} (expect 64)",
+                        queue.num_free()
+                    );
+                    let a = queue.alloc_descriptor().expect("alloc");
+                    let b = queue.alloc_descriptor().expect("alloc");
+                    println!("[virtio]   alloc = {}, {} (LIFO: 63, 62)", a, b);
+                    queue.free_descriptor(a);
+                    let c = queue.alloc_descriptor().expect("alloc");
+                    println!("[virtio]   free + alloc = {} (stack reuse)", c);
+                    queue.free_descriptor(b);
+                    queue.free_descriptor(c);
+                }
 
                 println!("[test] virtio-blk request header struct (8.1)");
                 {
                     use core::mem::{size_of, align_of};
                     let sz = size_of::<virtio::VirtioBlkReq>();
                     let al = align_of::<virtio::VirtioBlkReq>();
-                    println!("[virtio]   size = {} bytes (expect 16)", sz);
-                    println!("[virtio]   align = {} bytes", al);
-                    assert_eq!(sz, 16, "VirtioBlkReq must be 16 bytes per the spec");
+                    println!("[virtio]   size={} bytes (expect 16), align={}", sz, al);
+                    assert_eq!(sz, 16, "VirtioBlkReq must be 16 bytes");
                 }
 
-                println!("[test] allocate DMA buffers (8.2)");
-                let buffers = virtio::BlkBuffers::new();
-
-                println!("[test] build descriptor chain (8.3)");
-                let req = virtio::VirtioBlkReq::new_read(0);
-                buffers.write_header(&req);
-                println!(
-                    "[virtio] header written: type={} (IN=read), sector={}",
-                    req.type_, req.sector
-                );
-                let head = queue.build_read_chain(
-                    buffers.header_phys,
-                    buffers.data_phys,
-                    buffers.status_phys,
-                );
-                println!("[virtio] chain head descriptor = {}", head);
-
-                println!("[test] submit + kick + poll (8.4)");
-                let (a, u, l) = queue.debug_state();
-                println!("[virtio] pre-submit state: avail->idx={} used->idx={} last_used={}", a, u, l);
-                queue.submit_chain(head);
-                virtio_dev.kick();
-                let mut completion = None;
-                for iters in 0..200_000u32 {
-                    if let Some(c) = queue.poll_completion() {
-                        println!("[virtio]   completion arrived after {} poll iters", iters + 1);
-                        println!(
-                            "[virtio]   id={} len={}",
-                            c.0, c.1
-                        );
-                        completion = Some(c);
-                        break;
-                    }
-                }
-                let (a, u, l) = queue.debug_state();
-                println!("[virtio] post-poll state: avail->idx={} used->idx={} last_used={}", a, u, l);
-                let (_id, _len) = completion.expect("no completion arrived — read failed");
-
-                println!("[test] verify bytes (8.5)");
-                let status = buffers.read_status();
-                let status_name = match status {
-                    0 => "VIRTIO_BLK_S_OK",
-                    1 => "VIRTIO_BLK_S_IOERR",
-                    2 => "VIRTIO_BLK_S_UNSUPP",
-                    _ => "?",
-                };
-                println!("[virtio] status byte = {} ({})", status, status_name);
-                assert_eq!(status, virtio::VIRTIO_BLK_S_OK as u8,
-                    "device reported non-OK status");
-
-                let data = buffers.read_data_prefix(16);
+                println!("[test] first disk read via read_block (Keystone 1, recap from L8)");
+                let block0 = virtio_dev.read_block(0);
                 let expected_sig = b"MINIOS_DISK_v0\n";
-                println!("[virtio] data[0..15] = {:?} (expect {:?})",
-                    core::str::from_utf8(&data[0..15]).unwrap_or("<non-utf8>"),
-                    core::str::from_utf8(expected_sig).unwrap());
-                assert_eq!(&data[0..15], expected_sig,
-                    "signature mismatch — read wrong bytes");
-
-                let tail = buffers.read_data_prefix(512);
-                let tail_zeros: usize = tail[15..].iter().filter(|&&b| b == 0).count();
-                println!(
-                    "[virtio] data[15..512] = {} zero bytes (expect 497)",
-                    tail_zeros
-                );
+                let sig_str = core::str::from_utf8(&block0[0..15]).unwrap_or("<non-utf8>");
+                let tail_zeros: usize = block0[15..].iter().filter(|&&b| b == 0).count();
+                println!("[virtio]   read_block(0)[0..15] = {:?}", sig_str);
+                println!("[virtio]   read_block(0)[15..512] = {} zero bytes (expect 497)", tail_zeros);
+                assert_eq!(&block0[0..15], expected_sig, "signature mismatch");
                 assert_eq!(tail_zeros, 497, "trailing bytes not all zero");
-
                 println!("[virtio] *** Keystone 1: bytes flowed from disk ***");
 
-                // Free the descriptors back to the free list
-                queue.free_descriptor(63);
-                queue.free_descriptor(62);
-                queue.free_descriptor(61);
-                println!("[virtio] descriptors 63/62/61 returned to free list");
+                println!("[test] block layer API — read multiple sectors (9.3)");
+                let block1 = virtio_dev.read_block(1);
+                let block2 = virtio_dev.read_block(2);
+                let block1_zeros: usize = block1.iter().filter(|&&b| b == 0).count();
+                let block2_zeros: usize = block2.iter().filter(|&&b| b == 0).count();
+                println!("[virtio]   read_block(1): {} zero bytes (expect 512)", block1_zeros);
+                println!("[virtio]   read_block(2): {} zero bytes (expect 512)", block2_zeros);
+                assert_eq!(block1_zeros, 512, "sector 1 should be all zero");
+                assert_eq!(block2_zeros, 512, "sector 2 should be all zero");
+                println!("[virtio] *** block layer ready — ext2 can mount on top ***");
             } else {
                 println!("[virtio] failed to probe device");
             }

@@ -200,6 +200,9 @@ pub struct VirtioBlk {
     /// Multiplier (in bytes) for computing the per-queue notify offset.
     /// Read from the notification capability's body.
     notify_off_multiplier: u32,
+    /// The virtqueue, owned by the device after `setup_queue` runs.
+    /// `read_block` and future I/O methods unwrap this.
+    queue: Option<VirtQueue>,
 }
 
 impl VirtioBlk {
@@ -246,7 +249,84 @@ impl VirtioBlk {
             common_virt,
             notify_virt,
             notify_off_multiplier: notify_cap.notify_off_multiplier,
+            queue: None,
         })
+    }
+
+    /// Step 9.1: allocate and configure the virtqueue, stashing it inside
+    /// the device handle. After this call, `read_block` (and future I/O
+    /// methods) can use `self.queue.as_mut().unwrap()`.
+    ///
+    /// This wraps what used to be the two-step `VirtQueue::new` +
+    /// `configure_queue` dance in main.rs. Callers don't need to know
+    /// the queue exists.
+    pub fn setup_queue(&mut self, queue_size: u16) {
+        let queue = VirtQueue::new(queue_size);
+        self.configure_queue(&queue);
+        self.queue = Some(queue);
+    }
+
+    /// Borrow the virtqueue mutably. Panics if `setup_queue` hasn't run.
+    /// Public so test code in main.rs can still poke the queue directly
+    /// when verifying lower-level primitives.
+    pub fn queue_mut(&mut self) -> &mut VirtQueue {
+        self.queue.as_mut().expect("queue not set up — call setup_queue first")
+    }
+
+    /// Step 9.2: read one 512-byte sector from the disk. Synchronous —
+    /// returns when the device responds. Allocates DMA buffers per call
+    /// (~12 KB leaked; future optimization: buffer pool).
+    ///
+    /// The full dance, hidden from callers:
+    ///   1. Allocate header/data/status DMA buffers (BlkBuffers)
+    ///   2. Write the request header (type=IN, sector)
+    ///   3. Build the 3-descriptor chain
+    ///   4. Submit the chain (avail->idx advances with Release)
+    ///   5. Kick the device
+    ///   6. Poll for completion (Acquire on used->idx)
+    ///   7. Assert status == OK
+    ///   8. Free the descriptors
+    ///   9. Copy the 512 bytes out of the DMA buffer into a stack array
+    pub fn read_block(&mut self, sector: u64) -> [u8; 512] {
+        println!("[virtio] read_block(sector={})", sector);
+
+        let buffers = BlkBuffers::new();
+        let req = VirtioBlkReq::new_read(sector);
+        buffers.write_header(&req);
+
+        let (head, mid, tail) = self.queue.as_mut().expect("queue not set up")
+            .build_read_chain(
+                buffers.header_phys,
+                buffers.data_phys,
+                buffers.status_phys,
+            );
+
+        self.queue.as_mut().unwrap().submit_chain(head);
+        self.kick();
+
+        let completion = (0..200_000u32)
+            .find_map(|_| self.queue.as_mut().unwrap().poll_completion())
+            .expect("read_block: no completion arrived");
+
+        let status = buffers.read_status();
+        assert_eq!(
+            status, VIRTIO_BLK_S_OK,
+            "read_block(sector={}) failed: device status={}, completion id={} len={}",
+            sector, status, completion.0, completion.1
+        );
+
+        let queue = self.queue.as_mut().unwrap();
+        queue.free_descriptor(head);
+        queue.free_descriptor(mid);
+        queue.free_descriptor(tail);
+
+        let mut block = [0u8; 512];
+        let data_view = buffers.read_data_prefix(512);
+        block.copy_from_slice(&data_view);
+
+        println!("[virtio]   read_block(sector={}) complete ({} bytes)", sector, completion.1);
+
+        block
     }
 
     // ---------- Common config region MMIO access ----------
@@ -962,13 +1042,15 @@ impl VirtQueue {
     /// The header has no F_WRITE (device reads it). Data and status
     /// have F_WRITE (device writes them on completion).
     ///
-    /// Returns the head descriptor index — pass this to `submit_chain`.
+    /// Returns (head, mid, tail) — all three indices so the caller can
+    /// free them after completion. `submit_chain` only needs the head;
+    /// use `let (head, _, _)` if you don't care about mid/tail.
     pub fn build_read_chain(
         &mut self,
         header_phys: u64,
         data_phys: u64,
         status_phys: u64,
-    ) -> u16 {
+    ) -> (u16, u16, u16) {
         let head = self.alloc_descriptor().expect("no free descriptors");
         let mid = self.alloc_descriptor().expect("no free descriptors");
         let tail = self.alloc_descriptor().expect("no free descriptors");
@@ -1008,7 +1090,7 @@ impl VirtQueue {
             tail, status_phys, VIRTQ_DESC_F_WRITE
         );
 
-        head
+        (head, mid, tail)
     }
 
     /// Publish a chain head to the available ring and advance `idx`.
