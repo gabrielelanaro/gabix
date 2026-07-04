@@ -555,6 +555,35 @@ pub fn write_to_frame(dst_phys: PhysAddr, bytes: &[u8]) {
     }
 }
 
+/// Zero an entire 4 KB frame via the direct map. Used by the ELF loader
+/// (Lesson 16) to ensure freshly-allocated user pages have no stale
+/// bytes before the segment's file bytes are written in.
+pub fn zero_frame(dst_phys: PhysAddr) {
+    let dst = phys_to_virt(dst_phys).as_u64() as *mut u8;
+    // SAFETY: frame is mapped via the direct map.
+    unsafe { core::ptr::write_bytes(dst, 0, 4096); }
+}
+
+/// Write `bytes.len()` bytes into a physical frame starting at `offset`
+/// (0..4096). Does NOT zero the frame first — pair with `zero_frame` if
+/// needed. Used by the ELF loader to write the slice of file bytes that
+/// lands inside a particular page when the segment's `p_vaddr` isn't
+/// page-aligned (or when `p_filesz` doesn't fill the page).
+///
+/// Caller must guarantee `offset + bytes.len() <= 4096`.
+pub fn write_to_frame_at(dst_phys: PhysAddr, offset: usize, bytes: &[u8]) {
+    assert!(
+        offset.checked_add(bytes.len()).map_or(false, |n| n <= 4096),
+        "write_to_frame_at: write out of bounds (offset={}, len={})",
+        offset, bytes.len()
+    );
+    let dst = phys_to_virt(dst_phys).as_u64() as *mut u8;
+    // SAFETY: frame is mapped via the direct map; bounds checked above.
+    unsafe {
+        core::ptr::copy_nonoverlapping(bytes.as_ptr(), dst.add(offset), bytes.len());
+    }
+}
+
 /// Run translate on a handful of known addresses to verify the mapper works.
 fn translate_tests() {
     // _start's actual link address comes from the kernel image. Since slice
