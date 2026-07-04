@@ -95,6 +95,236 @@
     color: var(--text);
   }
   .step-detail p:last-child { margin-bottom: 0; }
+
+  /* ============================================================
+     exec() walkthrough demo — file → kernel state → user memory
+     ============================================================ */
+  .exec-demo {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1.5rem;
+    margin: 1.5rem 0;
+  }
+  .demo-controls {
+    display: flex;
+    gap: 0.6rem;
+    align-items: center;
+    margin-bottom: 0.75rem;
+    flex-wrap: wrap;
+  }
+  .demo-btn {
+    font-family: var(--font-sans);
+    font-size: 0.82rem;
+    font-weight: 600;
+    background: var(--accent);
+    color: #ffffff;
+    border: none;
+    padding: 0.4rem 0.9rem;
+    border-radius: 4px;
+    cursor: pointer;
+    letter-spacing: 0.03em;
+  }
+  .demo-btn:hover { background: #92400e; }
+  .demo-btn:disabled {
+    background: var(--surface-soft);
+    color: var(--text-faint);
+    border: 1px solid var(--border);
+    cursor: not-allowed;
+    opacity: 0.6;
+  }
+  .demo-btn:disabled:hover { background: var(--surface-soft); }
+  .demo-btn.demo-reset-btn {
+    background: var(--surface);
+    color: var(--text-dim);
+    border: 1px solid var(--border);
+  }
+  .demo-btn.demo-reset-btn:hover {
+    background: var(--surface-soft);
+    color: var(--text);
+  }
+  .demo-state-label {
+    font-family: var(--font-sans);
+    font-size: 0.8rem;
+    color: var(--text-dim);
+    margin-left: 0.4rem;
+  }
+  .demo-step-num {
+    font-family: var(--font-mono);
+    color: var(--accent);
+    font-weight: 700;
+  }
+  .demo-explanation {
+    background: var(--surface-soft);
+    border-left: 3px solid var(--accent);
+    padding: 0.85rem 1rem;
+    border-radius: 0 4px 4px 0;
+    margin-bottom: 1.25rem;
+    font-family: var(--font-serif);
+    font-size: 0.92rem;
+    line-height: 1.55;
+    color: var(--text);
+    min-height: 90px;
+  }
+  .demo-explanation strong { color: var(--accent); }
+  .demo-explanation code {
+    background: var(--surface);
+    padding: 0.05em 0.35em;
+    border-radius: 2px;
+    color: var(--accent);
+  }
+
+  /* Kernel-state indicator — shows CR3 / mode */
+  .kernel-state {
+    background: #1c1917;
+    color: #f5f5f4;
+    border-radius: 6px;
+    padding: 0.75rem 1rem;
+    margin-bottom: 1rem;
+    font-family: var(--font-mono);
+    font-size: 0.78rem;
+    display: grid;
+    grid-template-columns: auto 1fr auto 1fr auto 1fr;
+    gap: 0.5rem 1rem;
+    align-items: center;
+  }
+  .kernel-state .ks-label {
+    color: #fbbf24;
+    font-weight: 600;
+    font-family: var(--font-sans);
+    font-size: 0.72rem;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+  }
+  .kernel-state .ks-value {
+    color: #f5f5f4;
+  }
+  .kernel-state .ks-value.mode-kernel { color: #93c5fd; }
+  .kernel-state .ks-value.mode-user { color: #86efac; font-weight: 700; }
+
+  /* File/memory grid (similar to Lesson 15) */
+  .exec-anatomy-grid {
+    display: grid;
+    grid-template-columns: 1fr 60px 1fr;
+    gap: 0;
+    align-items: stretch;
+  }
+  .anatomy-col {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .anatomy-col-header {
+    font-family: var(--font-sans);
+    font-size: 0.78rem;
+    font-weight: 600;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    text-align: center;
+    padding-bottom: 0.5rem;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 0.6rem;
+  }
+  .anatomy-row {
+    padding: 0.45rem 0.7rem;
+    border-radius: 4px;
+    background: var(--surface-soft);
+    border: 1px solid var(--border);
+    line-height: 1.4;
+    color: var(--text);
+    font-size: 0.78rem;
+    font-family: var(--font-mono);
+  }
+  .anatomy-row.offset {
+    font-family: var(--font-mono);
+    font-size: 0.7rem;
+    color: var(--text-faint);
+    background: transparent;
+    border: none;
+    padding: 0.2rem 0.7rem;
+  }
+  .anatomy-row.header { background: #fef3c7; border-color: var(--accent); }
+  .anatomy-row.load-r  { background: #dbeafe; border-color: #1e40af; }
+  .anatomy-row.load-rx { background: #dbeafe; border-color: #1e40af; }
+  .anatomy-row.nonload { background: var(--surface-soft); border-color: var(--border); opacity: 0.75; }
+  .anatomy-row.mem-r   { background: #dbeafe; border-color: #1e40af; }
+  .anatomy-row.mem-rx  { background: #dbeafe; border-color: #1e40af; }
+  .anatomy-row.mem-rw  { background: #dcfce7; border-color: #15803d; }
+  .anatomy.row-empty { opacity: 0.4; font-style: italic; }
+  .anatomy-row .row-label {
+    font-family: var(--font-sans);
+    font-weight: 600;
+    font-size: 0.74rem;
+    color: var(--text);
+    display: block;
+  }
+  .anatomy-row .row-bytes {
+    color: var(--text-dim);
+    font-size: 0.7rem;
+    display: block;
+    margin-top: 1px;
+  }
+
+  /* Middle column — arrows */
+  .anatomy-arrows {
+    display: flex;
+    flex-direction: column;
+    justify-content: space-around;
+    align-items: center;
+    font-family: var(--font-sans);
+    font-size: 0.7rem;
+    color: var(--text-dim);
+    padding: 1.5rem 0;
+  }
+  .arrow-cell {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--text-faint);
+    font-size: 1.2rem;
+    line-height: 1;
+    padding: 0.4rem 0;
+    opacity: 0.5;
+  }
+  .arrow-cell.active {
+    color: var(--accent);
+    font-weight: 700;
+    transform: scale(1.3);
+    opacity: 1;
+    transition: transform 0.2s, color 0.2s, opacity 0.2s;
+  }
+
+  /* Step-highlighted regions */
+  .anatomy-row.active {
+    outline: 3px solid var(--accent);
+    outline-offset: 1px;
+    transform: scale(1.02);
+    box-shadow: 0 4px 12px rgba(180, 83, 9, 0.15);
+    z-index: 5;
+    transition: outline 0.2s, transform 0.2s, box-shadow 0.2s;
+  }
+  .anatomy-row.done { opacity: 0.55; }
+  .anatomy-row.appearing {
+    animation: appear 0.4s ease-out;
+  }
+  @keyframes appear {
+    from { opacity: 0; transform: translateX(-10px); }
+    to { opacity: 1; transform: translateX(0); }
+  }
+
+  @media (max-width: 640px) {
+    .exec-anatomy-grid {
+      grid-template-columns: 1fr;
+      gap: 1rem;
+    }
+    .anatomy-arrows {
+      flex-direction: row;
+      padding: 0.5rem 0;
+      flex-wrap: wrap;
+    }
+    .arrow-cell { padding: 0 0.5rem; transform: rotate(90deg); }
+  }
 </style>
 </head>
 <body>
@@ -245,6 +475,93 @@
     come back when a program actually reads <code>argc</code> /
     <code>argv</code>.
   </p>
+
+  <h2>Walkthrough — load and run <code>hello.elf</code></h2>
+
+  <p>
+    Press <strong>Forward</strong> to step through what
+    <code>exec_elf("/hello.elf")</code> actually does. The kernel
+    state panel tracks which address space is current and whether
+    the CPU is in kernel or user mode. The right column shows user
+    memory filling in as segments are mapped.
+  </p>
+
+  <div class="exec-demo" id="exec-demo">
+    <div class="demo-controls">
+      <button class="demo-btn demo-back-btn" type="button" disabled>← Back</button>
+      <button class="demo-btn demo-step-btn" type="button">Forward →</button>
+      <button class="demo-btn demo-reset-btn" type="button">Reset</button>
+      <span class="demo-state-label">Step <span class="demo-step-num">0</span> / 7</span>
+    </div>
+
+    <div class="kernel-state">
+      <span class="ks-label">CR3</span>
+      <span class="ks-value" id="ks-cr3">0x1000 (kernel AS)</span>
+      <span class="ks-label">Mode</span>
+      <span class="ks-value mode-kernel" id="ks-mode">kernel (ring 0)</span>
+      <span class="ks-label">rip</span>
+      <span class="ks-value" id="ks-rip">—</span>
+    </div>
+
+    <div class="demo-explanation" id="demo-explanation">
+      Press <strong>Forward</strong> to start. Each step highlights
+      what the kernel reads, what it allocates, and where bytes
+      land in the new process's memory.
+    </div>
+
+    <div class="exec-anatomy-grid">
+      <div class="anatomy-col anatomy-file">
+        <div class="anatomy-col-header">/hello.elf — 1344 bytes on disk</div>
+        <div class="anatomy-row offset">offset 0</div>
+        <div class="anatomy-row header" data-region="file-header">
+          <span class="row-label">ELF header (64 B)</span>
+          <span class="row-bytes">magic + entry=0x201190 + phoff=64 + phnum=5</span>
+        </div>
+        <div class="anatomy-row offset">offset 64</div>
+        <div class="anatomy-row nonload" data-region="file-pht">
+          <span class="row-label">Program Header Table</span>
+          <span class="row-bytes">5 entries × 56 B (incl. 2 × PT_LOAD)</span>
+        </div>
+        <div class="anatomy-row offset">offset 0x190 (400)</div>
+        <div class="anatomy-row load-rx" data-region="file-code">
+          <span class="row-label">code bytes (4 B)</span>
+          <span class="row-bytes">file[0x190..0x194] — _start: jmp .</span>
+        </div>
+        <div class="anatomy-row offset">… section headers, symbols, strings</div>
+      </div>
+
+      <div class="anatomy-arrows">
+        <div class="arrow-cell" data-arrow="arrow-read">↓</div>
+        <div class="arrow-cell" data-arrow="arrow-load1">↓</div>
+        <div class="arrow-cell" data-arrow="arrow-load2">↓</div>
+        <div class="arrow-cell" data-arrow="arrow-stack">↓</div>
+      </div>
+
+      <div class="anatomy-col anatomy-mem">
+        <div class="anatomy-col-header">new process virtual memory</div>
+        <div class="anatomy-row offset">vaddr 0x000000 (unmapped)</div>
+        <div class="anatomy-row offset" style="opacity:0.4;">⋮</div>
+        <div class="anatomy-row offset">vaddr 0x200000</div>
+        <div class="anatomy-row mem-r" data-region="mem-rodata" data-absent="true">
+          <span class="row-label">rodata segment</span>
+          <span class="row-bytes">388 B, r-- (mapped from file[0..388])</span>
+        </div>
+        <div class="anatomy-row offset">vaddr 0x201190</div>
+        <div class="anatomy-row mem-rx" data-region="mem-code" data-absent="true">
+          <span class="row-label">code segment</span>
+          <span class="row-bytes">4 B, r-x (entry point lives here)</span>
+        </div>
+        <div class="anatomy-row offset" style="opacity:0.4;">⋮ gap — not mapped</div>
+        <div class="anatomy-row offset">vaddr 0x7ffffffe000</div>
+        <div class="anatomy-row mem-rw" data-region="mem-stack" data-absent="true">
+          <span class="row-label">user stack</span>
+          <span class="row-bytes">8 KB, rw- (kernel-picked address)</span>
+        </div>
+        <div class="anatomy-row offset">vaddr 0x800000000000</div>
+        <div class="anatomy-row offset" style="opacity:0.4;">⋮ kernel half (always mapped)</div>
+      </div>
+    </div>
+  </div>
 
   <h2>Build steps — your turn</h2>
 
@@ -561,6 +878,199 @@
 </article>
 
 <script src="../assets/explorable.js"></script>
+<script>
+(function () {
+  const demo = document.getElementById('exec-demo');
+  if (!demo) return;
+
+  const stepNumEl = demo.querySelector('.demo-step-num');
+  const explanationEl = document.getElementById('demo-explanation');
+  const backBtn = demo.querySelector('.demo-back-btn');
+  const stepBtn = demo.querySelector('.demo-step-btn');
+  const resetBtn = demo.querySelector('.demo-reset-btn');
+  const cr3El = document.getElementById('ks-cr3');
+  const modeEl = document.getElementById('ks-mode');
+  const ripEl = document.getElementById('ks-rip');
+
+  const allRows = demo.querySelectorAll('[data-region]');
+  const allArrows = demo.querySelectorAll('[data-arrow]');
+
+  // Steps for the exec walkthrough. Each step:
+  //   - text: appears in the explanation panel
+  //   - active: regions/arrows to highlight this step
+  //   - markDone: regions that should fade to "already happened"
+  //   - reveal: regions to un-hide (data-absent=true → present)
+  //   - cr3, mode, rip: kernel-state panel updates
+  const steps = [
+    {
+      text: '<strong>Step 1 — Read the file via VFS.</strong> Same path as Lesson 14: <code>resolve_path("/hello.elf")</code> walks ext2 via the Filesystem trait and returns the file\'s bytes as <code>Vec&lt;u8&gt;</code>. The ELF parser sees an opaque byte buffer — it doesn\'t know ext2 or virtio-blk exists.',
+      active: ['file-header', 'arrow-read'],
+      cr3: '0x1000 (kernel AS)',
+      mode: 'kernel',
+      rip: '—',
+    },
+    {
+      text: '<strong>Step 2 — Parse + validate the header.</strong> <code>ElfHeader::parse</code> + walk the PHT. Confirm magic, class=64-bit, data=little-endian, <code>e_type=ET_EXEC</code>, <code>machine=x86-64</code>. Confirm <code>e_entry</code> falls inside an r-x <code>PT_LOAD</code>. All Lesson 15 code — nothing new here.',
+      active: ['file-header', 'file-pht'],
+      cr3: '0x1000 (kernel AS)',
+      mode: 'kernel',
+      rip: '—',
+    },
+    {
+      text: '<strong>Step 3 — Create a fresh AddressSpace.</strong> <code>AddressSpace::new()</code> allocates an empty PML4 frame, then deep-clones entries 256–511 from the current CR3. Result: the new AS has the kernel half mapped (where the kernel code, heap, and VGA buffer live) but no user code yet. The user half is empty.',
+      active: [],
+      cr3: '0x1000 → 0x29b000 (new AS, kernel half cloned)',
+      mode: 'kernel',
+      rip: '—',
+    },
+    {
+      text: '<strong>Step 4 — Map the first <code>PT_LOAD</code> (rodata).</strong> Read PHT[1]: <code>p_offset=0, p_vaddr=0x200000, p_filesz=388, p_flags=r--</code>. Allocate 1 frame (388 B fits in one 4 KB page), map it at <code>0x200000</code> with PRESENT + USER, copy 388 bytes from the file. Note: this segment <em>includes</em> the ELF header + PHT themselves — they\'re part of the read-only image.',
+      active: ['file-header', 'arrow-load1', 'mem-rodata'],
+      reveal: ['mem-rodata'],
+      cr3: '0x29b000 (new AS)',
+      mode: 'kernel',
+      rip: '—',
+    },
+    {
+      text: '<strong>Step 5 — Map the second <code>PT_LOAD</code> (code).</strong> Read PHT[2]: <code>p_offset=0x190, p_vaddr=0x201190, p_filesz=4, p_flags=r-x</code>. Allocate 1 frame, map at <code>0x201190</code> with PRESENT + USER + EXECUTABLE, copy 4 bytes from file offset 0x190. This is the segment <code>e_entry</code> lives in — the kernel will jump here in step 7.',
+      active: ['file-code', 'arrow-load2', 'mem-code'],
+      markDone: ['mem-rodata'],
+      reveal: ['mem-code'],
+      cr3: '0x29b000 (new AS)',
+      mode: 'kernel',
+      rip: '—',
+    },
+    {
+      text: '<strong>Step 6 — Map the user stack.</strong> The ELF doesn\'t say where the stack goes — the kernel picks. We map 2 pages (8 KB) at <code>0x7ffffffe000</code>, a high address near the top of the canonical user half. Permissions: <code>rw-</code> (writable, not executable — the W^X rule). <code>rsp</code> will be set to the top of this region.',
+      active: ['arrow-stack', 'mem-stack'],
+      markDone: ['mem-rodata', 'mem-code'],
+      reveal: ['mem-stack'],
+      cr3: '0x29b000 (new AS)',
+      mode: 'kernel',
+      rip: '—',
+    },
+    {
+      text: '<strong>Step 7 — Switch CR3 + <code>iretq</code> to user mode.</strong> <code>aspace.switch_to()</code> writes the new PML4 frame\'s physical address to CR3. Then the kernel builds the iretq stack frame — <code>ss</code> (user data seg), <code>rsp</code> (stack top), <code>rflags</code> (interrupts on), <code>cs</code> (user code seg), <code>rip = e_entry = 0x201190</code> — and executes <code>iretq</code>. The CPU transitions ring 0 → ring 3. <code>hello.elf</code> is now running.',
+      active: ['mem-code'],
+      markDone: ['mem-rodata', 'mem-stack'],
+      cr3: '0x29b000 (user AS live)',
+      mode: 'user',
+      rip: '0x201190',
+    },
+  ];
+
+  let current = 0;
+
+  function applyKernelState(s) {
+    cr3El.textContent = s.cr3;
+    modeEl.textContent = s.mode === 'user' ? 'user (ring 3)' : 'kernel (ring 0)';
+    modeEl.className = 'ks-value ' + (s.mode === 'user' ? 'mode-user' : 'mode-kernel');
+    ripEl.textContent = s.rip;
+  }
+
+  function clearAll() {
+    allRows.forEach((r) => r.classList.remove('active', 'done'));
+    allArrows.forEach((a) => a.classList.remove('active'));
+    // Reset absent regions back to hidden
+    allRows.forEach((r) => {
+      if (r.dataset.absent === 'true' && !r.classList.contains('appearing')) {
+        r.style.opacity = '0.25';
+        r.style.filter = 'grayscale(1)';
+      }
+    });
+  }
+
+  function render() {
+    stepNumEl.textContent = current;
+    backBtn.disabled = (current === 0);
+    stepBtn.disabled = (current === steps.length);
+
+    if (current === 0) {
+      clearAll();
+      explanationEl.innerHTML = 'Press <strong>Forward</strong> to start. Each step highlights what the kernel reads, what it allocates, and where bytes land in the new process\'s memory.';
+      applyKernelState({ cr3: '0x1000 (kernel AS)', mode: 'kernel', rip: '—' });
+      return;
+    }
+
+    clearAll();
+    const step = steps[current - 1];
+    applyKernelState(step);
+
+    // Mark earlier regions as done
+    for (let i = 0; i < current - 1; i++) {
+      (steps[i].active || []).forEach((id) => {
+        if (id.startsWith('arrow-')) return;
+        const el = demo.querySelector('[data-region="' + id + '"]');
+        if (el) el.classList.add('done');
+      });
+    }
+
+    // Activate current step's regions
+    (step.active || []).forEach((id) => {
+      if (id.startsWith('arrow-')) {
+        const el = demo.querySelector('[data-arrow="' + id + '"]');
+        if (el) el.classList.add('active');
+      } else {
+        const el = demo.querySelector('[data-region="' + id + '"]');
+        if (el) {
+          el.classList.add('active');
+          // Reveal if it was hidden
+          if (el.dataset.absent === 'true') {
+            el.style.opacity = '';
+            el.style.filter = '';
+          }
+        }
+      }
+    });
+
+    // Explicit reveals (regions that appear this step but aren't necessarily "active")
+    (step.reveal || []).forEach((id) => {
+      const el = demo.querySelector('[data-region="' + id + '"]');
+      if (el && el.dataset.absent === 'true') {
+        el.style.opacity = '';
+        el.style.filter = '';
+        el.classList.add('appearing');
+        setTimeout(() => el.classList.remove('appearing'), 500);
+      }
+    });
+
+    // Explicit "mark this as done now" (for non-active regions that should fade)
+    (step.markDone || []).forEach((id) => {
+      const el = demo.querySelector('[data-region="' + id + '"]');
+      if (el) el.classList.add('done');
+    });
+
+    explanationEl.innerHTML = step.text;
+  }
+
+  stepBtn.addEventListener('click', () => {
+    if (current < steps.length) {
+      current++;
+      render();
+    }
+  });
+
+  backBtn.addEventListener('click', () => {
+    if (current > 0) {
+      current--;
+      render();
+    }
+  });
+
+  resetBtn.addEventListener('click', () => {
+    current = 0;
+    render();
+  });
+
+  document.addEventListener('keydown', (e) => {
+    if (document.activeElement && document.activeElement.tagName === 'INPUT') return;
+    if (e.key === 'ArrowLeft')  { backBtn.click(); }
+    else if (e.key === 'ArrowRight') { stepBtn.click(); }
+  });
+
+  render();
+})();
+</script>
 
 </body>
 </html>
