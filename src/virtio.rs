@@ -613,7 +613,7 @@ const VIRTIO_BLK_S_UNSUPP: u8 = 2;
 /// reads the header, performs the operation, fills the data buffer (for
 /// reads), and writes the status byte.
 #[repr(C)]
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub struct VirtioBlkReq {
     /// Operation code (VIRTIO_BLK_T_IN, _OUT, _FLUSH).
     pub type_: u32,
@@ -630,6 +630,132 @@ impl VirtioBlkReq {
             reserved: 0,
             sector,
         }
+    }
+}
+
+/// DMA-able buffer set for one virtio-blk request: header, data, status.
+///
+/// Each buffer is allocated as its own 4 KiB frame from the frame
+/// allocator — wasteful (16 B header in a 4096 B frame) but the
+/// simplest path to a physical address. Linux's `kmalloc` would
+/// sub-allocate these into a shared page; that's a future optimization.
+///
+/// Frames are tracked (not exposed publicly) so a future `Drop` impl
+/// can return them to the frame allocator. For now the kernel lives
+/// forever, so we leak — fine for early-boot code.
+pub struct BlkBuffers {
+    /// Virtual addresses — kernel-side access via the direct map.
+    pub header_virt: u64,
+    pub data_virt: u64,
+    pub status_virt: u64,
+
+    /// Physical addresses — written into descriptors for the device.
+    pub header_phys: u64,
+    pub data_phys: u64,
+    pub status_phys: u64,
+
+    // Frame numbers (for future cleanup).
+    header_frame: u64,
+    data_frame: u64,
+    status_frame: u64,
+}
+
+impl BlkBuffers {
+    /// Allocate one fresh frame for each of header / data / status, zero
+    /// them, and return the bundle. Caller writes the request header
+    /// into `header_virt` before submitting.
+    pub fn new() -> Self {
+        let header_frame = crate::frame_allocator::allocate()
+            .expect("out of frames for blk request header");
+        let data_frame = crate::frame_allocator::allocate()
+            .expect("out of frames for blk data buffer");
+        let status_frame = crate::frame_allocator::allocate()
+            .expect("out of frames for blk status byte");
+
+        let offset = crate::memory::phys_offset();
+        let header_phys = header_frame * 4096;
+        let data_phys = data_frame * 4096;
+        let status_phys = status_frame * 4096;
+
+        let header_virt = header_phys + offset;
+        let data_virt = data_phys + offset;
+        let status_virt = status_phys + offset;
+
+        // Zero everything. The header is overwritten below; the data
+        // buffer needs to start zeroed so verification can distinguish
+        // "device wrote zeros" from "stale allocator garbage"; the
+        // status byte starts at 0 so we can detect device failure to
+        // respond.
+        // SAFETY: all three frames freshly allocated, reachable via
+        // the direct map, no aliases.
+        unsafe {
+            core::ptr::write_bytes(header_virt as *mut u8, 0, 4096);
+            core::ptr::write_bytes(data_virt as *mut u8, 0, 4096);
+            core::ptr::write_bytes(status_virt as *mut u8, 0, 4096);
+        }
+
+        println!("[virtio] blk buffers allocated (1 frame each)");
+        println!(
+            "[virtio]   header:  virt 0x{:X} phys 0x{:X}",
+            header_virt, header_phys
+        );
+        println!(
+            "[virtio]   data:    virt 0x{:X} phys 0x{:X}",
+            data_virt, data_phys
+        );
+        println!(
+            "[virtio]   status:  virt 0x{:X} phys 0x{:X}",
+            status_virt, status_phys
+        );
+
+        Self {
+            header_virt,
+            data_virt,
+            status_virt,
+            header_phys,
+            data_phys,
+            status_phys,
+            header_frame,
+            data_frame,
+            status_frame,
+        }
+    }
+
+    /// Write a `VirtioBlkReq` into the header buffer. Volatile so the
+    /// compiler doesn't elide the store before the device reads it.
+    pub fn write_header(&self, req: &VirtioBlkReq) {
+        // SAFETY: header_virt points at a 4096-byte buffer that we own.
+        // VirtioBlkReq is 16 bytes, fits comfortably. repr(C) ensures
+        // the on-the-wire layout matches.
+        unsafe {
+            let ptr = self.header_virt as *mut VirtioBlkReq;
+            core::ptr::write_volatile(ptr, *req);
+        }
+    }
+
+    /// Read the 1-byte status from the status buffer. Should be called
+    /// only after `poll_completion` returns Some for this request's head.
+    pub fn read_status(&self) -> u8 {
+        // SAFETY: status_virt points at a 4096-byte buffer; reading the
+        // first byte is in bounds.
+        unsafe { core::ptr::read_volatile(self.status_virt as *const u8) }
+    }
+
+    /// Snapshot of the first N bytes of the data buffer, for verification.
+    /// Returns a fresh Vec so the caller can compare/inspect at leisure.
+    pub fn read_data_prefix(&self, n: usize) -> alloc::vec::Vec<u8> {
+        let mut v = alloc::vec::Vec::with_capacity(n);
+        // SAFETY: data_virt points at a 4096-byte buffer; n is bounded
+        // by the caller (we'll assert).
+        assert!(n <= 4096, "read_data_prefix asked for too many bytes");
+        unsafe {
+            for i in 0..n {
+                v.push(core::ptr::read_volatile(
+                    (self.data_virt + i as u64) as *const u8,
+                ));
+            }
+        }
+        v
     }
 }
 

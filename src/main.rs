@@ -409,6 +409,10 @@ pub extern "C" fn _start(boot_info: &'static BootInfo) -> ! {
                     println!("[virtio]   align = {} bytes", al);
                     assert_eq!(sz, 16, "VirtioBlkReq must be 16 bytes per the spec");
                 }
+
+                println!("[test] allocate DMA buffers (8.2)");
+                let buffers = virtio::BlkBuffers::new();
+                let _ = buffers.header_phys; // silence dead-code warning
             } else {
                 println!("[virtio] failed to probe device");
             }
