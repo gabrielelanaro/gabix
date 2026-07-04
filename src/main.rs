@@ -22,6 +22,7 @@ mod fs;
 mod pci;
 mod virtio;
 mod ext2;
+mod elf;
 
 use bootloader::BootInfo;
 use alloc::vec::Vec;
