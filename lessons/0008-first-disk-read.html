@@ -1,0 +1,691 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Lesson 8 — First Disk Read</title>
+<link rel="stylesheet" href="../assets/lesson.css">
+<link rel="stylesheet" href="../assets/byte-layout.css">
+<style>
+  .chain-flow {
+    display: grid;
+    grid-template-columns: 1fr auto 1fr auto 1fr;
+    gap: 0.6rem;
+    align-items: stretch;
+    margin: 1.5rem 0;
+  }
+  .chain-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 0.8rem;
+    text-align: center;
+    font-family: var(--font-sans);
+    font-size: 0.82rem;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+  }
+  .chain-card.header  { border-top: 3px solid var(--accent); }
+  .chain-card.data    { border-top: 3px solid #be185d; }
+  .chain-card.status  { border-top: 3px solid #15803d; }
+  .chain-card-label {
+    font-family: var(--font-mono);
+    font-size: 0.7rem;
+    color: var(--text-faint);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    margin-bottom: 0.4rem;
+  }
+  .chain-card-title {
+    font-weight: 700;
+    font-size: 0.95rem;
+    color: var(--text);
+    margin-bottom: 0.4rem;
+  }
+  .chain-card-meta {
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
+    color: var(--text-dim);
+    margin: 0.2rem 0;
+  }
+  .chain-card-flags {
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
+    background: var(--surface-soft);
+    padding: 0.25rem 0.4rem;
+    border-radius: 3px;
+    margin-top: 0.3rem;
+    color: var(--accent);
+    font-weight: 600;
+  }
+  .chain-arrow {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    color: var(--accent);
+    font-family: var(--font-mono);
+    font-size: 0.7rem;
+    font-weight: 600;
+  }
+  .chain-arrow .arrow-glyph {
+    font-size: 1.5rem;
+    line-height: 1;
+  }
+  .chain-arrow .arrow-label {
+    margin-top: 0.2rem;
+    color: var(--text-faint);
+  }
+
+  .flow-step {
+    background: var(--surface);
+    border-left: 3px solid var(--accent);
+    padding: 0.6rem 1rem;
+    margin: 0.5rem 0;
+    font-family: var(--font-mono);
+    font-size: 0.82rem;
+  }
+  .flow-step .flow-time {
+    display: inline-block;
+    background: var(--accent-soft);
+    color: var(--accent);
+    font-weight: 600;
+    padding: 1px 6px;
+    border-radius: 3px;
+    margin-right: 0.6rem;
+    font-size: 0.78rem;
+  }
+  .flow-step.kernel { border-left-color: var(--accent); }
+  .flow-step.device { border-left-color: #15803d; background: #f0fdf4; }
+  .flow-step.device .flow-time { background: #dcfce7; color: #15803d; }
+
+  .step {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1rem 1.25rem;
+    margin: 1.25rem 0;
+  }
+  .step-num {
+    font-family: var(--font-mono);
+    font-size: 0.78rem;
+    font-weight: 600;
+    color: var(--accent);
+    background: var(--accent-soft);
+    padding: 2px 8px;
+    border-radius: 3px;
+    margin-right: 0.5rem;
+  }
+  .step-title {
+    font-family: var(--font-sans);
+    font-weight: 600;
+    font-size: 1rem;
+    margin-bottom: 0.4rem;
+  }
+  .step-detail {
+    font-family: var(--font-serif);
+    font-size: 0.95rem;
+    color: var(--text);
+  }
+  .step-detail p:last-child { margin-bottom: 0; }
+</style>
+</head>
+<body>
+<article class="lesson">
+
+  <header class="lesson-header">
+    <div class="lesson-eyebrow">Lesson 8 · M4 · Disk path — Keystone 1: bytes flow from disk</div>
+    <h1 class="lesson-title">First Disk Read</h1>
+    <p class="lesson-subtitle">Build a real virtio-blk request — three descriptors chained, kicked, and polled — and verify the bytes that come back are what we put on disk.</p>
+    <div class="lesson-meta">
+      <span><strong>Read time</strong> ~25 min</span>
+      <span><strong>Build time</strong> ~30–50 min</span>
+      <span><strong>Prereq</strong> <a href="0007-virtqueues.html">Lesson 7</a></span>
+    </div>
+  </header>
+
+  <div class="content">
+
+  <p class="lead">
+    Lesson 7 built the virtqueue mechanics — three regions allocated,
+    configured, with submit/kick/poll working. We verified the queue
+    was set up correctly, but the test descriptor had garbage data so
+    the device never produced a real response. Lesson 8 fixes that:
+    build a <strong>virtio-blk request</strong> properly, send it,
+    and check that the bytes that come back match
+    <code>MINIOS_DISK_v0</code> — the signature we wrote to sector 0
+    back in Lesson 5's <code>make-disk.sh</code>.
+  </p>
+
+  <h2>Why a request header at all</h2>
+
+  <p>
+    You might wonder: in Lesson 7 we had descriptors pointing at
+    buffers. Why can't the kernel just hand the device a buffer and
+    say "fill this"? Why does virtio-blk need a structured request
+    header?
+  </p>
+
+  <p>
+    Because the device needs to know <em>what to do with the
+    buffer</em>. A read at sector 0 is different from a read at
+    sector 42, which is different from a write, which is different
+    from a flush. The descriptor tells the device <em>where the
+    buffer is</em>; the request header tells the device <em>what to
+    do</em>. Without the header, the descriptor is just an empty
+    envelope.
+  </p>
+
+  <p>
+    virtio-blk defines a fixed 16-byte header the kernel fills in
+    for every request. The header travels as the first descriptor in
+    the chain; the data buffer (and a one-byte status field) follow
+    it. The device reads the header, does the operation, fills the
+    buffer, writes the status.
+  </p>
+
+  <h2>The virtio-blk request header (16 bytes)</h2>
+
+  <div class="byte-layout">
+    <div class="byte-layout-header">
+      <span class="byte-layout-name">virtio-blk request header</span>
+      <span class="byte-layout-size">16 bytes total</span>
+    </div>
+    <div class="byte-bar">
+      <div class="byte-field type-u32" style="--bytes: 4">
+        <span class="byte-field-name">type</span>
+        <span class="byte-field-meta">u32 · 4 B</span>
+        <span class="byte-field-range">0x00–0x03</span>
+      </div>
+      <div class="byte-field type-u32" style="--bytes: 4">
+        <span class="byte-field-name">reserved</span>
+        <span class="byte-field-meta">u32 · 4 B</span>
+        <span class="byte-field-range">0x04–0x07</span>
+      </div>
+      <div class="byte-field type-u64" style="--bytes: 8">
+        <span class="byte-field-name">sector</span>
+        <span class="byte-field-meta">u64 · 8 B</span>
+        <span class="byte-field-range">0x08–0x0F</span>
+      </div>
+    </div>
+
+    <div class="field-reference">
+      <dl>
+        <dt>type <span class="type-tag type-u32">u32</span></dt>
+        <dd>
+          <p>
+            Operation code. The four common values:
+          </p>
+          <p>
+            <code>VIRTIO_BLK_T_IN = 0</code> — read. Device reads
+            sectors from disk and writes the bytes into the data
+            buffer.
+          </p>
+          <p>
+            <code>VIRTIO_BLK_T_OUT = 1</code> — write. Device reads
+            bytes from the data buffer and writes them to disk.
+          </p>
+          <p>
+            <code>VIRTIO_BLK_T_FLUSH = 4</code> — flush. Device
+            writes any cached writes to persistent storage. Takes no
+            data buffer (just header + status).
+          </p>
+          <p>
+            <code>VIRTIO_BLK_T_GET_ID = 8</code> — read vendor ID
+            string. Special diagnostic; we won't use it.
+          </p>
+          <div class="example">read sector 0:  type = 0 (VIRTIO_BLK_T_IN)
+write sector 4:  type = 1 (VIRTIO_BLK_T_OUT)
+flush cache:     type = 4 (VIRTIO_BLK_T_FLUSH)</div>
+        </dd>
+
+        <dt>reserved <span class="type-tag type-u32">u32</span></dt>
+        <dd>
+          <p>
+            Always zero. The spec leaves this for future expansion
+            (e.g., priority bits for advanced schedulers). Driver
+            must zero it; device ignores it.
+          </p>
+        </dd>
+
+        <dt>sector <span class="type-tag type-u64">u64</span></dt>
+        <dd>
+          <p>
+            Starting sector number. <strong>Sector</strong> in
+            virtio-blk always means 512 bytes — not the filesystem's
+            block size, not the device's physical sector size.
+            Multi-sector reads/writes use one descriptor with
+            <code>len = 512 × N</code>; <code>sector</code> is the
+            starting unit.
+          </p>
+          <div class="example">read 1 sector at offset 0:     sector = 0, len = 512
+read 1 sector at offset 4096:   sector = 8 (4096 / 512), len = 512
+read 4 sectors at offset 4096:  sector = 8, len = 2048</div>
+        </dd>
+      </dl>
+    </div>
+  </div>
+
+  <p>
+    Note the size — 16 bytes, deliberately small. The header is
+    allocated fresh per request and freed on completion; keeping it
+    tight means less memory traffic per I/O. For the same reason it's
+    a flat structure with no pointers — pointers would have to be
+    translated across the guest/host boundary.
+  </p>
+
+  <div class="callout">
+    <div class="callout-title">Side note: sector vs block</div>
+    <p>
+      <strong>Sector</strong> = the device's unit, always 512 bytes
+      for virtio-blk. <strong>Block</strong> = the filesystem's
+      unit, often 1024 or 4096 bytes for ext2. The block layer
+      (Lesson 9) translates "give me block N" into "read sectors
+      N×(blocksize/512) through ((N+1)×(blocksize/512))-1". For
+      Lesson 8 we deal in sectors only — one block layer
+      abstraction higher than raw sectors is where blocks live.
+    </p>
+  </div>
+
+  <h2>The three-descriptor chain</h2>
+
+  <p>
+    Every virtio-blk request is a chain of three descriptors: the
+    header (kernel writes, device reads), the data buffer (direction
+    depends on type), and a one-byte status (device writes the
+    result). They're chained via <code>F_NEXT</code> on descriptors
+    0 and 1; descriptor 2 is the tail.
+  </p>
+
+  <div class="chain-flow">
+    <div class="chain-card header">
+      <div>
+        <div class="chain-card-label">desc[0] — head</div>
+        <div class="chain-card-title">Request header</div>
+        <div class="chain-card-meta">addr → 16-byte buffer</div>
+        <div class="chain-card-meta">len = 16</div>
+      </div>
+      <div class="chain-card-flags">flags = F_NEXT</div>
+    </div>
+
+    <div class="chain-arrow">
+      <span class="arrow-glyph">→</span>
+      <span class="arrow-label">next = 1</span>
+    </div>
+
+    <div class="chain-card data">
+      <div>
+        <div class="chain-card-label">desc[1] — middle</div>
+        <div class="chain-card-title">Data buffer</div>
+        <div class="chain-card-meta">addr → 512-byte buffer</div>
+        <div class="chain-card-meta">len = 512</div>
+      </div>
+      <div class="chain-card-flags">flags = F_NEXT | F_WRITE</div>
+    </div>
+
+    <div class="chain-arrow">
+      <span class="arrow-glyph">→</span>
+      <span class="arrow-label">next = 2</span>
+    </div>
+
+    <div class="chain-card status">
+      <div>
+        <div class="chain-card-label">desc[2] — tail</div>
+        <div class="chain-card-title">Status byte</div>
+        <div class="chain-card-meta">addr → 1-byte buffer</div>
+        <div class="chain-card-meta">len = 1</div>
+      </div>
+      <div class="chain-card-flags">flags = F_WRITE</div>
+    </div>
+  </div>
+
+  <p>
+    The <code>F_WRITE</code> flag on descriptors 1 and 2 (data and
+    status) tells the device: "you'll be writing here, not reading."
+    The header (descriptor 0) has no <code>F_WRITE</code> — the
+    device reads the header but doesn't modify it.
+  </p>
+
+  <p>
+    The kernel submits the chain by writing the <em>head</em>
+    descriptor index (0 in this example, but it's whatever the free
+    list returned) into the available ring. The device sees the new
+    head, follows <code>next</code> pointers to gather the whole
+    chain, then acts.
+  </p>
+
+  <div class="callout">
+    <div class="callout-title">The status byte</div>
+    <p>
+      After processing, the device writes one byte to the address in
+      descriptor 2:
+    </p>
+    <p>
+      <code>0 = VIRTIO_BLK_S_OK</code> — request succeeded, data
+      buffer is valid.<br>
+      <code>1 = VIRTIO_BLK_S_IOERR</code> — host-side I/O error
+      (e.g., QEMU couldn't read the backing file).<br>
+      <code>2 = VIRTIO_BLK_S_UNSUPP</code> — unsupported operation
+      (e.g., FLUSH when the device doesn't support it).
+    </p>
+    <p>
+      Always check the status byte before trusting the data buffer.
+      A failed read may have written partial or garbage data.
+    </p>
+  </div>
+
+  <h2>End-to-end flow — what physically happens</h2>
+
+  <p>
+    Trace one disk read of sector 0, from kernel code through to
+    completion:
+  </p>
+
+  <div class="flow-step kernel">
+    <span class="flow-time">T0</span>
+    Kernel allocates 3 descriptors from the free list, plus
+    3 DMA-able buffers (header, data, status). Computes physical
+    addresses for each.
+  </div>
+  <div class="flow-step kernel">
+    <span class="flow-time">T1</span>
+    Kernel writes the header fields:
+    <code>type=0, reserved=0, sector=0</code>. Writes descriptor
+    fields: desc[0] points at header, desc[1] at data buffer with
+    F_WRITE, desc[2] at status with F_WRITE. Chain via F_NEXT.
+  </div>
+  <div class="flow-step kernel">
+    <span class="flow-time">T2</span>
+    Kernel calls <code>submit_chain(head_index)</code>. Writes
+    head into <code>avail-&gt;ring[idx % N]</code>, advances
+    <code>avail-&gt;idx</code> with Release.
+  </div>
+  <div class="flow-step kernel">
+    <span class="flow-time">T3</span>
+    Kernel calls <code>kick()</code> — writes 0 to the notify
+    register. The store exits the guest immediately and signals
+    QEMU's virtio-blk backend.
+  </div>
+  <div class="flow-step device">
+    <span class="flow-time">T4</span>
+    QEMU's virtio-blk thread wakes, sees <code>avail-&gt;idx</code>
+    advanced, reads the head index, follows the chain to find
+    header + data + status buffers.
+  </div>
+  <div class="flow-step device">
+    <span class="flow-time">T5</span>
+    QEMU reads the request header: type=0 (read), sector=0. Issues
+    a host-side <code>pread</code> on the disk image file at byte
+    offset 0, reading 512 bytes into an internal buffer.
+  </div>
+  <div class="flow-step device">
+    <span class="flow-time">T6</span>
+    QEMU DMAs the 512 bytes from its internal buffer into the
+    guest's data buffer (descriptor 1's physical address). Writes
+    0 to the status byte (descriptor 2's address).
+  </div>
+  <div class="flow-step device">
+    <span class="flow-time">T7</span>
+    QEMU writes <code>{id: head_index, len: 512}</code> into
+    <code>used-&gt;ring[used-&gt;idx % N]</code>, advances
+    <code>used-&gt;idx</code> with Release.
+  </div>
+  <div class="flow-step kernel">
+    <span class="flow-time">T8</span>
+    Kernel's <code>poll_completion</code> reads
+    <code>used-&gt;idx</code> with Acquire, sees it advance, reads
+    the new entry. Returns <code>(id, len)</code> to the caller.
+  </div>
+  <div class="flow-step kernel">
+    <span class="flow-time">T9</span>
+    Kernel checks the status byte (= 0, success), reads the data
+    buffer, verifies bytes match <code>MINIOS_DISK_v0\n</code>
+    followed by zeros. Frees the 3 descriptors back to the free
+    list.
+  </div>
+
+  <p>
+    Steps T0–T3 are kernel-side and fast (microseconds). T4–T7 are
+    host-side and dominate the latency — QEMU has to actually read
+    a file, which may hit host OS page cache or do real disk I/O.
+    T8–T9 are kernel-side again, also fast.
+  </p>
+
+  <h2> DMA-able memory: a frame allocator detour </h2>
+
+  <p>
+    The device needs <strong>physical addresses</strong> for the
+    header, data buffer, and status byte — it DMAs to/from them
+    directly, without walking kernel page tables. Our heap allocator
+    hands out virtual addresses that we'd have to translate (walk
+    page tables) to get physical. That's annoying.
+  </p>
+
+  <p>
+    The frame allocator gives us both for free: each frame's physical
+    address is <code>frame_number × 4096</code>, and its virtual
+    address is <code>physical + phys_offset()</code> via the direct
+    map. We allocate one frame each for header (16 bytes used of
+    4096 — wasteful but simple), data buffer (512 bytes used of
+    4096), and status (1 byte used of 4096). Lesson 9 will refactor
+    this into a proper sub-frame allocator.
+  </p>
+
+  <div class="callout">
+    <div class="callout-title">What Linux does</div>
+    <p>
+      Real Linux drivers use <code>kmalloc</code> for the in-kernel
+      buffer, then <code>dma_map_single</code> to get the DMA
+      address. The DMA API handles IOMMU translation on hardware
+      that has one, and ensures proper cache flushing on hardware
+      that needs it. Our setup is simpler: no IOMMU, the direct map
+      gives us cache-coherent access, and the frame allocator gives
+      us physical addresses directly.
+    </p>
+  </div>
+
+  <h2>Build steps — your turn</h2>
+
+  <p>
+    Five substeps. By the end you'll have read sector 0 and verified
+    the signature. This is Keystone 1 — bytes flow from disk for
+    the first time.
+  </p>
+
+  <div class="step">
+    <div class="step-title"><span class="step-num">8.1</span>Define the request header struct</div>
+    <div class="step-detail">
+      <p>
+        Add a <code>#[repr(C)]</code> struct
+        <code>VirtioBlkReq</code> with the three fields above.
+        Constants for the operation types and status codes:
+      </p>
+      <ul>
+        <li><code>VIRTIO_BLK_T_IN = 0</code> (read), <code>VIRTIO_BLK_T_OUT = 1</code> (write), <code>VIRTIO_BLK_T_FLUSH = 4</code></li>
+        <li><code>VIRTIO_BLK_S_OK = 0</code>, <code>VIRTIO_BLK_S_IOERR = 1</code>, <code>VIRTIO_BLK_S_UNSUPP = 2</code></li>
+      </ul>
+      <p>
+        The struct lives in <code>src/virtio.rs</code>. Test by
+        asserting <code>size_of::&lt;VirtioBlkReq&gt;() == 16</code>.
+      </p>
+    </div>
+  </div>
+
+  <div class="step">
+    <div class="step-title"><span class="step-num">8.2</span>Allocate DMA-able buffers</div>
+    <div class="step-detail">
+      <p>
+        Helper to allocate one frame and return both its physical
+        and virtual addresses. Three allocations per read request:
+        header (16 B), data buffer (512 B), status (1 B). Each gets
+        its own 4 KiB frame.
+      </p>
+      <p>
+        Stash all six addresses (3 virt, 3 phys) in a small
+        <code>BlkRequest</code> struct so cleanup later can free
+        them.
+      </p>
+    </div>
+  </div>
+
+  <div class="step">
+    <div class="step-title"><span class="step-num">8.3</span>Build the descriptor chain</div>
+    <div class="step-detail">
+      <p>
+        Method <code>VirtQueue::build_read_chain(&amp;mut self, req: &amp;BlkRequest) -&gt; u16</code>:
+      </p>
+      <ol>
+        <li>Allocate 3 descriptors via <code>alloc_descriptor</code>: <code>head, mid, tail</code></li>
+        <li>Write desc[head]: <code>addr = req.header_phys, len = 16, flags = F_NEXT, next = mid</code></li>
+        <li>Write desc[mid]: <code>addr = req.data_phys, len = 512, flags = F_NEXT | F_WRITE, next = tail</code></li>
+        <li>Write desc[tail]: <code>addr = req.status_phys, len = 1, flags = F_WRITE, next = 0</code></li>
+        <li>Return <code>head</code> (this is what gets written to the avail ring)</li>
+      </ol>
+      <p>
+        Use the <code>write_descriptor</code> helper from Lesson 7's
+        step 7.3. The chain is built entirely in the descriptor table
+        region — no extra allocations.
+      </p>
+    </div>
+  </div>
+
+  <div class="step">
+    <div class="step-title"><span class="step-num">8.4</span>Submit, kick, poll</div>
+    <div class="step-detail">
+      <p>
+        Call the Lesson 7 helpers in sequence:
+      </p>
+      <ol>
+        <li><code>queue.submit_chain(head)</code> — fills avail ring, advances idx with Release</li>
+        <li><code>virtio_dev.kick()</code> — writes to notify register, wakes the device</li>
+        <li><code>queue.poll_completion()</code> — Acquire-loads used-&gt;idx, returns <code>(id, len)</code> when it advances</li>
+      </ol>
+      <p>
+        For Lesson 8, poll in a loop with a generous cap (e.g., 100000
+        iterations). When QEMU is slow to wake, it can take a few
+        iterations. If no completion arrives, fail loudly.
+      </p>
+    </div>
+  </div>
+
+  <div class="step">
+    <div class="step-title"><span class="step-num">8.5</span>Verify the bytes match</div>
+    <div class="step-detail">
+      <p>
+        After the completion arrives:
+      </p>
+      <ol>
+        <li>Read the status byte: must be <code>VIRTIO_BLK_S_OK (0)</code></li>
+        <li>Check <code>len == 512</code> (device wrote all requested bytes)</li>
+        <li>Read the first 15 bytes of the data buffer: must be <code>b"MINIOS_DISK_v0\n"</code></li>
+        <li>Remaining 497 bytes should be zero (the disk image was <code>truncate -s 1M</code>'d then the signature written)</li>
+        <li>Free all 3 descriptors back to the free list</li>
+      </ol>
+      <p>
+        Print the verification result. If the signature matches,
+        Keystone 1 is complete — the kernel has read its first byte
+        from disk.
+      </p>
+    </div>
+  </div>
+
+  <h2>Verification — what success looks like</h2>
+
+  <p>
+    After step 8.5, the boot output should show:
+  </p>
+
+<pre><span class="c">// ... Lesson 7 verification (queue active) ...</span>
+[test] first disk read — sector 0 (Keystone 1)
+[virtio] allocating DMA buffers (header/data/status)
+[virtio] building 3-descriptor read chain (sector 0)
+[virtio]   desc[head=61] addr=0x0000000000B83000 len=16  flags=0x01 (F_NEXT)         next=60
+[virtio]   desc[mid =60] addr=0x0000000000B84000 len=512 flags=0x03 (F_NEXT|F_WRITE) next=59
+[virtio]   desc[tail=59] addr=0x0000000000B85000 len=1   flags=0x02 (F_WRITE)        next=0
+[virtio] submit_chain(61): avail-&gt;idx 1 -&gt; 2
+[virtio] kick: wrote queue 0 to notify register
+[virtio] poll: completion arrived after N iterations
+[virtio]   id=61 len=512
+[virtio] status byte = 0 (VIRTIO_BLK_S_OK)
+[virtio] data[0..15] = "MINIOS_DISK_v0\n"
+[virtio] data[15..512] = all zero (497 bytes)
+[virtio] *** Keystone 1: bytes flowed from disk ***</pre>
+
+  <p>
+    Exact descriptor indices and addresses will vary based on
+    allocator state. What matters: status=0, len=512, the 15-byte
+    signature matches, the rest is zero. Once you see "Keystone 1:
+    bytes flowed from disk," you've hit the milestone.
+  </p>
+
+  <h2>Primary source</h2>
+
+  <p>
+    The OASIS VIRTIO 1.2 spec,
+    <a href="https://docs.oasis-open.org/virtio/virtio/v1.2/csd01/virtio-v1.2-csd01.html#x1-340005">section
+    5.2 (Block Device)</a>, defines the request header layout,
+    operation types, and status codes. Definitive reference.
+  </p>
+
+  <p>
+    For Linux's implementation:
+    <a href="https://elixir.bootlin.com/linux/latest/source/drivers/block/virtio_blk.c">drivers/block/virtio_blk.c</a>
+    — specifically <code>virtblk_queue_rq</code> shows how each
+    request becomes a descriptor chain. The struct
+    <code>virtio_blk_req</code> is the kernel-side equivalent of our
+    <code>VirtioBlkReq</code>.
+  </p>
+
+  <div class="probe">
+    <div class="probe-title">Pause and think</div>
+    <p>
+      The header's <code>sector</code> field is 64 bits — that's
+      enough to address 2^64 × 512 bytes = way more than any real
+      disk. Why is it that wide instead of, say, 32 bits (still 2
+      TB addressable)?
+    </p>
+  </div>
+
+  </div>
+
+  <footer class="lesson-footer">
+    <div class="footer-block">
+      <h4>Code tour</h4>
+      <p style="margin:0;">
+        Once you start building, the
+        <a href="../tours/tour-0008-first-disk-read.html">tour of changes</a>
+        will be the companion to this lesson — actual code that
+        landed for each step, with the serial output that proved it.
+      </p>
+    </div>
+
+    <div class="footer-block">
+      <h4>Up next</h4>
+      <p style="margin:0;">
+        Lesson 9 — Block layer abstraction. Wrap "submit a read for
+        sector N" into a clean <code>read_block(n) -&gt; [u8; 512]</code>
+        function. Generalizes what Lesson 8 builds into a primitive
+        the ext2 filesystem (Lesson 11) will sit on top of.
+      </p>
+    </div>
+
+    <div class="footer-block">
+      <h4>If anything was unclear</h4>
+      <p style="margin:0;">
+        Ask. Especially the DMA address translation, the descriptor
+        chain order, or anything about how QEMU's host-side read
+        becomes bytes in guest RAM. The point of this lesson is to
+        see the whole round trip cleanly.
+      </p>
+    </div>
+
+    <nav class="lesson-nav">
+      <a href="0007-virtqueues.html">← Lesson 7: Virtqueues</a>
+      <a href="roadmap-disk-to-exec.html">Roadmap ↑</a>
+    </nav>
+  </footer>
+
+</article>
+</body>
+</html>

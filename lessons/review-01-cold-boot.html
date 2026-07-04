@@ -1,0 +1,898 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Review 01 — Cold Boot</title>
+<link rel="stylesheet" href="../assets/lesson.css">
+<style>
+  /* ============ SCORE BAR ============ */
+  .score-bar {
+    position: sticky;
+    top: 0;
+    z-index: 10;
+    background: var(--bg);
+    border-bottom: 1px solid var(--border);
+    padding: 0.6rem 0;
+    margin: 0 0 2rem;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-family: var(--font-sans);
+    font-size: 0.85rem;
+  }
+  .score-bar .score-label {
+    color: var(--text-faint);
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    font-size: 0.72rem;
+  }
+  .score-bar .score-value {
+    color: var(--accent);
+    font-weight: 600;
+    font-size: 1rem;
+  }
+  .score-bar .score-progress {
+    flex: 1;
+    margin: 0 1.5rem;
+    height: 4px;
+    background: var(--surface-soft);
+    border-radius: 2px;
+    overflow: hidden;
+  }
+  .score-bar .score-progress-fill {
+    height: 100%;
+    background: var(--accent);
+    width: 0;
+    transition: width 0.4s ease;
+  }
+
+  /* ============ CASES ============ */
+  .case {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1.5rem 1.75rem;
+    margin: 1.5rem 0;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.03);
+  }
+  .case-header {
+    display: flex;
+    align-items: baseline;
+    gap: 0.75rem;
+    margin-bottom: 1rem;
+    padding-bottom: 0.75rem;
+    border-bottom: 1px dashed var(--border);
+  }
+  .case-num {
+    font-family: var(--font-sans);
+    font-size: 0.72rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+    color: var(--accent);
+    background: var(--accent-soft);
+    padding: 0.2rem 0.55rem;
+    border-radius: 3px;
+  }
+  .case-header h2 {
+    margin: 0;
+    font-size: 1.25rem;
+    line-height: 1.2;
+  }
+  .case-header h2::before { display: none; }
+
+  .case-scenario p { margin: 0 0 0.8rem; }
+  .case-scenario p:last-child { margin-bottom: 0; }
+  .case-question {
+    font-style: italic;
+    color: var(--text);
+    font-size: 1.02rem;
+    margin-top: 1rem !important;
+    padding-top: 0.8rem;
+    border-top: 1px solid var(--border);
+  }
+
+  /* ============ OPTIONS ============ */
+  .case-options {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    margin: 1.25rem 0 0;
+  }
+  .case-option {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    padding: 0.7rem 0.9rem;
+    font-family: var(--font-serif);
+    font-size: 0.95rem;
+    color: var(--text);
+    text-align: left;
+    cursor: pointer;
+    display: flex;
+    align-items: flex-start;
+    gap: 0.65rem;
+    transition: all 0.15s ease;
+    line-height: 1.45;
+  }
+  .case-option:hover:not(.locked) {
+    border-color: var(--accent);
+    background: var(--surface);
+  }
+  .case-option.locked { cursor: default; }
+  .opt-letter {
+    font-family: var(--font-sans);
+    font-weight: 700;
+    color: var(--accent);
+    background: var(--accent-soft);
+    width: 1.4rem;
+    height: 1.4rem;
+    border-radius: 3px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    font-size: 0.78rem;
+  }
+  .opt-text { flex: 1; }
+
+  .case-option.right {
+    background: #dcfce7;
+    border-color: #15803d;
+    color: var(--text);
+  }
+  .case-option.right .opt-letter {
+    background: #15803d;
+    color: #fff;
+  }
+  .case-option.wrong {
+    background: #fee2e2;
+    border-color: #b91c1c;
+  }
+  .case-option.wrong .opt-letter {
+    background: #b91c1c;
+    color: #fff;
+  }
+  .case-option.dimmed { opacity: 0.5; }
+
+  /* ============ ANSWER REVEAL ============ */
+  .case-answer {
+    margin-top: 1.25rem;
+    padding: 1rem 1.1rem;
+    border-radius: 5px;
+    border-left: 3px solid;
+    animation: slideIn 0.25s ease;
+  }
+  @keyframes slideIn {
+    from { opacity: 0; transform: translateY(-4px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+  .case-answer.correct {
+    background: #f0fdf4;
+    border-color: #15803d;
+  }
+  .case-answer.incorrect {
+    background: #fef2f2;
+    border-color: #b91c1c;
+  }
+  .answer-status {
+    font-family: var(--font-sans);
+    font-size: 0.78rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    margin-bottom: 0.5rem;
+  }
+  .case-answer.correct .answer-status { color: #15803d; }
+  .case-answer.incorrect .answer-status { color: #b91c1c; }
+  .answer-explanation p { margin: 0 0 0.6rem; font-size: 0.92rem; line-height: 1.55; }
+  .answer-explanation p:last-child { margin-bottom: 0; }
+  .answer-source {
+    margin-top: 0.7rem !important;
+    padding-top: 0.6rem;
+    border-top: 1px dashed var(--border);
+    font-family: var(--font-sans);
+    font-size: 0.8rem;
+    color: var(--text-dim);
+  }
+
+  /* ============ ORDERING CASE ============ */
+  .ordering-prompt {
+    font-family: var(--font-sans);
+    font-size: 0.82rem;
+    color: var(--text-dim);
+    margin: 1rem 0 0.6rem;
+  }
+  .ordering-pool {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    margin-bottom: 1rem;
+    padding: 0.8rem;
+    background: var(--surface-soft);
+    border-radius: 5px;
+    min-height: 3rem;
+  }
+  .order-item {
+    background: var(--bg);
+    border: 1px solid var(--border-bright);
+    border-radius: 4px;
+    padding: 0.45rem 0.75rem;
+    font-family: var(--font-mono);
+    font-size: 0.82rem;
+    color: var(--text);
+    cursor: pointer;
+    transition: all 0.15s ease;
+  }
+  .order-item:hover:not(.placed):not(.locked) {
+    border-color: var(--accent);
+    background: var(--surface);
+  }
+  .order-item.placed {
+    opacity: 0.3;
+    cursor: default;
+  }
+  .order-item.locked { cursor: default; }
+  .order-item.slot-right {
+    background: #dcfce7;
+    border-color: #15803d;
+    opacity: 1;
+  }
+  .order-item.slot-wrong {
+    background: #fee2e2;
+    border-color: #b91c1c;
+    opacity: 1;
+  }
+  .ordering-sequence {
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+    margin-bottom: 0.5rem;
+  }
+  .sequence-slot {
+    display: flex;
+    align-items: center;
+    gap: 0.65rem;
+    padding: 0.45rem 0.75rem;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    font-family: var(--font-mono);
+    font-size: 0.85rem;
+  }
+  .sequence-slot.empty {
+    color: var(--text-faint);
+    font-style: italic;
+    font-family: var(--font-sans);
+  }
+  .sequence-num {
+    font-family: var(--font-sans);
+    font-weight: 700;
+    color: var(--accent);
+    width: 1.5rem;
+    text-align: center;
+    font-size: 0.8rem;
+  }
+  .sequence-slot.right {
+    background: #dcfce7;
+    border-color: #15803d;
+  }
+  .sequence-slot.wrong {
+    background: #fee2e2;
+    border-color: #b91c1c;
+  }
+
+  /* ============ SUMMARY ============ */
+  .summary {
+    margin-top: 2.5rem;
+    padding: 2rem 1.75rem;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    text-align: center;
+  }
+  .summary h2 {
+    margin-top: 0;
+    text-align: center;
+  }
+  .summary h2::before {
+    margin-left: auto;
+    margin-right: auto;
+  }
+  .summary-score {
+    font-family: var(--font-sans);
+    font-size: 2.4rem;
+    font-weight: 700;
+    color: var(--accent);
+    margin: 0.5rem 0 1rem;
+  }
+  .summary-score .total {
+    color: var(--text-faint);
+    font-weight: 400;
+    font-size: 1.4rem;
+  }
+  .summary-breakdown {
+    text-align: left;
+    max-width: 480px;
+    margin: 1.5rem auto;
+    font-family: var(--font-sans);
+    font-size: 0.88rem;
+  }
+  .breakdown-row {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    padding: 0.4rem 0;
+    border-bottom: 1px dashed var(--border);
+  }
+  .breakdown-row:last-child { border-bottom: none; }
+  .breakdown-mark {
+    width: 1.1rem;
+    text-align: center;
+    font-weight: 700;
+  }
+  .breakdown-mark.ok { color: #15803d; }
+  .breakdown-mark.wobble { color: var(--accent); }
+  .breakdown-name { flex: 1; color: var(--text); }
+  .breakdown-link {
+    font-family: var(--font-sans);
+    font-size: 0.78rem;
+    color: var(--text-dim);
+  }
+  .summary-advice {
+    margin-top: 1.5rem;
+    padding: 1rem 1.1rem;
+    background: var(--accent-soft);
+    border-left: 3px solid var(--accent);
+    border-radius: 4px;
+    text-align: left;
+    font-size: 0.9rem;
+  }
+  .restart {
+    margin-top: 1.5rem;
+    background: var(--accent);
+    color: #fff;
+    border: none;
+    padding: 0.6rem 1.2rem;
+    border-radius: 5px;
+    font-family: var(--font-sans);
+    font-size: 0.88rem;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  .restart:hover { opacity: 0.9; }
+
+  .case-hexdump {
+    background: var(--code-bg);
+    color: var(--code-fg);
+    padding: 0.8rem 1rem;
+    border-radius: 5px;
+    font-family: var(--font-mono);
+    font-size: 0.78rem;
+    line-height: 1.7;
+    margin: 0.8rem 0;
+    overflow-x: auto;
+  }
+  .case-hexdump .byte { color: var(--code-number); }
+  .case-hexdump .ascii { color: var(--code-string); }
+  .case-hexdump .comment { color: var(--code-comment); font-style: italic; }
+  .case-hexdump .offset { color: var(--text-faint); }
+</style>
+</head>
+<body>
+<article class="lesson">
+
+  <header class="lesson-header">
+    <div class="lesson-eyebrow">Review Session 01 · Spaced repetition</div>
+    <h1 class="lesson-title">Cold Boot</h1>
+    <p class="lesson-subtitle">The kernel just rebooted. Five cases to remember how it works.</p>
+    <div class="lesson-meta">
+      <span><strong>Time</strong> ~10 min</span>
+      <span><strong>Format</strong> self-graded</span>
+      <span><strong>Goal</strong> find what's slippery, not score you</span>
+    </div>
+  </header>
+
+  <div class="content">
+
+    <p class="lead">
+      Five short scenarios pulled from <a href="0001-shape-of-vfs.html">Lesson 1</a>,
+      <a href="0002-file-descriptor-table.html">Lesson 2</a>,
+      <a href="0003-real-inodes-and-paths.html">Lesson 3</a>, and
+      <a href="0004-shape-of-storage-stack.html">Lesson 4</a>. Each one asks you to
+      <em>apply</em> a concept, not recognize it. Wrong answers teach — read the
+      explanation that reveals, then move on. The score is a diagnostic: low spots
+      tell us what to revisit before going further.
+    </p>
+
+    <div class="score-bar">
+      <span class="score-label">Score</span>
+      <span class="score-value">0 / 5</span>
+      <div class="score-progress"><div class="score-progress-fill"></div></div>
+      <span class="score-label">Cases</span>
+      <span class="score-value cases-done">0 / 5</span>
+    </div>
+
+    <!-- ========== CASE 1 ========== -->
+    <section class="case" data-case="1" data-topic="fd-file-sharing">
+      <header class="case-header">
+        <span class="case-num">Case 01</span>
+        <h2>The shared cursor</h2>
+      </header>
+      <div class="case-scenario">
+        <p>
+          A process opens <code>/var/log.txt</code> and gets <code>fd = 3</code>.
+          It then calls <code>fork()</code>. The child calls
+          <code>lseek(3, 0, SEEK_END)</code> &mdash; moving the cursor to the
+          end of the file. Then the parent runs <code>read(3, buf, 10)</code>.
+        </p>
+        <p class="case-question">Where does the parent's read start reading from?</p>
+      </div>
+      <div class="case-options">
+        <button class="case-option" data-correct="false">
+          <span class="opt-letter">A</span>
+          <span class="opt-text">Byte 0 &mdash; the parent has its own cursor; <code>fork()</code> copied it.</span>
+        </button>
+        <button class="case-option" data-correct="true">
+          <span class="opt-letter">B</span>
+          <span class="opt-text">The end of the file &mdash; <code>fork()</code> shared the <code>File</code> struct, so the cursor is shared too.</span>
+        </button>
+        <button class="case-option" data-correct="false">
+          <span class="opt-letter">C</span>
+          <span class="opt-text">Byte 10 &mdash; each process's reads advance independently of the other.</span>
+        </button>
+      </div>
+      <div class="case-answer" hidden>
+        <div class="answer-status"></div>
+        <div class="answer-explanation">
+          <p>
+            The cursor lives on the <code>File</code> struct &mdash; not on the
+            file descriptor (FD), not on the process. <code>fork()</code> duplicates
+            the FD table (child gets its own FD numbers), but each FD entry still
+            points at the <em>same</em> underlying <code>File</code> objects.
+            So when the child moves the cursor, the parent sees the new position.
+          </p>
+          <p>
+            Same reason shell <code>&gt;file</code> redirection survives
+            <code>fork()</code> + <code>exec()</code>: the FD and the
+            <code>File</code> it points at travel together.
+          </p>
+          <p class="answer-source">
+            From <a href="0002-file-descriptor-table.html">Lesson 2 — File Descriptor Table</a>
+            and learning-record 0002 (dup and FD sharing).
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ========== CASE 2 ========== -->
+    <section class="case" data-case="2" data-topic="path-resolution">
+      <header class="case-header">
+        <span class="case-num">Case 02</span>
+        <h2>Count the inodes</h2>
+      </header>
+      <div class="case-scenario">
+        <p>
+          A program calls <code>open("/home/gab/notes.txt")</code>. The kernel
+          resolves the path component by component.
+        </p>
+        <p class="case-question">How many distinct inodes does the kernel touch during resolution (before reading any file data)?</p>
+      </div>
+      <div class="case-options">
+        <button class="case-option" data-correct="false">
+          <span class="opt-letter">A</span>
+          <span class="opt-text">3 &mdash; one per component after the root.</span>
+        </button>
+        <button class="case-option" data-correct="true">
+          <span class="opt-letter">B</span>
+          <span class="opt-text">4 &mdash; root, then one per component including the file itself.</span>
+        </button>
+        <button class="case-option" data-correct="false">
+          <span class="opt-letter">C</span>
+          <span class="opt-text">5 &mdash; root, three intermediate directories, and the file.</span>
+        </button>
+      </div>
+      <div class="case-answer" hidden>
+        <div class="answer-status"></div>
+        <div class="answer-explanation">
+          <p>
+            Resolution starts at the root inode. The kernel reads root's
+            directory entries, finds <code>home</code>, and gets home's inode.
+            Reads home's directory, finds <code>gab</code>, gets gab's inode.
+            Reads gab's directory, finds <code>notes.txt</code>, gets notes's
+            inode. Four inodes touched: <code>/</code>, <code>home</code>,
+            <code>gab</code>, <code>notes.txt</code>.
+          </p>
+          <p>
+            Three directory reads, three name lookups, four inodes visited.
+            Counting carefully matters because each hop is one disk read in a
+            naive implementation &mdash; the dentry cache exists to skip them.
+          </p>
+          <p class="answer-source">
+            From <a href="0003-real-inodes-and-paths.html">Lesson 3 — Real Inodes and Paths</a>.
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ========== CASE 3 ========== -->
+    <section class="case" data-case="3" data-topic="dirent-format">
+      <header class="case-header">
+        <span class="case-num">Case 03</span>
+        <h2>Reading the directory bytes</h2>
+      </header>
+      <div class="case-scenario">
+        <p>You hexdump a directory's raw bytes:</p>
+        <div class="case-hexdump">
+          <span class="offset">offset 0:</span>  <span class="byte">05</span>  <span class="ascii">68 65 6c 6c 6f</span>  <span class="byte">02 00 00 00 00 00 00 00</span>  <span class="comment">// "hello", ino=2</span><br>
+          <span class="offset">offset 14:</span> <span class="byte">06</span>  <span class="ascii">73 65 63 72 65 74</span>  <span class="byte">03 00 00 00 00 00 00 00</span>  <span class="comment">// "secret", ino=3</span>
+        </div>
+        <p>
+          The format is <code>[name_len: 1 byte][name: N bytes][ino: 8 bytes little-endian]</code>.
+          You add a third file <code>data.txt</code>.
+        </p>
+        <p class="case-question">At what byte offset does the new entry begin?</p>
+      </div>
+      <div class="case-options">
+        <button class="case-option" data-correct="false">
+          <span class="opt-letter">A</span>
+          <span class="opt-text">28 &mdash; entries are fixed-width at 14 bytes each.</span>
+        </button>
+        <button class="case-option" data-correct="true">
+          <span class="opt-letter">B</span>
+          <span class="opt-text">29 &mdash; entries are variable-width; <code>secret</code> took 15 bytes.</span>
+        </button>
+        <button class="case-option" data-correct="false">
+          <span class="opt-letter">C</span>
+          <span class="opt-text">14 &mdash; entries restart at a fixed stride.</span>
+        </button>
+      </div>
+      <div class="case-answer" hidden>
+        <div class="answer-status"></div>
+        <div class="answer-explanation">
+          <p>
+            Each entry is <code>1 + N + 8</code> bytes &mdash; one byte for the
+            length, N bytes for the name, eight bytes for the inode number.
+            <code>hello</code> (5 chars) took <code>1 + 5 + 8 = 14</code> bytes
+            (offsets 0&ndash;13). <code>secret</code> (6 chars) took
+            <code>1 + 6 + 8 = 15</code> bytes (offsets 14&ndash;28). So the next
+            entry starts at offset 29.
+          </p>
+          <p>
+            The length-prefix isn't decoration: it lets the kernel skip to the
+            next entry in O(1) instead of scanning for a delimiter. Worth the
+            extra byte per entry.
+          </p>
+          <p class="answer-source">
+            From <a href="0003-real-inodes-and-paths.html">Lesson 3 — Real Inodes and Paths</a>,
+            step 3.2 (directory entry encode/decode).
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ========== CASE 4 ========== -->
+    <section class="case" data-case="4" data-topic="inode-numbers">
+      <header class="case-header">
+        <span class="case-num">Case 04</span>
+        <h2>What survives a reboot</h2>
+      </header>
+      <div class="case-scenario">
+        <p>
+          You power-cycle the machine. Same disk, fresh boot. The kernel reads
+          inode data from disk into RAM. On disk, each inode is identified by
+          <code>ino = 17</code> &mdash; a small integer.
+        </p>
+        <p class="case-question">Why is the inode identified by a number on disk, instead of a memory pointer like <code>0xFFFF_8000_1234_5678</code>?</p>
+      </div>
+      <div class="case-options">
+        <button class="case-option" data-correct="false">
+          <span class="opt-letter">A</span>
+          <span class="opt-text">Numbers are smaller &mdash; 4 bytes instead of 8, so the disk format is more compact.</span>
+        </button>
+        <button class="case-option" data-correct="true">
+          <span class="opt-letter">B</span>
+          <span class="opt-text">Numbers are stable across reboots; pointers are RAM addresses that mean nothing after a fresh boot.</span>
+        </button>
+        <button class="case-option" data-correct="false">
+          <span class="opt-letter">C</span>
+          <span class="opt-text">Numbers sort faster in B-trees, so directory lookups are quicker.</span>
+        </button>
+      </div>
+      <div class="case-answer" hidden>
+        <div class="answer-status"></div>
+        <div class="answer-explanation">
+          <p>
+            A pointer is a RAM address &mdash; it points at where the inode
+            <em>happened to be</em> last time the kernel ran. After a reboot,
+            RAM is empty; that address is meaningless. The on-disk format has
+            to use a stable label (the inode number) that the freshly-booted
+            kernel re-resolves to a fresh RAM pointer via the inode cache or
+            registry.
+          </p>
+          <p>
+            Persistence is what drives this design. Size and speed are
+            secondary &mdash; you'd make the same choice even if numbers were
+            bigger than pointers.
+          </p>
+          <p class="answer-source">
+            From <a href="0003-real-inodes-and-paths.html">Lesson 3 — Real Inodes and Paths</a>,
+            and learning-record 0007.
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ========== CASE 5 (ORDERING) ========== -->
+    <section class="case ordering" data-case="5" data-topic="storage-stack">
+      <header class="case-header">
+        <span class="case-num">Case 05</span>
+        <h2>Order in the stack</h2>
+      </header>
+      <div class="case-scenario">
+        <p>
+          A program calls <code>read(fd, buf, 10)</code> on a disk-backed file.
+          The request flows down through the storage stack to the hardware,
+          then the bytes flow back up.
+        </p>
+        <p class="case-question">Click the layers below in the order the request passes through them (top of stack first).</p>
+      </div>
+      <p class="ordering-prompt">Available layers &mdash; click in order:</p>
+      <div class="ordering-pool">
+        <button class="order-item" data-correct-pos="2">Filesystem (ext2)</button>
+        <button class="order-item" data-correct-pos="5">PCI bus</button>
+        <button class="order-item" data-correct-pos="3">Block layer</button>
+        <button class="order-item" data-correct-pos="1">VFS dispatch</button>
+        <button class="order-item" data-correct-pos="4">virtio-blk driver</button>
+      </div>
+      <p class="ordering-prompt">Your sequence:</p>
+      <div class="ordering-sequence">
+        <div class="sequence-slot empty" data-slot="1"><span class="sequence-num">1.</span> <span class="slot-label">empty</span></div>
+        <div class="sequence-slot empty" data-slot="2"><span class="sequence-num">2.</span> <span class="slot-label">empty</span></div>
+        <div class="sequence-slot empty" data-slot="3"><span class="sequence-num">3.</span> <span class="slot-label">empty</span></div>
+        <div class="sequence-slot empty" data-slot="4"><span class="sequence-num">4.</span> <span class="slot-label">empty</span></div>
+        <div class="sequence-slot empty" data-slot="5"><span class="sequence-num">5.</span> <span class="slot-label">empty</span></div>
+      </div>
+      <div class="case-answer" hidden>
+        <div class="answer-status"></div>
+        <div class="answer-explanation">
+          <p>
+            Top to bottom: VFS dispatches by file operations table
+            (<code>fops</code>); the filesystem translates the file-level
+            request into block numbers (which block holds these bytes?); the
+            block layer wraps it (in our mini-os, passthrough); the driver
+            pushes the request onto a virtqueue and "kicks" the device;
+            PCI (Peripheral Component Interconnect) is the physical path the
+            kick travels along. The hardware reads the disk, then the response
+            flows back up the same stack.
+          </p>
+          <p>
+            Each layer is replaceable. Swap ext2 for ext4 and the middle
+            stages change; swap virtio-blk for NVMe (Non-Volatile Memory
+            Express) and the bottom stages change; the user program at the top
+            never notices.
+          </p>
+          <p class="answer-source">
+            From <a href="0004-shape-of-storage-stack.html">Lesson 4 — Shape of the Storage Stack</a>.
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ========== SUMMARY ========== -->
+    <section class="summary" hidden>
+      <h2>Boot complete</h2>
+      <div class="summary-score">
+        <span class="score-num">0</span><span class="total"> / 5</span>
+      </div>
+      <div class="summary-breakdown"></div>
+      <div class="summary-advice"></div>
+      <button class="restart" type="button">Restart</button>
+    </section>
+
+  </div>
+
+  <footer class="lesson-footer">
+    <div class="footer-block">
+      <h4>Why this format</h4>
+      <p style="margin:0;">
+        Recognition (the answer looks right when you see it) feels like
+        mastery but decays in days. Retrieval (producing the answer cold)
+        is what builds storage strength. The cases above force retrieval
+        by asking you to apply concepts to fresh scenarios.
+      </p>
+    </div>
+
+    <div class="footer-block">
+      <h4>What low scores mean</h4>
+      <p style="margin:0;">
+        Nothing about your progress &mdash; they're a map of what to revisit
+        before going further. A shaky Case 01 (FD vs File vs Inode) matters
+        more than a shaky Case 05 (storage stack), because everything you
+        build next will assume the earlier concept is solid.
+      </p>
+    </div>
+
+    <div class="footer-block">
+      <h4>Spaced repetition</h4>
+      <p style="margin:0;">
+        One session helps, but the real lever is spacing: come back to these
+        concepts tomorrow, then in three days, then in a week. Each recall
+        strengthens the trace. Ask the agent to schedule a follow-up review
+        or generate a Round 02 with different scenarios.
+      </p>
+    </div>
+
+    <nav class="lesson-nav">
+      <a href="0004-shape-of-storage-stack.html">← Lesson 4: Shape of the Storage Stack</a>
+      <a href="../reference/vfs-glossary.html">Glossary ↑</a>
+    </nav>
+  </footer>
+
+</article>
+
+<script>
+(function () {
+  const state = {
+    score: 0,
+    casesDone: 0,
+    total: 5,
+    results: {} // caseNum -> {correct: bool, topic: string}
+  };
+
+  const caseTopics = {
+    1: { name: "FD vs File vs Inode (sharing after fork)", link: "0002-file-descriptor-table.html" },
+    2: { name: "Path resolution — inode count", link: "0003-real-inodes-and-paths.html" },
+    3: { name: "Directory entry byte format", link: "0003-real-inodes-and-paths.html" },
+    4: { name: "Inode numbers vs pointers (persistence)", link: "0003-real-inodes-and-paths.html" },
+    5: { name: "Storage stack layer ordering", link: "0004-shape-of-storage-stack.html" }
+  };
+
+  function updateScoreBar() {
+    document.querySelector('.score-value').textContent = state.score + ' / 5';
+    document.querySelector('.cases-done').textContent = state.casesDone + ' / 5';
+    const fill = document.querySelector('.score-progress-fill');
+    fill.style.width = (state.casesDone / state.total * 100) + '%';
+  }
+
+  function markCaseDone(caseNum, correct, topic) {
+    if (state.results[caseNum]) return; // already done
+    state.results[caseNum] = { correct, topic };
+    state.casesDone += 1;
+    if (correct) state.score += 1;
+    updateScoreBar();
+    if (state.casesDone === state.total) {
+      setTimeout(showSummary, 600);
+    }
+  }
+
+  function showSummary() {
+    const summary = document.querySelector('.summary');
+    summary.hidden = false;
+    summary.querySelector('.score-num').textContent = state.score;
+
+    const breakdown = summary.querySelector('.summary-breakdown');
+    breakdown.innerHTML = '';
+    for (let i = 1; i <= 5; i++) {
+      const r = state.results[i];
+      const t = caseTopics[i];
+      const row = document.createElement('div');
+      row.className = 'breakdown-row';
+      const mark = r.correct
+        ? '<span class="breakdown-mark ok">✓</span>'
+        : '<span class="breakdown-mark wobble">↻</span>';
+      row.innerHTML = mark +
+        '<span class="breakdown-name">' + t.name + '</span>' +
+        '<a class="breakdown-link" href="' + t.link + '">review →</a>';
+      breakdown.appendChild(row);
+    }
+
+    const advice = summary.querySelector('.summary-advice');
+    const wrong = Object.keys(state.results).filter(k => !state.results[k].correct);
+    let msg = '';
+    if (state.score === 5) {
+      msg = '<strong>All five.</strong> Solid. The concepts have stuck — safe to keep moving forward. Come back in three days for a different round to confirm.';
+    } else if (state.score >= 3) {
+      msg = '<strong>' + (5 - wrong) + ' solid, ' + wrong.length + ' wobbly.</strong> Click the "review →" links for the wobbly ones, re-read the relevant lesson section, then try Round 02 with fresh scenarios.';
+    } else {
+      msg = '<strong>' + wrong.length + ' of 5 wobbly.</strong> That\'s a useful signal — the concepts haven\'t consolidated yet. Slow down: re-read the linked lessons, then come back tomorrow. Retention comes from spacing, not from cramming another new topic on top.';
+    }
+    advice.innerHTML = msg;
+    summary.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+
+  // ====== MULTIPLE CHOICE CASES ======
+  document.querySelectorAll('.case:not(.ordering)').forEach(caseEl => {
+    const caseNum = parseInt(caseEl.dataset.case);
+    const options = caseEl.querySelectorAll('.case-option');
+    const answer = caseEl.querySelector('.case-answer');
+
+    options.forEach(opt => {
+      opt.addEventListener('click', () => {
+        if (caseEl.dataset.done) return;
+        const isCorrect = opt.dataset.correct === 'true';
+        caseEl.dataset.done = 'true';
+
+        options.forEach(o => {
+          o.classList.add('locked');
+          if (o.dataset.correct === 'true') o.classList.add('right');
+          else if (o === opt) o.classList.add('wrong');
+          else o.classList.add('dimmed');
+        });
+
+        answer.hidden = false;
+        answer.classList.add(isCorrect ? 'correct' : 'incorrect');
+        answer.querySelector('.answer-status').textContent =
+          isCorrect ? '✓ Correct' : '✗ Worth revisiting';
+
+        markCaseDone(caseNum, isCorrect, caseEl.dataset.topic);
+      });
+    });
+  });
+
+  // ====== ORDERING CASE ======
+  const orderCase = document.querySelector('.case.ordering');
+  if (orderCase) {
+    const items = orderCase.querySelectorAll('.order-item');
+    const slots = orderCase.querySelectorAll('.sequence-slot');
+    const answer = orderCase.querySelector('.case-answer');
+    let sequence = []; // array of {label, correctPos}
+
+    items.forEach(item => {
+      item.addEventListener('click', () => {
+        if (orderCase.dataset.done) return;
+        if (item.classList.contains('placed')) return;
+
+        const correctPos = parseInt(item.dataset.correctPos);
+        const label = item.textContent;
+        const slotIdx = sequence.length;
+        sequence.push({ label, correctPos });
+        item.classList.add('placed');
+        const slot = slots[slotIdx];
+        slot.classList.remove('empty');
+        slot.querySelector('.slot-label').textContent = label;
+
+        if (sequence.length === 5) {
+          orderCase.dataset.done = 'true';
+          items.forEach(i => i.classList.add('locked'));
+
+          let allRight = true;
+          sequence.forEach((entry, idx) => {
+            const expected = idx + 1;
+            const slot = slots[idx];
+            if (entry.correctPos === expected) {
+              slot.classList.add('right');
+            } else {
+              slot.classList.add('wrong');
+              allRight = false;
+            }
+          });
+          // also mark the placed items visually for clarity
+          items.forEach(i => {
+            const correctPos = parseInt(i.dataset.correctPos);
+            // dim them; the slots carry the feedback
+          });
+
+          answer.hidden = false;
+          answer.classList.add(allRight ? 'correct' : 'incorrect');
+          answer.querySelector('.answer-status').textContent =
+            allRight ? '✓ Correct order' : '✗ Worth revisiting';
+
+          markCaseDone(5, allRight, 'storage-stack');
+        }
+      });
+    });
+  }
+
+  // ====== RESTART ======
+  document.querySelector('.restart')?.addEventListener('click', () => {
+    location.reload();
+  });
+
+  updateScoreBar();
+})();
+</script>
+
+</body>
+</html>

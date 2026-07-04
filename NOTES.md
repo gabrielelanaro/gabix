@@ -142,6 +142,51 @@ thinking" (the long part) from "writing the code" (usually minutes).
 
 ## Tech debt / cleanup to revisit
 
+## Spaced repetition follow-ups pending
+
+The user wanted Round 02 of the review scheduled for 2026-07-06 (3 days
+after Review 01 on 2026-07-03). cmux doesn't support durable cron jobs, so
+this is hand-triggered: when the user is ready (anytime around or after
+July 6), generate the lesson from the spec below.
+
+### Round 02 spec (file: `lessons/review-02-<descriptive-name>.html`)
+
+Same five concepts as Review 01, fresh scenarios. The point is to force
+retrieval of the same ideas from different angles — not variations on the
+same scenarios, which collapses to recognition.
+
+1. **FD vs File vs Inode sharing** — instead of fork+cursor, use `dup2()` or
+   shell pipeline `|`. E.g., a pipe between two processes: parent writes to
+   fd=1, child inherits fd=0 reading from the same File; what does the child
+   see?
+2. **Path resolution inode count** — use a deeper path or trickier case
+   (e.g., `/a/b/../c.txt` — does `..` count as a component? how many inodes
+   visited?).
+3. **Dirent byte format** — flip the question: give a byte offset, ask what
+   field is being read. Or give the ino value as little-endian bytes, ask
+   what number it represents.
+4. **Inode numbers vs pointers** — flip the angle: what does the kernel do
+   when it sees `ino=17` on disk for the first time after boot? (Allocate a
+   fresh `Inode` in RAM, store the mapping `17 → Arc<Inode>` in the
+   registry.) Tests the registry/cache mechanism, not just the persistence
+   decision.
+5. **Storage stack ordering** — same concept, different interaction. Could
+   be: trace the bytes flowing back UP after a read completes, in order.
+   Different from Round 01 which was the request flowing DOWN.
+
+Format: same as Review 01 — sticky score bar, click-to-reveal cases, summary
+breakdown with per-case ✓/↻ and deep links to source lessons. Mix multiple-
+choice with one interactive case. Expand every acronym on first use. No
+LLM-isms.
+
+Open with `open lessons/review-02-*.html` after writing. Remind the user
+this is the spaced-repetition round — low scores mean revisit, not regress.
+
+If Round 02 lands well, Round 03 should cover the sidebar learning-records
+that both reviews skipped: memory layering (frame allocator vs heap vs page
+cache), allocator routing through `#[global_allocator]`, and user-pointer
+validation in syscalls (records 0003, 0004, 0005).
+
 ### Build an `IrqSaveMutex<T>` wrapper (found during Lesson 2 step 2.2)
 The current pattern is: every public SCHEDULER accessor manually wraps in
 `x86_64::instructions::interrupts::without_interrupts(|| { ... })` before calling

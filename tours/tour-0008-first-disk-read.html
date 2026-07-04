@@ -1,0 +1,480 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Tour — Lesson 8 · First Disk Read</title>
+<link rel="stylesheet" href="../assets/lesson.css">
+<link rel="stylesheet" href="../assets/byte-layout.css">
+<style>
+  .tour-step {
+    margin: 3rem 0;
+    padding-top: 1rem;
+    border-top: 1px solid var(--border);
+  }
+  .tour-step:first-of-type { border-top: none; padding-top: 0; }
+  .tour-step-num {
+    display: inline-block;
+    font-family: var(--font-mono);
+    font-size: 0.78rem;
+    font-weight: 600;
+    color: var(--accent);
+    background: var(--accent-soft);
+    padding: 2px 8px;
+    border-radius: 3px;
+    margin-right: 0.6rem;
+  }
+  .tour-step-title {
+    font-family: var(--font-sans);
+    font-weight: 700;
+    font-size: 1.3rem;
+    color: var(--text);
+    margin: 0 0 0.4rem;
+    display: inline;
+  }
+  .tour-step-h2 { margin: 0 0 1rem; }
+  .tour-files {
+    font-family: var(--font-mono);
+    font-size: 0.82rem;
+    color: var(--text-dim);
+    margin: 0.5rem 0 1.5rem;
+  }
+  .tour-files strong { color: var(--text); font-weight: 600; }
+
+  .snippet-meta {
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
+    color: var(--text-dim);
+    margin: 1.5rem 0 0.35rem;
+    display: flex;
+    align-items: baseline;
+    gap: 0.6rem;
+  }
+  .snippet-meta .snippet-file {
+    color: var(--accent);
+    font-weight: 600;
+    background: var(--accent-soft);
+    padding: 1px 6px;
+    border-radius: 3px;
+  }
+  .snippet-meta .snippet-what {
+    color: var(--text-faint);
+    font-style: italic;
+  }
+  .snippet-meta + pre,
+  .snippet-meta + pre.tour-output { margin-top: 0; }
+
+  pre.tour-output {
+    background: #111827;
+    color: #e5e7eb;
+    border-left: 3px solid var(--accent);
+    padding: 1rem 1.25rem;
+    border-radius: 0 6px 6px 0;
+    font-size: 0.8rem;
+    line-height: 1.55;
+    margin: 1rem 0;
+  }
+  pre.tour-output .ann { color: #9ca3af; font-style: italic; }
+  pre.tour-output .ok  { color: #86efac; }
+  pre.tour-output .err { color: #fca5a5; }
+  pre.tour-output .keystone { color: #fbbf24; font-weight: bold; }
+
+  .pull-quote {
+    border-left: 3px solid var(--accent);
+    padding: 0.4rem 0 0.4rem 1rem;
+    margin: 1.5rem 0;
+    font-style: italic;
+    color: var(--text-dim);
+  }
+</style>
+</head>
+<body>
+<article class="lesson">
+
+  <header class="lesson-header">
+    <div class="lesson-eyebrow">Tour · Lesson 8 · Companion to <a href="../lessons/0008-first-disk-read.html" style="color:inherit;">the lesson</a></div>
+    <h1 class="lesson-title">Code Tour — First Disk Read (Keystone 1)</h1>
+    <p class="lesson-subtitle">From empty DMA buffers to verified disk bytes. Five steps, each one a separate commit, each one verified on QEMU.</p>
+    <div class="lesson-meta">
+      <span><strong>Steps done</strong> 8.1 – 8.5 (complete)</span>
+      <span><strong>Commits</strong> <code>233f4dd</code> → <code>d42e82a</code></span>
+    </div>
+  </header>
+
+  <div class="content">
+
+  <p class="lead">
+    Lesson 8 is the payoff for everything in Lessons 5–7. We built PCI
+    enumeration (5), the virtio handshake (6), and virtqueue mechanics
+    (7). Now we use those primitives to send a real virtio-blk read
+    request and verify the bytes match <code>MINIOS_DISK_v0</code> —
+    the signature we wrote to sector 0 back in Lesson 5's
+    <code>make-disk.sh</code>.
+  </p>
+
+  <div class="pull-quote">
+    A note on what made this lesson harder than expected: the Lesson 7
+    test had submitted a descriptor with bogus data
+    (<code>addr=0, len=0, flags=0</code>). QEMU's virtio-blk rejected
+    it in a way that blocked the entire queue — Lesson 8's subsequent
+    real request never got processed until we removed that bogus
+    submission. Captured in step 8.4 below.
+  </div>
+
+  <!-- ============================================================ -->
+  <!-- STEP 8.1                                                     -->
+  <!-- ============================================================ -->
+
+  <div class="tour-step">
+    <h2 class="tour-step-h2">
+      <span class="tour-step-num">8.1</span>
+      <span class="tour-step-title">virtio-blk request header struct</span>
+    </h2>
+    <div class="tour-files">
+      <strong>Files:</strong> <code>src/virtio.rs</code> (new struct, new constants), <code>src/main.rs</code> (size assertion)
+    </div>
+
+    <p>
+      The 16-byte request header is what tells the device <em>what to
+      do</em> with the buffers the descriptors point at. Layout:
+      operation type, reserved (zero), starting sector.
+    </p>
+
+    <div class="snippet-meta">
+      <span class="snippet-file">src/virtio.rs</span>
+      <span class="snippet-what">— VirtioBlkReq + operation/status constants</span>
+    </div>
+<pre><span class="k">const</span> <span class="n">VIRTIO_BLK_T_IN</span>:    <span class="t">u32</span> = <span class="n">0</span>;  <span class="c">// read</span>
+<span class="k">const</span> <span class="n">VIRTIO_BLK_T_OUT</span>:   <span class="t">u32</span> = <span class="n">1</span>;  <span class="c">// write</span>
+<span class="k">const</span> <span class="n">VIRTIO_BLK_T_FLUSH</span>: <span class="t">u32</span> = <span class="n">4</span>;  <span class="c">// flush</span>
+
+<span class="k">const</span> <span class="n">VIRTIO_BLK_S_OK</span>:     <span class="t">u8</span> = <span class="n">0</span>;
+<span class="k">const</span> <span class="n">VIRTIO_BLK_S_IOERR</span>:  <span class="t">u8</span> = <span class="n">1</span>;
+<span class="k">const</span> <span class="n">VIRTIO_BLK_S_UNSUPP</span>: <span class="t">u8</span> = <span class="n">2</span>;
+
+<span class="k">#[repr(C)]</span>
+<span class="k">#[derive(Debug, Clone, Copy)]</span>
+<span class="k">pub struct</span> <span class="t">VirtioBlkReq</span> {
+    <span class="k">pub</span> type_:    <span class="t">u32</span>,  <span class="c">// offset 0x00 — operation code</span>
+    <span class="k">pub</span> reserved: <span class="t">u32</span>,  <span class="c">// offset 0x04 — spec says zero</span>
+    <span class="k">pub</span> sector:   <span class="t">u64</span>,  <span class="c">// offset 0x08 — starting sector</span>
+}
+
+<span class="k">impl</span> <span class="t">VirtioBlkReq</span> {
+    <span class="k">pub fn</span> new_read(sector: <span class="t">u64</span>) -&gt; <span class="t">Self</span> {
+        <span class="t">Self</span> { type_: <span class="n">VIRTIO_BLK_T_IN</span>, reserved: <span class="n">0</span>, sector }
+    }
+}</pre>
+
+    <p>
+      Verified the layout is exactly 16 bytes at boot — catches future
+      regressions if anyone adds a field:
+    </p>
+
+<pre class="tour-output"><span class="ann">[test] virtio-blk request header struct (8.1)</span>
+[virtio]   size = 16 bytes (expect 16)
+[virtio]   align = 8 bytes</pre>
+  </div>
+
+  <!-- ============================================================ -->
+  <!-- STEP 8.2                                                     -->
+  <!-- ============================================================ -->
+
+  <div class="tour-step">
+    <h2 class="tour-step-h2">
+      <span class="tour-step-num">8.2</span>
+      <span class="tour-step-title">BlkBuffers — DMA-able buffer bundle</span>
+    </h2>
+    <div class="tour-files">
+      <strong>Files:</strong> <code>src/virtio.rs</code> (new struct), <code>src/main.rs</code> (allocate)
+    </div>
+
+    <p>
+      The device needs physical addresses for header / data / status.
+      The frame allocator gives us page-aligned frames with trivially
+      computable physical addresses. We take one frame each — wasteful
+      but simple:
+    </p>
+
+    <div class="snippet-meta">
+      <span class="snippet-file">src/virtio.rs</span>
+      <span class="snippet-what">— BlkBuffers::new allocates 3 frames, zeroes them</span>
+    </div>
+<pre><span class="k">pub fn</span> new() -&gt; <span class="t">Self</span> {
+    <span class="k">let</span> header_frame = <span class="k">crate</span>::frame_allocator::allocate().expect(<span class="s">"..."</span>);
+    <span class="k">let</span> data_frame   = <span class="k">crate</span>::frame_allocator::allocate().expect(<span class="s">"..."</span>);
+    <span class="k">let</span> status_frame = <span class="k">crate</span>::frame_allocator::allocate().expect(<span class="s">"..."</span>);
+
+    <span class="k">let</span> offset = <span class="k">crate</span>::memory::phys_offset();
+    <span class="k">let</span> header_phys = header_frame * <span class="n">4096</span>;
+    <span class="c">// ... compute data_phys, status_phys, three virt addresses</span>
+
+    <span class="c">// Zero everything</span>
+    <span class="k">unsafe</span> {
+        core::ptr::write_bytes(header_virt <span class="k">as</span> *<span class="k">mut</span> <span class="t">u8</span>, <span class="n">0</span>, <span class="n">4096</span>);
+        <span class="c">// ... data and status same</span>
+    }
+    <span class="c">// ... return Self { ... }</span>
+}</pre>
+
+    <p>
+      Plus three accessors: <code>write_header(&amp;VirtioBlkReq)</code>
+      (writes the struct into the header buffer),
+      <code>read_status() -&gt; u8</code> (read the 1-byte status after
+      completion), <code>read_data_prefix(n) -&gt; Vec&lt;u8&gt;</code>
+      (snapshot first N bytes of the data buffer).
+    </p>
+
+<pre class="tour-output"><span class="ann">[test] allocate DMA buffers (8.2)</span>
+[virtio] blk buffers allocated (1 frame each)
+[virtio]   header:  virt 0x18000B8C000 phys 0xB8C000
+[virtio]   data:    virt 0x18000B8D000 phys 0xB8D000
+[virtio]   status:  virt 0x18000B8E000 phys 0xB8E000</pre>
+  </div>
+
+  <!-- ============================================================ -->
+  <!-- STEP 8.3                                                     -->
+  <!-- ============================================================ -->
+
+  <div class="tour-step">
+    <h2 class="tour-step-h2">
+      <span class="tour-step-num">8.3</span>
+      <span class="tour-step-title">Build the 3-descriptor read chain</span>
+    </h2>
+    <div class="tour-files">
+      <strong>Files:</strong> <code>src/virtio.rs</code> (new method on VirtQueue), <code>src/main.rs</code> (write header + build chain)
+    </div>
+
+    <p>
+      The chain pattern is fixed: header (F_NEXT, device reads), data
+      (F_NEXT | F_WRITE, device writes for read), status (F_WRITE only,
+      tail of chain).
+    </p>
+
+    <div class="snippet-meta">
+      <span class="snippet-file">src/virtio.rs</span>
+      <span class="snippet-what">— VirtQueue::build_read_chain</span>
+    </div>
+<pre><span class="k">pub fn</span> build_read_chain(
+    &amp;<span class="k">mut self</span>,
+    header_phys: <span class="t">u64</span>,
+    data_phys:   <span class="t">u64</span>,
+    status_phys: <span class="t">u64</span>,
+) -&gt; <span class="t">u16</span> {
+    <span class="k">let</span> head = <span class="k">self</span>.alloc_descriptor().expect(<span class="s">"..."</span>);
+    <span class="k">let</span> mid  = <span class="k">self</span>.alloc_descriptor().expect(<span class="s">"..."</span>);
+    <span class="k">let</span> tail = <span class="k">self</span>.alloc_descriptor().expect(<span class="s">"..."</span>);
+
+    <span class="k">self</span>.write_descriptor(head, header_phys, <span class="n">16</span>,
+        <span class="n">VIRTQ_DESC_F_NEXT</span>, mid);
+    <span class="k">self</span>.write_descriptor(mid, data_phys, <span class="n">512</span>,
+        <span class="n">VIRTQ_DESC_F_NEXT</span> | <span class="n">VIRTQ_DESC_F_WRITE</span>, tail);
+    <span class="k">self</span>.write_descriptor(tail, status_phys, <span class="n">1</span>,
+        <span class="n">VIRTQ_DESC_F_WRITE</span>, <span class="n">0</span>);
+
+    head
+}</pre>
+
+    <p>
+      Caller writes the request header into the header buffer first:
+    </p>
+
+    <div class="snippet-meta">
+      <span class="snippet-file">src/main.rs</span>
+      <span class="snippet-what">— set up the header content + build the chain</span>
+    </div>
+<pre><span class="k">let</span> req = virtio::<span class="t">VirtioBlkReq</span>::new_read(<span class="n">0</span>);  <span class="c">// type=IN, sector=0</span>
+buffers.write_header(&amp;req);
+
+<span class="k">let</span> head = queue.build_read_chain(
+    buffers.header_phys,
+    buffers.data_phys,
+    buffers.status_phys,
+);</pre>
+
+<pre class="tour-output"><span class="ann">[test] build descriptor chain (8.3)</span>
+[virtio]   desc[head=63] addr=0xB8C000 len=16  flags=0x01 (F_NEXT)         next=62
+[virtio]   desc[mid =62] addr=0xB8D000 len=512 flags=0x03 (F_NEXT|F_WRITE) next=61
+[virtio]   desc[tail=61] addr=0xB8E000 len=1   flags=0x02 (F_WRITE)        next=0
+[virtio] chain head descriptor = 63</pre>
+  </div>
+
+  <!-- ============================================================ -->
+  <!-- STEP 8.4 + 8.5 (combined)                                    -->
+  <!-- ============================================================ -->
+
+  <div class="tour-step">
+    <h2 class="tour-step-h2">
+      <span class="tour-step-num">8.4 + 8.5</span>
+      <span class="tour-step-title">Submit, kick, poll; verify bytes</span>
+    </h2>
+    <div class="tour-files">
+      <strong>Files:</strong> <code>src/virtio.rs</code> (added <code>debug_state</code> diagnostic), <code>src/main.rs</code> (kick + poll loop, verification)
+    </div>
+
+    <p>
+      The submit + kick + poll sequence reuses Lesson 7's helpers
+      directly. The Lesson 8 part is the polling loop with a generous
+      cap and the post-completion verification.
+    </p>
+
+    <div class="snippet-meta">
+      <span class="snippet-file">src/main.rs</span>
+      <span class="snippet-what">— submit, kick, poll up to 200000 times</span>
+    </div>
+<pre><span class="k">let</span> (a, u, l) = queue.debug_state();
+println!(<span class="s">"pre-submit: avail={} used={} last={}"</span>, a, u, l);
+
+queue.submit_chain(head);
+virtio_dev.kick();
+
+<span class="k">let mut</span> completion = <span class="t">None</span>;
+<span class="k">for</span> iters <span class="k">in</span> <span class="n">0</span>..<span class="n">200_000</span> {
+    <span class="k">if let</span> <span class="t">Some</span>(c) = queue.poll_completion() {
+        println!(<span class="s">"completion after {} iters"</span>, iters + <span class="n">1</span>);
+        completion = <span class="t">Some</span>(c);
+        <span class="k">break</span>;
+    }
+}
+<span class="k">let</span> (_id, _len) = completion.expect(<span class="s">"no completion"</span>);</pre>
+
+    <p>
+      First attempt failed: <code>used-&gt;idx</code> stayed at 0 through
+      all 200000 iterations. Diagnostic showed the device wasn't
+      responding at all.
+    </p>
+
+<pre class="tour-output"><span class="ann">pre-submit state: avail-&gt;idx=1 used-&gt;idx=0 last_used=0</span>
+<span class="ann">kick: wrote queue 0 to notify register</span>
+<span class="ann">post-poll state: avail-&gt;idx=2 used-&gt;idx=0 last_used=0</span>
+<span class="err">no completion arrived — read failed</span></pre>
+
+    <p>
+      <strong>Root cause:</strong> Lesson 7's step 7.4 had submitted a
+      descriptor with <code>addr=0, len=0, flags=0</code>. QEMU's
+      virtio-blk rejected it in a way that blocked the entire queue.
+      Lesson 8's real request sat behind it forever.
+    </p>
+
+    <p>
+      Fix: Lesson 7's test no longer submits garbage. It still verifies
+      <code>alloc_descriptor</code> / <code>write_descriptor</code> /
+      <code>free_descriptor</code> work — just doesn't push anything
+      into the avail ring. Lesson 8 sends the first real submission.
+    </p>
+
+<pre class="tour-output"><span class="ann">After removing Lesson 7's bogus submission:</span>
+[test] submit + kick + poll (8.4)
+[virtio] pre-submit state: avail-&gt;idx=0 used-&gt;idx=0 last_used=0
+[virtio] kick: wrote queue 0 to notify register at virt 0x180FE003000
+[virtio] poll_completion: used-&gt;idx 0 -&gt; 1, id=63 len=513
+[virtio]   completion arrived after 1 poll iters</pre>
+
+    <p>
+      The completion reports <code>id=63</code> (matches our head
+      descriptor index) and <code>len=513</code>. That's 512 (data
+      buffer, F_WRITE) + 1 (status byte, F_WRITE) — the total bytes
+      the device wrote to device-writable descriptors.
+    </p>
+
+    <p>
+      Step 8.5 verification: read the status byte, snapshot the data
+      buffer, compare against expected values.
+    </p>
+
+    <div class="snippet-meta">
+      <span class="snippet-file">src/main.rs</span>
+      <span class="snippet-what">— verify status byte + data signature</span>
+    </div>
+<pre><span class="k">let</span> status = buffers.read_status();
+<span class="k">assert_eq!</span>(status, virtio::<span class="n">VIRTIO_BLK_S_OK</span> <span class="k">as</span> <span class="t">u8</span>);
+
+<span class="k">let</span> data = buffers.read_data_prefix(<span class="n">16</span>);
+<span class="k">assert_eq!</span>(&amp;data[<span class="n">0</span>..<span class="n">15</span>], <span class="s">b"MINIOS_DISK_v0\n"</span>);
+
+<span class="k">let</span> tail = buffers.read_data_prefix(<span class="n">512</span>);
+<span class="k">let</span> tail_zeros: <span class="t">usize</span> = tail[<span class="n">15</span>..].iter().filter(|&amp;&amp;b| b == <span class="n">0</span>).count();
+<span class="k">assert_eq!</span>(tail_zeros, <span class="n">497</span>);
+
+<span class="c">// Free the 3 descriptors back to the free list</span>
+queue.free_descriptor(<span class="n">63</span>);
+queue.free_descriptor(<span class="n">62</span>);
+queue.free_descriptor(<span class="n">61</span>);</pre>
+
+<pre class="tour-output"><span class="ann">[test] verify bytes (8.5)</span>
+[virtio] status byte = 0 (VIRTIO_BLK_S_OK)
+[virtio] data[0..15] = "MINIOS_DISK_v0\n" (expect "MINIOS_DISK_v0\n")
+[virtio] data[15..512] = 497 zero bytes (expect 497)
+<span class="keystone">[virtio] *** Keystone 1: bytes flowed from disk ***</span>
+[virtio] descriptors 63/62/61 returned to free list</pre>
+  </div>
+
+  <!-- ============================================================ -->
+  <!-- SUMMARY                                                      -->
+  <!-- ============================================================ -->
+
+  <h2>What landed, by file</h2>
+
+  <p>
+    <strong><code>src/virtio.rs</code></strong> gained:
+  </p>
+
+  <ul>
+    <li><code>VirtioBlkReq</code> struct (16 bytes, repr(C)) + <code>new_read(sector)</code> constructor</li>
+    <li>Constants: <code>VIRTIO_BLK_T_IN/OUT/FLUSH</code>, <code>VIRTIO_BLK_S_OK/IOERR/UNSUPP</code></li>
+    <li><code>BlkBuffers</code> struct — three DMA-able frames with virt + phys addresses + frame numbers</li>
+    <li><code>BlkBuffers::new</code>, <code>write_header</code>, <code>read_status</code>, <code>read_data_prefix</code></li>
+    <li><code>VirtQueue::build_read_chain</code> — allocates 3 descriptors, writes the F_NEXT / F_WRITE pattern</li>
+    <li><code>VirtQueue::debug_state</code> — diagnostic returning (avail_idx, used_idx, last_used_idx)</li>
+  </ul>
+
+  <p>
+    <strong><code>src/main.rs</code></strong> got a Lesson 8 test block
+    after Lesson 7's: allocate buffers, write header, build chain,
+    submit, kick, poll, verify, free.
+  </p>
+
+  <p>
+    <strong>Lesson 7's test was modified</strong> — no longer submits
+    the bogus descriptor that was blocking the queue. Still verifies
+    alloc/write_descriptor/free work.
+  </p>
+
+  <h2>Commits</h2>
+
+  <ul>
+    <li><code>233f4dd</code> — Lesson 8 step 8.1: define virtio-blk request header struct</li>
+    <li><code>c43b55d</code> — Lesson 8 step 8.2: BlkBuffers — DMA-able buffer bundle</li>
+    <li><code>003abcf</code> — Lesson 8 step 8.3: build the 3-descriptor read chain</li>
+    <li><code>d42e82a</code> — Lesson 8 steps 8.4 + 8.5: submit, kick, poll; verify bytes</li>
+  </ul>
+
+  <p>
+    Pattern preserved from earlier lessons: each step is its own
+    commit, each commit verifies via real QEMU output. Lesson 9 will
+    wrap "submit a read for sector N" into a clean
+    <code>read_block(n) -&gt; [u8; 512]</code> function — generalizing
+    Lesson 8 into a primitive the ext2 filesystem will sit on.
+  </p>
+
+  </div>
+
+  <footer class="lesson-footer">
+    <div class="footer-block">
+      <h4>Up next</h4>
+      <p style="margin:0;">
+        Lesson 9 — Block layer abstraction. Wrap "submit a read for
+        sector N" into a clean <code>read_block(n) -&gt; [u8; 512]</code>
+        function. The ext2 superblock parser (Lesson 11) sits on top.
+      </p>
+    </div>
+
+    <nav class="lesson-nav">
+      <a href="../lessons/0008-first-disk-read.html">↑ Lesson 8</a>
+      <a href="tour-0007-virtqueues.html">← Tour 7</a>
+    </nav>
+  </footer>
+
+</article>
+</body>
+</html>
