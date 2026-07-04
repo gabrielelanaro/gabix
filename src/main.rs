@@ -439,6 +439,39 @@ pub extern "C" fn _start(boot_info: &'static BootInfo) -> ! {
 
                 println!("[ext2] *** inode {} is the root directory — ready to walk (Lesson 13) ***",
                     root_ino);
+
+                println!("[test] ext2 directory walk (13.1-13.5)");
+                let entries = ext2::walk_directory(&mut virtio_dev, &root_inode);
+                println!("[ext2] walk complete: {} live entries", entries.len());
+
+                // Verify we got exactly the 3 mkfs-default entries
+                assert_eq!(entries.len(), 3, "expected 3 entries (., .., lost+found)");
+
+                // Find by name to verify each
+                let dot = entries.iter().find(|e| e.name == b".").expect("missing .");
+                let dotdot = entries.iter().find(|e| e.name == b"..").expect("missing ..");
+                let lf = entries.iter().find(|e| e.name == b"lost+found").expect("missing lost+found");
+
+                assert_eq!(dot.inode, ext2::EXT2_ROOT_INO,
+                    ". should point at root inode (2)");
+                assert_eq!(dotdot.inode, ext2::EXT2_ROOT_INO,
+                    ".. should point at root inode (2) — root's parent is itself");
+                assert_eq!(lf.inode, 11,
+                    "lost+found should be inode 11 (first user inode after reserved 1-10)");
+                assert_eq!(dot.file_type, ext2::EXT_FT_DIR, ". should be a directory");
+                assert_eq!(lf.file_type, ext2::EXT_FT_DIR, "lost+found should be a directory");
+
+                // Test lookup_in_dir via the API
+                println!("[ext2] testing lookup_in_dir");
+                let found = ext2::lookup_in_dir(&mut virtio_dev, &root_inode, b"lost+found");
+                println!("[ext2]   lookup_in_dir(\"lost+found\") = {:?}", found);
+                assert_eq!(found, Some(11));
+
+                let missing = ext2::lookup_in_dir(&mut virtio_dev, &root_inode, b"does-not-exist");
+                println!("[ext2]   lookup_in_dir(\"does-not-exist\") = {:?}", missing);
+                assert_eq!(missing, None);
+
+                println!("[ext2] *** directory walk works — ready to mount (Lesson 14) ***");
             } else {
                 println!("[virtio] failed to probe device");
             }

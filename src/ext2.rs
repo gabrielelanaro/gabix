@@ -371,6 +371,167 @@ pub fn read_inode(
 
     Inode::parse(&buf[offset_in_buf..offset_in_buf + 128])
 }
+
+// ============================================================
+// Block read helper (Lesson 13.2)
+// ============================================================
+
+/// Read one ext2 block (1024 bytes = 2 sectors). Used by superblock,
+/// inode, and now directory readers. Assumes 1024-byte blocks — our
+/// disk's only size. A block-size-aware version is a future refactor.
+pub fn read_block(dev: &mut VirtioBlk, block_n: u32) -> [u8; 1024] {
+    let sector_a = dev.read_sector((block_n as u64) * 2);
+    let sector_b = dev.read_sector((block_n as u64) * 2 + 1);
+    let mut buf = [0u8; 1024];
+    buf[..512].copy_from_slice(&sector_a);
+    buf[512..].copy_from_slice(&sector_b);
+    buf
+}
+
+// ============================================================
+// Directory entry (Lesson 13.1)
+// ============================================================
+
+/// ext2 file-type bits stored in the dirent's `file_type` byte.
+/// Same encoding as i_mode's top 4 bits, just shifted right by 12.
+pub const EXT_FT_UNKNOWN:  u8 = 0;
+pub const EXT_FT_REG_FILE: u8 = 1;
+pub const EXT_FT_DIR:      u8 = 2;
+pub const EXT_FT_CHRDEV:   u8 = 3;
+pub const EXT_FT_BLKDEV:   u8 = 4;
+pub const EXT_FT_FIFO:     u8 = 5;
+pub const EXT_FT_SOCK:     u8 = 6;
+pub const EXT_FT_SYMLINK:  u8 = 7;
+
+/// A parsed directory entry. The name is owned (heap-allocated Vec)
+/// so callers don't have to deal with byte slices + length tracking.
+#[derive(Debug)]
+pub struct Dirent {
+    /// Inode number this entry points at. 0 means the slot is dead
+    /// (deleted but space not reclaimed).
+    pub inode: u32,
+    /// Bytes to skip to reach the next entry (linked list).
+    pub rec_len: u16,
+    /// Length of the name in bytes (no null terminator on disk).
+    pub name_len: u8,
+    /// File-type hint so walkers don't have to read the inode just
+    /// to know if it's a directory. See EXT_FT_* constants.
+    pub file_type: u8,
+    /// The actual name bytes.
+    pub name: Vec<u8>,
+}
+
+impl Dirent {
+    /// Human-readable type label.
+    pub fn type_name(&self) -> &'static str {
+        match self.file_type {
+            EXT_FT_REG_FILE => "file",
+            EXT_FT_DIR      => "dir",
+            EXT_FT_CHRDEV   => "char-dev",
+            EXT_FT_BLKDEV   => "block-dev",
+            EXT_FT_FIFO     => "fifo",
+            EXT_FT_SOCK     => "sock",
+            EXT_FT_SYMLINK  => "symlink",
+            _               => "unknown",
+        }
+    }
+
+    /// True if this entry is live (inode != 0). Dead entries still
+    /// occupy space — the walker skips them but advances by rec_len.
+    pub fn is_live(&self) -> bool {
+        self.inode != 0
+    }
+
+    /// Parse the dirent at `offset` within `bytes`. Returns the parsed
+    /// Dirent plus the offset of the NEXT entry (offset + rec_len).
+    ///
+    /// The returned Dirent is always populated (even for dead entries)
+    /// so the walker can decide what to do with them.
+    pub fn parse_at(bytes: &[u8], offset: usize) -> (Dirent, usize) {
+        let u32_at = |off: usize| -> u32 {
+            u32::from_le_bytes(bytes[off..off + 4].try_into().unwrap())
+        };
+        let u16_at = |off: usize| -> u16 {
+            u16::from_le_bytes(bytes[off..off + 2].try_into().unwrap())
+        };
+        let u8_at = |off: usize| -> u8 { bytes[off] };
+
+        let inode = u32_at(offset);
+        let rec_len = u16_at(offset + 4);
+        let name_len = u8_at(offset + 6);
+        let file_type = u8_at(offset + 7);
+
+        // Name bytes start at offset+8 and run for name_len bytes.
+        // Spec guarantees no null terminator; we copy as-is.
+        let name_start = offset + 8;
+        let name_end = name_start + name_len as usize;
+        let name = if name_end <= bytes.len() {
+            bytes[name_start..name_end].to_vec()
+        } else {
+            // Truncated entry — shouldn't happen on a valid filesystem.
+            Vec::new()
+        };
+
+        let next_offset = offset + rec_len as usize;
+        (Dirent { inode, rec_len, name_len, file_type, name }, next_offset)
+    }
+}
+
+// ============================================================
+// Directory walk (Lesson 13.3 + 13.4)
+// ============================================================
+
+/// Walk a directory's entries, returning every live dirent.
+///
+/// Reads each direct block (block_pointers[0..12]) that's non-zero,
+/// parses the linked list of entries inside, and collects those with
+/// `inode != 0`. Doesn't follow indirect/double/triple pointers —
+/// that's only needed for directories larger than 12 KiB, which ours
+/// isn't.
+pub fn walk_directory(dev: &mut VirtioBlk, dir_inode: &Inode) -> Vec<Dirent> {
+    let mut entries = Vec::new();
+
+    for (i, &block_n) in dir_inode.block_pointers.iter().enumerate().take(12) {
+        if block_n == 0 {
+            continue;
+        }
+        println!("[ext2]   scanning direct block {} (block #{})", i, block_n);
+        let block = read_block(dev, block_n);
+
+        let mut offset = 0usize;
+        while offset + 8 <= block.len() {
+            let (entry, next_offset) = Dirent::parse_at(&block, offset);
+            if entry.is_live() {
+                let name_str = core::str::from_utf8(&entry.name).unwrap_or("<non-utf8>");
+                println!(
+                    "[ext2]     entry: inode={:<5} type={} name=\"{}\"",
+                    entry.inode, entry.type_name(), name_str
+                );
+                entries.push(entry);
+            }
+            if next_offset <= offset {
+                // rec_len of 0 would loop forever; bail out.
+                break;
+            }
+            offset = next_offset;
+        }
+    }
+
+    entries
+}
+
+/// Look up `name` in a directory's entries. Returns the matching
+/// inode number, or None if not found. This is the path-resolution
+/// primitive: "/foo" becomes walk root → lookup_in_dir("foo").
+pub fn lookup_in_dir(dev: &mut VirtioBlk, dir_inode: &Inode, name: &[u8]) -> Option<u32> {
+    let entries = walk_directory(dev, dir_inode);
+    for entry in entries {
+        if entry.name == name {
+            return Some(entry.inode);
+        }
+    }
+    None
+}
 ///
 /// The BGDT lives in the block right after the superblock. For 1024-byte
 /// block filesystems, that's block 2 (superblock is block 1). Each entry
