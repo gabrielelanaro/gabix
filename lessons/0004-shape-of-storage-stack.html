@@ -250,7 +250,7 @@
     <div class="stack-arrow">↓</div>
     <div class="stack-layer">
       <span class="layer-name">Block layer</span>
-      <code>read_block(n) -&gt; [u8; 512]</code>
+      <code>read_sector(n) -&gt; [u8; 512]</code>
       <span class="layer-tag future">future</span>
     </div>
     <div class="stack-arrow">↓</div>
@@ -336,7 +336,7 @@
   <p>
     <strong>Future.</strong>
     Filesystems don't talk directly to device drivers — they go through
-    the block layer, which provides a uniform <code>read_block(n)</code>
+    the block layer, which provides a uniform <code>read_sector(n)</code>
     / <code>write_block(n)</code> interface. The block layer also handles
     request queuing, merging, scheduling (deadline, BFQ, none), and
     plugging. In Linux, requests become <code>struct bio</code> (block
@@ -344,7 +344,7 @@
   </p>
   <p>
     For mini-os we'll start with the simplest possible block layer: a
-    function <code>read_block(n: u64) -&gt; [u8; 512]</code> that calls
+    function <code>read_sector(n: u64) -&gt; [u8; 512]</code> that calls
     straight into the virtio-blk driver. No merging, no scheduling, no
     async. Just a synchronous read.
   </p>
@@ -518,7 +518,7 @@
 
     <div class="pipe-down">
       <span class="pipe-arrow">&darr;</span>
-      <span class="pipe-label"><code>read_block(42)</code></span>
+      <span class="pipe-label"><code>read_sector(42)</code></span>
     </div>
 
     <details class="pipe-stage">
@@ -535,7 +535,7 @@
         </p>
         <p>
           <strong>mini-os will skip all of that.</strong> A synchronous
-          <code>read_block(n) -&gt; [u8; 512]</code> function that calls
+          <code>read_sector(n) -&gt; [u8; 512]</code> function that calls
           the driver directly. Good enough for a learning kernel; the
           optimization machinery is a whole separate topic.
         </p>
@@ -676,7 +676,7 @@
     </li>
     <li>
       <strong>Block layer</strong> — wrap the driver in
-      <code>read_block(n)</code>. Trivial wrapper, but it's the API the
+      <code>read_sector(n)</code>. Trivial wrapper, but it's the API the
       filesystem will use.
     </li>
     <li>

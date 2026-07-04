@@ -374,24 +374,24 @@ pub extern "C" fn _start(boot_info: &'static BootInfo) -> ! {
                     assert_eq!(sz, 16, "VirtioBlkReq must be 16 bytes");
                 }
 
-                println!("[test] first disk read via read_block (Keystone 1, recap from L8)");
-                let block0 = virtio_dev.read_block(0);
+                println!("[test] first disk read via read_sector (Keystone 1, recap from L8)");
+                let block0 = virtio_dev.read_sector(0);
                 let expected_sig = b"MINIOS_DISK_v0\n";
                 let sig_str = core::str::from_utf8(&block0[0..15]).unwrap_or("<non-utf8>");
                 let tail_zeros: usize = block0[15..].iter().filter(|&&b| b == 0).count();
-                println!("[virtio]   read_block(0)[0..15] = {:?}", sig_str);
-                println!("[virtio]   read_block(0)[15..512] = {} zero bytes (expect 497)", tail_zeros);
+                println!("[virtio]   read_sector(0)[0..15] = {:?}", sig_str);
+                println!("[virtio]   read_sector(0)[15..512] = {} zero bytes (expect 497)", tail_zeros);
                 assert_eq!(&block0[0..15], expected_sig, "signature mismatch");
                 assert_eq!(tail_zeros, 497, "trailing bytes not all zero");
                 println!("[virtio] *** Keystone 1: bytes flowed from disk ***");
 
                 println!("[test] block layer API — read multiple sectors (9.3)");
-                let block1 = virtio_dev.read_block(1);
-                let block2 = virtio_dev.read_block(2);
+                let block1 = virtio_dev.read_sector(1);
+                let block2 = virtio_dev.read_sector(2);
                 let block1_zeros: usize = block1.iter().filter(|&&b| b == 0).count();
                 let block2_zeros: usize = block2.iter().filter(|&&b| b == 0).count();
-                println!("[virtio]   read_block(1): {} zero bytes (expect 512)", block1_zeros);
-                println!("[virtio]   read_block(2): {} zero bytes (expect 512)", block2_zeros);
+                println!("[virtio]   read_sector(1): {} zero bytes (expect 512)", block1_zeros);
+                println!("[virtio]   read_sector(2): {} zero bytes (expect 512)", block2_zeros);
                 assert_eq!(block1_zeros, 512, "sector 1 should be all zero");
                 assert_eq!(block2_zeros, 512, "sector 2 should be all zero");
                 println!("[virtio] *** block layer ready — ext2 can mount on top ***");

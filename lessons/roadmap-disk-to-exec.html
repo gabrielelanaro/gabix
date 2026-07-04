@@ -407,7 +407,7 @@
       <li><strong>9.4</strong> — Adjacent-block merging: if incoming bio's sector follows the queue tail's, merge them.</li>
       <li><strong>9.5</strong> — Simple elevator scheduler: sort pending requests by sector before dispatch.</li>
       <li><strong>9.6</strong> — <code>submit_bio</code> public API: filesystems use this; queue handles the rest.</li>
-      <li><strong>9.7</strong> — <code>read_block(n)</code> becomes a thin synchronous wrapper that submits a bio, waits for completion.</li>
+      <li><strong>9.7</strong> — <code>read_sector(n)</code> becomes a thin synchronous wrapper that submits a bio, waits for completion.</li>
     </ul>
     <p class="roadmap-linux-ref">
       <strong>Linux counterparts:</strong>

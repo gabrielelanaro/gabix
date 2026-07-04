@@ -201,7 +201,7 @@ pub struct VirtioBlk {
     /// Read from the notification capability's body.
     notify_off_multiplier: u32,
     /// The virtqueue, owned by the device after `setup_queue` runs.
-    /// `read_block` and future I/O methods unwrap this.
+    /// `read_sector` and future I/O methods unwrap this.
     queue: Option<VirtQueue>,
 }
 
@@ -254,7 +254,7 @@ impl VirtioBlk {
     }
 
     /// Step 9.1: allocate and configure the virtqueue, stashing it inside
-    /// the device handle. After this call, `read_block` (and future I/O
+    /// the device handle. After this call, `read_sector` (and future I/O
     /// methods) can use `self.queue.as_mut().unwrap()`.
     ///
     /// This wraps what used to be the two-step `VirtQueue::new` +
@@ -287,8 +287,8 @@ impl VirtioBlk {
     ///   7. Assert status == OK
     ///   8. Free the descriptors
     ///   9. Copy the 512 bytes out of the DMA buffer into a stack array
-    pub fn read_block(&mut self, sector: u64) -> [u8; 512] {
-        println!("[virtio] read_block(sector={})", sector);
+    pub fn read_sector(&mut self, sector: u64) -> [u8; 512] {
+        println!("[virtio] read_sector(sector={})", sector);
 
         let buffers = BlkBuffers::new();
         let req = VirtioBlkReq::new_read(sector);
@@ -306,12 +306,12 @@ impl VirtioBlk {
 
         let completion = (0..200_000u32)
             .find_map(|_| self.queue.as_mut().unwrap().poll_completion())
-            .expect("read_block: no completion arrived");
+            .expect("read_sector: no completion arrived");
 
         let status = buffers.read_status();
         assert_eq!(
             status, VIRTIO_BLK_S_OK,
-            "read_block(sector={}) failed: device status={}, completion id={} len={}",
+            "read_sector(sector={}) failed: device status={}, completion id={} len={}",
             sector, status, completion.0, completion.1
         );
 
@@ -324,7 +324,7 @@ impl VirtioBlk {
         let data_view = buffers.read_data_prefix(512);
         block.copy_from_slice(&data_view);
 
-        println!("[virtio]   read_block(sector={}) complete ({} bytes)", sector, completion.1);
+        println!("[virtio]   read_sector(sector={}) complete ({} bytes)", sector, completion.1);
 
         block
     }

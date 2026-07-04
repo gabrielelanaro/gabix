@@ -246,7 +246,7 @@
   <p class="lead">
     Lesson 9 takes the inline descriptor-chain + DMA + submit/kick/poll
     dance from Lesson 8 and wraps it in one function:
-    <code>read_block(sector) -&gt; [u8; 512]</code>. Above this function,
+    <code>read_sector(sector) -&gt; [u8; 512]</code>. Above this function,
     filesystem code (ext2 in Lesson 11) reasons about blocks. Below it,
     virtio-blk driver code reasons about descriptors.
   </p>
@@ -273,13 +273,13 @@
           <span class="cb-chip mod">MOD</span>
           <span class="cb-name">virtio.rs</span>
           <span class="cb-lines">1,155</span>
-          <span class="cb-desc">virtio-blk driver + virtqueue + read_block</span>
+          <span class="cb-desc">virtio-blk driver + virtqueue + read_sector</span>
         </div>
         <div class="cb-row">
           <span class="cb-chip mod">MOD</span>
           <span class="cb-name">main.rs</span>
           <span class="cb-lines">439</span>
-          <span class="cb-desc">kernel entry; setup_queue + read_block tests</span>
+          <span class="cb-desc">kernel entry; setup_queue + read_sector tests</span>
         </div>
         <div class="cb-row">
           <span class="cb-chip ctx">ctx</span>
@@ -403,10 +403,10 @@
     Only <code>virtio.rs</code> and <code>main.rs</code> changed.
     <code>virtio.rs</code> gained ~70 lines (queue field,
     <code>setup_queue</code>, <code>queue_mut</code>,
-    <code>read_block</code>, plus the <code>build_read_chain</code>
+    <code>read_sector</code>, plus the <code>build_read_chain</code>
     signature change). <code>main.rs</code> shrank by ~100 lines —
     the inline Lesson 8 chain/submit/kick/poll/verify block collapsed
-    into one <code>read_block</code> call.
+    into one <code>read_sector</code> call.
   </p>
 
   <!-- ============================================================ -->
@@ -424,7 +424,7 @@
 
     <p>
       Previously <code>virtio_dev</code> and <code>queue</code> were
-      separate locals in main.rs. For <code>read_block</code> to work,
+      separate locals in main.rs. For <code>read_sector</code> to work,
       it needs both. The clean fix: <code>VirtioBlk</code> owns the
       queue.
     </p>
@@ -482,7 +482,7 @@ virtio_dev.setup_queue(<span class="n">64</span>);
   <div class="tour-step">
     <h2 class="tour-step-h2">
       <span class="tour-step-num">9.2</span>
-      <span class="tour-step-title">Add <code>read_block</code></span>
+      <span class="tour-step-title">Add <code>read_sector</code></span>
     </h2>
     <div class="tour-files">
       <strong>Files:</strong> <code>src/virtio.rs</code> (new method, build_read_chain signature change)
@@ -494,9 +494,9 @@ virtio_dev.setup_queue(<span class="n">64</span>);
 
     <div class="snippet-meta">
       <span class="snippet-file">src/virtio.rs</span>
-      <span class="snippet-what">— read_block: 9 lines of mechanism</span>
+      <span class="snippet-what">— read_sector: 9 lines of mechanism</span>
     </div>
-<pre><span class="k">pub fn</span> read_block(&amp;<span class="k">mut self</span>, sector: <span class="t">u64</span>) -&gt; [<span class="t">u8</span>; <span class="n">512</span>] {
+<pre><span class="k">pub fn</span> read_sector(&amp;<span class="k">mut self</span>, sector: <span class="t">u64</span>) -&gt; [<span class="t">u8</span>; <span class="n">512</span>] {
     <span class="k">let</span> buffers = <span class="t">BlkBuffers</span>::new();
     <span class="k">let</span> req = <span class="t">VirtioBlkReq</span>::new_read(sector);
     buffers.write_header(&amp;req);
@@ -509,7 +509,7 @@ virtio_dev.setup_queue(<span class="n">64</span>);
 
     <span class="k">let</span> _completion = (<span class="n">0</span>..<span class="n">200_000</span>)
         .find_map(|_| <span class="k">self</span>.queue.as_mut().unwrap().poll_completion())
-        .expect(<span class="s">"read_block: no completion"</span>);
+        .expect(<span class="s">"read_sector: no completion"</span>);
 
     <span class="k">assert_eq!</span>(buffers.read_status(), <span class="n">VIRTIO_BLK_S_OK</span>);
 
@@ -565,7 +565,7 @@ virtio_dev.setup_queue(<span class="n">64</span>);
       <span class="tour-step-title">Verify: read multiple sectors</span>
     </h2>
     <div class="tour-files">
-      <strong>Files:</strong> <code>src/main.rs</code> (3 read_block calls + assertions)
+      <strong>Files:</strong> <code>src/main.rs</code> (3 read_sector calls + assertions)
     </div>
 
     <p>
@@ -578,30 +578,30 @@ virtio_dev.setup_queue(<span class="n">64</span>);
       <span class="snippet-file">src/main.rs</span>
       <span class="snippet-what">— the test block</span>
     </div>
-<pre><span class="k">let</span> block0 = virtio_dev.read_block(<span class="n">0</span>);
+<pre><span class="k">let</span> block0 = virtio_dev.read_sector(<span class="n">0</span>);
 <span class="k">assert_eq!</span>(&amp;block0[<span class="n">0</span>..<span class="n">15</span>], <span class="s">b"MINIOS_DISK_v0\n"</span>);
 <span class="k">assert_eq!</span>(block0[<span class="n">15</span>..].iter().filter(|&amp;&amp;b| b == <span class="n">0</span>).count(), <span class="n">497</span>);
 
-<span class="k">let</span> block1 = virtio_dev.read_block(<span class="n">1</span>);
+<span class="k">let</span> block1 = virtio_dev.read_sector(<span class="n">1</span>);
 <span class="k">assert_eq!</span>(block1.iter().filter(|&amp;&amp;b| b == <span class="n">0</span>).count(), <span class="n">512</span>);
 
-<span class="k">let</span> block2 = virtio_dev.read_block(<span class="n">2</span>);
+<span class="k">let</span> block2 = virtio_dev.read_sector(<span class="n">2</span>);
 <span class="k">assert_eq!</span>(block2.iter().filter(|&amp;&amp;b| b == <span class="n">0</span>).count(), <span class="n">512</span>);</pre>
 
-<pre class="tour-output"><span class="ann">[test] first disk read via read_block (Keystone 1, recap from L8)</span>
-[virtio] read_block(sector=0)
-[virtio]   read_block(sector=0) complete (513 bytes)
-[virtio]   read_block(0)[0..15] = "MINIOS_DISK_v0\n"
-[virtio]   read_block(0)[15..512] = 497 zero bytes (expect 497)
+<pre class="tour-output"><span class="ann">[test] first disk read via read_sector (Keystone 1, recap from L8)</span>
+[virtio] read_sector(sector=0)
+[virtio]   read_sector(sector=0) complete (513 bytes)
+[virtio]   read_sector(0)[0..15] = "MINIOS_DISK_v0\n"
+[virtio]   read_sector(0)[15..512] = 497 zero bytes (expect 497)
 <span class="keystone">[virtio] *** Keystone 1: bytes flowed from disk ***</span>
 
 <span class="ann">[test] block layer API — read multiple sectors (9.3)</span>
-[virtio] read_block(sector=1)
-[virtio]   read_block(sector=1) complete (513 bytes)
-[virtio] read_block(sector=2)
-[virtio]   read_block(sector=2) complete (513 bytes)
-[virtio]   read_block(1): 512 zero bytes (expect 512)
-[virtio]   read_block(2): 512 zero bytes (expect 512)
+[virtio] read_sector(sector=1)
+[virtio]   read_sector(sector=1) complete (513 bytes)
+[virtio] read_sector(sector=2)
+[virtio]   read_sector(sector=2) complete (513 bytes)
+[virtio]   read_sector(1): 512 zero bytes (expect 512)
+[virtio]   read_sector(2): 512 zero bytes (expect 512)
 <span class="ok">[virtio] *** block layer ready — ext2 can mount on top ***</span></pre>
   </div>
 
@@ -618,7 +618,7 @@ virtio_dev.setup_queue(<span class="n">64</span>);
     <li>New field <code>queue: Option&lt;VirtQueue&gt;</code> on VirtioBlk</li>
     <li>New method <code>setup_queue(queue_size)</code> — allocate + configure in one call</li>
     <li>New method <code>queue_mut()</code> — accessor for test code</li>
-    <li>New method <code>read_block(sector) -&gt; [u8; 512]</code> — the block layer API</li>
+    <li>New method <code>read_sector(sector) -&gt; [u8; 512]</code> — the block layer API</li>
     <li>Changed <code>build_read_chain</code> to return <code>(head, mid, tail)</code></li>
   </ul>
 
@@ -628,14 +628,14 @@ virtio_dev.setup_queue(<span class="n">64</span>);
   <ul>
     <li><code>virtio_dev</code> now <code>mut</code> (was immutable)</li>
     <li>Replaced <code>VirtQueue::new + configure_queue</code> with <code>virtio_dev.setup_queue(64)</code></li>
-    <li>Replaced the inline Lesson 8 chain/submit/kick/poll/verify block with one <code>read_block(0)</code> call + assertions on the returned array</li>
-    <li>Added 9.3 test: <code>read_block(1)</code> and <code>read_block(2)</code> for multi-sector coverage</li>
+    <li>Replaced the inline Lesson 8 chain/submit/kick/poll/verify block with one <code>read_sector(0)</code> call + assertions on the returned array</li>
+    <li>Added 9.3 test: <code>read_sector(1)</code> and <code>read_sector(2)</code> for multi-sector coverage</li>
   </ul>
 
   <h2>Commit</h2>
 
   <ul>
-    <li><code>6875d9b</code> — Lesson 9: block layer abstraction (read_block)</li>
+    <li><code>6875d9b</code> — Lesson 9: block layer abstraction (read_sector)</li>
   </ul>
 
   <p>
@@ -653,7 +653,7 @@ virtio_dev.setup_queue(<span class="n">64</span>);
       <h4>Up next</h4>
       <p style="margin:0;">
         Lesson 11 — ext2 superblock parser. The superblock lives at
-        byte offset 1024 = sector 2. <code>read_block(2)</code> will
+        byte offset 1024 = sector 2. <code>read_sector(2)</code> will
         return the bytes; we parse the on-disk ext2 superblock
         structure out of them. Lesson 10 (page cache) is deferred —
         it's an optimization, not on the critical path to "load and

@@ -767,7 +767,7 @@ queue.free_descriptor(<span class="n">61</span>);</pre>
     Pattern preserved from earlier lessons: each step is its own
     commit, each commit verifies via real QEMU output. Lesson 9 will
     wrap "submit a read for sector N" into a clean
-    <code>read_block(n) -&gt; [u8; 512]</code> function — generalizing
+    <code>read_sector(n) -&gt; [u8; 512]</code> function — generalizing
     Lesson 8 into a primitive the ext2 filesystem will sit on.
   </p>
 
@@ -778,7 +778,7 @@ queue.free_descriptor(<span class="n">61</span>);</pre>
       <h4>Up next</h4>
       <p style="margin:0;">
         Lesson 9 — Block layer abstraction. Wrap "submit a read for
-        sector N" into a clean <code>read_block(n) -&gt; [u8; 512]</code>
+        sector N" into a clean <code>read_sector(n) -&gt; [u8; 512]</code>
         function. The ext2 superblock parser (Lesson 11) sits on top.
       </p>
     </div>

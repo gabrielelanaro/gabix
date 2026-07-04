@@ -44,7 +44,7 @@ payoff: bytes flow from disk for the first time.
 **Zone of proximal development now:**
 
 - All the disk primitives absorbed: PCI discovery, virtio handshake, virtqueue setup, descriptor chain construction, kick + poll. The kernel can read any sector of the disk on demand.
-- Ready for Lesson 9: Block layer abstraction. Wrap "submit a read for sector N" into a clean `read_block(n) -> [u8; 512]` function. Generalizes Lesson 8 into a primitive the ext2 filesystem will sit on.
+- Ready for Lesson 9: Block layer abstraction. Wrap "submit a read for sector N" into a clean `read_sector(n) -> [u8; 512]` function. Generalizes Lesson 8 into a primitive the ext2 filesystem will sit on.
 - After Lesson 9: ext2 superblock parsing (Lesson 11), which is where disk bytes start having filesystem meaning.
 
 **Calibration data — Lesson 8 total wall clock:**
