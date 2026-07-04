@@ -162,3 +162,117 @@ impl ElfHeader {
         println!("[elf]   is_x86_64_exec = {}", self.is_x86_64_exec());
     }
 }
+
+// ============================================================
+// Program Header (Elf64_Phdr) — one entry in the PHT
+// ============================================================
+
+/// `p_type` values we recognize. Only PT_LOAD causes the loader to
+/// copy bytes into memory; the others are hints the kernel reads and
+/// discards. The values are part of the ELF spec, not Linux-specific.
+pub const PT_LOAD:    u32 = 1;  // Loadable segment — copy into memory.
+pub const PT_DYNAMIC: u32 = 2;  // Dynamic linking info (for ld.so).
+pub const PT_INTERP:  u32 = 3;  // Path to the dynamic linker.
+pub const PT_NOTE:    u32 = 4;  // Metadata (build-id, ABI properties).
+pub const PT_PHDR:    u32 = 6;  // The PHT itself, as a segment.
+/// PT_GNU_STACK — marker for "should the stack be executable?". The
+/// weird number is `0x6474e551` — a magic in the OS-specific range.
+pub const PT_GNU_STACK: u32 = 0x6474E551;
+
+/// Permission bits for `p_flags`. Maps directly to page-table bits
+/// in Lesson 16: PF_R → readable, PF_W → writable, PF_X → executable.
+pub const PF_R: u32 = 0x4;
+pub const PF_W: u32 = 0x2;
+pub const PF_X: u32 = 0x1;
+
+/// The 56-byte program-header entry (Elf64_Phdr in the spec).
+///
+/// One entry per chunk of the program. The kernel reads the whole
+/// table (e_phnum entries starting at e_phoff) and processes each:
+/// PT_LOAD entries get mapped; others get read and discarded.
+#[derive(Debug)]
+pub struct ProgramHeader {
+    /// `p_type` — what kind of segment this is. PT_LOAD = 1 means
+    /// "copy these bytes into memory".
+    pub p_type: u32,
+    /// `p_flags` — permission bits (PF_R | PF_W | PF_X).
+    pub p_flags: u32,
+    /// `p_offset` — file offset where this segment's bytes start.
+    pub p_offset: u64,
+    /// `p_vaddr` — virtual address where these bytes should land.
+    pub p_vaddr: u64,
+    /// `p_paddr` — physical address (unused under Linux paging).
+    pub p_paddr: u64,
+    /// `p_filesz` — how many bytes exist in the file.
+    pub p_filesz: u64,
+    /// `p_memsz` — how many bytes the segment occupies in memory.
+    /// If `p_memsz > p_filesz`, the extra bytes are zeroed — that's
+    /// how .bss (zero-initialized globals) works.
+    pub p_memsz: u64,
+    /// `p_align` — alignment of both p_offset and p_vaddr. Usually
+    /// the page size (4096) for PT_LOAD.
+    pub p_align: u64,
+}
+
+impl ProgramHeader {
+    /// Parse 56 bytes into a `ProgramHeader`. Returns `None` on
+    /// short input. The ELF magic / class / etc. checks happen at
+    /// the header level, not per-entry.
+    pub fn parse(bytes: &[u8]) -> Option<Self> {
+        if bytes.len() < 56 {
+            return None;
+        }
+
+        let u32_at = |off: usize| -> u32 {
+            u32::from_le_bytes(bytes[off..off + 4].try_into().unwrap())
+        };
+        let u64_at = |off: usize| -> u64 {
+            u64::from_le_bytes(bytes[off..off + 8].try_into().unwrap())
+        };
+
+        Some(Self {
+            p_type:   u32_at(0x00),
+            p_flags:  u32_at(0x04),
+            p_offset: u64_at(0x08),
+            p_vaddr:  u64_at(0x10),
+            p_paddr:  u64_at(0x18),
+            p_filesz: u64_at(0x20),
+            p_memsz:  u64_at(0x28),
+            p_align:  u64_at(0x30),
+        })
+    }
+
+    /// True if this entry is a loadable segment.
+    pub fn is_load(&self) -> bool { self.p_type == PT_LOAD }
+
+    /// Human-readable permission string ("r-x", "rw-", etc.) for
+    /// printing. Three letters, mirrors `ls -l` syntax.
+    pub fn perms_str(&self) -> &'static str {
+        let r = self.p_flags & PF_R != 0;
+        let w = self.p_flags & PF_W != 0;
+        let x = self.p_flags & PF_X != 0;
+        match (r, w, x) {
+            (false, false, false) => "---",
+            (false, false, true)  => "--x",
+            (false, true,  false) => "-w-",
+            (false, true,  true)  => "-wx",
+            (true,  false, false) => "r--",
+            (true,  false, true)  => "r-x",
+            (true,  true,  false) => "rw-",
+            (true,  true,  true)  => "rwx",
+        }
+    }
+
+    /// Short label for `p_type` for printing.
+    pub fn type_str(&self) -> &'static str {
+        match self.p_type {
+            PT_LOAD       => "LOAD",
+            PT_DYNAMIC    => "DYN ",
+            PT_INTERP     => "INTRP",
+            PT_NOTE       => "NOTE",
+            PT_PHDR       => "PHDR",
+            PT_GNU_STACK  => "GSTK",
+            _             => "OTHER",
+        }
+    }
+}
