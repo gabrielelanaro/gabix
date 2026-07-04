@@ -377,25 +377,47 @@ pub extern "C" fn _start(boot_info: &'static BootInfo) -> ! {
 
                 println!("[test] first disk read via read_sector (Keystone 1, recap from L8)");
                 let block0 = virtio_dev.read_sector(0);
-                let expected_sig = b"MINIOS_DISK_v0\n";
-                let sig_str = core::str::from_utf8(&block0[0..15]).unwrap_or("<non-utf8>");
-                let tail_zeros: usize = block0[15..].iter().filter(|&&b| b == 0).count();
-                println!("[virtio]   read_sector(0)[0..15] = {:?}", sig_str);
-                println!("[virtio]   read_sector(0)[15..512] = {} zero bytes (expect 497)", tail_zeros);
-                assert_eq!(&block0[0..15], expected_sig, "signature mismatch");
-                assert_eq!(tail_zeros, 497, "trailing bytes not all zero");
+                // Sector 0 is the boot sector. ext2's mkfs leaves it mostly
+                // empty (zeros). Earlier lessons wrote "MINIOS_DISK_v0\n"
+                // here; now that the disk is ext2-formatted we just verify
+                // read_sector returns 512 bytes successfully.
+                println!(
+                    "[virtio]   read_sector(0) returned {} bytes (boot sector)",
+                    block0.len()
+                );
                 println!("[virtio] *** Keystone 1: bytes flowed from disk ***");
 
                 println!("[test] block layer API — read multiple sectors (9.3)");
                 let block1 = virtio_dev.read_sector(1);
                 let block2 = virtio_dev.read_sector(2);
-                let block1_zeros: usize = block1.iter().filter(|&&b| b == 0).count();
-                let block2_zeros: usize = block2.iter().filter(|&&b| b == 0).count();
-                println!("[virtio]   read_sector(1): {} zero bytes (expect 512)", block1_zeros);
-                println!("[virtio]   read_sector(2): {} zero bytes (expect 512)", block2_zeros);
-                assert_eq!(block1_zeros, 512, "sector 1 should be all zero");
-                assert_eq!(block2_zeros, 512, "sector 2 should be all zero");
+                // Sectors 1 and 2 now contain ext2's superblock (1024 bytes
+                // starting at sector 2) and adjacent metadata. Earlier
+                // lessons checked they were zero — that was before the disk
+                // had a filesystem. Now they're populated by mkfs.ext2.
+                println!(
+                    "[virtio]   read_sector(1) returned {} bytes",
+                    block1.len()
+                );
+                println!(
+                    "[virtio]   read_sector(2) returned {} bytes (superblock lives here)",
+                    block2.len()
+                );
                 println!("[virtio] *** block layer ready — ext2 can mount on top ***");
+
+                println!("[test] ext2 superblock parser (10.1-10.4)");
+                let sb = ext2::read_superblock(&mut virtio_dev);
+                sb.print();
+
+                assert!(sb.is_ext2(), "ext2 magic not found — disk isn't ext2");
+                assert_eq!(sb.block_size, 1024, "expected 1024-byte blocks for small disk");
+                assert_eq!(sb.first_data_block, 1, "first_data_block should be 1 for 1024 B blocks");
+                assert_eq!(sb.state, 1, "filesystem should be clean (state=1)");
+                assert!(sb.inodes_count > 0 && sb.inodes_count < 1000,
+                    "inodes_count {} looks wrong", sb.inodes_count);
+                assert!(sb.blocks_count > 0 && sb.blocks_count < 10000,
+                    "blocks_count {} looks wrong", sb.blocks_count);
+
+                println!("[ext2] *** superblock parsed — ext2 filesystem recognized ***");
             } else {
                 println!("[virtio] failed to probe device");
             }

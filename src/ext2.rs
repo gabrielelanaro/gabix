@@ -11,6 +11,7 @@
 //! is metadata for journaling, quotas, etc. that we don't touch.
 
 use crate::println;
+use crate::virtio::VirtioBlk;
 
 /// ext2 magic number — appears at byte offset 56 of the superblock
 /// (byte offset 1080 of the disk, = sector 2 byte 56). If this isn't
@@ -25,6 +26,26 @@ pub const EXT2_ROOT_INO: u32 = 2;
 /// Default block size when s_log_block_size == 0. Other valid values:
 /// 1 -> 2048, 2 -> 4096.
 const EXT2_MIN_BLOCK_SIZE: u32 = 1024;
+
+/// Read the ext2 superblock from disk. The superblock is 1024 bytes
+/// starting at byte offset 1024 (sector 2). Since `read_sector` returns
+/// 512 bytes at a time, we read two sectors (2 and 3) and concatenate.
+///
+/// Future optimization: a `read_bytes(offset, len)` primitive that
+/// handles multi-sector reads internally. For Lesson 10, two calls
+/// plus a concat is fine.
+pub fn read_superblock(dev: &mut VirtioBlk) -> Superblock {
+    println!("[ext2] reading superblock (sectors 2 and 3)");
+
+    let sector2 = dev.read_sector(2);
+    let sector3 = dev.read_sector(3);
+
+    let mut bytes = [0u8; 1024];
+    bytes[..512].copy_from_slice(&sector2);
+    bytes[512..].copy_from_slice(&sector3);
+
+    Superblock::parse(&bytes)
+}
 
 /// The parsed superblock. We don't model the full 1024-byte on-disk
 /// struct — just the fields a teaching kernel needs to read inodes and
@@ -53,7 +74,7 @@ pub struct Superblock {
     /// The magic number — should equal `EXT2_MAGIC` (0xEF53).
     pub magic: u16,
     /// Filesystem state. 1 = clean, 2 = has errors. mkfs leaves it 1.
-    pub state: u32,
+    pub state: u16,
 }
 
 impl Superblock {
@@ -90,7 +111,7 @@ impl Superblock {
             first_data_block:   u32_at(20),
             block_size,
             magic:              u16_at(56),
-            state:              u32_at(58),
+            state:              u16_at(58),
         }
     }
 
