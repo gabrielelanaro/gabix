@@ -75,6 +75,64 @@ kernel has a Linux counterpart we can read alongside.
 - Follow existing mini-os conventions: Socratic learning, expand every acronym on first use, write code together where possible
 - Read the Linux sources alongside: `fs/read_write.c`, `block/`, `fs/ext2/`, `drivers/block/virtio_blk.c`, `fs/exec.c`
 
+## Timeline (2026-06-13 → 2026-07-04)
+
+**By the numbers:**
+
+| Metric | Value |
+|---|---|
+| Calendar span | 21 days |
+| Active days | 11 |
+| Total commits | 103 |
+| Estimated focused hours | ~50h |
+| Final LoC | ~3000 (src/) + lessons/tours/records |
+
+**Sessions (commit windows from first to last commit each day):**
+
+| Date | Commits | Hours | What landed |
+|---|---:|---:|---|
+| 06-13 | 10 | ~4.5h | Repo setup, concept references, VGA writer |
+| 06-14 | 11 | ~9.5h | Boot/bootimage, VFS foundation (Lessons 1–2) |
+| 06-20 | 9 | ~7h | Real inodes + path resolution (Lesson 3) |
+| 06-21 | 6 | ~5h | User mode + iretq (M3) |
+| 06-22 | 4 | ~5.5h | Preemptive scheduler (M3) |
+| 06-25 | 1 | — | (docs) |
+| 06-27 | 3 | ~5h | Syscall MSRs + handler (M3) |
+| 06-28 | 10 | ~6h | Memory layer — AddressSpace, fork shape |
+| 06-29 | 5 | ~0.5h | Quick fixes |
+| 07-03 | 7 | ~0.2h | Lesson prep |
+| **07-04** | **37** | **~7.5h** | **Lessons 13–16: disk → ext2 → VFS → ELF → ring 3** |
+
+**Shape of the work:**
+
+- **M2/M3 phase (mid-June):** heap allocator, frame allocator, paging,
+  AddressSpace, GDT/IDT, PIC/PIT, user-mode entry, scheduler,
+  syscall mechanism. The kernel *infrastructure*. Mostly contiguous
+  work — 7 sessions in 9 days.
+- **Gap (June 30 – July 2):** 5 days off.
+- **Disk path (Lessons 5–16, late June + July 4):** PCI enumeration,
+  virtio handshake, virtqueues, block layer, ext2 superblock, BGD,
+  inode, directory walk, mount via Filesystem trait, ELF parser,
+  exec. The *mission*. Most of this landed in two focused sessions
+  (June 28 and July 4).
+- **Final push (July 4, ~7.5h):** 37 commits. Lessons 13 (ext2 dir
+  walk), 14 (mount via trait), 15 (ELF parser), 16 (exec). All four
+  lessons from "no ext2 directory code" to "hello.elf calls
+  sys_write from ring 3" in a single sitting.
+
+**Pace calibration for future planning:**
+
+- A "lesson" (defined concept → working code → tour + records) takes
+  1–3 hours once the conceptual foundation has landed in conversation.
+- Conceptual foundation work — the Socratic back-and-forth that
+  builds the mental model — takes longer than the code itself and is
+  what determines whether the lesson sticks. Lesson 15 took ~30 min
+  of code but ~1h of conceptual conversation first.
+- The shortest unit of meaningful work is ~30 min (one step within
+  a lesson: struct definition, parser, single test). The longest
+  single lesson-end-to-end was Lesson 16 at ~2.5h.
+
+
 ## Out of scope (for this push to disk)
 - Asynchronous I/O (`aio`, `io_uring`)
 - Memory-mapped files (`mmap`)
