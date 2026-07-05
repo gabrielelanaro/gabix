@@ -38,6 +38,25 @@ use core::sync::atomic::{AtomicU64, Ordering};
 /// If we panicked while WRITER was locked (e.g., during a println! call),
 /// the spinlock would deadlock. We avoid this by force_unlocking WRITER
 /// before printing — we're about to halt anyway, so safety doesn't matter.
+///
+/// In test mode (cargo bootimage --features test-mode): the handler also
+/// calls `qemu_exit::exit_qemu(EXIT_FAILURE)` after printing. That lets the
+/// wrapper script (scripts/test.sh) translate the failure into a Unix exit
+/// code. Without test-mode, the handler loops forever so you can read the
+/// message on screen before killing QEMU manually.
+#[cfg(feature = "test-mode")]
+#[panic_handler]
+fn panic(info: &PanicInfo) -> ! {
+    use crate::qemu_exit;
+    unsafe {
+        vga_buffer::WRITER.force_unlock();
+        serial::SERIAL1.force_unlock();
+    }
+    println!("[panic] {}", info);
+    qemu_exit::exit_qemu(qemu_exit::EXIT_FAILURE);
+}
+
+#[cfg(not(feature = "test-mode"))]
 #[panic_handler]
 fn panic(info: &PanicInfo) -> ! {
     unsafe {
