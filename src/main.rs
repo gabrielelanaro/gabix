@@ -24,6 +24,7 @@ mod virtio;
 mod ext2;
 mod elf;
 mod exec;
+mod qemu_exit;
 
 use bootloader::BootInfo;
 use alloc::vec::Vec;
