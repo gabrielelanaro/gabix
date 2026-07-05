@@ -40,13 +40,10 @@ build_kernel() {
     echo "[test] building kernel with features: $features"
     (
         cd "$REPO_ROOT"
-        # `cargo bootimage` doesn't always invalidate the kernel crate when
-        # only --features changes (the fingerprint doesn't track feature
-        # sets the same way `cargo build` does). Clean the mini-os crate
-        # before each build to guarantee the feature set actually applied.
-        # Cost: ~6s rebuild per test. Better than silently running the
-        # previous test's binary.
-        cargo clean -p mini-os 2>&1 | tail -1
+        # Force the package build for the custom target without mutating
+        # source files. `cargo bootimage` can otherwise reuse a stale binary
+        # when only the feature set changed between test scripts.
+        cargo clean --target x86_64-mini-os -p mini-os 2>&1 | tail -1
         cargo bootimage --features "$features" 2>&1 | tail -3
     )
 }

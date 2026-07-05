@@ -560,8 +560,32 @@ pub extern "C" fn _start(boot_info: &'static BootInfo) -> ! {
     };
 
     // Switch CR3 to the new AS, then iretq to user mode.
-    ctx.aspace.switch_to();
-    println!("[exec] CR3 := new AS; jumping to user mode at rip=0x{:X}", ctx.entry);
+    //
+    // **Must update the scheduler's record of main's address_space, not
+    // just write CR3.** `ctx.aspace.switch_to()` writes CR3 directly
+    // without telling the scheduler — so `task.address_space.pml4_frame`
+    // for main still points at the boot PML4 (frame 1). Later, when
+    // `yield_now` switches FROM child TO main, it reads main's stale
+    // pml4_frame and switches CR3 back to the boot PML4, which doesn't
+    // have any of the user code/stack mappings. Parent user code then
+    // crashes on the next instruction fetch.
+    //
+    // `replace_current_address_space` updates the scheduler's record;
+    // then we write CR3 via the scheduler's now-correct view.
+    let entry = ctx.entry;
+    let stack_top = ctx.stack_top;
+    let user_name = program_name_from_path(user_elf_path);
+    crate::task::replace_current_address_space(ctx.aspace, user_name);
+    let pml4_frame = crate::task::current_pml4_frame();
+    // SAFETY: pml4_frame comes from the current task's AddressSpace,
+    // which was just initialized via exec_elf.
+    unsafe {
+        x86_64::registers::control::Cr3::write(
+            pml4_frame,
+            x86_64::registers::control::Cr3Flags::empty(),
+        );
+    }
+    println!("[exec] CR3 := new AS; jumping to user mode at rip=0x{:X}", entry);
     println!("[exec] *** mission running: disk → ext2 → VFS → ELF → ring 3 ***");
 
     // Disable interrupts during the iretq setup. The RFLAGS value
@@ -580,12 +604,19 @@ pub extern "C" fn _start(boot_info: &'static BootInfo) -> ! {
             "push 0x23",            // CS (user code | RPL=3)
             "push {rip}",           // RIP (= e_entry)
             "iretq",
-            rsp = in(reg) ctx.stack_top,
-            rip = in(reg) ctx.entry,
+            rsp = in(reg) stack_top,
+            rip = in(reg) entry,
             options(nostack, nomem, preserves_flags),
         );
     }
     unreachable!("iretq transfers control to user mode");
+}
+
+fn program_name_from_path(path: &'static str) -> &'static str {
+    match path.rsplit_once('/') {
+        Some((_, name)) if !name.is_empty() => name,
+        _ => path,
+    }
 }
 
 /// Counter incremented by worker_a every loop iteration. Atomic so it's

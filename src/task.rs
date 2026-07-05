@@ -491,6 +491,17 @@ pub fn spawn_fork_child(
 
     // Allocate 16 frames and map them into the virtual range, in the
     // CURRENT (parent's) address space.
+    //
+    // **Must use the per-AS mapper, not the global `memory::map_to`.** The
+    // global MAPPER captured the boot-time PML4 (frame 1, the bootloader's)
+    // at memory::init(). After `sys_exec` switched CR3 to the user AS
+    // (e.g., frame 3231 for /fork_smoke.elf), the global mapper still
+    // points at frame 1 — so `memory::map_to` would write to the boot PML4,
+    // not the live one. The write_volatile below would then page-fault
+    // because the CPU (using CR3=frame 3231) walks the user PML4 which
+    // lacks the new mapping. `AddressSpace::from_current()` wraps the
+    // current CR3, so its `map_to` targets the live PML4.
+    let current_as = memory::AddressSpace::from_current();
     let mut frames_allocated = 0;
     let mut virt = stack_bottom;
     while virt < stack_top {
@@ -499,12 +510,13 @@ pub fn spawn_fork_child(
         let phys = PhysAddr::new(frame_number * 4096);
         // SAFETY: virtual range is freshly picked, frame is fresh.
         unsafe {
-            memory::map_to(
-                VirtAddr::new(virt),
-                phys,
-                PageTableFlags::PRESENT | PageTableFlags::WRITABLE,
-            )
-            .expect("map_to failed while allocating fork-child stack");
+            current_as
+                .map_to(
+                    VirtAddr::new(virt),
+                    phys,
+                    PageTableFlags::PRESENT | PageTableFlags::WRITABLE,
+                )
+                .expect("map_to failed while allocating fork-child stack");
         }
         frames_allocated += 1;
         virt += 4096;
@@ -530,13 +542,16 @@ pub fn spawn_fork_child(
                 .expect("out of frames while allocating child syscall stack");
             let phys = PhysAddr::new(frame_number * 4096);
             // SAFETY: virtual range is freshly picked, frame is fresh.
+            // Uses `current_as` (live CR3) — see comment above the kernel-
+            // stack loop for why the global `memory::map_to` is wrong here.
             unsafe {
-                memory::map_to(
-                    VirtAddr::new(virt),
-                    phys,
-                    PageTableFlags::PRESENT | PageTableFlags::WRITABLE,
-                )
-                .expect("map_to failed while allocating child syscall stack");
+                current_as
+                    .map_to(
+                        VirtAddr::new(virt),
+                        phys,
+                        PageTableFlags::PRESENT | PageTableFlags::WRITABLE,
+                    )
+                    .expect("map_to failed while allocating child syscall stack");
             }
             virt += 4096;
         }
@@ -867,6 +882,12 @@ pub fn yield_now() {
         // user task set.
         if new_syscall_rsp != 0 {
             crate::syscall::set_kernel_rsp(new_syscall_rsp);
+            // Mirror the same update into TSS.RSP0. The CPU uses RSP0 on
+            // any ring-3 → ring-0 interrupt (timer firing in user mode).
+            // If RSP0 stays at the previous task's stack, the next timer
+            // preemption in user mode lands on the wrong stack and
+            // corrupts whichever task "owns" it. See `gdt::set_rsp0`.
+            crate::gdt::set_rsp0(new_syscall_rsp);
         }
 
         // Switch address space if the new task's PML4 differs from the
@@ -950,25 +971,73 @@ pub fn mark_current_zombie(exit_code: i64) {
     // will handle the interrupt state via its own was_enabled check.
 }
 
-/// Mark the currently-running task as Blocked. The task won't be picked
-/// by `yield_now` until something else flips its state back to Ready
-/// (e.g. `mark_current_zombie` waking a parent that's waiting on a child).
-pub fn mark_current_blocked() {
-    let was_enabled = x86_64::instructions::interrupts::are_enabled();
-    if was_enabled {
-        x86_64::instructions::interrupts::disable();
-    }
-    {
+
+/// Result of one atomic wait attempt.
+pub enum WaitResult {
+    /// A child was found Zombie, marked Dead, and removed from the parent's
+    /// child list.
+    Reaped { child_pid: u64, exit_status: i64 },
+    /// The parent has no remaining children.
+    NoChildren,
+    /// The parent still has children, but none have exited yet. The parent
+    /// has been marked Blocked and should yield.
+    WouldBlock,
+}
+
+/// Atomically try to reap one Zombie child of `parent_pid`.
+///
+/// This is deliberately one scheduler operation. Splitting "find zombie",
+/// "check children", "mark blocked", and "reap" into separate helpers left
+/// windows where the timer interrupt could fire while `SCHEDULER` was locked,
+/// then call `yield_now` and deadlock on the same lock.
+pub fn wait_for_zombie_child(parent_pid: u64) -> WaitResult {
+    x86_64::instructions::interrupts::without_interrupts(|| {
         let mut sched = SCHEDULER.lock();
-        let current = sched.current;
-        sched.tasks[current].state = TaskState::Blocked;
-        println!(
-            "[sched] task id={} \"{}\" marked Blocked",
-            sched.tasks[current].id, sched.tasks[current].name
-        );
-    }
-    // Like mark_current_zombie: leave interrupts disabled; caller (sys_wait)
-    // calls yield_now next, which manages interrupt state itself.
+
+        if let Some((child_pid, exit_status)) = sched
+            .tasks
+            .iter()
+            .find(|task| task.parent == Some(parent_pid) && task.state == TaskState::Zombie)
+            .map(|task| (task.id, task.exit_status.unwrap_or(0)))
+        {
+            let child = sched
+                .tasks
+                .iter_mut()
+                .find(|task| task.id == child_pid)
+                .expect("wait_for_zombie_child: child disappeared");
+            child.state = TaskState::Dead;
+
+            if let Some(parent) = sched.tasks.iter_mut().find(|task| task.id == parent_pid) {
+                parent.children.retain(|&pid| pid != child_pid);
+            }
+
+            println!(
+                "[sched] task id={} reaped by parent {} (exit={})",
+                child_pid, parent_pid, exit_status
+            );
+            return WaitResult::Reaped {
+                child_pid,
+                exit_status,
+            };
+        }
+
+        let parent = sched
+            .tasks
+            .iter_mut()
+            .find(|task| task.id == parent_pid)
+            .expect("wait_for_zombie_child: parent not found");
+
+        if parent.children.is_empty() {
+            WaitResult::NoChildren
+        } else {
+            parent.state = TaskState::Blocked;
+            println!(
+                "[sched] task id={} \"{}\" marked Blocked",
+                parent.id, parent.name
+            );
+            WaitResult::WouldBlock
+        }
+    })
 }
 
 /// Replace the current task's address space with `new_as`. Used by
@@ -1001,61 +1070,3 @@ pub fn replace_current_address_space(new_as: crate::memory::AddressSpace, new_na
     let _ = old_as_frame; // old AS leaks (no cleanup yet)
 }
 
-/// Find a Zombie child of the given parent. Returns the child's PID and
-/// exit status if one exists, else None.
-pub fn find_zombie_child_of(parent_pid: u64) -> Option<(u64, i64)> {
-    let sched = SCHEDULER.lock();
-    for task in sched.tasks.iter() {
-        if task.parent == Some(parent_pid) && task.state == TaskState::Zombie {
-            return Some((task.id, task.exit_status.unwrap_or(0)));
-        }
-    }
-    None
-}
-
-/// Does the given parent have any child(ren) — in ANY state?
-/// Used by sys_wait to detect ECHILD (no children to wait for).
-pub fn has_any_children(parent_pid: u64) -> bool {
-    let sched = SCHEDULER.lock();
-    sched.tasks.iter().any(|t| t.parent == Some(parent_pid))
-}
-
-/// Reap a Zombie child: copy out its exit status, mark it as Dead (so
-/// yield_now skips it permanently). Caller has already verified the child
-/// is a Zombie child of the current task.
-pub fn reap_child(child_pid: u64) -> i64 {
-    let mut sched = SCHEDULER.lock();
-    let current_pid = sched.tasks[sched.current].id;
-    let child = sched
-        .tasks
-        .iter_mut()
-        .find(|t| t.id == child_pid);
-    let exit_status = match child {
-        Some(task) => {
-            assert!(
-                task.parent == Some(current_pid),
-                "reap_child: not your child"
-            );
-            assert!(task.state == TaskState::Zombie, "reap_child: not Zombie");
-            task.state = TaskState::Dead;
-            task.exit_status.unwrap_or(0)
-        }
-        None => panic!("reap_child: pid {} not found", child_pid),
-    };
-    // Remove reaped child from parent's children list (separate mutable
-    // borrow — couldn't keep both `task` and `parent_task` alive at once).
-    {
-        let parent_task = sched
-            .tasks
-            .iter_mut()
-            .find(|t| t.id == current_pid);
-        if let Some(parent) = parent_task {
-            parent.children.retain(|&c| c != child_pid);
-        }
-    }
-    println!(
-        "[sched] task id={} reaped by parent {} (exit={})",
-        child_pid, current_pid, exit_status
-    );
-    exit_status
-}

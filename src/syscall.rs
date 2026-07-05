@@ -152,6 +152,14 @@ pub fn init() {
     // top is where we start).
     KERNEL_RSP.store(SYSCALL_STACK_TOP, core::sync::atomic::Ordering::SeqCst);
 
+    // Mirror it into TSS.RSP0 so the FIRST timer fire in user mode lands
+    // on the syscall stack (not the boot stack captured at gdt::init).
+    // Without this, the first preempted user task's saved context.rsp
+    // ends up pointing at the boot stack — and the subsequent switch-back
+    // resumes on the boot stack, which may have been clobbered by then.
+    // After the first yield_now, TSS.RSP0 stays in sync with KERNEL_RSP.
+    crate::gdt::set_rsp0(SYSCALL_STACK_TOP);
+
     unsafe {
         // Enable the SYSCALL instruction (EFER.SCE = 1).
         let efer = rdmsr(MSR_EFER);
@@ -357,7 +365,7 @@ unsafe extern "C" fn syscall_entry() {
 }
 
 extern "C" fn syscall_handler(num: u64, arg1: u64, arg2: u64, arg3: u64) -> u64 {
-    println!("[syscall] num={} args=({}, {}, {})", num, arg1, arg2, arg3);
+    println!("[syscall] num={} args=({}, {}, {}) pid={}", num, arg1, arg2, arg3, crate::task::current_pid());
     match num {
         SYS_READ => sys_read(arg1, arg2, arg3),
         SYS_WRITE => sys_write(arg1, arg2, arg3),
@@ -690,38 +698,36 @@ fn sys_wait(exit_status_ptr: u64) -> u64 {
     println!("[syscall] sys_wait4 (parent pid={})", parent_pid);
 
     loop {
-        // Try to find a Zombie child.
-        if let Some((child_pid, exit_status)) = crate::task::find_zombie_child_of(parent_pid) {
-            // Reap and return.
-            let reaped_exit = crate::task::reap_child(child_pid);
-            println!(
-                "[syscall] sys_wait4 -> child pid={} (exit={})",
-                child_pid, reaped_exit
-            );
-            // Write exit status to user pointer if non-NULL.
-            if exit_status_ptr != 0 {
-                // SAFETY: the user passed us this pointer; we trust it
-                // points to a writable u64 in user memory. Kernel can
-                // write to user-mapped pages (USER_ACCESSIBLE bit set
-                // in PT entry; kernel mode bypasses US check).
-                let user_ptr = exit_status_ptr as *mut i64;
-                unsafe {
-                    core::ptr::write_volatile(user_ptr, exit_status);
+        match crate::task::wait_for_zombie_child(parent_pid) {
+            crate::task::WaitResult::Reaped { child_pid, exit_status } => {
+                println!(
+                    "[syscall] sys_wait4 -> child pid={} (exit={})",
+                    child_pid, exit_status
+                );
+                // Write exit status to user pointer if non-NULL.
+                if exit_status_ptr != 0 {
+                    // SAFETY: the user passed us this pointer; we trust it
+                    // points to a writable i64 in user memory. Kernel can
+                    // write to user-mapped pages (USER_ACCESSIBLE bit set
+                    // in PT entry; kernel mode bypasses US check).
+                    let user_ptr = exit_status_ptr as *mut i64;
+                    unsafe {
+                        core::ptr::write_volatile(user_ptr, exit_status);
+                    }
                 }
+                return child_pid;
             }
-            return child_pid;
+            crate::task::WaitResult::NoChildren => {
+                println!("[syscall] sys_wait4 -> no children, returning -1");
+                return u64::MAX; // -1 / ECHILD
+            }
+            crate::task::WaitResult::WouldBlock => {
+                println!("[syscall] sys_wait4 — no Zombie child yet, blocking");
+                crate::task::yield_now();
+                // When yield_now returns, we've been rescheduled — likely because
+                // a child exited and woke us. Loop to check for a Zombie again.
+            }
         }
-        // No Zombie child. Check if we have any children at all.
-        if !crate::task::has_any_children(parent_pid) {
-            println!("[syscall] sys_wait4 -> no children, returning -1");
-            return u64::MAX; // -1 / ECHILD
-        }
-        // We have children, but none have exited yet. Block until one does.
-        println!("[syscall] sys_wait4 — no Zombie child yet, blocking");
-        crate::task::mark_current_blocked();
-        crate::task::yield_now();
-        // When yield_now returns, we've been rescheduled — likely because
-        // a child exited and woke us. Loop to check for a Zombie again.
     }
 }
 

@@ -85,12 +85,7 @@ pub fn init() {
         core::arch::asm!("mov {}, rsp", out(reg) kernel_rsp, options(nomem, nostack));
     }
 
-    // SAFETY: we're single-CPU, no concurrent access to TSS. The
-    // mutation happens before `load_tss`, so the CPU sees the right
-    // value when it first reads the TSS.
-    unsafe {
-        (*(&raw mut TSS)).privilege_stack_table[0] = VirtAddr::new(kernel_rsp);
-    }
+    set_rsp0(kernel_rsp);
 
     GDT.0.load();
     unsafe {
@@ -107,5 +102,30 @@ pub fn init() {
         // Load the TSS. After this, the CPU knows where to find RSP0
         // when transitioning from ring 3 to ring 0.
         load_tss(GDT.1.tss);
+    }
+}
+
+/// Update TSS.RSP0 — the stack the CPU switches to on any ring-3 → ring-0
+/// transition (interrupt firing in user mode, syscall using sysretq's
+/// implicit stack swap, etc.).
+///
+/// **Why this must be updated on every context switch:** when an interrupt
+/// fires while the CPU is in user mode, the CPU loads RSP from
+/// `TSS.privilege_stack_table[0]` and pushes the interrupt frame there.
+/// That stack must belong to whichever task is currently running, so that
+/// `yield_now` (called from the timer handler) saves the right RSP into
+/// the right task's `context.rsp`. If RSP0 stays at the boot stack, every
+/// timer-driven preemption saves a boot-stack pointer into the paused
+/// task's context — corrupting it for the next switch back.
+///
+/// Called from `task::yield_now` after picking the new task, alongside
+/// `syscall::set_kernel_rsp` (which is the analogous update for the
+/// `syscall` instruction's stack swap).
+pub fn set_rsp0(rsp: u64) {
+    // SAFETY: single CPU, no concurrent access. The TSS is read by the
+    // CPU only on the next ring transition, which is after this function
+    // returns. Mutating the static here is safe.
+    unsafe {
+        (*(&raw mut TSS)).privilege_stack_table[0] = VirtAddr::new(rsp);
     }
 }

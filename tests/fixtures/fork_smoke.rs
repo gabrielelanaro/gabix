@@ -16,7 +16,7 @@ pub extern "C" fn _start() -> ! {
         sys_exit(0);
     } else {
         sys_write(1, b"[fork_smoke] parent\n");
-        sys_wait4(pid);
+        sys_wait_any();
         sys_exit(0);
     }
 }
@@ -55,15 +55,17 @@ fn sys_write(fd: u64, buf: &[u8]) -> u64 {
     ret
 }
 
-/// sys_wait4(pid) — Linux x86-64 ABI: rax = 61, rdi = pid.
-/// Blocks until the named child exits, then returns its exit status.
-fn sys_wait4(pid: u64) -> u64 {
+/// sys_wait_any — wait for any child to exit. Our kernel's sys_wait treats
+/// arg1 as the exit-status pointer (NULL = don't write status). Linux's
+/// wait4 has more args (pid, wstatus, options, rusage), but our kernel only
+/// implements the "wait for any child, optional status write" subset.
+fn sys_wait_any() -> u64 {
     let ret;
     unsafe {
         core::arch::asm!(
             "syscall",
             in("rax") 61,
-            in("rdi") pid,
+            in("rdi") 0u64, // exit_status_ptr = NULL (don't care about status)
             lateout("rax") ret,
             lateout("rcx") _,
             lateout("r11") _,

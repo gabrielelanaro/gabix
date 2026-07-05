@@ -2,17 +2,16 @@
 # E2E test: exec /fork_smoke.elf, verify both parent and child markers appear.
 #
 # fork_smoke.elf calls sys_fork. Child prints "[fork_smoke] child" and exits.
-# Parent prints "[fork_smoke] parent", sys_wait4s the child, then exits.
+# Parent prints "[fork_smoke] parent", waits for any child, then exits.
 # The scheduler is preemptive so either branch can run first — the assertion
 # is that BOTH markers appear, in any order.
 #
 # Pass: QEMU exits 33 AND both [fork_smoke] markers appear in serial.
 # Fail: anything else (panic, hang, missing marker, only one marker).
 #
-# This test exercises the full fork machinery for the first time end-to-end:
-# sys_fork handler, spawn_fork_child, fork_trampoline, deep_clone_from_current,
-# sys_wait4, zombie reaping. If anything in that chain is broken, this test
-# will catch it.
+# This test exercises the full fork machinery end-to-end: sys_fork handler,
+# spawn_fork_child, fork_trampoline, deep_clone_from_current, sys_wait,
+# zombie reaping. If anything in that chain is broken, this test will catch it.
 
 . "$(dirname "$0")/common.sh"
 
