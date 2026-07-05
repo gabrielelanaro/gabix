@@ -1,8 +1,8 @@
 #!/bin/sh
 # E2E test: boot with the Lesson 19 virtio-net card and verify PCI sees it.
 #
-# Lesson 19 stops at discovery. The card is attached and visible on the PCI
-# bus, but the driver handshake and packet queues arrive in Lesson 20.
+# Lesson 19's contract is discovery. Later lessons initialize the same card,
+# but this test stays focused on the PCI proof.
 
 . "$(dirname "$0")/common.sh"
 

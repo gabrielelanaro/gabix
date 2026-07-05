@@ -1,0 +1,1251 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Lesson 20 — virtio-net Initialization</title>
+<link rel="stylesheet" href="../assets/lesson.css">
+<link rel="stylesheet" href="../assets/byte-layout.css">
+<style>
+  .parallel-handshake {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 1rem;
+    margin: 1.5rem 0;
+  }
+  .parallel-handshake .ph-col {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 0.9rem 1rem;
+    font-family: var(--font-mono);
+    font-size: 0.82rem;
+    line-height: 1.65;
+  }
+  .parallel-handshake .ph-col.blk  { border-top: 3px solid #94a3b8; }
+  .parallel-handshake .ph-col.net  { border-top: 3px solid var(--accent); }
+  .parallel-handshake .ph-title {
+    font-family: var(--font-sans);
+    font-weight: 700;
+    font-size: 0.9rem;
+    margin-bottom: 0.5rem;
+    color: var(--text);
+  }
+  .parallel-handshake .ph-title .ph-sub {
+    font-family: var(--font-mono);
+    font-weight: 400;
+    color: var(--text-faint);
+    font-size: 0.75rem;
+    margin-left: 0.4rem;
+  }
+  .parallel-handshake .ph-step {
+    display: grid;
+    grid-template-columns: 1.2rem 1fr;
+    gap: 0.4rem;
+    color: var(--text-dim);
+  }
+  .parallel-handshake .ph-step .ph-mark {
+    text-align: center;
+    color: var(--text-faint);
+  }
+  .parallel-handshake .ph-step.same .ph-mark  { color: #15803d; }
+  .parallel-handshake .ph-step.diff .ph-mark  { color: var(--accent); font-weight: 600; }
+  .parallel-handshake .ph-step.same .ph-text  { color: var(--text-dim); }
+  .parallel-handshake .ph-step.diff .ph-text  { color: var(--text); font-weight: 500; }
+
+  .queue-pair {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 1.2rem;
+    margin: 1.5rem 0;
+    font-family: var(--font-mono);
+    font-size: 0.82rem;
+  }
+  .queue-pair .qp-col {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1rem 1.1rem;
+  }
+  .queue-pair .qp-col.rx { border-top: 3px solid #15803d; background: #f0fdf4; }
+  .queue-pair .qp-col.tx { border-top: 3px solid #b45309; background: #fffbeb; }
+  .queue-pair .qp-title {
+    font-family: var(--font-sans);
+    font-weight: 700;
+    font-size: 0.95rem;
+    margin-bottom: 0.4rem;
+  }
+  .queue-pair .qp-title .qp-idx {
+    font-family: var(--font-mono);
+    font-size: 0.78rem;
+    color: var(--text-faint);
+    font-weight: 400;
+    margin-left: 0.4rem;
+  }
+  .queue-pair .qp-row {
+    display: grid;
+    grid-template-columns: 8.5rem 1fr;
+    gap: 0.5rem;
+    padding: 0.3rem 0;
+    border-bottom: 1px dashed var(--border);
+    color: var(--text-dim);
+    font-size: 0.8rem;
+  }
+  .queue-pair .qp-row:last-child { border-bottom: none; }
+  .queue-pair .qp-row .qp-label { color: var(--text-faint); font-family: var(--font-sans); font-size: 0.78rem; }
+  .queue-pair .qp-row .qp-value { color: var(--text); }
+
+  .flow-rx {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1rem 1.2rem;
+    margin: 1.5rem 0;
+    font-family: var(--font-mono);
+    font-size: 0.82rem;
+  }
+  .flow-rx .fr-row {
+    display: grid;
+    grid-template-columns: 8rem 1fr;
+    gap: 0.6rem;
+    padding: 0.25rem 0;
+  }
+  .flow-rx .fr-row .fr-when {
+    color: var(--text-faint);
+    font-family: var(--font-sans);
+    font-size: 0.78rem;
+  }
+  .flow-rx .fr-row .fr-what { color: var(--text); }
+  .flow-rx .fr-row.kernel   .fr-what::before { content: "kernel  "; color: var(--accent); font-weight: 600; }
+  .flow-rx .fr-row.device   .fr-what::before { content: "device  "; color: #15803d; font-weight: 600; }
+
+  .blk-vs-net {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 1.25rem 0;
+    font-size: 0.9rem;
+  }
+  .blk-vs-net th, .blk-vs-net td {
+    text-align: left;
+    padding: 0.5rem 0.6rem;
+    border-bottom: 1px solid var(--border);
+    vertical-align: top;
+  }
+  .blk-vs-net th {
+    font-family: var(--font-sans);
+    font-size: 0.78rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--text-dim);
+  }
+  .blk-vs-net td code { color: var(--accent); }
+
+  .config-region {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1rem 1.2rem;
+    margin: 1.25rem 0;
+    font-family: var(--font-mono);
+    font-size: 0.82rem;
+    line-height: 1.7;
+  }
+  .config-region .cr-row {
+    display: grid;
+    grid-template-columns: 6rem 5rem 1fr;
+    gap: 0.5rem;
+  }
+  .config-region .cr-off { color: var(--text-faint); }
+  .config-region .cr-name { color: var(--accent); font-weight: 600; }
+  .config-region .cr-desc { color: var(--text-dim); font-family: var(--font-sans); font-size: 0.85rem; }
+
+  .callout-feature {
+    background: #eff6ff;
+    border: 1px solid #bfdbfe;
+    border-left: 4px solid #1d4ed8;
+    border-radius: 4px;
+    padding: 0.8rem 1rem;
+    margin: 1rem 0;
+    font-family: var(--font-sans);
+    font-size: 0.88rem;
+    color: var(--text);
+  }
+  .callout-feature strong { color: #1d4ed8; }
+
+  /* ============================================================
+     RX buffer lifecycle visualization
+     ============================================================ */
+  .rx-viz {
+    margin: 2rem 0;
+  }
+  .rx-viz-legend {
+    display: flex;
+    gap: 0.6rem;
+    flex-wrap: wrap;
+    margin: 0 0 1rem;
+    font-family: var(--font-sans);
+    font-size: 0.78rem;
+  }
+  .rx-viz-legend .lg-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    padding: 0.2rem 0.5rem;
+    border-radius: 3px;
+    border: 1px solid var(--border);
+    background: var(--surface);
+    color: var(--text-dim);
+  }
+  .rx-viz-legend .lg-swatch {
+    width: 0.85rem;
+    height: 0.85rem;
+    border-radius: 2px;
+    border: 1px solid var(--border);
+  }
+  .rx-viz-legend .lg-swatch.empty    { background: #f3f4f6; }
+  .rx-viz-legend .lg-swatch.posted   { background: #fef3c7; }
+  .rx-viz-legend .lg-swatch.filled   { background: #dcfce7; }
+  .rx-viz-legend .lg-swatch.reading  { background: #dbeafe; }
+  .rx-viz-legend .lg-swatch.notalloc { background: repeating-linear-gradient(45deg, #f3f4f6 0 4px, #e7e1d8 4px 8px); }
+
+  .rx-viz-snapshot {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1rem 1.2rem 1.1rem;
+    margin: 0.9rem 0;
+  }
+  .rx-viz-snaphead {
+    display: flex;
+    align-items: baseline;
+    gap: 0.7rem;
+    margin-bottom: 0.7rem;
+  }
+  .rx-viz-snapnum {
+    font-family: var(--font-mono);
+    font-size: 0.78rem;
+    font-weight: 600;
+    color: var(--accent);
+    background: var(--accent-soft);
+    padding: 2px 8px;
+    border-radius: 3px;
+  }
+  .rx-viz-snaptitle {
+    font-family: var(--font-sans);
+    font-weight: 600;
+    font-size: 0.95rem;
+    color: var(--text);
+  }
+  .rx-viz-snapwhen {
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
+    color: var(--text-faint);
+    margin-left: auto;
+  }
+
+  .rx-viz-table {
+    display: grid;
+    grid-template-columns: repeat(8, minmax(4.5rem, 1fr));
+    gap: 0.3rem;
+    margin: 0.4rem 0 0.7rem;
+  }
+  .rx-viz-cell {
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 0.4rem 0.3rem 0.45rem;
+    text-align: center;
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
+    background: var(--surface);
+    color: var(--text-dim);
+    line-height: 1.35;
+  }
+  .rx-viz-cell .rvc-idx {
+    font-weight: 600;
+    color: var(--text);
+    font-size: 0.78rem;
+  }
+  .rx-viz-cell .rvc-state {
+    display: block;
+    margin-top: 0.2rem;
+    font-family: var(--font-sans);
+    font-size: 0.66rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--text-faint);
+  }
+  .rx-viz-cell.state-empty    { background: #f3f4f6; }
+  .rx-viz-cell.state-posted   { background: #fef3c7; border-color: #fcd34d; }
+  .rx-viz-cell.state-posted   .rvc-state { color: #92400e; }
+  .rx-viz-cell.state-filled   { background: #dcfce7; border-color: #86efac; }
+  .rx-viz-cell.state-filled   .rvc-state { color: #15803d; font-weight: 600; }
+  .rx-viz-cell.state-reading  { background: #dbeafe; border-color: #93c5fd; }
+  .rx-viz-cell.state-reading  .rvc-state { color: #1d4ed8; font-weight: 600; }
+  .rx-viz-cell.state-notalloc {
+    background: repeating-linear-gradient(45deg, #f3f4f6 0 5px, #e7e1d8 5px 10px);
+    color: var(--text-faint);
+    border-style: dashed;
+  }
+
+  .rx-viz-rings {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0.6rem;
+    margin: 0.4rem 0 0.7rem;
+    font-family: var(--font-mono);
+    font-size: 0.78rem;
+  }
+  .rx-viz-ring {
+    background: var(--surface-soft);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 0.5rem 0.7rem;
+  }
+  .rx-viz-ring.rx  { border-left: 3px solid #b45309; }
+  .rx-viz-ring.used { border-left: 3px solid #15803d; }
+  .rx-viz-ring-label {
+    font-family: var(--font-sans);
+    font-size: 0.7rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-faint);
+    margin-bottom: 0.25rem;
+  }
+  .rx-viz-ring-contents {
+    color: var(--text);
+    word-break: break-all;
+  }
+  .rx-viz-ring-idx {
+    color: var(--text-dim);
+    margin-top: 0.2rem;
+  }
+  .rx-viz-ring-idx strong { color: var(--text); }
+
+  .rx-viz-narr {
+    font-family: var(--font-serif);
+    font-size: 0.88rem;
+    color: var(--text-dim);
+    line-height: 1.55;
+    margin: 0.4rem 0 0;
+  }
+  .rx-viz-narr strong { color: var(--text); }
+  .rx-viz-narr .kern { color: #b45309; font-weight: 600; }
+  .rx-viz-narr .dev  { color: #15803d; font-weight: 600; }
+
+  @media (max-width: 720px) {
+    .rx-viz-table { grid-template-columns: repeat(4, 1fr); }
+    .rx-viz-rings { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+<article class="lesson">
+
+  <header class="lesson-header">
+    <div class="lesson-eyebrow">Lesson 20 · Phase 2 · networking</div>
+    <h1 class="lesson-title">virtio-net Initialization</h1>
+    <p class="lesson-subtitle">Wake the network card with the same handshake virtio-blk used, then do three things virtio-blk never needed: read its MAC address, set up a second virtqueue, and stock the receive queue with empty buffers before any traffic can arrive.</p>
+    <div class="lesson-meta">
+      <span><strong>Read time</strong> ~20 min</span>
+      <span><strong>Build time</strong> ~30–45 min</span>
+      <span><strong>Prereq</strong> <a href="0006-virtio-device-initialization.html">Lesson 6</a>, <a href="0007-virtqueues.html">Lesson 7</a>, <a href="0019-shape-of-network-stack.html">Lesson 19</a></span>
+    </div>
+  </header>
+
+  <div class="content">
+
+  <p class="lead">
+    Lesson 19 ended with virtio-net visible on the PCI (Peripheral
+    Component Interconnect) bus, silent and unclaimed. This lesson wakes
+    it. The work splits cleanly: most of it is reuse, three pieces are
+    genuinely new, and the new pieces exist for one reason — networks
+    deliver bytes the kernel did not ask for. Every addition in this
+    lesson answers the same question: <em>what does a device need from
+    its driver before the driver has anything to say?</em>
+  </p>
+
+  <h2>The handshake you already know</h2>
+
+  <p>
+    The virtio modern-transport handshake is device-agnostic by design.
+    Reset, ACKNOWLEDGE, DRIVER, feature negotiation, FEATURES_OK,
+    DRIVER_OK — the same six steps, in the same order, on the same
+    common-config registers, for every virtio device in the spec
+    (<a href="https://docs.oasis-open.org/virtio/virtio/v1.2/csd01/virtio-v1.2-csd01.html#x1-1550004">VIRTIO
+    1.2 §4 — Virtio Transport Options</a>). Lesson 6 walked it for
+    virtio-blk. The card on the other end is virtio-net now; the dance
+    is unchanged.
+  </p>
+
+  <div class="parallel-handshake">
+    <div class="ph-col blk">
+      <div class="ph-title">virtio-blk <span class="ph-sub">Lesson 6</span></div>
+      <div class="ph-step same"><span class="ph-mark">✓</span><span class="ph-text">probe PCI, map common cfg</span></div>
+      <div class="ph-step same"><span class="ph-mark">✓</span><span class="ph-text">reset → ACKNOWLEDGE → DRIVER</span></div>
+      <div class="ph-step diff"><span class="ph-mark">~</span><span class="ph-text">features: VERSION_1</span></div>
+      <div class="ph-step same"><span class="ph-mark">✓</span><span class="ph-text">FEATURES_OK</span></div>
+      <div class="ph-step diff"><span class="ph-mark">~</span><span class="ph-text">1 virtqueue (request/response)</span></div>
+      <div class="ph-step same"><span class="ph-mark">✓</span><span class="ph-text">DRIVER_OK</span></div>
+    </div>
+    <div class="ph-col net">
+      <div class="ph-title">virtio-net <span class="ph-sub">this lesson</span></div>
+      <div class="ph-step same"><span class="ph-mark">✓</span><span class="ph-text">probe PCI, map common cfg</span></div>
+      <div class="ph-step same"><span class="ph-mark">✓</span><span class="ph-text">reset → ACKNOWLEDGE → DRIVER</span></div>
+      <div class="ph-step diff"><span class="ph-mark">~</span><span class="ph-text">features: VERSION_1 + NET_F_MAC</span></div>
+      <div class="ph-step same"><span class="ph-mark">✓</span><span class="ph-text">FEATURES_OK</span></div>
+      <div class="ph-step diff"><span class="ph-mark">~</span><span class="ph-text">2 virtqueues (RX, TX)</span></div>
+      <div class="ph-step same"><span class="ph-mark">✓</span><span class="ph-text">DRIVER_OK</span></div>
+    </div>
+  </div>
+
+  <p>
+    The capability list walk, the MMIO (Memory-Mapped I/O) mapping of
+    the common-config region, the status-byte transitions, the
+    feature-select register dance — all of Lesson 6 transfers line for
+    line. The driver code you already wrote for virtio-blk, point for
+    point, also drives virtio-net once the queue and feature pieces
+    change. That is the spec paying back the work you put into Lesson 6.
+  </p>
+
+  <p>
+    Three places need virtio-net-specific knowledge: which feature bits
+    to claim, where the MAC address lives, and what the device expects
+    of its two virtqueues before it will start moving frames. The rest
+    of the lesson is those three.
+  </p>
+
+  <h2>Feature negotiation — claim MAC, refuse merge-RX</h2>
+
+  <p>
+    virtio-net advertises its own device-specific feature bits in the
+    low 32 of the 64-bit feature space. The spec defines about thirty
+    of them
+    (<a href="https://docs.oasis-open.org/virtio/virtio/v1.2/csd01/virtio-v1.2-csd01.html#x1-2200005">VIRTIO
+    1.2 §5.1.3</a>); mini-os needs two and explicitly avoids a third.
+  </p>
+
+  <ul>
+    <li>
+      <strong>VIRTIO_F_VERSION_1</strong> (bit 32, transport layer) —
+      the modern-transport compliance bit. Same claim as virtio-blk.
+      Without it the device falls back to legacy mode, which we have
+      never driven and will not start now.
+    </li>
+    <li>
+      <strong>VIRTIO_NET_F_MAC</strong> (bit 5, device-specific) — the
+      device exposes its MAC (Media Access Control) address in the
+      device-config region. Claiming this bit is what makes the MAC
+      field at offset 0 of device config valid to read. Without it, the
+      driver would have to fabricate or guess a MAC.
+    </li>
+  </ul>
+
+  <div class="callout-feature">
+    <strong>Refused: VIRTIO_NET_F_MRG_RXBUF</strong> (bit 15). The
+    device offers to spread one incoming frame across multiple
+    RX buffers when the frame is larger than one buffer's worth.
+    Useful for jumbo frames and high throughput. We refuse it: one
+    frame per buffer keeps the RX descriptor chain a single
+    <code>F_WRITE</code> entry and the receive parser one buffer
+    ahead in memory. Simplicity wins at our packet sizes; we'll
+    revisit if we ever approach the 1500-byte Ethernet MTU
+    (Maximum Transmission Unit).
+  </div>
+
+  <p>
+    Every other offered feature — checksum offload, TCP segmentation,
+    multiqueue, MTU negotiation — is left untouched. The driver-feature
+    write is <code>0x20</code> in the low half (bit 5) and
+    <code>0x1</code> in the high half (bit 0 of high = bit 32). The
+    device accepts; FEATURES_OK stays set.
+  </p>
+
+  <h2>Reading the MAC from device config</h2>
+
+  <p>
+    The common-config region is where the handshake lives, but it
+    carries nothing device-specific. The MAC lives in a second region:
+    the <strong>device-config capability</strong>
+    (<code>cfg_type = 4</code>), the same cap virtio-blk uses for its
+    disk-capacity field. Different cap, different region, mapped to its
+    own virtual address the same way common-config was in Lesson 6.
+  </p>
+
+  <p>
+    The device-config region for virtio-net starts with the 6 bytes of
+    MAC, followed by fields valid only if other feature bits were
+    negotiated. Layout when only <code>NET_F_MAC</code> is claimed
+    (<a href="https://docs.oasis-open.org/virtio/virtio/v1.2/csd01/virtio-v1.2-csd01.html#x1-2270005">VIRTIO
+    1.2 §5.1.4</a>):
+  </p>
+
+  <div class="config-region">
+    <div class="cr-row"><span class="cr-off">0x00–0x05</span><span class="cr-name">mac[6]</span><span class="cr-desc">6 bytes — the card's hardware address, exposed because we negotiated NET_F_MAC</span></div>
+    <div class="cr-row"><span class="cr-off">0x06–0x07</span><span class="cr-name">status</span><span class="cr-desc">u16 — link up/down; valid only with NET_F_STATUS (we didn't claim; reads as zero)</span></div>
+    <div class="cr-row"><span class="cr-off">0x08–0x09</span><span class="cr-name">max_pairs</span><span class="cr-desc">u16 — multiqueue depth; valid only with NET_F_MQ (we didn't claim; reads as zero)</span></div>
+    <div class="cr-row"><span class="cr-off">0x0A–0x0B</span><span class="cr-name">mtu</span><span class="cr-desc">u16 — MTU in bytes; valid only with NET_F_MTU (we didn't claim; reads as zero)</span></div>
+  </div>
+
+  <p>
+    Six bytes, six <code>read_volatile</code> calls at offsets
+    <code>0</code> through <code>5</code>. QEMU's virtio-net-pci without
+    explicit configuration supplies <code>52:54:00:12:34:56</code> —
+    the locally-administered range (the <code>52:54</code> prefix is
+    QEMU's signature on the wire). Printing it after FEATURES_OK
+    confirms the device-specific config cap mapped correctly and the
+    device accepted our feature subset.
+  </p>
+
+  <div class="callout">
+    <div class="callout-title">Why we read the MAC instead of inventing one</div>
+    <p style="margin:0;">
+      The MAC is the card's identity on the wire. ARP (Address
+      Resolution Protocol, Lesson 22) and every Ethernet frame the
+      kernel transmits carry it as the source. QEMU's slirp backend
+      uses the MAC to identify the guest in its internal state. A
+      fabricated MAC that doesn't match what QEMU thinks the card has
+      would still let us transmit, but ARP replies we send would be
+      ignored by the gateway. The MAC is part of the device; reading
+      it is the right move.
+    </p>
+  </div>
+
+  <h2>Two queues, opposite directions</h2>
+
+  <p>
+    virtio-blk had one virtqueue. Every request the kernel submitted
+    to it was a request that needed a response — read this sector,
+    here is the data. The kernel drove the queue; the device answered.
+    Network traffic has no such symmetry. Frames come in without being
+    asked for, and frames go out without any reply expected on the
+    same path. One queue cannot serve both roles cleanly, so virtio-net
+    splits them:
+  </p>
+
+  <div class="queue-pair">
+    <div class="qp-col rx">
+      <div class="qp-title">Receive queue <span class="qp-idx">queue 0 · RX</span></div>
+      <div class="qp-row"><span class="qp-label">direction</span><span class="qp-value">device → kernel</span></div>
+      <div class="qp-row"><span class="qp-label">descriptor type</span><span class="qp-value">F_WRITE only (device writes)</span></div>
+      <div class="qp-row"><span class="qp-label">who produces</span><span class="qp-value">kernel posts empty buffers</span></div>
+      <div class="qp-row"><span class="qp-label">who consumes</span><span class="qp-value">device fills them on arrival</span></div>
+      <div class="qp-row"><span class="qp-label">when</span><span class="qp-value">whenever a frame arrives</span></div>
+    </div>
+    <div class="qp-col tx">
+      <div class="qp-title">Transmit queue <span class="qp-idx">queue 1 · TX</span></div>
+      <div class="qp-row"><span class="qp-label">direction</span><span class="qp-value">kernel → device</span></div>
+      <div class="qp-row"><span class="qp-label">descriptor type</span><span class="qp-value">no flags (device reads)</span></div>
+      <div class="qp-row"><span class="qp-label">who produces</span><span class="qp-value">kernel posts a complete frame</span></div>
+      <div class="qp-row"><span class="qp-label">who consumes</span><span class="qp-value">device reads and ships it</span></div>
+      <div class="qp-row"><span class="qp-label">when</span><span class="qp-value">whenever the kernel wants to send</span></div>
+    </div>
+  </div>
+
+  <p>
+    Both queues use the same descriptor table, available ring, used ring
+    layout from Lesson 7. The <code>VirtQueue</code> struct mini-os
+    already has works for both. The differences live entirely in
+    descriptor flags and in <em>who initiates work</em>: TX work is
+    always kernel-initiated (the kernel builds a frame, submits, kicks);
+    RX work is device-initiated (the device fills a buffer whenever a
+    frame arrives, on its own schedule, with no kick from us).
+  </p>
+
+  <p>
+    virtio-blk's queue was its own thing — a single channel for paired
+    request/response. virtio-net's two queues are siblings of each
+    other under the virtqueue abstraction, with opposite purposes.
+    Comparing side by side:
+  </p>
+
+  <table class="blk-vs-net">
+    <thead>
+      <tr><th></th><th>virtio-blk (Lesson 7)</th><th>virtio-net RX</th><th>virtio-net TX</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>queue count</td><td>1</td><td colspan="2">2 (RX = 0, TX = 1)</td></tr>
+      <tr><td>descriptor chain</td><td>3 segments: header / data / status</td><td>1 segment: empty buffer</td><td>2 segments: virtio_net_hdr / frame</td></tr>
+      <tr><td>flags on data</td><td>F_NEXT | F_WRITE</td><td>F_WRITE</td><td>(none — device reads)</td></tr>
+      <tr><td>kernel initiates</td><td>yes, every I/O</td><td>no, on demand only to refill</td><td>yes, every transmit</td></tr>
+      <tr><td>device initiates</td><td>never</td><td>yes, on every received frame</td><td>never</td></tr>
+      <tr><td>kick after submit</td><td>always</td><td>only when refilling after drain</td><td>always</td></tr>
+    </tbody>
+  </table>
+
+  <p>
+    Lesson 7's mechanics — descriptor allocation, the available-ring
+    publication with <code>Release</code> ordering, the used-ring poll
+    with <code>Acquire</code> — all carry over unchanged. The shape of
+    a chain and the rhythm of the dance vary; the rings themselves are
+    identical.
+  </p>
+
+  <h2>The RX supply problem</h2>
+
+  <p>
+    Lesson 19's two implementer rules — network byte order is
+    big-endian, and receive is unsolicited — were a preview of where
+    the difficulty lives. Here is the unsolicited rule made concrete.
+    When a frame arrives, the device must have a place to put it
+    <em>already queued and waiting</em>. There is no request the kernel
+    can issue to "fetch the next frame" — the device just lands one in
+    whatever empty buffer the kernel has posted, on the device's own
+    clock. If no buffer is posted, the frame is dropped silently. The
+    wire does not wait.
+  </p>
+
+  <p>
+    The kernel is therefore a buffer producer, and the device is a
+    buffer consumer. The dance between them, for the receive path:
+  </p>
+
+  <div class="flow-rx">
+    <div class="fr-row kernel"><span class="fr-when">at init</span><span class="fr-what">allocate N × 2048-byte frames, write a F_WRITE descriptor per buffer, publish to RX avail ring</span></div>
+    <div class="fr-row kernel"><span class="fr-when">at init</span><span class="fr-what">set DRIVER_OK — device is now permitted to read the RX queue</span></div>
+    <div class="fr-row device"><span class="fr-when">on frame arrival</span><span class="fr-what">pick the next posted buffer, DMA the frame into it, write an entry in the RX used ring</span></div>
+    <div class="fr-row kernel"><span class="fr-when">when kernel polls</span><span class="fr-what">see the new used entry, read the buffer, recycle it back into the avail ring</span></div>
+    <div class="fr-row kernel"><span class="fr-when">if supply runs low</span><span class="fr-what">post more empty buffers before the device runs out — kick optional, device usually polls</span></div>
+  </div>
+
+  <p>
+    Each posted RX buffer is one descriptor with <code>F_WRITE</code>
+    set and a length large enough for the worst case. We use 2048
+    bytes: an Ethernet frame can be up to 1518 bytes (destination MAC +
+    source MAC + EtherType + 1500 MTU + 4-byte CRC, which QEMU does
+    not pass through), plus the 12-byte virtio-net header the device
+    prepends, plus a margin. A 4 KiB frame would also work; 2048 keeps
+    two buffers per frame.
+  </p>
+
+  <p>
+    Initial supply size: eight buffers. Enough to absorb a short burst
+    of incoming ARP and ICMP (Internet Control Message Protocol)
+    traffic in Lesson 22–24 before the kernel gets around to polling.
+    Linux uses 256 and refills on a softirq; we use eight and refill
+    in the polling loop. Lesson 21 will recycle a buffer back into the
+    avail ring the moment it has been consumed.
+  </p>
+
+  <h3>The RX supply problem, step by step</h3>
+
+  <p>
+    Seven snapshots trace one buffer through allocate, post, fill,
+    read, recycle, and a burst case. Each snapshot shows the eight
+    descriptors (one cell per descriptor — and the buffer that
+    descriptor points at, since they share a lifecycle), plus the
+    state of both rings.
+  </p>
+
+  <div class="callout">
+    <div class="callout-title">Want it animated?</div>
+    <p style="margin:0;">
+      <a href="0020-rx-ring-animation.html">Open the live interactive version</a> —
+      clickable buttons for "frame arrives" and "kernel polls," an
+      auto-play mode, and a burst mode that lets you overflow the
+      supply and watch frames drop.
+    </p>
+  </div>
+
+  <div class="rx-viz-legend">
+    <span class="lg-chip"><span class="lg-swatch notalloc"></span>not allocated</span>
+    <span class="lg-chip"><span class="lg-swatch empty"></span>descriptor written, not posted</span>
+    <span class="lg-chip"><span class="lg-swatch posted"></span>posted to avail ring</span>
+    <span class="lg-chip"><span class="lg-swatch filled"></span>device filled it (in used ring)</span>
+    <span class="lg-chip"><span class="lg-swatch reading"></span>kernel is reading</span>
+  </div>
+
+  <div class="rx-viz">
+
+    <!-- ============== T1 ============== -->
+    <div class="rx-viz-snapshot">
+      <div class="rx-viz-snaphead">
+        <span class="rx-viz-snapnum">T1</span>
+        <span class="rx-viz-snaptitle">Boot finished, RX queue not yet set up</span>
+        <span class="rx-viz-snapwhen">right after handshake</span>
+      </div>
+      <div class="rx-viz-table">
+        <div class="rx-viz-cell state-notalloc"><span class="rvc-idx">D0</span><span class="rvc-state">—</span></div>
+        <div class="rx-viz-cell state-notalloc"><span class="rvc-idx">D1</span><span class="rvc-state">—</span></div>
+        <div class="rx-viz-cell state-notalloc"><span class="rvc-idx">D2</span><span class="rvc-state">—</span></div>
+        <div class="rx-viz-cell state-notalloc"><span class="rvc-idx">D3</span><span class="rvc-state">—</span></div>
+        <div class="rx-viz-cell state-notalloc"><span class="rvc-idx">D4</span><span class="rvc-state">—</span></div>
+        <div class="rx-viz-cell state-notalloc"><span class="rvc-idx">D5</span><span class="rvc-state">—</span></div>
+        <div class="rx-viz-cell state-notalloc"><span class="rvc-idx">D6</span><span class="rvc-state">—</span></div>
+        <div class="rx-viz-cell state-notalloc"><span class="rvc-idx">D7</span><span class="rvc-state">—</span></div>
+      </div>
+      <div class="rx-viz-rings">
+        <div class="rx-viz-ring rx">
+          <div class="rx-viz-ring-label">avail ring</div>
+          <div class="rx-viz-ring-contents">not configured</div>
+          <div class="rx-viz-ring-idx">idx = <strong>—</strong></div>
+        </div>
+        <div class="rx-viz-ring used">
+          <div class="rx-viz-ring-label">used ring</div>
+          <div class="rx-viz-ring-contents">not configured</div>
+          <div class="rx-viz-ring-idx">idx = <strong>—</strong></div>
+        </div>
+      </div>
+      <p class="rx-viz-narr">
+        <span class="kern">kernel</span> has run the virtio handshake
+        through FEATURES_OK and read the MAC. The descriptor table,
+        avail ring, and used ring exist as zeroed frames the kernel
+        allocated for queue 0 in step 3 — but no descriptors are
+        written and no buffers are claimed. <span class="dev">device</span>
+        is still waiting for DRIVER_OK.
+      </p>
+    </div>
+
+    <!-- ============== T2 ============== -->
+    <div class="rx-viz-snapshot">
+      <div class="rx-viz-snaphead">
+        <span class="rx-viz-snapnum">T2</span>
+        <span class="rx-viz-snaptitle">Kernel writes 8 descriptors, one per buffer</span>
+        <span class="rx-viz-snapwhen">step 4 part 1 — pre-DRIVER_OK</span>
+      </div>
+      <div class="rx-viz-table">
+        <div class="rx-viz-cell state-empty"><span class="rvc-idx">D0</span><span class="rvc-state">empty</span></div>
+        <div class="rx-viz-cell state-empty"><span class="rvc-idx">D1</span><span class="rvc-state">empty</span></div>
+        <div class="rx-viz-cell state-empty"><span class="rvc-idx">D2</span><span class="rvc-state">empty</span></div>
+        <div class="rx-viz-cell state-empty"><span class="rvc-idx">D3</span><span class="rvc-state">empty</span></div>
+        <div class="rx-viz-cell state-empty"><span class="rvc-idx">D4</span><span class="rvc-state">empty</span></div>
+        <div class="rx-viz-cell state-empty"><span class="rvc-idx">D5</span><span class="rvc-state">empty</span></div>
+        <div class="rx-viz-cell state-empty"><span class="rvc-idx">D6</span><span class="rvc-state">empty</span></div>
+        <div class="rx-viz-cell state-empty"><span class="rvc-idx">D7</span><span class="rvc-state">empty</span></div>
+      </div>
+      <div class="rx-viz-rings">
+        <div class="rx-viz-ring rx">
+          <div class="rx-viz-ring-label">avail ring</div>
+          <div class="rx-viz-ring-contents">[ ]</div>
+          <div class="rx-viz-ring-idx">idx = <strong>0</strong></div>
+        </div>
+        <div class="rx-viz-ring used">
+          <div class="rx-viz-ring-label">used ring</div>
+          <div class="rx-viz-ring-contents">[ ]</div>
+          <div class="rx-viz-ring-idx">idx = <strong>0</strong></div>
+        </div>
+      </div>
+      <p class="rx-viz-narr">
+        <span class="kern">kernel</span> allocates 8 × 2048-byte frames
+        and writes 8 descriptors — each pointing at one buffer's
+        physical address, <code>F_WRITE</code> set, length 2048. The
+        buffers exist in RAM; the descriptors exist in the descriptor
+        table; <strong>neither is published yet</strong>. The avail
+        ring is still empty, so the device has no idea anything is
+        waiting.
+      </p>
+    </div>
+
+    <!-- ============== T3 ============== -->
+    <div class="rx-viz-snapshot">
+      <div class="rx-viz-snaphead">
+        <span class="rx-viz-snapnum">T3</span>
+        <span class="rx-viz-snaptitle">Kernel submits all 8 to avail ring, sets DRIVER_OK</span>
+        <span class="rx-viz-snapwhen">step 4 part 2 — go live</span>
+      </div>
+      <div class="rx-viz-table">
+        <div class="rx-viz-cell state-posted"><span class="rvc-idx">D0</span><span class="rvc-state">posted</span></div>
+        <div class="rx-viz-cell state-posted"><span class="rvc-idx">D1</span><span class="rvc-state">posted</span></div>
+        <div class="rx-viz-cell state-posted"><span class="rvc-idx">D2</span><span class="rvc-state">posted</span></div>
+        <div class="rx-viz-cell state-posted"><span class="rvc-idx">D3</span><span class="rvc-state">posted</span></div>
+        <div class="rx-viz-cell state-posted"><span class="rvc-idx">D4</span><span class="rvc-state">posted</span></div>
+        <div class="rx-viz-cell state-posted"><span class="rvc-idx">D5</span><span class="rvc-state">posted</span></div>
+        <div class="rx-viz-cell state-posted"><span class="rvc-idx">D6</span><span class="rvc-state">posted</span></div>
+        <div class="rx-viz-cell state-posted"><span class="rvc-idx">D7</span><span class="rvc-state">posted</span></div>
+      </div>
+      <div class="rx-viz-rings">
+        <div class="rx-viz-ring rx">
+          <div class="rx-viz-ring-label">avail ring</div>
+          <div class="rx-viz-ring-contents">[ D0, D1, D2, D3, D4, D5, D6, D7 ]</div>
+          <div class="rx-viz-ring-idx">idx = <strong>8</strong> · device reads slot 0 next</div>
+        </div>
+        <div class="rx-viz-ring used">
+          <div class="rx-viz-ring-label">used ring</div>
+          <div class="rx-viz-ring-contents">[ ]</div>
+          <div class="rx-viz-ring-idx">idx = <strong>0</strong></div>
+        </div>
+      </div>
+      <p class="rx-viz-narr">
+        <span class="kern">kernel</span> publishes all 8 descriptor
+        indices into the avail ring's slots 0–7 with
+        <code>Release</code> ordering, then bumps avail
+        <code>idx</code> from 0 to 8. Then writes DRIVER_OK. <span class="dev">device</span>
+        is now permitted to read the queue and starts polling the avail
+        ring. Every buffer is empty and waiting; the supply is full.
+      </p>
+    </div>
+
+    <!-- ============== T4 ============== -->
+    <div class="rx-viz-snapshot">
+      <div class="rx-viz-snaphead">
+        <span class="rx-viz-snapnum">T4</span>
+        <span class="rx-viz-snaptitle">A frame arrives — device fills buffer 0</span>
+        <span class="rx-viz-snapwhen">first RX completion</span>
+      </div>
+      <div class="rx-viz-table">
+        <div class="rx-viz-cell state-filled"><span class="rvc-idx">D0</span><span class="rvc-state">frame · 60 B</span></div>
+        <div class="rx-viz-cell state-posted"><span class="rvc-idx">D1</span><span class="rvc-state">posted</span></div>
+        <div class="rx-viz-cell state-posted"><span class="rvc-idx">D2</span><span class="rvc-state">posted</span></div>
+        <div class="rx-viz-cell state-posted"><span class="rvc-idx">D3</span><span class="rvc-state">posted</span></div>
+        <div class="rx-viz-cell state-posted"><span class="rvc-idx">D4</span><span class="rvc-state">posted</span></div>
+        <div class="rx-viz-cell state-posted"><span class="rvc-idx">D5</span><span class="rvc-state">posted</span></div>
+        <div class="rx-viz-cell state-posted"><span class="rvc-idx">D6</span><span class="rvc-state">posted</span></div>
+        <div class="rx-viz-cell state-posted"><span class="rvc-idx">D7</span><span class="rvc-state">posted</span></div>
+      </div>
+      <div class="rx-viz-rings">
+        <div class="rx-viz-ring rx">
+          <div class="rx-viz-ring-label">avail ring</div>
+          <div class="rx-viz-ring-contents">[ D1, D2, D3, D4, D5, D6, D7 ]</div>
+          <div class="rx-viz-ring-idx">idx = <strong>8</strong> · device reads slot 1 next</div>
+        </div>
+        <div class="rx-viz-ring used">
+          <div class="rx-viz-ring-label">used ring</div>
+          <div class="rx-viz-ring-contents">[ (id=0, len=60) ]</div>
+          <div class="rx-viz-ring-idx">idx = <strong>1</strong> · kernel reads slot 0 next</div>
+        </div>
+      </div>
+      <p class="rx-viz-narr">
+        Slirp broadcasts an ARP request. <span class="dev">device</span>
+        reads avail slot 0, sees <code>D0</code>, DMAs (Direct Memory
+        Access) 60 bytes — 12-byte virtio_net_hdr + 14-byte Ethernet
+        header + 28-byte ARP + 6-byte padding — into buffer 0's
+        physical address. Then writes <code>(id=0, len=60)</code> into
+        used slot 0 and bumps used <code>idx</code> from 0 to 1.
+        Descriptor D0 is now "in the used ring" — neither posted nor
+        free. The 60 bytes are sitting at buffer 0's address, in
+        kernel-accessible RAM, but the kernel hasn't looked yet.
+      </p>
+    </div>
+
+    <!-- ============== T5 ============== -->
+    <div class="rx-viz-snapshot">
+      <div class="rx-viz-snaphead">
+        <span class="rx-viz-snapnum">T5</span>
+        <span class="rx-viz-snaptitle">Kernel polls, sees used entry, reads buffer 0</span>
+        <span class="rx-viz-snapwhen">poll loop tick</span>
+      </div>
+      <div class="rx-viz-table">
+        <div class="rx-viz-cell state-reading"><span class="rvc-idx">D0</span><span class="rvc-state">reading</span></div>
+        <div class="rx-viz-cell state-posted"><span class="rvc-idx">D1</span><span class="rvc-state">posted</span></div>
+        <div class="rx-viz-cell state-posted"><span class="rvc-idx">D2</span><span class="rvc-state">posted</span></div>
+        <div class="rx-viz-cell state-posted"><span class="rvc-idx">D3</span><span class="rvc-state">posted</span></div>
+        <div class="rx-viz-cell state-posted"><span class="rvc-idx">D4</span><span class="rvc-state">posted</span></div>
+        <div class="rx-viz-cell state-posted"><span class="rvc-idx">D5</span><span class="rvc-state">posted</span></div>
+        <div class="rx-viz-cell state-posted"><span class="rvc-idx">D6</span><span class="rvc-state">posted</span></div>
+        <div class="rx-viz-cell state-posted"><span class="rvc-idx">D7</span><span class="rvc-state">posted</span></div>
+      </div>
+      <div class="rx-viz-rings">
+        <div class="rx-viz-ring rx">
+          <div class="rx-viz-ring-label">avail ring</div>
+          <div class="rx-viz-ring-contents">[ D1, D2, D3, D4, D5, D6, D7 ]</div>
+          <div class="rx-viz-ring-idx">idx = <strong>8</strong> · unchanged</div>
+        </div>
+        <div class="rx-viz-ring used">
+          <div class="rx-viz-ring-label">used ring</div>
+          <div class="rx-viz-ring-contents">[ (id=0, len=60) ] · being drained</div>
+          <div class="rx-viz-ring-idx">idx = <strong>1</strong> · kernel updates last_used from 0 to 1</div>
+        </div>
+      </div>
+      <p class="rx-viz-narr">
+        <span class="kern">kernel</span>'s poll loop loads used
+        <code>idx</code> with <code>Acquire</code>, sees 1 (was 0 last
+        tick). Reads the entry at slot 0: <code>(id=0, len=60)</code>.
+        <code>id</code> is the descriptor index — the kernel uses it
+        to find descriptor 0, follow its <code>addr</code> field to
+        buffer 0's physical address, and read 60 bytes. Those bytes
+        get handed to the Ethernet parser (Lesson 21). The kernel's
+        <code>last_used_idx</code> advances to 1 — the entry is now
+        "processed." Descriptor 0 is still occupied (kernel still
+        holds the buffer).
+      </p>
+    </div>
+
+    <!-- ============== T6 ============== -->
+    <div class="rx-viz-snapshot">
+      <div class="rx-viz-snaphead">
+        <span class="rx-viz-snapnum">T6</span>
+        <span class="rx-viz-snaptitle">Kernel recycles descriptor 0 back to avail ring</span>
+        <span class="rx-viz-snapwhen">immediately after parse</span>
+      </div>
+      <div class="rx-viz-table">
+        <div class="rx-viz-cell state-posted"><span class="rvc-idx">D0</span><span class="rvc-state">posted</span></div>
+        <div class="rx-viz-cell state-posted"><span class="rvc-idx">D1</span><span class="rvc-state">posted</span></div>
+        <div class="rx-viz-cell state-posted"><span class="rvc-idx">D2</span><span class="rvc-state">posted</span></div>
+        <div class="rx-viz-cell state-posted"><span class="rvc-idx">D3</span><span class="rvc-state">posted</span></div>
+        <div class="rx-viz-cell state-posted"><span class="rvc-idx">D4</span><span class="rvc-state">posted</span></div>
+        <div class="rx-viz-cell state-posted"><span class="rvc-idx">D5</span><span class="rvc-state">posted</span></div>
+        <div class="rx-viz-cell state-posted"><span class="rvc-idx">D6</span><span class="rvc-state">posted</span></div>
+        <div class="rx-viz-cell state-posted"><span class="rvc-idx">D7</span><span class="rvc-state">posted</span></div>
+      </div>
+      <div class="rx-viz-rings">
+        <div class="rx-viz-ring rx">
+          <div class="rx-viz-ring-label">avail ring</div>
+          <div class="rx-viz-ring-contents">[ D1, D2, D3, D4, D5, D6, D7, D0 ]</div>
+          <div class="rx-viz-ring-idx">idx = <strong>9</strong> · written at slot 8 % 8 = 0</div>
+        </div>
+        <div class="rx-viz-ring used">
+          <div class="rx-viz-ring-label">used ring</div>
+          <div class="rx-viz-ring-contents">[ ] · drained</div>
+          <div class="rx-viz-ring-idx">idx = <strong>1</strong> · kernel caught up</div>
+        </div>
+      </div>
+      <p class="rx-viz-narr">
+        <span class="kern">kernel</span> publishes index 0 back into
+        the avail ring at slot <code>8 % 8 = 0</code> (the ring wraps
+        around), bumps avail <code>idx</code> from 8 to 9. Buffer 0 is
+        back in service — the same 2048 bytes, the same descriptor.
+        Total buffers available to the device: 8 again. <strong>This
+        is the recycle.</strong> No memory allocation, no free, no
+        rewrite of the descriptor fields (they never changed — same
+        buffer address, same length, same <code>F_WRITE</code>). The
+        only cost was one entry on each ring.
+      </p>
+    </div>
+
+    <!-- ============== T7 ============== -->
+    <div class="rx-viz-snapshot">
+      <div class="rx-viz-snaphead">
+        <span class="rx-viz-snapnum">T7</span>
+        <span class="rx-viz-snaptitle">Burst — three frames arrive before next poll</span>
+        <span class="rx-viz-snapwhen">what the supply exists to absorb</span>
+      </div>
+      <div class="rx-viz-table">
+        <div class="rx-viz-cell state-filled"><span class="rvc-idx">D0</span><span class="rvc-state">frame · 60 B</span></div>
+        <div class="rx-viz-cell state-filled"><span class="rvc-idx">D1</span><span class="rvc-state">frame · 60 B</span></div>
+        <div class="rx-viz-cell state-filled"><span class="rvc-idx">D2</span><span class="rvc-state">frame · 60 B</span></div>
+        <div class="rx-viz-cell state-posted"><span class="rvc-idx">D3</span><span class="rvc-state">posted</span></div>
+        <div class="rx-viz-cell state-posted"><span class="rvc-idx">D4</span><span class="rvc-state">posted</span></div>
+        <div class="rx-viz-cell state-posted"><span class="rvc-idx">D5</span><span class="rvc-state">posted</span></div>
+        <div class="rx-viz-cell state-posted"><span class="rvc-idx">D6</span><span class="rvc-state">posted</span></div>
+        <div class="rx-viz-cell state-posted"><span class="rvc-idx">D7</span><span class="rvc-state">posted</span></div>
+      </div>
+      <div class="rx-viz-rings">
+        <div class="rx-viz-ring rx">
+          <div class="rx-viz-ring-label">avail ring</div>
+          <div class="rx-viz-ring-contents">[ D3, D4, D5, D6, D7 ]</div>
+          <div class="rx-viz-ring-idx">idx = <strong>9</strong> · device reads slot 3 next</div>
+        </div>
+        <div class="rx-viz-ring used">
+          <div class="rx-viz-ring-label">used ring</div>
+          <div class="rx-viz-ring-contents">[ (id=0, len=60), (id=1, len=60), (id=2, len=60) ]</div>
+          <div class="rx-viz-ring-idx">idx = <strong>4</strong> · kernel reads slot 1 next</div>
+        </div>
+      </div>
+      <p class="rx-viz-narr">
+        The kernel didn't poll fast enough. Three more frames arrived;
+        <span class="dev">device</span> filled D0, D1, D2 in sequence
+        (the same D0 we just recycled, then D1, D2) and stacked three
+        new entries in the used ring. The supply of 8 buffers absorbed
+        the burst with no drops. <strong>If a sixth frame arrives
+        before the kernel polls, it lands in D3.</strong> If the
+        supply ever empties out entirely (all 8 filled, none recycled),
+        the next frame is dropped silently — the wire does not wait.
+        This is the entire reason the supply exists.
+      </p>
+    </div>
+
+  </div>
+
+  <p>
+    Two things to notice across the seven snapshots. The buffer memory
+    itself is reused, never freed — once allocated, those 16 KiB of
+    RX buffers stay live for the kernel's whole lifetime. And the
+    descriptor's <code>addr</code>, <code>len</code>, and
+    <code>flags</code> fields, once written at T2, are never rewritten
+    — recycling just re-publishes the descriptor's index to the avail
+    ring. The whole dance is ring arithmetic; the data structures
+    underneath are static.
+  </p>
+
+  <h2>virtio_net_hdr — the device's own envelope</h2>
+
+  <p>
+    Every frame the device hands the kernel — in either direction —
+    comes prefixed by a 12-byte header that is purely between driver
+    and device. Ethernet, IP, and the rest never see it. Lesson 19
+    showed it as the outermost bar on the dissected UDP
+    (User Datagram Protocol) packet; here is what those 12 bytes
+    actually carry
+    (<a href="https://docs.oasis-open.org/virtio/virtio/v1.2/csd01/virtio-v1.2-csd01.html#x1-2310005">VIRTIO
+    1.2 §5.1.6</a>):
+  </p>
+
+  <div class="byte-layout">
+    <div class="byte-layout-header">
+      <span class="byte-layout-name">virtio_net_hdr — the device's own envelope</span>
+      <span class="byte-layout-size">12 bytes · all zero for us</span>
+    </div>
+    <div class="byte-bar">
+      <div class="byte-field type-u8" style="--bytes: 1"
+           data-tip="flags · 0 · checksum-offload hints, valid only with NET_F_CSUM or GUEST_CSUM">
+        <span class="byte-field-name">flags</span>
+        <span class="byte-field-meta">u8 · 1 B</span>
+        <span class="byte-field-range">0x00</span>
+      </div>
+      <div class="byte-field type-u8" style="--bytes: 1"
+           data-tip="gso_type · 0 · segmentation offload type (TCP/UDP); we negotiate none">
+        <span class="byte-field-name">gso_type</span>
+        <span class="byte-field-meta">u8 · 1 B</span>
+        <span class="byte-field-range">0x01</span>
+      </div>
+      <div class="byte-field type-u16" style="--bytes: 2"
+           data-tip="hdr_len · 0 · header length for GSO; unused without GSO">
+        <span class="byte-field-name">hdr_len</span>
+        <span class="byte-field-meta">u16 · 2 B</span>
+        <span class="byte-field-range">0x02–0x03</span>
+      </div>
+      <div class="byte-field type-u16" style="--bytes: 2"
+           data-tip="gso_size · 0 · TCP MSS for GSO; unused without GSO">
+        <span class="byte-field-name">gso_size</span>
+        <span class="byte-field-meta">u16 · 2 B</span>
+        <span class="byte-field-range">0x04–0x05</span>
+      </div>
+      <div class="byte-field type-u16" style="--bytes: 2"
+           data-tip="csum_start · 0 · offset where checksum offload should start; unused without CSUM">
+        <span class="byte-field-name">csum_start</span>
+        <span class="byte-field-meta">u16 · 2 B</span>
+        <span class="byte-field-range">0x06–0x07</span>
+      </div>
+      <div class="byte-field type-u16" style="--bytes: 2"
+           data-tip="csum_offset · 0 · offset within packet to write the checksum; unused without CSUM">
+        <span class="byte-field-name">csum_offset</span>
+        <span class="byte-field-meta">u16 · 2 B</span>
+        <span class="byte-field-range">0x08–0x09</span>
+      </div>
+      <div class="byte-field type-u16" style="--bytes: 2"
+           data-tip="num_buffers · meaningful only on RX with MRG_RXBUF (we refused); ignored otherwise">
+        <span class="byte-field-name">num_buffers</span>
+        <span class="byte-field-meta">u16 · 2 B</span>
+        <span class="byte-field-range">0x0A–0x0B</span>
+      </div>
+    </div>
+    <div class="field-reference">
+      <dl>
+        <dt>flags <span class="type-tag type-u8">u8</span></dt>
+        <dd>
+          <p>
+            Checksum-offload hints. With NET_F_CSUM or GUEST_CSUM
+            negotiated, the kernel can ask the device to compute and
+            insert a checksum at transmit, or signal that one was
+            validated at receive. We refused both, so the field stays
+            zero in both directions and the kernel computes checksums
+            in software (Lesson 23, RFC 1071).
+          </p>
+          <div class="example">00</div>
+        </dd>
+        <dt>gso_type, hdr_len, gso_size <span class="type-tag type-u16">u16 ×3</span></dt>
+        <dd>
+          <p>
+            Segmentation offload — letting the device split one large
+            TCP send into multiple Ethernet frames. We did not negotiate
+            GSO. All three fields are zero.
+          </p>
+          <div class="example">00 00 00 00 00 00</div>
+        </dd>
+        <dt>num_buffers <span class="type-tag type-u16">u16</span></dt>
+          <p>
+            The only field that has meaning on receive without any
+            feature negotiated — when MRG_RXBUF is on, it tells the
+            kernel how many RX buffers were consumed by this one frame.
+            We refused MRG_RXBUF, so each received frame uses exactly
+            one buffer, and the field reads as 1 (device still writes
+            it). We can ignore it.
+          </p>
+        </dd>
+      </dl>
+    </div>
+  </div>
+
+  <p>
+    The pattern across all 12 bytes: every field is a hook for a
+    feature we refused to negotiate. Saying "no" to offloads at feature
+    negotiation time is what lets the entire header be zero on transmit
+    and ignored on receive. Lesson 21's TX path will build a 12-byte
+    zero header and prepend it to every Ethernet frame; Lesson 21's RX
+    path will skip 12 bytes and start parsing at offset 12. No parsing
+    logic, no feature branches — the simplest possible header is the
+    one you negotiated away to zero.
+  </p>
+
+  <div class="callout">
+    <div class="callout-title">Why the header exists at all</div>
+    <p style="margin:0;">
+      virtio could have made the header optional. It didn't, because
+      making every device offload-capable by default lets a guest
+      enable offloads later without renegotiating the queue layout. The
+      12 bytes are dead weight we pay for the option of features we
+      didn't claim. Linux, which claims most of them, treats the header
+      as load-bearing metadata.
+    </p>
+  </div>
+
+  <h2>The build — four steps</h2>
+
+  <p>
+    All four steps reuse Lesson 6 and Lesson 7 code. The genuinely new
+    code is the device-config mapping in step 2 and the RX buffer
+    poster in step 4.
+  </p>
+
+  <div class="recipe">
+    <div class="recipe-step">
+      <div class="recipe-num">1</div>
+      <div class="recipe-body">
+        <strong>Probe virtio-net and run the handshake through FEATURES_OK.</strong>
+        Reuse Lesson 6's <code>VirtioBlk::probe</code> shape — PCI
+        find, capability walk, map common-config region — but for the
+        network device (vendor <code>0x1AF4</code>, device
+        <code>0x1041</code>). Drive
+        <code>reset_and_acknowledge</code> and
+        <code>negotiate_features</code>. The feature bits change — low
+        half <code>0x20</code> for <code>NET_F_MAC</code>, high half
+        <code>0x1</code> for <code>VERSION_1</code> — but the register
+        dance is identical to virtio-blk. Stop after FEATURES_OK
+        sticks. Commit.
+      </div>
+    </div>
+    <div class="recipe-step">
+      <div class="recipe-num">2</div>
+      <div class="recipe-body">
+        <strong>Map the device-config cap and read the MAC.</strong>
+        Find the cap with <code>cfg_type == 4</code> in the capability
+        list, map it via <code>map_mmio</code>. Six
+        <code>read_volatile</code> calls at offsets 0–5 read the MAC
+        bytes. Print as <code>52:54:00:12:34:56</code>. Stash the MAC
+        in the driver struct for later ARP and TX use. Commit.
+      </div>
+    </div>
+    <div class="recipe-step">
+      <div class="recipe-num">3</div>
+      <div class="recipe-body">
+        <strong>Set up virtqueue 0 (RX) and virtqueue 1 (TX).</strong>
+        Two <code>VirtQueue::new(64)</code> calls, two
+        <code>configure_queue</code> calls — one with
+        <code>queue_select = 0</code>, one with
+        <code>queue_select = 1</code>. The Lesson 7 code already
+        handles any queue index; pass it. Verify both
+        <code>queue_enable</code> readbacks are 1. Commit.
+      </div>
+    </div>
+    <div class="recipe-step">
+      <div class="recipe-num">4</div>
+      <div class="recipe-body">
+        <strong>Post 8 empty RX buffers, then set DRIVER_OK.</strong>
+        Allocate eight 2048-byte frames (two 4 KiB allocations each, or
+        one frame split in half). For each: allocate a descriptor with
+        <code>F_WRITE</code>, point it at the buffer's physical
+        address, length 2048, and submit it to RX's avail ring with
+        <code>Release</code> ordering. Do <em>not</em> kick — the
+        device reads RX at DRIVER_OK time. Then write DRIVER_OK. The
+        device is now live and any broadcast ARP from slirp will land
+        in one of the posted buffers within milliseconds. Commit.
+      </div>
+    </div>
+  </div>
+
+  <div class="callout">
+    <div class="callout-title">Deferred work</div>
+    <p style="margin:0;">
+      No frames are sent or received yet. DRIVER_OK is set, RX is
+      stocked, TX is empty, and the device is waiting. The first byte
+      to cross the wire is Lesson 21. This lesson's job is to leave the
+      card in a state where the next lesson has something to parse.
+    </p>
+  </div>
+
+  <h2>Primary source</h2>
+
+  <p>
+    The virtio 1.2 spec is the authoritative reference for everything
+    in this lesson:
+    <a href="https://docs.oasis-open.org/virtio/virtio/v1.2/csd01/virtio-v1.2-csd01.html#x1-2170001">§5.1
+    Network Device</a> covers feature bits, device config, the header,
+    and the queue semantics. For Linux's implementation of the same
+    ideas, <code>drivers/net/virtio_net.c</code>'s
+    <code>virtnet_probe</code> walks the same handshake and reads the
+    same MAC field — though it claims more features, posts more
+    buffers, and runs the whole thing under a softirq. The mini-os
+    version is a stripped-down outline of the same shape.
+  </p>
+
+  <div class="probe">
+    <div class="probe-title">Probe — check the model before you build</div>
+    <p>
+      Suppose you forgot to post any RX buffers before setting
+      DRIVER_OK. Describe what happens, in order: the moment the first
+      broadcast ARP frame arrives at the card, what the device tries
+      to do, what the kernel sees when it polls RX, and what (if
+      anything) prints on serial. Then the harder question: why is
+      there no error reported anywhere, and why does the kernel not
+      fault?
+    </p>
+  </div>
+
+  <p>
+    Answer it back to me, or push on whatever didn't land — the
+    two-queue split, why we read the MAC instead of inventing one,
+    what the 12-byte header buys us at zero cost. I'm your teacher for
+    this phase; the probe is where the conversation starts.
+  </p>
+
+  </div>
+
+  <footer class="lesson-footer">
+    <div class="footer-block">
+      <h4>What this unlocks</h4>
+      <p style="margin:0;">
+        Lesson 21 puts the first frame on the wire. TX sends a
+        broadcast, RX receives slirp's reply, and the
+        <code>send_frame</code> / <code>recv_frame</code> abstraction
+        closes the driver layer.
+      </p>
+    </div>
+
+    <div class="footer-block">
+      <h4>Roadmap</h4>
+      <p style="margin:0;">
+        This is lesson 2 of 8 in
+        <a href="roadmap-networking.html">the Phase 2 networking roadmap</a> —
+        keystone: ping the gateway (L24); objective: user-space UDP
+        echo server (L26).
+      </p>
+    </div>
+
+    <div class="footer-block">
+      <h4>Code tour</h4>
+      <p style="margin:0;">
+        Read the companion walkthrough:
+        <a href="../tours/tour-0020-virtio-net-init.html">tour-0020-virtio-net-init.html</a>.
+        It follows the driver state, feature negotiation, MAC read,
+        queue setup, RX buffer supply, and test.
+      </p>
+    </div>
+
+    <div class="footer-block">
+      <h4>Primary source</h4>
+      <p style="margin:0;">
+        <a href="https://docs.oasis-open.org/virtio/virtio/v1.2/csd01/virtio-v1.2-csd01.html#x1-2170001">VIRTIO 1.2 §5.1 Network Device</a> ·
+        <a href="https://docs.oasis-open.org/virtio/virtio/v1.2/csd01/virtio-v1.2-csd01.html#x1-1550004">VIRTIO 1.2 §4 Modern Transport</a> ·
+        <code>drivers/net/virtio_net.c</code>
+      </p>
+    </div>
+
+    <div class="footer-block">
+      <h4>Read next</h4>
+      <p style="margin:0;">
+        <a href="0019-shape-of-network-stack.html">Lesson 19 (shape of the network stack)</a> —
+        the layer model and the dissected UDP packet that this lesson
+        grounds in driver code. Re-skim the byte-layout bars; the
+        <code>virtio_net_hdr</code> at the top is now yours to manage.
+      </p>
+    </div>
+
+    <nav class="lesson-nav">
+      <a href="0019-shape-of-network-stack.html">← L19 shape of the stack</a>
+      <a href="roadmap-networking.html">Phase 2 roadmap ↑</a>
+      <a href="../MISSION.md">Mission</a>
+    </nav>
+  </footer>
+
+</article>
+</body>
+</html>

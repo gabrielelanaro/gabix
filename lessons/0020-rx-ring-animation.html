@@ -1,0 +1,786 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Lesson 20 — RX Ring Buffer Live</title>
+<link rel="stylesheet" href="../assets/lesson.css">
+<style>
+  /* ============ LAYOUT ============ */
+  .ring-stage {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 1.5rem 1.5rem 1.25rem;
+    margin: 1.5rem 0;
+    position: relative;
+    overflow: hidden;
+  }
+  .ring-stage-title {
+    font-family: var(--font-sans);
+    font-weight: 700;
+    font-size: 1.05rem;
+    margin: 0 0 0.3rem;
+    color: var(--text);
+  }
+  .ring-stage-sub {
+    font-family: var(--font-serif);
+    font-style: italic;
+    font-size: 0.9rem;
+    color: var(--text-dim);
+    margin: 0 0 1.25rem;
+  }
+
+  /* ============ WIRE ============ */
+  .wire {
+    display: flex;
+    align-items: center;
+    gap: 0.7rem;
+    margin: 0 0 1.5rem;
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+    color: var(--text-faint);
+  }
+  .wire-label { width: 8rem; text-align: right; }
+  .wire-line {
+    flex: 1;
+    height: 4px;
+    background: linear-gradient(to right, var(--border-bright), var(--border));
+    border-radius: 2px;
+    position: relative;
+    overflow: visible;
+  }
+  .wire-arrow {
+    position: absolute;
+    right: -4px;
+    top: 50%;
+    transform: translateY(-50%);
+    color: var(--border-bright);
+    font-size: 0.9rem;
+  }
+
+  /* flying frame on the wire */
+  .flying-frame {
+    position: absolute;
+    top: 50%;
+    transform: translate(-50%, -50%);
+    background: #fef3c7;
+    border: 1px solid #fcd34d;
+    border-radius: 3px;
+    padding: 0.15rem 0.4rem;
+    font-family: var(--font-mono);
+    font-size: 0.65rem;
+    color: #92400e;
+    font-weight: 600;
+    pointer-events: none;
+    opacity: 0;
+    transition: left 0.6s ease-out, opacity 0.2s;
+    z-index: 10;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+  }
+
+  /* ============ DESCRIPTOR TABLE ============ */
+  .section-label {
+    font-family: var(--font-sans);
+    font-size: 0.7rem;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--text-faint);
+    margin: 0 0 0.5rem;
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+  }
+  .section-label .sl-detail {
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
+    text-transform: none;
+    letter-spacing: 0;
+    color: var(--text-dim);
+  }
+
+  .desc-table {
+    display: grid;
+    grid-template-columns: repeat(8, 1fr);
+    gap: 0.4rem;
+    margin: 0 0 1.5rem;
+  }
+  .desc-cell {
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 0.55rem 0.3rem 0.5rem;
+    text-align: center;
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+    background: #f3f4f6;
+    color: var(--text-dim);
+    transition: background 0.3s, border-color 0.3s, transform 0.2s;
+    position: relative;
+  }
+  .desc-cell .dc-idx {
+    font-weight: 700;
+    color: var(--text);
+    font-size: 0.85rem;
+    font-family: var(--font-sans);
+  }
+  .desc-cell .dc-state {
+    display: block;
+    margin-top: 0.25rem;
+    font-family: var(--font-sans);
+    font-size: 0.62rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--text-faint);
+  }
+  .desc-cell .dc-len {
+    display: block;
+    margin-top: 0.1rem;
+    font-size: 0.65rem;
+    color: var(--text-dim);
+    font-family: var(--font-mono);
+    min-height: 0.85rem;
+  }
+  .desc-cell.posted {
+    background: #fef3c7;
+    border-color: #fcd34d;
+  }
+  .desc-cell.posted .dc-state { color: #92400e; font-weight: 600; }
+  .desc-cell.filled {
+    background: #dcfce7;
+    border-color: #86efac;
+  }
+  .desc-cell.filled .dc-state { color: #15803d; font-weight: 600; }
+  .desc-cell.reading {
+    background: #dbeafe;
+    border-color: #93c5fd;
+    transform: scale(1.05);
+  }
+  .desc-cell.reading .dc-state { color: #1d4ed8; font-weight: 600; }
+  .desc-cell.pulse {
+    animation: cellpulse 0.5s ease-out;
+  }
+  @keyframes cellpulse {
+    0% { transform: scale(1); }
+    50% { transform: scale(1.12); box-shadow: 0 0 0 4px rgba(180, 83, 9, 0.18); }
+    100% { transform: scale(1); }
+  }
+
+  /* ============ RINGS ============ */
+  .ring-row {
+    display: grid;
+    grid-template-columns: 8rem 1fr;
+    gap: 0.8rem;
+    align-items: center;
+    margin: 0.4rem 0 0.5rem;
+  }
+  .ring-name {
+    font-family: var(--font-sans);
+    font-size: 0.82rem;
+    font-weight: 600;
+    color: var(--text);
+    text-align: right;
+  }
+  .ring-name .rn-sub {
+    display: block;
+    font-weight: 400;
+    font-size: 0.7rem;
+    color: var(--text-faint);
+    margin-top: 0.1rem;
+  }
+  .ring-track {
+    background: var(--surface-soft);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 0.45rem 0.55rem;
+    display: flex;
+    align-items: center;
+    gap: 0.3rem;
+    flex-wrap: wrap;
+    min-height: 2.6rem;
+  }
+  .ring-track.rx   { border-left: 3px solid #b45309; }
+  .ring-track.used { border-left: 3px solid #15803d; }
+  .ring-slot {
+    display: inline-block;
+    padding: 0.2rem 0.5rem;
+    border-radius: 3px;
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    color: var(--text-dim);
+    animation: slotpop 0.25s ease-out;
+    transition: opacity 0.3s;
+  }
+  .ring-slot.empty {
+    background: transparent;
+    border-style: dashed;
+    color: var(--text-faint);
+    animation: none;
+  }
+  .ring-slot.rx  { background: #fef3c7; border-color: #fcd34d; color: #92400e; font-weight: 600; }
+  .ring-slot.used { background: #dcfce7; border-color: #86efac; color: #15803d; font-weight: 600; }
+  @keyframes slotpop {
+    from { transform: scale(0.6); opacity: 0; }
+    to   { transform: scale(1);   opacity: 1; }
+  }
+
+  .ring-idx {
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
+    color: var(--text-dim);
+    margin-left: 0.5rem;
+    min-width: 5rem;
+  }
+  .ring-idx strong { color: var(--text); }
+
+  /* ============ CONTROLS ============ */
+  .controls {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.6rem;
+    align-items: center;
+    margin: 1.5rem 0 0.8rem;
+    padding-top: 1rem;
+    border-top: 1px solid var(--border);
+  }
+  .btn {
+    font-family: var(--font-sans);
+    font-size: 0.85rem;
+    font-weight: 500;
+    padding: 0.45rem 0.9rem;
+    border-radius: 5px;
+    border: 1px solid var(--border);
+    background: var(--surface);
+    color: var(--text);
+    cursor: pointer;
+    transition: background 0.15s, border-color 0.15s, transform 0.1s;
+  }
+  .btn:hover { background: var(--surface-soft); border-color: var(--border-bright); }
+  .btn:active { transform: translateY(1px); }
+  .btn:disabled { opacity: 0.45; cursor: not-allowed; }
+  .btn.primary {
+    background: var(--accent);
+    color: white;
+    border-color: var(--accent);
+  }
+  .btn.primary:hover { background: #92400e; border-color: #92400e; }
+  .btn.success {
+    background: #15803d;
+    color: white;
+    border-color: #15803d;
+  }
+  .btn.success:hover { background: #166534; border-color: #166534; }
+  .btn.toggle.active {
+    background: var(--accent-soft);
+    color: var(--accent);
+    border-color: var(--accent);
+    font-weight: 600;
+  }
+
+  .status-bar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 1rem;
+    font-family: var(--font-mono);
+    font-size: 0.78rem;
+    color: var(--text-dim);
+    padding: 0.6rem 0.8rem;
+    background: var(--surface-soft);
+    border-radius: 5px;
+    margin: 0.4rem 0 1rem;
+  }
+  .status-bar .sb-item strong { color: var(--text); }
+  .status-bar .sb-action {
+    color: var(--accent);
+    font-style: italic;
+    margin-left: auto;
+  }
+
+  /* ============ LOG ============ */
+  .log-strip {
+    font-family: var(--font-mono);
+    font-size: 0.74rem;
+    background: var(--code-bg);
+    color: var(--code-fg);
+    border-radius: 5px;
+    padding: 0.6rem 0.8rem;
+    margin: 0.5rem 0 0;
+    max-height: 9rem;
+    overflow-y: auto;
+    line-height: 1.5;
+  }
+  .log-strip .log-line { padding: 1px 0; }
+  .log-strip .log-line.kern { color: #fbbf24; }
+  .log-strip .log-line.dev  { color: #86efac; }
+  .log-strip .log-line.info { color: #cbd5e1; }
+
+  /* ============ LEGEND ============ */
+  .legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    font-family: var(--font-sans);
+    font-size: 0.78rem;
+    margin: 0 0 1rem;
+  }
+  .legend .lg-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    padding: 0.2rem 0.55rem;
+    border-radius: 3px;
+    border: 1px solid var(--border);
+    background: var(--surface);
+    color: var(--text-dim);
+  }
+  .legend .lg-swatch {
+    width: 0.85rem;
+    height: 0.85rem;
+    border-radius: 2px;
+    border: 1px solid var(--border);
+  }
+  .legend .lg-swatch.posted  { background: #fef3c7; border-color: #fcd34d; }
+  .legend .lg-swatch.filled  { background: #dcfce7; border-color: #86efac; }
+  .legend .lg-swatch.reading { background: #dbeafe; border-color: #93c5fd; }
+
+  /* ============ DROP COUNTER ============ */
+  .drop-banner {
+    background: #fee2e2;
+    border: 1px solid #fca5a5;
+    border-radius: 5px;
+    padding: 0.5rem 0.8rem;
+    margin: 0.5rem 0 0;
+    font-family: var(--font-sans);
+    font-size: 0.82rem;
+    color: #b91c1c;
+    font-weight: 600;
+    opacity: 0;
+    transition: opacity 0.3s;
+  }
+  .drop-banner.show { opacity: 1; }
+
+  @media (max-width: 720px) {
+    .desc-table { grid-template-columns: repeat(4, 1fr); }
+    .ring-row   { grid-template-columns: 1fr; }
+    .ring-name  { text-align: left; }
+  }
+</style>
+</head>
+<body>
+<article class="lesson">
+
+  <header class="lesson-header">
+    <div class="lesson-eyebrow">Lesson 20 · Interactive · RX ring</div>
+    <h1 class="lesson-title">Receive Ring — Live</h1>
+    <p class="lesson-subtitle">Click buttons, watch frames arrive, watch the kernel drain them. The same eight buffers cycle forever between posted (waiting), filled (in used ring), and back.</p>
+    <div class="lesson-meta">
+      <span><strong>Companion to</strong> <a href="0020-virtio-net-init.html">Lesson 20</a></span>
+      <span><strong>Best on desktop</strong></span>
+    </div>
+  </header>
+
+  <div class="content">
+
+  <p>
+    Eight descriptors. Two rings. One wire. Press <strong>Frame
+    arrives</strong> to inject a frame from the wire; press
+    <strong>Kernel polls</strong> to drain one entry from the used
+    ring and recycle its buffer back into the avail ring. Hit
+    <strong>Auto</strong> and watch the steady state.
+  </p>
+
+  <div class="legend">
+    <span class="lg-chip"><span class="lg-swatch posted"></span>posted — empty, in avail ring, ready for device</span>
+    <span class="lg-chip"><span class="lg-swatch filled"></span>filled — device wrote a frame, in used ring</span>
+    <span class="lg-chip"><span class="lg-swatch reading"></span>reading — kernel is parsing it</span>
+  </div>
+
+  <div class="ring-stage">
+    <div class="ring-stage-title">RX queue — 8 buffers, 2048 bytes each</div>
+    <p class="ring-stage-sub">
+      Same setup as the snapshots in the lesson, but the descriptors
+      and rings now move on their own. The wire is on the left; frames
+      slide in from it. The kernel is on the right; it pulls entries
+      from the used ring.
+    </p>
+
+    <!-- wire -->
+    <div class="wire">
+      <span class="wire-label">network wire</span>
+      <div class="wire-line" id="wireLine">
+        <span class="wire-arrow">▼</span>
+        <div class="flying-frame" id="flyingFrame">FRAME</div>
+      </div>
+      <span class="wire-label" style="width: auto; text-align: left;">→ virtio-net</span>
+    </div>
+
+    <!-- descriptor table -->
+    <div class="section-label">
+      <span>descriptor table (8 entries, each points at one 2048-byte buffer)</span>
+      <span class="sl-detail" id="postedCounter">0 posted · 0 filled</span>
+    </div>
+    <div class="desc-table" id="descTable">
+      <!-- 8 cells injected by JS -->
+    </div>
+
+    <!-- avail ring -->
+    <div class="ring-row">
+      <div class="ring-name">avail ring<span class="rn-sub">device reads here</span></div>
+      <div>
+        <div class="ring-track rx" id="availRing">
+          <!-- slots injected by JS -->
+        </div>
+        <div class="ring-idx" id="availIdx">idx = <strong>0</strong> · device reads slot 0 next</div>
+      </div>
+    </div>
+
+    <!-- used ring -->
+    <div class="ring-row">
+      <div class="ring-name">used ring<span class="rn-sub">kernel reads here</span></div>
+      <div>
+        <div class="ring-track used" id="usedRing">
+          <!-- slots injected by JS -->
+        </div>
+        <div class="ring-idx" id="usedIdx">idx = <strong>0</strong> · kernel reads slot 0 next</div>
+      </div>
+    </div>
+
+    <!-- status -->
+    <div class="status-bar" style="margin-top: 1.2rem;">
+      <span class="sb-item">frames arrived: <strong id="statFrames">0</strong></span>
+      <span class="sb-item">frames processed: <strong id="statProcessed">0</strong></span>
+      <span class="sb-item">frames dropped: <strong id="statDropped">0</strong></span>
+      <span class="sb-action" id="statAction">idle</span>
+    </div>
+    <div class="drop-banner" id="dropBanner">
+      ⚠ frame dropped — supply was empty. Click <em>Kernel polls</em> to recycle buffers.
+    </div>
+
+    <!-- controls -->
+    <div class="controls">
+      <button class="btn primary" id="btnArrive">▼ Frame arrives</button>
+      <button class="btn success" id="btnPoll">▲ Kernel polls</button>
+      <button class="btn toggle" id="btnAuto">▶ Auto-play</button>
+      <button class="btn" id="btnBurst">⟫ Burst of 4</button>
+      <button class="btn" id="btnReset" style="margin-left: auto;">Reset</button>
+    </div>
+
+    <!-- log -->
+    <div class="log-strip" id="logStrip">
+      <div class="log-line info">[init] 8 descriptors allocated, posted to avail ring. DRIVER_OK set.</div>
+    </div>
+
+  </div>
+
+  <p>
+    A few things to try. Hit <strong>Burst of 4</strong> without
+    polling in between: the supply drops to 4 posted. Hit it again:
+    supply hits 0, the next frame gets dropped, the red banner appears.
+    Hit <strong>Kernel polls</strong> a few times to drain the
+    backlog. Then turn on <strong>Auto-play</strong> and let the
+    system find its steady state.
+  </p>
+
+  <p>
+    The descriptor cells never move — only their colors
+    change. The buffer memory they point at is the same 2048 bytes
+    forever. What flows is <em>state</em>: posted → filled → reading →
+    posted, around and around. The avail and used rings are how the
+    kernel and device tell each other whose turn it is to look at
+    each buffer.
+  </p>
+
+  </div>
+
+  <footer class="lesson-footer">
+    <div class="footer-block">
+      <h4>Back to the lesson</h4>
+      <p style="margin:0;">
+        <a href="0020-virtio-net-init.html#rx-supply-step-by-step">Return to Lesson 20 — RX supply problem, step by step</a>
+      </p>
+    </div>
+    <div class="footer-block">
+      <h4>Roadmap</h4>
+      <p style="margin:0;">
+        <a href="roadmap-networking.html">Phase 2 networking roadmap</a>
+      </p>
+    </div>
+  </footer>
+
+</article>
+
+<script>
+(function() {
+  const N = 8;
+  const POLL_READ_TIME_MS = 450;
+
+  // ---- state ----
+  let descriptors = [];   // {state, len}
+  let availRing = [];     // array of descriptor indices currently in avail (in submission order)
+  let usedRing  = [];     // array of {id, len} currently in used (in arrival order)
+  let availIdx  = 0;      // monotonic counter — total submissions ever
+  let usedIdx   = 0;      // monotonic counter — total completions ever (device writes)
+  let lastUsed  = 0;      // monotonic counter — total completions kernel has processed
+  let framesArrived = 0;
+  let framesProcessed = 0;
+  let framesDropped = 0;
+  let auto = false;
+  let autoTimers = [];
+
+  // ---- init ----
+  function reset() {
+    descriptors = [];
+    for (let i = 0; i < N; i++) {
+      descriptors.push({ state: 'posted', len: 0 });
+      availRing.push(i);
+    }
+    usedRing = [];
+    availIdx = N;   // all 8 posted at init
+    usedIdx = 0;
+    lastUsed = 0;
+    framesArrived = 0;
+    framesProcessed = 0;
+    framesDropped = 0;
+    auto = false;
+    autoTimers.forEach(t => clearTimeout(t));
+    autoTimers = [];
+    document.getElementById('btnAuto').classList.remove('active');
+    document.getElementById('btnAuto').textContent = '▶ Auto-play';
+    document.getElementById('dropBanner').classList.remove('show');
+    clearLog();
+    log('info', '[init] 8 descriptors allocated, posted to avail ring. DRIVER_OK set.');
+    render();
+  }
+
+  // ---- actions ----
+  function frameArrives() {
+    if (availRing.length === 0) {
+      // supply exhausted — drop
+      framesDropped++;
+      document.getElementById('dropBanner').classList.add('show');
+      log('dev', `[drop]  frame arrived, no buffers posted — dropped silently`);
+      flashWire(true);
+      render();
+      return;
+    }
+    flashWire(false);
+    const descId = availRing.shift();   // device consumes next posted descriptor
+    const len = 50 + Math.floor(Math.random() * 180);
+    descriptors[descId] = { state: 'filled', len };
+    usedRing.push({ id: descId, len });
+    usedIdx++;
+    framesArrived++;
+    document.getElementById('dropBanner').classList.remove('show');
+    log('dev', `[rx ]   frame arrived, ${len} B → buffer D${descId}, used idx → ${usedIdx}`);
+    pulse(descId);
+    render();
+  }
+
+  function kernelPolls() {
+    if (lastUsed === usedIdx) {
+      log('kern', '[poll] used ring empty, nothing to do');
+      return;
+    }
+    const entry = usedRing.shift();
+    const descId = entry.id;
+    lastUsed++;
+    descriptors[descId].state = 'reading';
+    log('kern', `[poll] kernel sees used idx → ${usedIdx}, reads (id=${descId}, len=${entry.len})`);
+    render();
+    // After a brief read, recycle the descriptor back into avail
+    setTimeout(() => {
+      descriptors[descId] = { state: 'posted', len: 0 };
+      availRing.push(descId);
+      availIdx++;
+      framesProcessed++;
+      log('kern', `[recycle] D${descId} → avail ring at slot ${availIdx % N}, avail idx → ${availIdx}`);
+      pulse(descId);
+      render();
+    }, POLL_READ_TIME_MS);
+  }
+
+  function burst() {
+    for (let i = 0; i < 4; i++) {
+      autoTimers.push(setTimeout(frameArrives, i * 220));
+    }
+  }
+
+  function toggleAuto() {
+    auto = !auto;
+    const btn = document.getElementById('btnAuto');
+    if (auto) {
+      btn.classList.add('active');
+      btn.textContent = '■ Stop auto';
+      scheduleAuto();
+    } else {
+      btn.classList.remove('active');
+      btn.textContent = '▶ Auto-play';
+      autoTimers.forEach(t => clearTimeout(t));
+      autoTimers = [];
+    }
+  }
+
+  function scheduleAuto() {
+    if (!auto) return;
+    // Frames arrive every 1.4–2.6s
+    const arriveDelay = 1400 + Math.random() * 1200;
+    autoTimers.push(setTimeout(() => {
+      if (!auto) return;
+      frameArrives();
+      scheduleAuto();
+    }, arriveDelay));
+    // Kernel polls every 1.0–1.8s
+    const pollDelay = 1000 + Math.random() * 800;
+    autoTimers.push(setTimeout(() => {
+      if (!auto) return;
+      kernelPolls();
+      scheduleAutoPoll();
+    }, pollDelay));
+  }
+  function scheduleAutoPoll() {
+    if (!auto) return;
+    const pollDelay = 1000 + Math.random() * 800;
+    autoTimers.push(setTimeout(() => {
+      if (!auto) return;
+      kernelPolls();
+      scheduleAutoPoll();
+    }, pollDelay));
+  }
+
+  // ---- visuals ----
+  function flashWire(dropped) {
+    const fly = document.getElementById('flyingFrame');
+    fly.textContent = dropped ? 'DROP' : 'FRAME';
+    fly.style.background = dropped ? '#fee2e2' : '#fef3c7';
+    fly.style.borderColor = dropped ? '#fca5a5' : '#fcd34d';
+    fly.style.color = dropped ? '#b91c1c' : '#92400e';
+    fly.style.left = '0%';
+    fly.style.opacity = '1';
+    requestAnimationFrame(() => {
+      fly.style.left = '105%';
+    });
+    setTimeout(() => { fly.style.opacity = '0'; }, 700);
+  }
+
+  function pulse(descId) {
+    const cell = document.querySelector(`.desc-cell[data-idx="${descId}"]`);
+    if (!cell) return;
+    cell.classList.remove('pulse');
+    void cell.offsetWidth;  // reflow to restart animation
+    cell.classList.add('pulse');
+  }
+
+  // ---- render ----
+  function render() {
+    // descriptor table
+    const dt = document.getElementById('descTable');
+    dt.innerHTML = '';
+    let postedCount = 0, filledCount = 0;
+    descriptors.forEach((d, i) => {
+      const cell = document.createElement('div');
+      cell.className = `desc-cell ${d.state}`;
+      cell.dataset.idx = i;
+      const lenText = d.state === 'filled' ? `${d.len} B` : '';
+      cell.innerHTML = `
+        <span class="dc-idx">D${i}</span>
+        <span class="dc-state">${labelFor(d.state)}</span>
+        <span class="dc-len">${lenText}</span>
+      `;
+      dt.appendChild(cell);
+      if (d.state === 'posted') postedCount++;
+      if (d.state === 'filled') filledCount++;
+    });
+    document.getElementById('postedCounter').textContent =
+      `${postedCount} posted · ${filledCount} filled`;
+
+    // avail ring
+    const ar = document.getElementById('availRing');
+    ar.innerHTML = '';
+    availRing.forEach(id => {
+      const slot = document.createElement('span');
+      slot.className = 'ring-slot rx';
+      slot.textContent = `D${id}`;
+      ar.appendChild(slot);
+    });
+    for (let i = availRing.length; i < N; i++) {
+      const slot = document.createElement('span');
+      slot.className = 'ring-slot empty';
+      slot.textContent = '·';
+      ar.appendChild(slot);
+    }
+    document.getElementById('availIdx').innerHTML =
+      `idx = <strong>${availIdx}</strong> · device reads slot ${availIdx % N} next`;
+
+    // used ring
+    const ur = document.getElementById('usedRing');
+    ur.innerHTML = '';
+    usedRing.forEach(e => {
+      const slot = document.createElement('span');
+      slot.className = 'ring-slot used';
+      slot.textContent = `(D${e.id}, ${e.len}B)`;
+      ur.appendChild(slot);
+    });
+    for (let i = usedRing.length; i < N; i++) {
+      const slot = document.createElement('span');
+      slot.className = 'ring-slot empty';
+      slot.textContent = '·';
+      ur.appendChild(slot);
+    }
+    document.getElementById('usedIdx').innerHTML =
+      `idx = <strong>${usedIdx}</strong> · kernel reads slot ${lastUsed % N} next`;
+
+    // status bar
+    document.getElementById('statFrames').textContent = framesArrived;
+    document.getElementById('statProcessed').textContent = framesProcessed;
+    document.getElementById('statDropped').textContent = framesDropped;
+
+    // action hint
+    let action = 'idle';
+    if (availRing.length === 0) action = '⚠ supply empty';
+    else if (usedRing.length >= 4) action = '⚠ backlog growing';
+    else if (usedRing.length > 0) action = 'ready: kernel can poll';
+    else if (framesArrived === 0) action = 'idle — press Frame arrives';
+    else action = 'all drained';
+    document.getElementById('statAction').textContent = action;
+  }
+
+  function labelFor(state) {
+    return ({
+      posted:  'posted',
+      filled:  'frame',
+      reading: 'reading',
+      notalloc: '—',
+    })[state] || state;
+  }
+
+  // ---- log ----
+  function log(kind, msg) {
+    const strip = document.getElementById('logStrip');
+    const line = document.createElement('div');
+    line.className = `log-line ${kind}`;
+    const t = new Date();
+    const ts = `${String(t.getHours()).padStart(2,'0')}:${String(t.getMinutes()).padStart(2,'0')}:${String(t.getSeconds()).padStart(2,'0')}`;
+    line.textContent = `${ts}  ${msg}`;
+    strip.appendChild(line);
+    strip.scrollTop = strip.scrollHeight;
+    // cap log length
+    while (strip.children.length > 80) strip.removeChild(strip.firstChild);
+  }
+  function clearLog() {
+    document.getElementById('logStrip').innerHTML = '';
+  }
+
+  // ---- wire up ----
+  document.getElementById('btnArrive').addEventListener('click', frameArrives);
+  document.getElementById('btnPoll').addEventListener('click', kernelPolls);
+  document.getElementById('btnAuto').addEventListener('click', toggleAuto);
+  document.getElementById('btnBurst').addEventListener('click', burst);
+  document.getElementById('btnReset').addEventListener('click', reset);
+
+  reset();
+})();
+</script>
+
+</body>
+</html>

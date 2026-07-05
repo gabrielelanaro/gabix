@@ -520,6 +520,13 @@ A milestone is a "demo-able" checkpoint. Worth a commit + tag + log entry.
 
 Most recent entries at the top. One entry per work session.
 
+### 2026-07-05 (lesson 20) — virtio-net handshake, MAC, queues, RX supply
+- **Done:** Implemented Lesson 20's virtio-net initialization slice. Added `VirtioNet` driver state, mapped common/notification/device-config capabilities, negotiated `VIRTIO_NET_F_MAC` plus modern transport, read and stored the MAC address from device config, configured RX queue 0 and TX queue 1, posted eight 2048-byte RX buffers, and set `DRIVER_OK`. Added `tests/test_virtio_net_init.sh` to lock the serial proof.
+- **Status:** Roadmap checkboxes unchanged. This continues the Phase 2 networking track; packet parsing and TX/RX frame helpers remain for Lesson 21.
+- **Verification:** `cargo check --features test-mode` passed with 50 warnings. `./tests/test_virtio_net_init.sh` passed and confirmed `FEATURES_OK`, MAC `52:54:00:12:34:56`, both queue-enable readbacks, eight RX buffers posted, and `DRIVER_OK`. `./tests/run.sh` passed all 5 tests.
+- **Docs:** Added `tours/tour-0020-virtio-net-init.html`, linked it from Lesson 20, linked Lesson 19 forward to Lesson 20, and included the existing RX ring animation page referenced by the lesson.
+- **Next:** Lesson 21 should build the driver-facing frame API: skip the 12-byte `virtio_net_hdr` on RX, prepend a zeroed header on TX, recycle RX buffers after parsing, and send/receive the first Ethernet frame.
+
 ### 2026-07-05 (lesson 19) — Networking phase starts with virtio-net discovery
 - **Done:** Implemented Lesson 19's build slice. Added a generic `PciDevice` coordinate type and `find_virtio_device(device_id)` helper, kept the existing virtio-blk transitional fallback for the disk path, attached a modern-only virtio-net PCI card in `scripts/run.sh` and the shared QEMU test helper, and added a boot probe that finds device `0x1041` and prints its BARs. Added `tests/test_virtio_net_probe.sh` to lock the discovery proof.
 - **Status:** Roadmap checkboxes unchanged. This starts the Phase 2 networking track described by `lessons/roadmap-networking.html`; the existing Month 4 storage/syscall checklist still reflects the older spine.

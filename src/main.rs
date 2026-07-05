@@ -541,6 +541,29 @@ pub extern "C" fn _start(boot_info: &'static BootInfo) -> ! {
         }
     }
 
+    println!("[test] virtio-net initialization (20.1-20.4)");
+    if let Some(mut net_dev) = virtio::VirtioNet::probe() {
+        println!("[virtio-net] handshake phase 1 — reset + ACK + DRIVER");
+        net_dev.reset_and_acknowledge();
+
+        println!("[virtio-net] handshake phase 2 — feature negotiation");
+        net_dev.negotiate_features();
+
+        println!("[virtio-net] read MAC address from device config");
+        net_dev.read_mac();
+
+        println!("[virtio-net] configure RX queue 0 and TX queue 1");
+        net_dev.setup_queues(64);
+
+        println!("[virtio-net] post initial RX buffer supply");
+        net_dev.post_initial_rx_buffers();
+
+        println!("[virtio-net] handshake phase 3 — DRIVER_OK");
+        net_dev.set_driver_ok();
+    } else {
+        println!("[virtio-net] device not present; skipping init");
+    }
+
     println!("[boot] enabling interrupts");
     x86_64::instructions::interrupts::enable();
 

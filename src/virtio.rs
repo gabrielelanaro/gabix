@@ -66,6 +66,15 @@ const STATUS_FAILED: u8 = 0x80;
 /// Transport features start at bit 32; device-specific features are 0-31.
 const VIRTIO_F_VERSION_1: u64 = 1 << 32;
 
+/// virtio-net feature bit: device config contains a valid MAC address.
+const VIRTIO_NET_F_MAC: u32 = 1 << 5;
+
+/// RX buffers are large enough for a virtio-net header plus one Ethernet MTU.
+const VIRTIO_NET_RX_BUFFER_LEN: u32 = 2048;
+
+/// Initial receive-buffer supply for Lesson 20.
+const VIRTIO_NET_RX_BUFFER_COUNT: usize = 8;
+
 /// One parsed virtio vendor-specific capability.
 ///
 /// Says: "structure of type `cfg_type` lives at `bar` + `offset`, for
@@ -262,7 +271,7 @@ impl VirtioBlk {
     /// the queue exists.
     pub fn setup_queue(&mut self, queue_size: u16) {
         let queue = VirtQueue::new(queue_size);
-        self.configure_queue(&queue);
+        self.configure_queue_at(0, &queue, "virtio-blk request");
         self.queue = Some(queue);
     }
 
@@ -568,11 +577,14 @@ impl VirtioBlk {
     /// The device treats `queue_enable` as the commit bit — before that
     /// write it ignores the queue entirely. Reading back `queue_enable`
     /// and seeing 1 confirms acceptance.
-    pub fn configure_queue(&self, queue: &VirtQueue) {
-        println!("[virtio] configuring virtqueue 0 in common config");
+    pub fn configure_queue_at(&self, queue_index: u16, queue: &VirtQueue, label: &str) {
+        println!(
+            "[virtio] configuring virtqueue {} ({}) in common config",
+            queue_index, label
+        );
 
-        // 1. Select queue 0 (the request queue for virtio-blk)
-        self.write_common_u16(COMMON_QUEUE_SELECT, 0);
+        // 1. Select the target queue.
+        self.write_common_u16(COMMON_QUEUE_SELECT, queue_index);
 
         // 2. Negotiate size. Read the device's max, then write back ours.
         let device_max = self.read_common_u16(COMMON_QUEUE_SIZE);
@@ -608,7 +620,7 @@ impl VirtioBlk {
             enable_readback, 1,
             "device rejected queue configuration — queue_enable didn't stick"
         );
-        println!("[virtio] virtqueue 0 active");
+        println!("[virtio] virtqueue {} active", queue_index);
     }
 
     /// Step 7.5: kick — wake the device so it processes new submissions.
@@ -643,6 +655,387 @@ impl VirtioBlk {
         //     "[virtio] kick: wrote queue 0 to notify register at virt 0x{:X} (notify_off={} * mult={})",
         //     notify_addr, queue_notify_off, self.notify_off_multiplier
         // );
+    }
+}
+
+// ============================================================
+// VirtioNet — Lesson 20 network device initialization
+// ============================================================
+
+/// One receive buffer posted to the virtio-net RX queue.
+pub struct RxBuffer {
+    pub desc_idx: u16,
+    pub virt: u64,
+    pub phys: u64,
+    pub len: u32,
+    frame: u64,
+}
+
+/// Driver state for the virtio-net device after PCI probing.
+pub struct VirtioNet {
+    bus: u8,
+    device: u8,
+    func: u8,
+    common_virt: u64,
+    notify_virt: u64,
+    notify_off_multiplier: u32,
+    device_config_virt: u64,
+    mac: [u8; 6],
+    rx_queue: Option<VirtQueue>,
+    tx_queue: Option<VirtQueue>,
+    rx_buffers: alloc::vec::Vec<RxBuffer>,
+}
+
+impl VirtioNet {
+    /// Find the modern virtio-net PCI device and map the common,
+    /// notification, and device-config capability regions.
+    pub fn probe() -> Option<Self> {
+        let dev = pci::find_virtio_device(pci::VIRTIO_NET_NON_TRANSITIONAL)?;
+        let caps = parse_virtio_capabilities(dev.bus, dev.device, dev.func);
+
+        let common_cap = caps.iter().find(|c| c.cfg_type == VIRTIO_CAP_COMMON)?;
+        let common_bar_base = pci::bar_base(dev.bus, dev.device, dev.func, common_cap.bar);
+        let common_phys = common_bar_base + common_cap.offset as u64;
+        let common_virt = crate::memory::map_mmio(common_phys, common_cap.length as u64);
+        println!(
+            "[virtio-net] common config: BAR{}+0x{:X} = phys 0x{:X} = virt 0x{:X}",
+            common_cap.bar, common_cap.offset, common_phys, common_virt
+        );
+
+        let notify_cap = caps.iter().find(|c| c.cfg_type == VIRTIO_CAP_NOTIFY)?;
+        let notify_bar_base = pci::bar_base(dev.bus, dev.device, dev.func, notify_cap.bar);
+        let notify_phys = notify_bar_base + notify_cap.offset as u64;
+        let notify_virt = crate::memory::map_mmio(notify_phys, notify_cap.length as u64);
+        println!(
+            "[virtio-net] notifications: BAR{}+0x{:X} = phys 0x{:X} = virt 0x{:X} (multiplier {})",
+            notify_cap.bar,
+            notify_cap.offset,
+            notify_phys,
+            notify_virt,
+            notify_cap.notify_off_multiplier,
+        );
+
+        let device_config_cap = caps
+            .iter()
+            .find(|c| c.cfg_type == VIRTIO_CAP_DEVICE_CONFIG)?;
+        let device_config_bar_base =
+            pci::bar_base(dev.bus, dev.device, dev.func, device_config_cap.bar);
+        let device_config_phys = device_config_bar_base + device_config_cap.offset as u64;
+        let device_config_virt =
+            crate::memory::map_mmio(device_config_phys, device_config_cap.length as u64);
+        println!(
+            "[virtio-net] device config: BAR{}+0x{:X} = phys 0x{:X} = virt 0x{:X}",
+            device_config_cap.bar,
+            device_config_cap.offset,
+            device_config_phys,
+            device_config_virt
+        );
+
+        Some(Self {
+            bus: dev.bus,
+            device: dev.device,
+            func: dev.func,
+            common_virt,
+            notify_virt,
+            notify_off_multiplier: notify_cap.notify_off_multiplier,
+            device_config_virt,
+            mac: [0; 6],
+            rx_queue: None,
+            tx_queue: None,
+            rx_buffers: alloc::vec::Vec::new(),
+        })
+    }
+
+    fn read_common_u8(&self, offset: u8) -> u8 {
+        unsafe { read_volatile((self.common_virt + offset as u64) as *const u8) }
+    }
+
+    fn write_common_u8(&self, offset: u8, value: u8) {
+        unsafe {
+            write_volatile(
+                (self.common_virt + offset as u64) as *mut u8,
+                value,
+            );
+        }
+    }
+
+    fn read_common_u16(&self, offset: u8) -> u16 {
+        unsafe { read_volatile((self.common_virt + offset as u64) as *const u16) }
+    }
+
+    fn write_common_u16(&self, offset: u8, value: u16) {
+        unsafe {
+            write_volatile(
+                (self.common_virt + offset as u64) as *mut u16,
+                value,
+            );
+        }
+    }
+
+    fn read_common_u32(&self, offset: u8) -> u32 {
+        unsafe { read_volatile((self.common_virt + offset as u64) as *const u32) }
+    }
+
+    fn write_common_u32(&self, offset: u8, value: u32) {
+        unsafe {
+            write_volatile(
+                (self.common_virt + offset as u64) as *mut u32,
+                value,
+            );
+        }
+    }
+
+    fn write_common_u64(&self, offset: u8, value: u64) {
+        unsafe {
+            write_volatile(
+                (self.common_virt + offset as u64) as *mut u64,
+                value,
+            );
+        }
+    }
+
+    pub fn read_status(&self) -> u8 {
+        self.read_common_u8(COMMON_DEVICE_STATUS)
+    }
+
+    pub fn write_status(&self, value: u8) {
+        self.write_common_u8(COMMON_DEVICE_STATUS, value);
+    }
+
+    pub fn reset_and_acknowledge(&self) {
+        let before = self.read_status();
+        println!(
+            "[virtio-net] {:02x}:{:02x}.{} device_status before reset: 0x{:02X}",
+            self.bus, self.device, self.func, before
+        );
+
+        self.write_status(0);
+        let after_reset = self.read_status();
+        println!("[virtio-net] device_status after reset:  0x{:02X}", after_reset);
+        assert_eq!(after_reset, 0, "virtio-net did not reset cleanly");
+
+        self.write_status(STATUS_ACKNOWLEDGE);
+        let after_ack = self.read_status();
+        println!("[virtio-net] device_status after ACK:    0x{:02X}", after_ack);
+
+        self.write_status(STATUS_ACKNOWLEDGE | STATUS_DRIVER);
+        let after_driver = self.read_status();
+        println!(
+            "[virtio-net] device_status after DRIVER: 0x{:02X}",
+            after_driver
+        );
+    }
+
+    /// Negotiate the modern transport bit plus NET_F_MAC.
+    pub fn negotiate_features(&self) {
+        self.write_common_u32(COMMON_DEVICE_FEATURE_SELECT, 0);
+        let device_features_low = self.read_common_u32(COMMON_DEVICE_FEATURE);
+        self.write_common_u32(COMMON_DEVICE_FEATURE_SELECT, 1);
+        let device_features_high = self.read_common_u32(COMMON_DEVICE_FEATURE);
+
+        println!(
+            "[virtio-net] device features low:  0x{:08X}",
+            device_features_low
+        );
+        println!(
+            "[virtio-net] device features high: 0x{:08X}",
+            device_features_high
+        );
+
+        assert!(
+            device_features_low & VIRTIO_NET_F_MAC != 0,
+            "virtio-net did not advertise VIRTIO_NET_F_MAC"
+        );
+        assert!(
+            device_features_high & 0x1 != 0,
+            "virtio-net did not advertise VIRTIO_F_VERSION_1"
+        );
+
+        let supported_low = VIRTIO_NET_F_MAC;
+        let supported_high = 0x1;
+
+        println!(
+            "[virtio-net] driver features low:  0x{:08X} (VIRTIO_NET_F_MAC)",
+            supported_low
+        );
+        println!(
+            "[virtio-net] driver features high: 0x{:08X} (VIRTIO_F_VERSION_1)",
+            supported_high
+        );
+
+        self.write_common_u32(COMMON_DRIVER_FEATURE_SELECT, 0);
+        self.write_common_u32(COMMON_DRIVER_FEATURE, supported_low);
+        self.write_common_u32(COMMON_DRIVER_FEATURE_SELECT, 1);
+        self.write_common_u32(COMMON_DRIVER_FEATURE, supported_high);
+
+        self.write_status(STATUS_ACKNOWLEDGE | STATUS_DRIVER | STATUS_FEATURES_OK);
+        let status = self.read_status();
+        println!(
+            "[virtio-net] device_status after FEATURES_OK: 0x{:02X}",
+            status
+        );
+        assert!(
+            status & STATUS_FEATURES_OK != 0,
+            "virtio-net rejected our feature subset"
+        );
+    }
+
+    /// Read and store the MAC address from device config offset 0.
+    pub fn read_mac(&mut self) -> [u8; 6] {
+        let mut mac = [0u8; 6];
+        for (i, byte) in mac.iter_mut().enumerate() {
+            *byte = unsafe {
+                read_volatile((self.device_config_virt + i as u64) as *const u8)
+            };
+        }
+        self.mac = mac;
+        println!(
+            "[virtio-net] MAC {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+            mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]
+        );
+        mac
+    }
+
+    pub fn setup_queues(&mut self, queue_size: u16) {
+        let rx_queue = VirtQueue::new(queue_size);
+        self.configure_queue_at(0, &rx_queue, "RX");
+        self.rx_queue = Some(rx_queue);
+
+        let tx_queue = VirtQueue::new(queue_size);
+        self.configure_queue_at(1, &tx_queue, "TX");
+        self.tx_queue = Some(tx_queue);
+    }
+
+    fn configure_queue_at(&self, queue_index: u16, queue: &VirtQueue, label: &str) {
+        println!(
+            "[virtio-net] configuring queue {} ({})",
+            queue_index, label
+        );
+
+        self.write_common_u16(COMMON_QUEUE_SELECT, queue_index);
+        let device_max = self.read_common_u16(COMMON_QUEUE_SIZE);
+        println!(
+            "[virtio-net]   queue {} max size: {} (we want {})",
+            queue_index,
+            device_max,
+            queue.queue_size()
+        );
+        assert!(
+            queue.queue_size() <= device_max,
+            "virtio-net queue {} max size {} < requested {}",
+            queue_index,
+            device_max,
+            queue.queue_size()
+        );
+
+        self.write_common_u16(COMMON_QUEUE_SIZE, queue.queue_size());
+        self.write_common_u64(COMMON_QUEUE_DESC, queue.desc_phys());
+        self.write_common_u64(COMMON_QUEUE_AVAIL, queue.avail_phys());
+        self.write_common_u64(COMMON_QUEUE_USED, queue.used_phys());
+        self.write_common_u16(COMMON_QUEUE_ENABLE, 1);
+
+        let enable_readback = self.read_common_u16(COMMON_QUEUE_ENABLE);
+        println!(
+            "[virtio-net]   queue {} enable readback: {}",
+            queue_index, enable_readback
+        );
+        assert_eq!(
+            enable_readback, 1,
+            "virtio-net queue {} was rejected",
+            queue_index
+        );
+        println!("[virtio-net] queue {} ({}) active", queue_index, label);
+    }
+
+    /// Allocate and publish the initial receive-buffer supply.
+    pub fn post_initial_rx_buffers(&mut self) {
+        let rx_queue = self
+            .rx_queue
+            .as_mut()
+            .expect("virtio-net RX queue not configured");
+        assert!(
+            rx_queue.num_free() >= VIRTIO_NET_RX_BUFFER_COUNT,
+            "not enough RX descriptors for initial supply"
+        );
+
+        for _ in 0..VIRTIO_NET_RX_BUFFER_COUNT {
+            let frame = crate::frame_allocator::allocate()
+                .expect("out of frames for virtio-net RX buffer");
+            let phys = frame * 4096;
+            let virt = phys + crate::memory::phys_offset();
+
+            unsafe {
+                core::ptr::write_bytes(virt as *mut u8, 0, 4096);
+            }
+
+            let desc_idx = rx_queue
+                .alloc_descriptor()
+                .expect("no free RX descriptors");
+            rx_queue.write_descriptor(
+                desc_idx,
+                phys,
+                VIRTIO_NET_RX_BUFFER_LEN,
+                VIRTQ_DESC_F_WRITE,
+                0,
+            );
+            rx_queue.submit_chain(desc_idx);
+
+            self.rx_buffers.push(RxBuffer {
+                desc_idx,
+                virt,
+                phys,
+                len: VIRTIO_NET_RX_BUFFER_LEN,
+                frame,
+            });
+        }
+
+        let (avail_idx, used_idx, last_used_idx) = rx_queue.debug_state();
+        if let Some(first) = self.rx_buffers.first() {
+            println!(
+                "[virtio-net] first RX buffer: desc={} frame={} phys=0x{:X} virt=0x{:X} len={}",
+                first.desc_idx,
+                first.frame,
+                first.phys,
+                first.virt,
+                first.len
+            );
+        }
+        println!(
+            "[virtio-net] posted {} RX buffers (len={} bytes each, avail_idx={}, used_idx={}, last_used_idx={})",
+            self.rx_buffers.len(),
+            VIRTIO_NET_RX_BUFFER_LEN,
+            avail_idx,
+            used_idx,
+            last_used_idx
+        );
+    }
+
+    pub fn set_driver_ok(&self) {
+        self.write_status(
+            STATUS_ACKNOWLEDGE | STATUS_DRIVER | STATUS_FEATURES_OK | STATUS_DRIVER_OK,
+        );
+        let status = self.read_status();
+        println!(
+            "[virtio-net] device_status after DRIVER_OK: 0x{:02X}",
+            status
+        );
+        assert!(
+            status & STATUS_FAILED == 0,
+            "virtio-net entered FAILED state"
+        );
+        assert!(
+            status & STATUS_DEVICE_NEEDS_RESET == 0,
+            "virtio-net requested reset"
+        );
+        assert!(
+            status & STATUS_DRIVER_OK != 0,
+            "virtio-net DRIVER_OK did not stick"
+        );
+        println!(
+            "[virtio-net] device is live with RX stocked and TX idle (notify=0x{:X}, multiplier={})",
+            self.notify_virt,
+            self.notify_off_multiplier
+        );
     }
 }
 
