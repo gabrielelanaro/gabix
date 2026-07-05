@@ -16,3 +16,8 @@ linked_list_allocator = "0.10"
 # wrapper script (scripts/test.sh) gets a deterministic pass/fail exit code.
 # Build with: cargo bootimage --features test-mode
 test-mode = []
+
+# When enabled, the kernel exec's /fork_smoke.elf instead of /hello.elf.
+# Used together with test-mode by scripts/test-fork.sh to verify sys_fork
+# + sys_wait4 end-to-end. Build with: cargo bootimage --features test-mode,test-fork
+test-fork = []

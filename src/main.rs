@@ -532,17 +532,27 @@ pub extern "C" fn _start(boot_info: &'static BootInfo) -> ! {
     syscall::init();
 
     // ========================================================
-    // Lesson 16: exec /hello.elf
+    // Lesson 16: exec /hello.elf (or /fork_smoke.elf under test-fork)
     // ========================================================
     // This is the mission landing. The kernel:
-    //   1. Resolves /hello.elf via VFS (Lessons 1-14)
+    //   1. Resolves the user ELF via VFS (Lessons 1-14)
     //   2. Parses its header (Lesson 15)
     //   3. Maps PT_LOAD segments into a fresh AddressSpace (Lesson 16)
     //   4. Maps a user stack
     //   5. Switches CR3 and iretqs to e_entry
     // The program runs in ring 3 from a binary that came from disk.
-    println!("[test] exec /hello.elf (16.1-16.4) — the mission");
-    let ctx = match exec::exec_elf("/hello.elf") {
+    //
+    // Under `--features test-fork`, we exec /fork_smoke.elf instead of
+    // /hello.elf. The fork_smoke program exercises sys_fork + sys_wait4;
+    // scripts/test-fork.sh greps the serial output for [fork_smoke]
+    // markers from both parent and child branches.
+    #[cfg(feature = "test-fork")]
+    let user_elf_path: &str = "/fork_smoke.elf";
+    #[cfg(not(feature = "test-fork"))]
+    let user_elf_path: &str = "/hello.elf";
+
+    println!("[test] exec {} (16.1-16.4) — the mission", user_elf_path);
+    let ctx = match exec::exec_elf(user_elf_path) {
         Ok(c) => c,
         Err(e) => {
             panic!("[exec] failed: {}", e);
