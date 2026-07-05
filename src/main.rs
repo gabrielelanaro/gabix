@@ -16,6 +16,7 @@ mod frame_allocator;
 mod memory;
 mod allocator;
 mod task;
+mod process;
 mod user;
 mod syscall;
 mod fs;
@@ -155,7 +156,7 @@ pub extern "C" fn _start(boot_info: &'static BootInfo) -> ! {
     // For slice 3.6.b (ring transition test) we don't spawn workers —
     // we want a clean isolation of the user-mode test. main will call
     // enter_user_mode directly.
-    println!("[test] registering main task only (3.6.b isolation)");
+    process::init();
     task::init_main();
 
     // Sanity test: Box::new goes through our #[global_allocator].
