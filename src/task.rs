@@ -803,15 +803,31 @@ pub fn yield_now() {
                         || current_state == TaskState::Dead
                     {
                         // Current is un-runnable AND nothing else can run.
-                        // System is effectively done. Halt.
+                        // System is effectively done.
                         println!(
-                            "[sched] no runnable tasks (current state={:?}) — halting",
+                            "[sched] no runnable tasks (current state={:?}) — done",
                             current_state
                         );
                         drop(sched);
-                        x86_64::instructions::interrupts::disable();
-                        loop {
-                            x86_64::instructions::hlt();
+                        #[cfg(feature = "test-mode")]
+                        {
+                            // In test mode: terminate QEMU with success.
+                            // The kernel reached a clean shutdown state
+                            // (every task exited or blocked permanently),
+                            // so the test passes.
+                            crate::qemu_exit::exit_qemu(
+                                crate::qemu_exit::EXIT_SUCCESS,
+                            );
+                        }
+                        #[cfg(not(feature = "test-mode"))]
+                        {
+                            // Interactive mode: halt forever so the user
+                            // can read the serial output before killing
+                            // QEMU manually.
+                            x86_64::instructions::interrupts::disable();
+                            loop {
+                                x86_64::instructions::hlt();
+                            }
                         }
                     }
                     // Current is the only runnable task. Just return.
