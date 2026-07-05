@@ -12,6 +12,14 @@
 use crate::println;
 use x86_64::instructions::port::Port;
 
+/// Coordinates of one function on the PCI bus.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PciDevice {
+    pub bus: u8,
+    pub device: u8,
+    pub func: u8,
+}
+
 /// I/O port for the PCI configuration address (32-bit).
 const CONFIG_ADDRESS: u16 = 0xCF8;
 
@@ -173,7 +181,32 @@ const VIRTIO_VENDOR_ID: u16 = 0x1AF4;
 const VIRTIO_BLK_TRANSITIONAL: u16 = 0x1001;
 
 /// Non-transitional (modern-only) virtio-blk device ID.
-const VIRTIO_BLK_NON_TRANSITIONAL: u16 = 0x1042;
+pub const VIRTIO_BLK_NON_TRANSITIONAL: u16 = 0x1042;
+
+/// Non-transitional (modern-only) virtio-net device ID.
+pub const VIRTIO_NET_NON_TRANSITIONAL: u16 = 0x1041;
+
+/// Search bus 0 for one modern virtio device ID.
+pub fn find_virtio_device(device_id: u16) -> Option<PciDevice> {
+    for device in 0..32u8 {
+        for func in 0..8u8 {
+            let vendor_word = config_read(0, device, func, 0x00);
+            let vendor_id = (vendor_word & 0xFFFF) as u16;
+            if vendor_id != VIRTIO_VENDOR_ID {
+                continue;
+            }
+            let found_device_id = (vendor_word >> 16) as u16;
+            if found_device_id == device_id {
+                return Some(PciDevice {
+                    bus: 0,
+                    device,
+                    func,
+                });
+            }
+        }
+    }
+    None
+}
 
 /// Search bus 0 for the virtio-blk device.
 ///
@@ -181,6 +214,10 @@ const VIRTIO_BLK_NON_TRANSITIONAL: u16 = 0x1042;
 /// device is attached. Accepts both transitional (0x1001) and non-transitional
 /// (0x1042) device IDs — QEMU exposes transitional by default.
 pub fn find_virtio_blk() -> Option<(u8, u8, u8)> {
+    if let Some(dev) = find_virtio_device(VIRTIO_BLK_NON_TRANSITIONAL) {
+        return Some((dev.bus, dev.device, dev.func));
+    }
+
     for device in 0..32u8 {
         for func in 0..8u8 {
             let vendor_word = config_read(0, device, func, 0x00);
@@ -190,7 +227,6 @@ pub fn find_virtio_blk() -> Option<(u8, u8, u8)> {
             }
             let device_id = (vendor_word >> 16) as u16;
             if device_id == VIRTIO_BLK_TRANSITIONAL
-                || device_id == VIRTIO_BLK_NON_TRANSITIONAL
             {
                 return Some((0, device, func));
             }

@@ -42,7 +42,7 @@ use core::sync::atomic::{AtomicU64, Ordering};
 ///
 /// In test mode (cargo bootimage --features test-mode): the handler also
 /// calls `qemu_exit::exit_qemu(EXIT_FAILURE)` after printing. That lets the
-/// wrapper script (scripts/test.sh) translate the failure into a Unix exit
+/// test wrapper translate the failure into a Unix exit
 /// code. Without test-mode, the handler loops forever so you can read the
 /// message on screen before killing QEMU manually.
 #[cfg(feature = "test-mode")]
@@ -521,6 +521,23 @@ pub extern "C" fn _start(boot_info: &'static BootInfo) -> ! {
         }
         None => {
             println!("[pci] virtio-blk not found on bus 0");
+        }
+    }
+
+    println!("[test] find virtio-net and decode BARs (19.1)");
+    match pci::find_virtio_device(pci::VIRTIO_NET_NON_TRANSITIONAL) {
+        Some(dev) => {
+            println!(
+                "[pci] virtio-net found at {:02x}:{:02x}.{} device={:04x}",
+                dev.bus,
+                dev.device,
+                dev.func,
+                pci::VIRTIO_NET_NON_TRANSITIONAL
+            );
+            pci::print_bars(dev.bus, dev.device, dev.func);
+        }
+        None => {
+            println!("[pci] virtio-net not found on bus 0");
         }
     }
 

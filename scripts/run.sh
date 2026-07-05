@@ -24,13 +24,16 @@ fi
 # Build the bootimage fresh
 cargo bootimage 2>&1 | tail -3
 
-# Launch QEMU with both drives
+# Launch QEMU with both drives plus the Lesson 19 virtio-net card.
 #   - First -drive: the kernel bootimage (bootloader sees this as the boot disk)
 #   - Second -drive + -device: the virtio-blk-pci disk (kernel discovers via PCI)
+#   - netdev + virtio-net-pci: QEMU user-mode network, UDP port 5555 forwarded in
 exec qemu-system-x86_64 \
     -drive format=raw,file="$KERNEL" \
     -drive file="$DISK_IMG",format=raw,if=none,id=drv0 \
     -device virtio-blk-pci,drive=drv0 \
+    -netdev user,id=n0,hostfwd=udp::5555-:5555 \
+    -device virtio-net-pci,netdev=n0,disable-legacy=on,disable-modern=off \
     -display none \
     -serial stdio \
     -no-reboot

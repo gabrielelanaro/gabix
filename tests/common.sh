@@ -68,6 +68,8 @@ boot_qemu() {
             -drive format=raw,file="$KERNEL" \
             -drive file="$DISK_IMG",format=raw,if=none,id=drv0 \
             -device virtio-blk-pci,drive=drv0 \
+            -netdev user,id=n0,hostfwd=udp::5555-:5555 \
+            -device virtio-net-pci,netdev=n0,disable-legacy=on,disable-modern=off \
             -device isa-debug-exit,iobase=0xf4,iosize=0x04 \
             -display none \
             -serial stdio \

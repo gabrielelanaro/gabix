@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Tour - Lesson 19 - Find the Network Card</title>
+<link rel="stylesheet" href="../assets/lesson.css">
+<style>
+  .tour-step { margin: 3rem 0; padding-top: 1rem; border-top: 1px solid var(--border); }
+  .tour-step:first-of-type { border-top: none; padding-top: 0; }
+  .tour-step-num {
+    display: inline-block; font-family: var(--font-mono); font-size: 0.78rem;
+    font-weight: 600; color: var(--accent); background: var(--accent-soft);
+    padding: 2px 8px; border-radius: 3px; margin-right: 0.6rem;
+  }
+  .tour-step-title {
+    font-family: var(--font-sans); font-weight: 700; font-size: 1.3rem;
+    color: var(--text); margin: 0 0 0.4rem; display: inline;
+  }
+  .tour-step-h2 { margin: 0 0 1rem; }
+  .tour-files { font-family: var(--font-mono); font-size: 0.82rem; color: var(--text-dim); margin: 0.5rem 0 1.5rem; }
+  .tour-files strong { color: var(--text); font-weight: 600; }
+  .snippet-meta { font-family: var(--font-mono); font-size: 0.72rem; color: var(--text-dim); margin: 1.5rem 0 0.35rem; display: flex; align-items: baseline; gap: 0.6rem; }
+  .snippet-meta .snippet-file { color: var(--accent); font-weight: 600; background: var(--accent-soft); padding: 1px 6px; border-radius: 3px; }
+  .snippet-meta .snippet-what { color: var(--text-faint); font-style: italic; }
+  .snippet-meta + pre, .snippet-meta + pre.tour-output { margin-top: 0; }
+  pre.tour-output { background: #111827; color: #e5e7eb; border-left: 3px solid var(--accent); padding: 1rem 1.25rem; border-radius: 0 6px 6px 0; font-size: 0.8rem; line-height: 1.55; margin: 1rem 0; overflow-x: auto; }
+  pre.tour-output .ok { color: #86efac; }
+  .plain-map {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1rem 1.25rem;
+    margin: 1.25rem 0;
+    overflow-x: auto;
+  }
+  .plain-map pre { background: transparent; color: var(--text); padding: 0; margin: 0; }
+</style>
+</head>
+<body>
+<article class="lesson">
+  <header class="lesson-header">
+    <div class="lesson-eyebrow">Tour - Lesson 19 - Companion to <a href="../lessons/0019-shape-of-network-stack.html" style="color:inherit;">the lesson</a></div>
+    <h1 class="lesson-title">Code Tour - Find the Network Card</h1>
+    <p class="lesson-subtitle">The first networking build step is a hardware proof: QEMU attaches a virtio-net card, PCI sees it, and the kernel prints its BARs.</p>
+    <div class="lesson-meta">
+      <span><strong>Files</strong> <code>tests/common.sh</code>, <code>src/pci.rs</code>, <code>src/main.rs</code></span>
+      <span><strong>Test</strong> <code>tests/test_virtio_net_probe.sh</code></span>
+    </div>
+  </header>
+
+  <div class="content">
+  <p class="lead">
+    Lesson 19 stops at discovery. The network card is present and visible.
+    It stays idle until Lesson 20 performs the virtio handshake and posts
+    receive buffers.
+  </p>
+
+  <div class="plain-map">
+<pre>QEMU adds a virtio-net PCI device
+PCI enumeration prints vendor=1af4 device=1041
+the kernel asks for virtio device 0x1041
+the kernel prints that device's BARs
+the block device path still boots and runs user code</pre>
+  </div>
+
+  <div class="tour-step">
+    <h2 class="tour-step-h2"><span class="tour-step-num">19.1</span><span class="tour-step-title">Attach the card in QEMU</span></h2>
+    <div class="tour-files"><strong>Files:</strong> <code>tests/common.sh</code>, <code>scripts/run.sh</code></div>
+    <p>
+      Both QEMU launch paths now add a user-mode network backend and a
+      modern virtio-net PCI device. The UDP port forward is for the later
+      echo-server milestone.
+    </p>
+    <div class="snippet-meta"><span class="snippet-file">tests/common.sh</span><span class="snippet-what">QEMU device flags</span></div>
+<pre>-netdev user,id=n0,hostfwd=udp::5555-:5555
+-device virtio-net-pci,netdev=n0,disable-legacy=on,disable-modern=off</pre>
+    <p>
+      The modern-only flag makes the PCI device ID <code>0x1041</code>. That
+      is virtio device type 1, network, plus the modern PCI offset
+      <code>0x1040</code>.
+    </p>
+  </div>
+
+  <div class="tour-step">
+    <h2 class="tour-step-h2"><span class="tour-step-num">19.2</span><span class="tour-step-title">Represent a PCI function</span></h2>
+    <div class="tour-files"><strong>File:</strong> <code>src/pci.rs</code></div>
+    <p>
+      A PCI function is named by three small numbers: bus, device, and
+      function. <code>PciDevice</code> packages those numbers so callers can
+      pass one value around.
+    </p>
+    <div class="snippet-meta"><span class="snippet-file">src/pci.rs</span><span class="snippet-what">PCI coordinates</span></div>
+<pre><span class="k">pub struct</span> <span class="t">PciDevice</span> {
+    <span class="k">pub</span> bus: <span class="t">u8</span>,
+    <span class="k">pub</span> device: <span class="t">u8</span>,
+    <span class="k">pub</span> func: <span class="t">u8</span>,
+}</pre>
+  </div>
+
+  <div class="tour-step">
+    <h2 class="tour-step-h2"><span class="tour-step-num">19.3</span><span class="tour-step-title">Search for one virtio device ID</span></h2>
+    <div class="tour-files"><strong>File:</strong> <code>src/pci.rs</code></div>
+    <p>
+      The new helper scans bus 0 and returns the first virtio device whose
+      PCI device ID matches the caller's target.
+    </p>
+    <div class="snippet-meta"><span class="snippet-file">src/pci.rs</span><span class="snippet-what">generic virtio finder</span></div>
+<pre><span class="k">pub fn</span> find_virtio_device(device_id: <span class="t">u16</span>) -&gt; <span class="t">Option</span>&lt;<span class="t">PciDevice</span>&gt; {
+    <span class="k">for</span> device <span class="k">in</span> 0..32u8 {
+        <span class="k">for</span> func <span class="k">in</span> 0..8u8 {
+            <span class="k">let</span> vendor_word = config_read(0, device, func, 0x00);
+            <span class="k">let</span> vendor_id = (vendor_word &amp; 0xFFFF) <span class="k">as</span> <span class="t">u16</span>;
+            <span class="k">let</span> found_device_id = (vendor_word &gt;&gt; 16) <span class="k">as</span> <span class="t">u16</span>;
+
+            <span class="k">if</span> vendor_id == 0x1AF4 &amp;&amp; found_device_id == device_id {
+                <span class="k">return</span> <span class="t">Some</span>(<span class="t">PciDevice</span> { bus: 0, device, func });
+            }
+        }
+    }
+    <span class="t">None</span>
+}</pre>
+    <p>
+      The block helper still accepts the older block ID used by QEMU's
+      existing disk path. The network probe uses the modern ID directly.
+    </p>
+  </div>
+
+  <div class="tour-step">
+    <h2 class="tour-step-h2"><span class="tour-step-num">19.4</span><span class="tour-step-title">Print the network card during boot</span></h2>
+    <div class="tour-files"><strong>File:</strong> <code>src/main.rs</code></div>
+    <p>
+      After the block device setup, boot asks for virtio-net device
+      <code>0x1041</code>. If it is present, the kernel prints its location
+      and decodes its six BAR slots.
+    </p>
+    <div class="snippet-meta"><span class="snippet-file">src/main.rs</span><span class="snippet-what">Lesson 19 probe</span></div>
+<pre><span class="k">match</span> pci::find_virtio_device(pci::<span class="t">VIRTIO_NET_NON_TRANSITIONAL</span>) {
+    <span class="t">Some</span>(dev) =&gt; {
+        println!(<span class="s">"[pci] virtio-net found at {:02x}:{:02x}.{} device={:04x}"</span>,
+                 dev.bus, dev.device, dev.func, pci::<span class="t">VIRTIO_NET_NON_TRANSITIONAL</span>);
+        pci::print_bars(dev.bus, dev.device, dev.func);
+    }
+    <span class="t">None</span> =&gt; println!(<span class="s">"[pci] virtio-net not found on bus 0"</span>),
+}</pre>
+    <p>
+      The card is only discovered here. The driver does no feature negotiation
+      and gives the card no buffers yet.
+    </p>
+  </div>
+
+  <div class="tour-step">
+    <h2 class="tour-step-h2"><span class="tour-step-num">19.5</span><span class="tour-step-title">Lock the proof with a test</span></h2>
+    <div class="tour-files"><strong>File:</strong> <code>tests/test_virtio_net_probe.sh</code></div>
+    <p>
+      The test boots the normal user program and checks the serial log for
+      the PCI enumeration line, the explicit virtio-net probe line, and BAR
+      output.
+    </p>
+    <div class="snippet-meta"><span class="snippet-file">serial output</span><span class="snippet-what">expected markers</span></div>
+<pre>[pci] 00:04.0 vendor=1af4 device=1041 class=0200 (network)
+[pci] virtio-net found at 00:04.0 device=1041
+[pci]   BAR1 = ...
+[pci]   BAR4-BAR5 = ...</pre>
+  </div>
+
+  <h2>Verification</h2>
+<pre class="tour-output"><span class="ok">cargo check --features test-mode</span>
+51 warnings, matching the current baseline
+
+<span class="ok">./tests/test_virtio_net_probe.sh</span>
+[net] PASS</pre>
+
+  <h2>Where to Ask Questions</h2>
+  <p>
+    Good follow-ups: why the virtio-net ID is <code>0x1041</code>, what BARs
+    are for, or why Lesson 19 stops before the handshake.
+  </p>
+  </div>
+
+  <footer class="lesson-footer">
+    <div class="footer-block">
+      <h4>Practice</h4>
+      <p style="margin:0;">
+        Say the boot proof in one sentence: QEMU attaches the device, PCI
+        names it, and the kernel prints the regions it will map later.
+      </p>
+    </div>
+    <nav class="lesson-nav">
+      <a href="../lessons/0019-shape-of-network-stack.html">Lesson 19</a>
+      <a href="../lessons/0018-inherit-exit-reap.html">Lesson 18</a>
+    </nav>
+  </footer>
+</article>
+</body>
+</html>

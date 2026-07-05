@@ -520,6 +520,13 @@ A milestone is a "demo-able" checkpoint. Worth a commit + tag + log entry.
 
 Most recent entries at the top. One entry per work session.
 
+### 2026-07-05 (lesson 19) — Networking phase starts with virtio-net discovery
+- **Done:** Implemented Lesson 19's build slice. Added a generic `PciDevice` coordinate type and `find_virtio_device(device_id)` helper, kept the existing virtio-blk transitional fallback for the disk path, attached a modern-only virtio-net PCI card in `scripts/run.sh` and the shared QEMU test helper, and added a boot probe that finds device `0x1041` and prints its BARs. Added `tests/test_virtio_net_probe.sh` to lock the discovery proof.
+- **Status:** Roadmap checkboxes unchanged. This starts the Phase 2 networking track described by `lessons/roadmap-networking.html`; the existing Month 4 storage/syscall checklist still reflects the older spine.
+- **Verification:** `cargo check --features test-mode` passed with the existing 51-warning baseline. `./tests/test_virtio_net_probe.sh` passed and confirmed `vendor=1af4 device=1041`, the explicit `virtio-net found` line, and BAR output.
+- **Docs:** Added `tours/tour-0019-shape-of-network-stack.html`, linked it from Lesson 19, and linked Lesson 18 forward to Lesson 19.
+- **Next:** Lesson 20 should wake the card: parse virtio-net capabilities, read the MAC address from device config, complete the handshake, and prepare receive buffers.
+
 ### 2026-07-05 (lesson 18) — FD inheritance, exit cleanup, wait by PID
 - **Done:** Implemented Lesson 18's process-lifecycle slice. Added `FdTable::clone_shallow()` and `FdTable::open_count()`, made `spawn_fork_child` copy the parent's FD table into the child, made `mark_current_zombie` replace the exiting process's FD table with an empty table and log how many descriptors were closed, and extended `sys_wait4` to accept a target PID plus status pointer. Added `WaitTarget::{Any, Specific(Pid)}` so `wait(-1, status)` still reaps any child while `wait(pid, status)` tracks one child.
 - **Status:** Roadmap checkboxes unchanged. This closes the Lesson 18 lifecycle work that sits between the completed fork/exec/wait milestone and later scheduler/address-space cleanup.
