@@ -144,6 +144,122 @@ printf 'write %s /hello.elf\nquit\n' "$HELLO_ELF" \
     | "$DEBUGFS" -w "$DISK_IMG" 2>&1 | grep -E '(inode|error)' || true
 rm -f "$HELLO_ELF_SRC" "$HELLO_ELF"
 
+# Lesson 17 (test framework): cross-compile fork_smoke.elf — a user program
+# that exercises sys_fork + sys_wait4. The test framework's wrapper script
+# (scripts/test-fork.sh) greps serial output for [fork_smoke] markers from
+# both parent and child branches. Both must appear for the test to pass.
+FORK_SMOKE_SRC=$(mktemp /tmp/mini-os-fork-smoke-XXXXXX.rs)
+cat > "$FORK_SMOKE_SRC" <<'EOF'
+// fork_smoke.elf — exercises sys_fork, sys_write, sys_wait4, sys_exit.
+//
+// Parent calls sys_fork. Child sees pid=0 and prints "[fork_smoke] child",
+// then exits. Parent prints "[fork_smoke] parent", waits for child via
+// sys_wait4, then exits. The wrapper script greps serial output for both
+// markers — order doesn't matter, but both must appear.
+#![no_std]
+#![no_main]
+
+#[no_mangle]
+pub extern "C" fn _start() -> ! {
+    let pid = sys_fork();
+    if pid == 0 {
+        sys_write(1, b"[fork_smoke] child\n");
+        sys_exit(0);
+    } else {
+        sys_write(1, b"[fork_smoke] parent\n");
+        sys_wait4(pid);
+        sys_exit(0);
+    }
+}
+
+/// sys_fork() — Linux x86-64 ABI: rax = 57. No args.
+/// Returns child PID in parent, 0 in child. Clobbers rcx and r11.
+fn sys_fork() -> u64 {
+    let ret;
+    unsafe {
+        core::arch::asm!(
+            "syscall",
+            in("rax") 57,
+            lateout("rax") ret,
+            lateout("rcx") _,
+            lateout("r11") _,
+        );
+    }
+    ret
+}
+
+/// sys_write(fd, buf) — Linux x86-64 ABI: rax = 1, rdi = fd, rsi = buf, rdx = len.
+fn sys_write(fd: u64, buf: &[u8]) -> u64 {
+    let ret;
+    unsafe {
+        core::arch::asm!(
+            "syscall",
+            in("rax") 1,
+            in("rdi") fd,
+            in("rsi") buf.as_ptr(),
+            in("rdx") buf.len(),
+            lateout("rax") ret,
+            lateout("rcx") _,
+            lateout("r11") _,
+        );
+    }
+    ret
+}
+
+/// sys_wait4(pid) — Linux x86-64 ABI: rax = 61, rdi = pid.
+/// Blocks until the named child exits, then returns its exit status.
+fn sys_wait4(pid: u64) -> u64 {
+    let ret;
+    unsafe {
+        core::arch::asm!(
+            "syscall",
+            in("rax") 61,
+            in("rdi") pid,
+            lateout("rax") ret,
+            lateout("rcx") _,
+            lateout("r11") _,
+        );
+    }
+    ret
+}
+
+/// sys_exit(code) — Linux x86-64 ABI: rax = 60, rdi = exit code.
+fn sys_exit(code: u64) -> ! {
+    unsafe {
+        core::arch::asm!(
+            "syscall",
+            in("rax") 60,
+            in("rdi") code,
+            options(noreturn),
+        );
+    }
+}
+
+#[panic_handler]
+fn panic(_: &core::panic::PanicInfo) -> ! { loop {} }
+EOF
+
+FORK_SMOKE_ELF=$(mktemp /tmp/mini-os-fork-smoke-XXXXXX.elf)
+rustc --target x86_64-unknown-none --edition 2021 \
+      -C relocation-model=static \
+      -o "$FORK_SMOKE_ELF" "$FORK_SMOKE_SRC"
+
+FILE_INFO=$(file "$FORK_SMOKE_ELF")
+case "$FILE_INFO" in
+    *"ELF 64-bit LSB executable, x86-64"*)
+        echo "[make-disk] fork_smoke.elf: $FILE_INFO"
+        ;;
+    *)
+        echo "[make-disk] unexpected file type: $FILE_INFO" >&2
+        rm -f "$FORK_SMOKE_SRC" "$FORK_SMOKE_ELF"
+        exit 1
+        ;;
+esac
+
+printf 'write %s /fork_smoke.elf\nquit\n' "$FORK_SMOKE_ELF" \
+    | "$DEBUGFS" -w "$DISK_IMG" 2>&1 | grep -E '(inode|error)' || true
+rm -f "$FORK_SMOKE_SRC" "$FORK_SMOKE_ELF"
+
 # Verify
 echo "Created $DISK_IMG ($SIZE_MB MB, ext2)"
 echo "ext2 magic at offset 1080 (should be 53 EF):"

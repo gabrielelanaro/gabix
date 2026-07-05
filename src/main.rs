@@ -386,7 +386,7 @@ pub extern "C" fn _start(boot_info: &'static BootInfo) -> ! {
                 println!("[ext2] walk complete: {} live entries", entries.len());
 
                 // Verify we got exactly the 6 entries mkfs + Lesson 14 + Lesson 15 created
-                assert_eq!(entries.len(), 6, "expected 6 entries (., .., lost+found, hello.txt, secret.txt, hello.elf)");
+                assert_eq!(entries.len(), 7, "expected 7 entries (., .., lost+found, hello.txt, secret.txt, hello.elf, fork_smoke.elf)");
 
                 // Find by name to verify each
                 let dot = entries.iter().find(|e| e.name == b".").expect("missing .");
