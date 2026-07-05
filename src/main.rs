@@ -25,6 +25,7 @@ mod ext2;
 mod elf;
 mod exec;
 mod qemu_exit;
+mod test_runner;
 
 use bootloader::BootInfo;
 use alloc::vec::Vec;
