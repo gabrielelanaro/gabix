@@ -3,8 +3,10 @@
 #
 # Lesson 10: format as ext2 so the kernel can parse a real filesystem.
 # Lesson 14: write hello.txt + secret.txt into the ext2 filesystem via debugfs.
-# Lesson 15: cross-compile a tiny x86-64 ELF and add it as /hello.elf, so the
-#            kernel has a real binary to parse with the ELF header parser.
+# Lesson 15: cross-compile a tiny x86-64 ELF and add it as /hello.elf.
+# Lesson 17 (test framework): compile every tests/fixtures/*.rs into a user
+#            ELF and add it to the disk. Each fixture is the user program
+#            behind one E2E test in tests/.
 #
 # Output: disk.img (in the project root)
 #
@@ -44,8 +46,6 @@ truncate -s "${SIZE_MB}M" "$DISK_IMG"
 "$MKFS_EXT2" -F "$DISK_IMG" 2>&1 | grep -E '(ext2|blocks|inodes)' | head -5
 
 # Lesson 14: write hello.txt and secret.txt into the ext2 filesystem.
-# debugfs's `write` command copies a host file into the ext2 filesystem.
-# We pipe commands via stdin and end with `quit` to exit cleanly.
 HELLO_SRC=$(mktemp /tmp/mini-os-hello.XXXXXX.txt)
 SECRET_SRC=$(mktemp /tmp/mini-os-secret.XXXXXX.txt)
 echo "hello from disk" > "$HELLO_SRC"
@@ -54,211 +54,53 @@ printf 'write %s /hello.txt\nwrite %s /secret.txt\nquit\n' "$HELLO_SRC" "$SECRET
     | "$DEBUGFS" -w "$DISK_IMG" 2>&1 | grep -E '(inode|error)' || true
 rm -f "$HELLO_SRC" "$SECRET_SRC"
 
-# Lesson 15: cross-compile a tiny x86-64 ELF and add it as /hello.elf.
-#
-# Two rustc flags matter:
+# Lesson 15+: cross-compile every tests/fixtures/*.rs into a user ELF and
+# write it to the disk. Two rustc flags matter:
 #   --target x86_64-unknown-none   → bare-metal ELF, no host OS ABI
 #   -C relocation-model=static     → ET_EXEC (fixed addresses), not PIE
 # Without -C relocation-model=static, rustc emits ET_DYN, which would force
-# the loader to handle dynamic relocations in Lesson 16. We skip that.
+# the loader to handle dynamic relocations. We skip that.
 if ! rustup target list --installed 2>/dev/null | grep -q '^x86_64-unknown-none$'; then
     echo "x86_64-unknown-none Rust target not installed." >&2
     echo "Run: rustup target add x86_64-unknown-none" >&2
     exit 1
 fi
 
-HELLO_ELF_SRC=$(mktemp /tmp/mini-os-hello-user-XXXXXX.rs)
-cat > "$HELLO_ELF_SRC" <<'EOF'
-// Lesson 16 hello.elf — a real user program.
-//
-// Writes "hello, world\n" to stdout (fd=1) via sys_write, then exits.
-// Demonstrates that exec() produces a ring-3 program that can call
-// back into the kernel via the syscall instruction.
-#![no_std]
-#![no_main]
+# Each line: <source-relative-to-repo-root> <dest-path-on-disk>
+FIXTURES="tests/fixtures/hello.rs:/hello.elf
+tests/fixtures/fork_smoke.rs:/fork_smoke.elf"
 
-#[no_mangle]
-pub extern "C" fn _start() -> ! {
-    let msg: &[u8] = b"hello, world\n";
-    sys_write(1, msg);
-    sys_exit(0);
-}
+for entry in $FIXTURES; do
+    src=${entry%%:*}
+    dest=${entry##*:}
+    src_path="$(cd "$(dirname "$0")/.." && pwd)/$src"
 
-/// sys_write(fd, buf, len) — Linux x86-64 ABI:
-///   rax = 1, rdi = fd, rsi = buf ptr, rdx = len
-/// Returns byte count in rax. Clobbers rcx and r11.
-fn sys_write(fd: u64, buf: &[u8]) -> u64 {
-    let ret;
-    unsafe {
-        core::arch::asm!(
-            "syscall",
-            in("rax") 1,
-            in("rdi") fd,
-            in("rsi") buf.as_ptr(),
-            in("rdx") buf.len(),
-            lateout("rax") ret,
-            lateout("rcx") _,
-            lateout("r11") _,
-        );
-    }
-    ret
-}
-
-/// sys_exit(code) — Linux x86-64 ABI: rax = 60, rdi = exit code.
-/// Never returns. The kernel handler terminates the user program.
-fn sys_exit(code: u64) -> ! {
-    unsafe {
-        core::arch::asm!(
-            "syscall",
-            in("rax") 60,
-            in("rdi") code,
-            options(noreturn),
-        );
-    }
-}
-
-#[panic_handler]
-fn panic(_: &core::panic::PanicInfo) -> ! { loop {} }
-EOF
-
-HELLO_ELF=$(mktemp /tmp/mini-os-hello-user-XXXXXX.elf)
-rustc --target x86_64-unknown-none --edition 2021 \
-      -C relocation-model=static \
-      -o "$HELLO_ELF" "$HELLO_ELF_SRC"
-
-# Sanity-check: confirm it's an ET_EXEC x86-64 ELF.
-FILE_INFO=$(file "$HELLO_ELF")
-case "$FILE_INFO" in
-    *"ELF 64-bit LSB executable, x86-64"*)
-        echo "[make-disk] hello.elf: $FILE_INFO"
-        ;;
-    *)
-        echo "[make-disk] unexpected file type: $FILE_INFO" >&2
-        rm -f "$HELLO_ELF_SRC" "$HELLO_ELF"
+    if [ ! -f "$src_path" ]; then
+        echo "[make-disk] missing fixture: $src_path" >&2
         exit 1
-        ;;
-esac
+    fi
 
-# Write it into ext2 via debugfs, same pattern as hello.txt.
-printf 'write %s /hello.elf\nquit\n' "$HELLO_ELF" \
-    | "$DEBUGFS" -w "$DISK_IMG" 2>&1 | grep -E '(inode|error)' || true
-rm -f "$HELLO_ELF_SRC" "$HELLO_ELF"
+    elf=$(mktemp /tmp/mini-os-fixture-XXXXXX.elf)
+    rustc --target x86_64-unknown-none --edition 2021 \
+          -C relocation-model=static \
+          -o "$elf" "$src_path"
 
-# Lesson 17 (test framework): cross-compile fork_smoke.elf — a user program
-# that exercises sys_fork + sys_wait4. The test framework's wrapper script
-# (scripts/test-fork.sh) greps serial output for [fork_smoke] markers from
-# both parent and child branches. Both must appear for the test to pass.
-FORK_SMOKE_SRC=$(mktemp /tmp/mini-os-fork-smoke-XXXXXX.rs)
-cat > "$FORK_SMOKE_SRC" <<'EOF'
-// fork_smoke.elf — exercises sys_fork, sys_write, sys_wait4, sys_exit.
-//
-// Parent calls sys_fork. Child sees pid=0 and prints "[fork_smoke] child",
-// then exits. Parent prints "[fork_smoke] parent", waits for child via
-// sys_wait4, then exits. The wrapper script greps serial output for both
-// markers — order doesn't matter, but both must appear.
-#![no_std]
-#![no_main]
+    file_info=$(file "$elf")
+    case "$file_info" in
+        *"ELF 64-bit LSB executable, x86-64"*)
+            echo "[make-disk] $dest ← $src: OK"
+            ;;
+        *)
+            echo "[make-disk] $dest: unexpected file type: $file_info" >&2
+            rm -f "$elf"
+            exit 1
+            ;;
+    esac
 
-#[no_mangle]
-pub extern "C" fn _start() -> ! {
-    let pid = sys_fork();
-    if pid == 0 {
-        sys_write(1, b"[fork_smoke] child\n");
-        sys_exit(0);
-    } else {
-        sys_write(1, b"[fork_smoke] parent\n");
-        sys_wait4(pid);
-        sys_exit(0);
-    }
-}
-
-/// sys_fork() — Linux x86-64 ABI: rax = 57. No args.
-/// Returns child PID in parent, 0 in child. Clobbers rcx and r11.
-fn sys_fork() -> u64 {
-    let ret;
-    unsafe {
-        core::arch::asm!(
-            "syscall",
-            in("rax") 57,
-            lateout("rax") ret,
-            lateout("rcx") _,
-            lateout("r11") _,
-        );
-    }
-    ret
-}
-
-/// sys_write(fd, buf) — Linux x86-64 ABI: rax = 1, rdi = fd, rsi = buf, rdx = len.
-fn sys_write(fd: u64, buf: &[u8]) -> u64 {
-    let ret;
-    unsafe {
-        core::arch::asm!(
-            "syscall",
-            in("rax") 1,
-            in("rdi") fd,
-            in("rsi") buf.as_ptr(),
-            in("rdx") buf.len(),
-            lateout("rax") ret,
-            lateout("rcx") _,
-            lateout("r11") _,
-        );
-    }
-    ret
-}
-
-/// sys_wait4(pid) — Linux x86-64 ABI: rax = 61, rdi = pid.
-/// Blocks until the named child exits, then returns its exit status.
-fn sys_wait4(pid: u64) -> u64 {
-    let ret;
-    unsafe {
-        core::arch::asm!(
-            "syscall",
-            in("rax") 61,
-            in("rdi") pid,
-            lateout("rax") ret,
-            lateout("rcx") _,
-            lateout("r11") _,
-        );
-    }
-    ret
-}
-
-/// sys_exit(code) — Linux x86-64 ABI: rax = 60, rdi = exit code.
-fn sys_exit(code: u64) -> ! {
-    unsafe {
-        core::arch::asm!(
-            "syscall",
-            in("rax") 60,
-            in("rdi") code,
-            options(noreturn),
-        );
-    }
-}
-
-#[panic_handler]
-fn panic(_: &core::panic::PanicInfo) -> ! { loop {} }
-EOF
-
-FORK_SMOKE_ELF=$(mktemp /tmp/mini-os-fork-smoke-XXXXXX.elf)
-rustc --target x86_64-unknown-none --edition 2021 \
-      -C relocation-model=static \
-      -o "$FORK_SMOKE_ELF" "$FORK_SMOKE_SRC"
-
-FILE_INFO=$(file "$FORK_SMOKE_ELF")
-case "$FILE_INFO" in
-    *"ELF 64-bit LSB executable, x86-64"*)
-        echo "[make-disk] fork_smoke.elf: $FILE_INFO"
-        ;;
-    *)
-        echo "[make-disk] unexpected file type: $FILE_INFO" >&2
-        rm -f "$FORK_SMOKE_SRC" "$FORK_SMOKE_ELF"
-        exit 1
-        ;;
-esac
-
-printf 'write %s /fork_smoke.elf\nquit\n' "$FORK_SMOKE_ELF" \
-    | "$DEBUGFS" -w "$DISK_IMG" 2>&1 | grep -E '(inode|error)' || true
-rm -f "$FORK_SMOKE_SRC" "$FORK_SMOKE_ELF"
+    printf 'write %s %s\nquit\n' "$elf" "$dest" \
+        | "$DEBUGFS" -w "$DISK_IMG" 2>&1 | grep -E '(inode|error)' || true
+    rm -f "$elf"
+done
 
 # Verify
 echo "Created $DISK_IMG ($SIZE_MB MB, ext2)"
