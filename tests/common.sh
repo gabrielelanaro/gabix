@@ -40,10 +40,10 @@ build_kernel() {
     echo "[test] building kernel with features: $features"
     (
         cd "$REPO_ROOT"
-        # Force the package build for the custom target without mutating
-        # source files. `cargo bootimage` can otherwise reuse a stale binary
-        # when only the feature set changed between test scripts.
-        cargo clean --target x86_64-mini-os -p mini-os 2>&1 | tail -1
+        # Force a fresh custom-target build. `cargo bootimage` can otherwise
+        # reuse a stale boot image when only the feature set changed between
+        # test scripts.
+        rm -rf target/x86_64-mini-os
         cargo bootimage --features "$features" 2>&1 | tail -3
     )
 }

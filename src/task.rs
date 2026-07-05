@@ -15,6 +15,7 @@
 //! the saved state and the switch work.
 
 use crate::frame_allocator;
+use crate::fs::FdTable;
 use crate::memory;
 use crate::println;
 use crate::process::{Pid, Process, PROCESS_TABLE};
@@ -489,16 +490,18 @@ pub fn spawn_fork_child(
     // once deep_clone has built the real one.
     let pid = {
         let mut table = PROCESS_TABLE.lock();
+        let child_fd_table = table
+            .get(parent_pid)
+            .expect("spawn_fork_child: parent process missing")
+            .fd_table
+            .clone_shallow();
         let proc = Process::new(
             "fork-child",
             Some(parent_pid),
             // Placeholder — deep_clone_from_current() below produces the
             // real AS, then we write it back into the Process.
             memory::AddressSpace::from_current(),
-            // Lesson 2: child starts with an empty FD table. Lesson 5 will
-            // inherit the parent's table (POSIX fork semantics) by cloning
-            // each `Arc<File>` from the parent's table into the child's.
-            crate::fs::FdTable::new(),
+            child_fd_table,
         );
         table.allocate(proc)
     };
@@ -982,18 +985,21 @@ pub fn mark_current_zombie(exit_code: i64) {
         sched.tasks[current].pid
     };
 
-    let (parent_pid, name) = {
+    let (parent_pid, name, closed_fds, old_fd_table) = {
         let mut table = PROCESS_TABLE.lock();
         let proc = table
             .get_mut(pid)
             .expect("mark_current_zombie: current process missing");
         proc.exit_status = Some(exit_code);
-        (proc.parent, proc.name)
+        let closed_fds = proc.fd_table.open_count();
+        let old_fd_table = core::mem::replace(&mut proc.fd_table, FdTable::new());
+        (proc.parent, proc.name, closed_fds, old_fd_table)
     };
+    drop(old_fd_table);
 
     println!(
-        "[sched] task pid={} \"{}\" marked Zombie (exit={})",
-        pid, name, exit_code
+        "[sched] task pid={} \"{}\" marked Zombie (exit={}, closed_fds={})",
+        pid, name, exit_code, closed_fds
     );
 
     // If our parent is Blocked (e.g. inside sys_wait), wake it — its child
@@ -1031,13 +1037,31 @@ pub enum WaitResult {
     WouldBlock,
 }
 
+/// Which child a wait call is interested in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WaitTarget {
+    /// Reap the first exited child owned by the parent.
+    Any,
+    /// Reap this exact child PID.
+    Specific(Pid),
+}
+
+impl WaitTarget {
+    fn matches(self, child_pid: Pid) -> bool {
+        match self {
+            WaitTarget::Any => true,
+            WaitTarget::Specific(target_pid) => child_pid == target_pid,
+        }
+    }
+}
+
 /// Atomically try to reap one Zombie child of `parent_pid`.
 ///
 /// This is deliberately one scheduler operation. Splitting "find zombie",
 /// "check children", "mark blocked", and "reap" into separate helpers left
 /// windows where the timer interrupt could fire while `SCHEDULER` was locked,
 /// then call `yield_now` and deadlock on the same lock.
-pub fn wait_for_zombie_child(parent_pid: Pid) -> WaitResult {
+pub fn wait_for_zombie_child(parent_pid: Pid, target: WaitTarget) -> WaitResult {
     x86_64::instructions::interrupts::without_interrupts(|| {
         let zombie_task_pids = {
             let sched = SCHEDULER.lock();
@@ -1054,7 +1078,7 @@ pub fn wait_for_zombie_child(parent_pid: Pid) -> WaitResult {
             let child_pid = zombie_task_pids.into_iter().find(|&pid| {
                 table
                     .get(pid)
-                    .map(|proc| proc.parent == Some(parent_pid))
+                    .map(|proc| proc.parent == Some(parent_pid) && target.matches(pid))
                     .unwrap_or(false)
             });
 
@@ -1094,16 +1118,18 @@ pub fn wait_for_zombie_child(parent_pid: Pid) -> WaitResult {
             };
         }
 
-        let parent_has_children = {
+        let parent_has_matching_child = {
             let table = PROCESS_TABLE.lock();
-            !table
+            let parent_proc = table
                 .get(parent_pid)
-                .expect("wait_for_zombie_child: parent process missing")
+                .expect("wait_for_zombie_child: parent process missing");
+            parent_proc
                 .children
-                .is_empty()
+                .iter()
+                .any(|&child_pid| target.matches(child_pid))
         };
 
-        if !parent_has_children {
+        if !parent_has_matching_child {
             WaitResult::NoChildren
         } else {
             let mut sched = SCHEDULER.lock();

@@ -374,7 +374,7 @@ extern "C" fn syscall_handler(num: u64, arg1: u64, arg2: u64, arg3: u64) -> u64 
         SYS_FORK => sys_fork(),
         SYS_EXECVE => sys_exec(arg1),
         SYS_EXIT => sys_exit(arg1),
-        SYS_WAIT4 => sys_wait(arg1),
+        SYS_WAIT4 => sys_wait(arg1, arg2),
         _ => u64::MAX,
     }
 }
@@ -676,8 +676,8 @@ fn sys_exit(exit_code: u64) -> u64 {
     panic!("sys_exit: zombie task was rescheduled (this should never happen)");
 }
 
-/// SYS_WAIT4: wait for any child to exit, reap it, return its PID and
-/// write its exit status to the user-provided pointer (if non-NULL).
+/// SYS_WAIT4: wait for a child to exit, reap it, return its PID and
+/// write its exit status to the user-provided pointer if non-NULL.
 ///
 /// Linux semantics (simplified):
 ///   - If parent has a Zombie child: reap it immediately. Return child PID.
@@ -686,19 +686,38 @@ fn sys_exit(exit_code: u64) -> u64 {
 ///   - If parent has no children at all: return -1 (ECHILD).
 ///
 /// Args:
-///   - arg1 (rdi): pointer to a user u64 where exit status will be written,
-///     or 0 (NULL) to ignore.
+///   - arg1 (rdi): target PID, or `u64::MAX` to wait for any child.
+///   - arg2 (rsi): pointer to a user i64 where exit status will be written,
+///     or 0 to ignore.
 ///
 /// Returns:
 ///   - Child PID on success.
 ///   - `u64::MAX` (which user code reads as -1) if no children.
-fn sys_wait(exit_status_ptr: u64) -> u64 {
+fn sys_wait(target_pid_raw: u64, exit_status_ptr: u64) -> u64 {
+    use crate::process::Pid;
+    use crate::task::{WaitResult, WaitTarget};
+
     let parent_pid = crate::task::current_pid();
-    println!("[syscall] sys_wait4 (parent pid={})", parent_pid);
+    let target = if target_pid_raw == u64::MAX {
+        WaitTarget::Any
+    } else if target_pid_raw > 0 {
+        WaitTarget::Specific(Pid::new(target_pid_raw))
+    } else {
+        println!(
+            "[syscall] sys_wait4 unsupported target pid={} (parent pid={})",
+            target_pid_raw, parent_pid
+        );
+        return u64::MAX;
+    };
+
+    println!(
+        "[syscall] sys_wait4 (parent pid={}, target={:?})",
+        parent_pid, target
+    );
 
     loop {
-        match crate::task::wait_for_zombie_child(parent_pid) {
-            crate::task::WaitResult::Reaped { child_pid, exit_status } => {
+        match crate::task::wait_for_zombie_child(parent_pid, target) {
+            WaitResult::Reaped { child_pid, exit_status } => {
                 println!(
                     "[syscall] sys_wait4 -> child pid={} (exit={})",
                     child_pid, exit_status
@@ -716,15 +735,14 @@ fn sys_wait(exit_status_ptr: u64) -> u64 {
                 }
                 return child_pid.into();
             }
-            crate::task::WaitResult::NoChildren => {
-                println!("[syscall] sys_wait4 -> no children, returning -1");
+            WaitResult::NoChildren => {
+                println!("[syscall] sys_wait4 -> no matching children, returning -1");
                 return u64::MAX; // -1 / ECHILD
             }
-            crate::task::WaitResult::WouldBlock => {
-                println!("[syscall] sys_wait4 — no Zombie child yet, blocking");
+            WaitResult::WouldBlock => {
+                println!("[syscall] sys_wait4 waiting for target {:?}", target);
                 crate::task::yield_now();
-                // When yield_now returns, we've been rescheduled — likely because
-                // a child exited and woke us. Loop to check for a Zombie again.
+                // When yield_now returns, the parent checks the target again.
             }
         }
     }

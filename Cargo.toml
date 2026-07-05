@@ -21,3 +21,8 @@ test-mode = []
 # Used together with test-mode by scripts/test-fork.sh to verify sys_fork
 # + sys_wait4 end-to-end. Build with: cargo bootimage --features test-mode,test-fork
 test-fork = []
+
+# When enabled, the kernel exec's /inherit_wait.elf instead of /hello.elf.
+# Used together with test-mode by tests/test_inherit_wait.sh to verify fork
+# FD inheritance, exit-time FD cleanup, and wait-by-PID.
+test-inherit = []

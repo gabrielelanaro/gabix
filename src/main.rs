@@ -386,8 +386,8 @@ pub extern "C" fn _start(boot_info: &'static BootInfo) -> ! {
                 let entries = ext2::walk_directory(&mut virtio_dev, &root_inode);
                 println!("[ext2] walk complete: {} live entries", entries.len());
 
-                // Verify we got exactly the 6 entries mkfs + Lesson 14 + Lesson 15 created
-                assert_eq!(entries.len(), 7, "expected 7 entries (., .., lost+found, hello.txt, secret.txt, hello.elf, fork_smoke.elf)");
+                // Verify we got exactly the entries mkfs + Lesson 14 + fixture builds created
+                assert_eq!(entries.len(), 8, "expected 8 entries (., .., lost+found, hello.txt, secret.txt, hello.elf, fork_smoke.elf, inherit_wait.elf)");
 
                 // Find by name to verify each
                 let dot = entries.iter().find(|e| e.name == b".").expect("missing .");
@@ -533,7 +533,7 @@ pub extern "C" fn _start(boot_info: &'static BootInfo) -> ! {
     syscall::init();
 
     // ========================================================
-    // Lesson 16: exec /hello.elf (or /fork_smoke.elf under test-fork)
+    // Lesson 16: exec /hello.elf, with feature-selected fixture programs for tests
     // ========================================================
     // This is the mission landing. The kernel:
     //   1. Resolves the user ELF via VFS (Lessons 1-14)
@@ -543,13 +543,12 @@ pub extern "C" fn _start(boot_info: &'static BootInfo) -> ! {
     //   5. Switches CR3 and iretqs to e_entry
     // The program runs in ring 3 from a binary that came from disk.
     //
-    // Under `--features test-fork`, we exec /fork_smoke.elf instead of
-    // /hello.elf. The fork_smoke program exercises sys_fork + sys_wait4;
-    // scripts/test-fork.sh greps the serial output for [fork_smoke]
-    // markers from both parent and child branches.
-    #[cfg(feature = "test-fork")]
+    // Under test fixtures, exec the selected user program from disk.
+    #[cfg(feature = "test-inherit")]
+    let user_elf_path: &str = "/inherit_wait.elf";
+    #[cfg(all(not(feature = "test-inherit"), feature = "test-fork"))]
     let user_elf_path: &str = "/fork_smoke.elf";
-    #[cfg(not(feature = "test-fork"))]
+    #[cfg(all(not(feature = "test-inherit"), not(feature = "test-fork")))]
     let user_elf_path: &str = "/hello.elf";
 
     println!("[test] exec {} (16.1-16.4) — the mission", user_elf_path);

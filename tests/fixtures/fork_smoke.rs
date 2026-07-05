@@ -55,17 +55,17 @@ fn sys_write(fd: u64, buf: &[u8]) -> u64 {
     ret
 }
 
-/// sys_wait_any — wait for any child to exit. Our kernel's sys_wait treats
-/// arg1 as the exit-status pointer (NULL = don't write status). Linux's
-/// wait4 has more args (pid, wstatus, options, rusage), but our kernel only
-/// implements the "wait for any child, optional status write" subset.
+/// sys_wait_any — wait for any child to exit. Our kernel's wait4 subset uses
+/// arg1 as the target pid (-1 = any child) and arg2 as the optional status
+/// pointer.
 fn sys_wait_any() -> u64 {
     let ret;
     unsafe {
         core::arch::asm!(
             "syscall",
             in("rax") 61,
-            in("rdi") 0u64, // exit_status_ptr = NULL (don't care about status)
+            in("rdi") u64::MAX, // target pid = -1, any child
+            in("rsi") 0u64,     // exit_status_ptr = NULL
             lateout("rax") ret,
             lateout("rcx") _,
             lateout("r11") _,

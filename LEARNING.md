@@ -520,6 +520,13 @@ A milestone is a "demo-able" checkpoint. Worth a commit + tag + log entry.
 
 Most recent entries at the top. One entry per work session.
 
+### 2026-07-05 (lesson 18) — FD inheritance, exit cleanup, wait by PID
+- **Done:** Implemented Lesson 18's process-lifecycle slice. Added `FdTable::clone_shallow()` and `FdTable::open_count()`, made `spawn_fork_child` copy the parent's FD table into the child, made `mark_current_zombie` replace the exiting process's FD table with an empty table and log how many descriptors were closed, and extended `sys_wait4` to accept a target PID plus status pointer. Added `WaitTarget::{Any, Specific(Pid)}` so `wait(-1, status)` still reaps any child while `wait(pid, status)` tracks one child.
+- **Status:** Roadmap checkboxes unchanged. This closes the Lesson 18 lifecycle work that sits between the completed fork/exec/wait milestone and later scheduler/address-space cleanup.
+- **Verification:** Rebuilt `disk.img` with `/inherit_wait.elf`. `cargo check --features test-mode,test-fork` passed with the existing 51-warning baseline. `cargo check --features test-mode,test-inherit` passed with the same baseline. `./tests/test_inherit_wait.sh`, `./tests/test_fork_smoke.sh`, `./tests/test_hello.sh`, and `./tests/run.sh` all passed. The new inherit test confirms the child reads through an inherited FD, parent receives exit status 7 from `wait(pid)`, the shared file cursor advances, and both processes log `closed_fds=1`.
+- **Docs:** Added `tours/tour-0018-inherit-exit-reap.html`, linked it from Lesson 18, and kept the tour low on jargon.
+- **Next:** Decide whether Lesson 19 should tackle signal delivery (`SIGCHLD`) or scheduler cleanup for dead task entries.
+
 ### 2026-07-05 (lesson 17) — Real process table wired into fork/exec/wait
 - **Done:** Finished Lesson 17's process-table refactor. Added `ProcessTable` as the owner of stable `Pid` allocation, moved process-shaped state (`name`, parent/children, exit status, address space, fd table) off `Task`, and left `Task` with scheduler state plus a `pid` back-reference. Re-pointed `current_pid`, fd-table access, address-space lookup, `mark_current_zombie`, `wait_for_zombie_child`, and `replace_current_address_space` through `PROCESS_TABLE` with scheduler/process locks acquired separately under interrupts-disabled sections. Renamed the per-task ring-3 entry stack field to `entry_stack_top`, linked Lesson 17 from Lesson 16's footer, and added the Lesson 17 code tour.
 - **Status:** No roadmap checkbox changed. Month 4 item 4.3 was already complete; this was structural cleanup before process lifecycle work.

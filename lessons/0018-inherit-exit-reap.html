@@ -1,0 +1,531 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Lesson 18 — Inherit, exit, reap</title>
+<link rel="stylesheet" href="../assets/lesson.css">
+<style>
+  .lifecycle {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1.5rem;
+    margin: 1.5rem 0;
+    overflow-x: auto;
+  }
+  .lifecycle pre {
+    background: transparent;
+    color: var(--text);
+    font-size: 0.86rem;
+    line-height: 1.5;
+    margin: 0;
+    padding: 0;
+  }
+  .lifecycle .lbl {
+    color: var(--accent);
+    font-weight: 600;
+  }
+  .lifecycle .st {
+    color: var(--text);
+    font-weight: 600;
+  }
+  .transition-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 1.25rem 0;
+    font-size: 0.92rem;
+  }
+  .transition-table th, .transition-table td {
+    text-align: left;
+    padding: 0.5rem 0.65rem;
+    border-bottom: 1px solid var(--border);
+    vertical-align: top;
+  }
+  .transition-table th {
+    font-family: var(--font-sans);
+    font-size: 0.78rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--text-dim);
+  }
+  .transition-table td code { color: var(--accent); }
+  .transition-table tr.inherit td:nth-child(1) { color: #15803d; font-weight: 600; }
+  .transition-table tr.release  td:nth-child(1) { color: #b45309; font-weight: 600; }
+  .transition-table tr.retire   td:nth-child(1) { color: #6d28d9; font-weight: 600; }
+  .fd-diagram {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1.5rem;
+    margin: 1.5rem 0;
+    overflow-x: auto;
+  }
+  .fd-diagram pre {
+    background: transparent;
+    color: var(--text);
+    font-size: 0.82rem;
+    line-height: 1.5;
+    margin: 0;
+    padding: 0;
+  }
+  .fd-diagram .share { color: var(--accent); }
+  .fd-diagram .own   { color: var(--text-dim); }
+  .wait-dispatch {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 1.25rem 0;
+    font-size: 0.92rem;
+  }
+  .wait-dispatch th, .wait-dispatch td {
+    text-align: left;
+    padding: 0.45rem 0.6rem;
+    border-bottom: 1px solid var(--border);
+  }
+  .wait-dispatch th {
+    font-family: var(--font-sans);
+    font-size: 0.78rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--text-dim);
+  }
+  .wait-dispatch td code { color: var(--accent); }
+</style>
+</head>
+<body>
+<article class="lesson">
+
+  <header class="lesson-header">
+    <div class="lesson-eyebrow">Lesson 18 · Phase 1 · process lifecycle</div>
+    <h1 class="lesson-title">Inherit, exit, reap</h1>
+    <p class="lesson-subtitle">Three lifecycle transitions, three resource consequences. Fork gives the child the parent's open files. Exit releases them. Wait retires the PID — and now waits for a specific child.</p>
+    <div class="lesson-meta">
+      <span><strong>Read time</strong> ~12 min</span>
+      <span><strong>Build time</strong> ~40–60 min</span>
+      <span><strong>Prereq</strong> Lesson 17 (ProcessTable with stable PIDs)</span>
+    </div>
+  </header>
+
+  <div class="content">
+
+  <p class="lead">
+    The kernel can <code>fork</code>, <code>exec</code>, <code>wait</code>, and <code>exit</code> —
+    and the transitions between those states leak. A fork child starts with an
+    empty file descriptor table, so it loses every file the parent had open.
+    An exit leaves the file descriptors sitting in the <code>ProcessTable</code>
+    until the parent reaps, so an orphaned process leaks its files forever. A
+    wait reaps <em>any</em> child, never the specific one the parent asked for.
+    This lesson closes all three gaps.
+  </p>
+
+  <h2>Where we are in the process layer</h2>
+
+  <div class="layer-stack">
+    <div class="layer-row">
+      <span class="layer-name">syscalls (fork / exec / wait / exit)</span>
+      <span class="layer-desc">working, end-to-end</span>
+    </div>
+    <div class="layer-row">
+      <span class="layer-name">ProcessTable — stable PIDs</span>
+      <span class="layer-desc">Lesson 17; reaping already removes the slot</span>
+    </div>
+    <div class="layer-row current">
+      <span class="layer-name">Lifecycle transitions ← Lesson 18</span>
+      <span class="layer-desc">inherit FDs at fork, release at exit, reap by PID at wait</span>
+    </div>
+    <div class="layer-row">
+      <span class="layer-name">Scheduler (run queue + context switch)</span>
+      <span class="layer-desc">already built; Dead tasks still leak from the Vec — deferred</span>
+    </div>
+    <div class="layer-row">
+      <span class="layer-name">AddressSpace + frame allocator</span>
+      <span class="layer-desc">M2 — address-space teardown at exit deferred to a later slice</span>
+    </div>
+  </div>
+
+  <h2>The lifecycle, three transitions</h2>
+
+  <p>
+    A process moves through four states. Three transitions connect them, and
+    each transition moves a different kind of resource.
+  </p>
+
+  <div class="lifecycle">
+<pre>            <span class="lbl">fork()</span>                  <span class="lbl">exit()</span>                <span class="lbl">wait()</span>
+         ─────────▶                ─────────▶              ─────────▶
+  <span class="st">Created</span>              <span class="st">Running</span>              <span class="st">Zombie</span>              <span class="st">Reaped</span>
+  (in ProcessTable,      (on the run queue,       (off the run queue,     (slot = None,
+   not yet runnable)      being scheduled)         exit_status set)        PID retired)
+
+   child gets a copy        child drops its          parent reads exit
+   of parent's FD table     FD table on the way     status, table slot
+   (Arc clone per slot)     to Zombie               is set to None</pre>
+  </div>
+
+  <table class="transition-table">
+    <thead>
+      <tr><th>Transition</th><th>Who triggers it</th><th>Resource consequence</th></tr>
+    </thead>
+    <tbody>
+      <tr class="inherit"><td>fork → Created</td><td>parent calls <code>sys_fork</code></td><td>child gets a copy of the parent's FD (File Descriptor) table — each <code>Arc&lt;File&gt;</code> cloned, refcount bumped</td></tr>
+      <tr class="release"><td>exit → Zombie</td><td>child calls <code>sys_exit</code></td><td>child's FD table drops on the way to Zombie — <code>Arc&lt;File&gt;</code> refcounts fall, files with no remaining references free</td></tr>
+      <tr class="retire"><td>wait → Reaped</td><td>parent calls <code>sys_wait</code></td><td>child's <code>ProcessTable</code> slot is set to <code>None</code>; PID retired; the <code>Process</code> struct drops</td></tr>
+    </tbody>
+  </table>
+
+  <p>
+    Three resources, three release points. Mixing them — releasing FDs at reap
+    instead of at exit, or retiring the PID at exit instead of at wait —
+    breaks a property the system depends on. The next three sections take
+    each transition in turn.
+  </p>
+
+  <h2>Fork inherits — POSIX semantics</h2>
+
+  <p>
+    When a process forks, the child must see the same open files the parent
+    had. POSIX (Portable Operating System Interface, the IEEE standard that
+    Unix-like systems follow) specifies: the child's FD numbers match the
+    parent's, and each FD in the child points to the <em>same open file
+    description</em> — same cursor, same inode. This is the property that
+    makes shell pipelines work. The parent opens a pipe on fd=3, forks, the
+    child inherits fd=3 and reads from it; the bytes flow through the one
+    shared open file.
+  </p>
+
+  <p>
+    In our types this is one <code>Arc&lt;File&gt;</code> clone per slot. The
+    <code>File</code> (cursor + inode reference) is shared; the
+    <code>FdTable</code> (the integer→File map) is copied. The Arc refcount
+    goes from 1 to 2. A separate <code>open()</code> of the same inode by a
+    different process produces an <em>independent</em> <code>File</code> with
+    its own cursor — the Arc is the dividing line.
+  </p>
+
+  <div class="fd-diagram">
+<pre>  Parent fd_table                 Child fd_table (after fork)
+  ┌──────────┐                    ┌──────────┐
+  │ fd=3 ────┼──→ <span class="share">Arc&lt;File&gt; ◀──────┤ fd=3</span>   <span class="own">shared cursor, shared inode</span>
+  │ fd=4 ────┼──→ <span class="share">Arc&lt;File&gt; ◀──────┤ fd=4</span>   <span class="own">shared cursor, shared inode</span>
+  │ fd=5     │ (empty)             │ fd=5     │ (empty — both see the same hole)
+  └──────────┘                    └──────────┘
+
+  Two separate open()s of /hello.txt would produce TWO Arc&lt;File&gt;s
+  (independent cursors). fork() and dup() produce ONE Arc&lt;File&gt; seen
+  through two table entries (shared cursor). The Arc is the unit of sharing.</pre>
+  </div>
+
+  <div class="margin-note">
+    <strong>Linux parallel:</strong> <code>dup_fd()</code> in
+    <a href="https://elixir.bootlin.com/linux/latest/source/kernel/fork.c">kernel/fork.c</a>
+    is the function that copies the parent's <code>files_struct</code> into the
+    child. It clones each <code>file</code> pointer (bumping <code>f_count</code>)
+    and copies the FD bitmap. Our <code>FdTable::clone_shallow</code> is the same
+    operation with <code>Arc</code> standing in for the atomic refcount.
+  </div>
+
+  <h2>Exit closes — release at the right moment</h2>
+
+  <p>
+    When a process calls <code>sys_exit</code>, it enters the zombie state. A zombie
+    keeps three things: its PID, its parent PID, and its exit status. Those
+    stay so the parent's <code>wait</code> can read them. Everything else is
+    gone — the FD table, the address space contents, the register frame.
+  </p>
+
+  <p>
+    Today, <code>sys_exit</code> calls <code>mark_current_zombie</code>, which
+    sets the state and the exit status and yields. The <code>Process</code>
+    in the table still holds its <code>fd_table</code>. The FDs only get
+    released when the parent reaps — <code>wait_for_zombie_child</code> calls
+    <code>table.remove(child_pid)</code>, the <code>Process</code> drops, the
+    <code>fd_table</code> drops, the <code>Arc&lt;File&gt;</code> refcounts
+    fall. If the parent never reaps — a buggy parent, or an orphan whose
+    original parent died before waiting — the FDs leak. The file stays
+    "open" forever, its inode pinned alive.
+  </p>
+
+  <p>
+    The fix is to close the FDs at exit, at the moment the process stops
+    using them. <code>mark_current_zombie</code> swaps the zombie's
+    <code>fd_table</code> for an empty one before it yields. The old table
+    drops in scope; the <code>Arc&lt;File&gt;</code> refcounts fall; files
+    with no remaining references get freed. The zombie keeps its PID and
+    exit status for the parent. It carries no file resources.
+  </p>
+
+  <div class="split-view">
+    <div class="split-card before">
+      <h4>Before exit (Running)</h4>
+<pre style="margin:0;">Process {
+  pid: 7,
+  parent: 2,
+  exit_status: None,
+  fd_table: [fd3, fd4],   ← held
+  address_space: <pml4>,  ← held (leaks on exit,
+                             deferred to a later slice)
+}</pre>
+    </div>
+    <div class="split-card after">
+      <h4>After exit (Zombie)</h4>
+<pre style="margin:0;">Process {
+  pid: 7,                ← kept for wait
+  parent: 2,              ← kept for wait
+  exit_status: Some(42),  ← kept for wait
+  fd_table: [],           ← released
+  address_space: <pml4>,  ← still leaks (deferred)
+}</pre>
+    </div>
+  </div>
+
+  <p>
+    The address space also leaks, on purpose for this lesson. Releasing it
+    requires unmapping every user page and recursively freeing the PML4
+    (Page Map Level 4), PDPT, PD, PT (Page Table) frames — a real page-table
+    walk. That cleanup is bigger than this lesson and deserves its own slice.
+    FDs close here because their lifecycle matches exit: a process that has
+    exited will never read or write another file.
+  </p>
+
+  <h2>Wait reaps — and now by PID</h2>
+
+  <p>
+    <code>sys_wait</code> today takes one argument — a user pointer to write
+    the exit status into — and reaps whichever zombie child it finds first.
+    A parent with three children cannot wait for a specific one. It gets
+    whichever one happened to die first.
+  </p>
+
+  <p>
+    Linux's <code>wait4(pid, wstatus, options, rusage)</code> takes a pid
+    argument that selects the target:
+  </p>
+
+  <table class="wait-dispatch">
+    <thead>
+      <tr><th><code>pid</code> argument</th><th>Meaning</th><th>Mini-os</th></tr>
+    </thead>
+    <tbody>
+      <tr><td><code>pid &gt; 0</code></td><td>wait for that specific child</td><td>implemented this lesson</td></tr>
+      <tr><td><code>pid == -1</code></td><td>wait for any child</td><td>already works (current behavior, kept as default)</td></tr>
+      <tr><td><code>pid == 0</code></td><td>wait for any child in the same process group</td><td>out of scope — no process groups exist yet</td></tr>
+      <tr><td><code>pid &lt; -1</code></td><td>wait for any child in process group <code>|pid|</code></td><td>out of scope</td></tr>
+    </tbody>
+  </table>
+
+  <p>
+    We add the pid argument to <code>sys_wait</code> and a
+    <code>WaitTarget</code> enum (<code>Any</code> or <code>Specific(Pid)</code>)
+    to <code>wait_for_zombie_child</code>. The reap itself —
+    <code>table.remove</code>, child Task marked <code>Dead</code> — already
+    works from Lesson 17. This lesson only changes the <em>selection</em>
+    of which zombie to reap.
+  </p>
+
+  <div class="margin-note">
+    <strong>Linux parallel:</strong> <code>do_waitpid()</code> in
+    <a href="https://elixir.bootlin.com/linux/latest/source/kernel/exit.c">kernel/exit.c</a>
+    branches on the <code>pid</code> argument the same way. <code>release_task()</code>
+    in the same file is the actual reap — it removes the task from all the
+    lists and frees the <code>task_struct</code>. Our <code>table.remove</code>
+    is the slot-indexed analog.
+  </div>
+
+  <h2>The build — four commits</h2>
+
+  <div class="recipe">
+    <div class="recipe-step">
+      <div class="recipe-num">1</div>
+      <div class="recipe-body">
+        <strong>New method <code>FdTable::clone_shallow</code> in <code>src/fs.rs</code>.</strong>
+        Iterates <code>self.table</code>, clones each
+        <code>Option&lt;Arc&lt;File&gt;&gt;</code> into a fresh
+        <code>Vec</code>, returns a new <code>FdTable</code> sharing every
+        <code>File</code> the parent had open with matching FD numbers.
+        Pure addition — no syscall, no behavior change, nothing calls it
+        yet.
+      </div>
+    </div>
+    <div class="recipe-step">
+      <div class="recipe-num">2</div>
+      <div class="recipe-body">
+        <strong>FD inheritance in <code>spawn_fork_child</code> (<code>src/task.rs</code>).</strong>
+        Read the parent's <code>fd_table</code> out of
+        <code>PROCESS_TABLE</code> (under the existing lock, before
+        allocating the child), call <code>clone_shallow</code>, pass the
+        result to <code>Process::new</code> instead of
+        <code>FdTable::new()</code>. The comment that said "Lesson 5 will
+        inherit" comes true. The existing <code>fork_smoke</code> test
+        must still pass.
+      </div>
+    </div>
+    <div class="recipe-step">
+      <div class="recipe-num">3</div>
+      <div class="recipe-body">
+        <strong>Close FDs at exit in <code>mark_current_zombie</code> (<code>src/task.rs</code>).</strong>
+        After setting <code>exit_status</code>, swap
+        <code>proc.fd_table</code> for <code>FdTable::new()</code> and drop
+        the old one in scope. Add a log line counting how many FDs were
+        closed. A zombie carries PID + parent + exit status; it carries no
+        file resources.
+      </div>
+    </div>
+    <div class="recipe-step">
+      <div class="recipe-num">4</div>
+      <div class="recipe-body">
+        <strong><code>wait(pid, status_ptr)</code> — extend <code>sys_wait</code> (<code>src/syscall.rs</code>) and <code>wait_for_zombie_child</code> (<code>src/task.rs</code>).</strong>
+        Add a <code>WaitTarget</code> enum
+        (<code>Any</code> / <code>Specific(Pid)</code>). <code>sys_wait</code>
+        reads <code>arg1</code> as the target pid (positive = specific,
+        <code>-1</code> / <code>u64::MAX</code> = any) and shifts the
+        status pointer to <code>arg2</code>. The <code>WouldBlock</code>
+        arm now blocks if the <em>specific</em> child is still alive, even
+        when other children are zombies. Update the fork smoke test (or
+        add a new <code>test_inherit.sh</code>) to wait for a child by PID
+        and read its exit code.
+      </div>
+    </div>
+  </div>
+
+  <div class="callout">
+    <div class="callout-title">What this lesson does <em>not</em> do</div>
+    <p style="margin:0;">
+      <strong>Address-space teardown at exit</strong> — the PML4 and user
+      pages leak. Real Linux does this in <code>exit_mm()</code> in
+      <code>kernel/exit.c</code>; we defer it to its own memory-cleanup
+      slice. <strong>Dead Task removal from the scheduler's
+      <code>Vec&lt;Box&lt;Task&gt;&gt;</code></strong> — Dead tasks stay in
+      the vector, skipped by the run-queue scan. Removing them shifts
+      indices and requires fixing <code>sched.current</code>; deferred to a
+      scheduler-cleanup slice. <strong>SIGCHLD</strong> — the parent still
+      blocks inside <code>sys_wait</code> and gets woken by
+      <code>mark_current_zombie</code>'s parent-wake path. Asynchronous
+      signal delivery is a separate lesson.
+    </p>
+  </div>
+
+  <h2>The win</h2>
+
+  <p>
+    After step 4, all of the following are true:
+  </p>
+
+  <ul>
+    <li>
+      A forked child inherits the parent's open files. Shell-style FD
+      plumbing works: parent opens a file, forks, child reads from the
+      inherited fd and sees the same cursor the parent left.
+    </li>
+    <li>
+      A process that exits releases its files immediately, at the moment it
+      stops using them — not when the parent gets around to reaping. An
+      orphan releases its FDs on the exit path.
+    </li>
+    <li>
+      A parent can <code>wait</code> for a specific child by PID, reading
+      that child's exit code. <code>wait(-1)</code> still reaps any child.
+    </li>
+  </ul>
+
+  <p>
+    Together, the three transitions now move the right resources at the
+    right moment. The process layer has a real lifecycle, where every
+    resource acquired at fork is released at exactly one later point.
+  </p>
+
+  <h2>Primary source</h2>
+
+  <p>
+    Read <a href="https://elixir.bootlin.com/linux/latest/source/kernel/fork.c"><code>dup_fd()</code> in kernel/fork.c</a>
+    for the FD-inheritance machinery — it is the cleanest statement of
+    "clone each <code>file</code> pointer, bump the refcount, copy the FD
+    bitmap" in the kernel. Then read
+    <a href="https://elixir.bootlin.com/linux/latest/source/kernel/exit.c"><code>do_exit()</code> and <code>release_task()</code> in kernel/exit.c</a>
+    for the symmetric teardown: <code>do_exit</code> calls
+    <code>exit_files()</code> to close FDs <em>at exit</em> (the point this
+    lesson makes), and <code>release_task</code> is the actual reap that
+    frees the <code>task_struct</code> once the parent has read the exit
+    status. The separation between those two functions is exactly the
+    separation between this lesson's step 3 (close at exit) and step 4
+    (reap at wait).
+  </p>
+
+  <p>
+    For the conceptual framing of the process lifecycle, OSTEP's
+    <a href="https://pages.cs.wisc.edu/~remzi/OSTEP/cpu-api.pdf">Chapter 5 — "Interlude: Process API"</a>
+    (free PDF) covers <code>fork</code>, <code>wait</code>, and <code>exec</code>
+    as the three primitives and walks through why a parent <code>wait</code>s
+    on a specific child.
+  </p>
+
+  <div class="probe">
+    <div class="probe-title">Probe — check the model before you build</div>
+    <p>
+      A parent opens <code>/hello.txt</code> on fd=3, reads 5 bytes, then
+      forks. The child reads 5 bytes from fd=3, then exits. The parent
+      returns from <code>wait</code> and reads 5 more bytes from fd=3.
+      How many bytes has the parent read in total — 5, 10, or 15 — and
+      which one is right, and why?
+    </p>
+  </div>
+
+  <p>
+    When you have an answer (or a question), say it back to me. I am your
+    teacher for this material — if any step of the build is unclear, or
+    you want to push back on closing FDs at exit rather than at reap, this
+    is the moment.
+  </p>
+
+  </div>
+
+  <footer class="lesson-footer">
+    <div class="footer-block">
+      <h4>What this unlocks</h4>
+      <p style="margin:0;">
+        A real shell (the Phase 1 endpoint) can now fork, let the child
+        inherit stdin/stdout, and wait for that specific child to finish
+        before prompting again. The next Phase 1 item — signal delivery
+        (<code>SIGCHLD</code> when a child exits) — builds on the
+        parent-wake path this lesson keeps intact.
+      </p>
+    </div>
+
+    <div class="footer-block">
+      <h4>Code tour</h4>
+      <p style="margin:0;">
+        Read the companion walkthrough:
+        <a href="../tours/tour-0018-inherit-exit-reap.html">tour-0018-inherit-exit-reap.html</a>.
+        It follows the Rust through <code>src/fs.rs</code>,
+        <code>src/task.rs</code>, and <code>src/syscall.rs</code> with
+        the serial-output verification.
+      </p>
+    </div>
+
+    <div class="footer-block">
+      <h4>Primary source</h4>
+      <p style="margin:0;">
+        <a href="https://elixir.bootlin.com/linux/latest/source/kernel/fork.c"><code>kernel/fork.c</code> (dup_fd)</a> ·
+        <a href="https://elixir.bootlin.com/linux/latest/source/kernel/exit.c"><code>kernel/exit.c</code> (do_exit, release_task)</a> ·
+        <a href="https://pages.cs.wisc.edu/~remzi/OSTEP/cpu-api.pdf">OSTEP Ch. 5 (PDF)</a>
+      </p>
+    </div>
+
+    <div class="footer-block">
+      <h4>Read next</h4>
+      <p style="margin:0;">
+        <a href="0017-real-process-table.html">← Lesson 17 (real process table)</a> —
+        the prior lesson, where stable PIDs landed. Lesson 19 (signal
+        delivery) is the natural sequel.
+      </p>
+    </div>
+
+    <nav class="lesson-nav">
+      <a href="0017-real-process-table.html">← L17 process table</a>
+      <a href="../MISSION.md">Mission</a>
+      <span class="placeholder">L19 (signals) →</span>
+    </nav>
+  </footer>
+
+</article>
+</body>
+</html>

@@ -306,6 +306,20 @@ impl FdTable {
         Self { table: Vec::new() }
     }
 
+    /// Copy the table entries while sharing the same open `File`s.
+    /// Each cloned `Arc<File>` points at the same cursor and inode, which
+    /// is the behavior `fork` needs for inherited file descriptors.
+    pub fn clone_shallow(&self) -> Self {
+        Self {
+            table: self.table.clone(),
+        }
+    }
+
+    /// Count currently-open descriptors. Used for lifecycle log lines.
+    pub fn open_count(&self) -> usize {
+        self.table.iter().filter(|slot| slot.is_some()).count()
+    }
+
     /// Insert `file` at the lowest free FD number, return that number.
     ///
     /// "Lowest free" matches POSIX `open()` semantics — after closing FD 3,
