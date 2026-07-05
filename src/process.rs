@@ -16,12 +16,6 @@
 //! becomes `None` permanently. The simplest shape that satisfies the
 //! "once a process has been named N, no other process is ever N" rule.
 
-// Lesson 17 step 1: the table is allocated and PID 0 is registered at
-// boot, but nothing reads it yet. Steps 2–3 move process-shaped state
-// off `Task` and re-point the accessors here; this allow comes off then.
-#![allow(dead_code)]
-
-
 use crate::fs::FdTable;
 use crate::memory::AddressSpace;
 use crate::println;

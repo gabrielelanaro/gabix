@@ -4,12 +4,20 @@
 //! - Slice 3.2: `switch()` (the actual register swap) and a minimal
 //!   cooperative scheduler (`spawn`, `yield_now`).
 //!
+//! Lesson 17 split the process-shaped fields (id/name/parent/children/
+//! exit_status/address_space/fd_table) off to `Process` in `src/process.rs`.
+//! What stays on `Task` is purely the scheduler side: how to resume a
+//! paused register frame on a known stack. A `Task` carries a `pid`
+//! back-reference so the scheduler can ask the process table "what
+//! address space / fd table / parent does this task belong to?"
+//!
 //! See `docs/context-switch.html` for the visual walkthrough of how
 //! the saved state and the switch work.
 
 use crate::frame_allocator;
 use crate::memory;
 use crate::println;
+use crate::process::{Pid, Process, PROCESS_TABLE};
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::arch::naked_asm;
@@ -56,51 +64,32 @@ pub struct TaskContext {
     pub rsp: u64,
 }
 
-/// A schedulable task. Started small in slice 3.1; extended in 4.3.a
-/// with process-tree fields (parent, children, exit_status) in
-/// preparation for `fork`/`wait` semantics.
-///
-/// Slice 4.4.b added `address_space`: every task holds one. Kernel
-/// threads (main, idle, workers) all share the kernel bootstrap AS via
-/// `AddressSpace::from_current()`. User processes (eventually created by
-/// `fork`) get their own via `AddressSpace::new()`.
+/// A schedulable task — the scheduler-side view of a paused register
+/// frame. Lesson 17 moved every process-shaped field (identity, tree,
+/// memory, files) to `Process` in `src/process.rs`. `Task` keeps a `pid`
+/// back-reference so the scheduler can reach the process table when it
+/// needs address-space or fd-table information.
 pub struct Task {
-    pub id: u64,
-    pub name: &'static str,
+    /// Back-reference to this task's process. Set at task creation and
+    /// never changes. The scheduler locks SCHEDULER to read this, drops
+    /// the lock, then locks PROCESS_TABLE to read whatever process-side
+    /// field it needs — never holds both at once.
+    pub pid: Pid,
     pub state: TaskState,
     pub context: TaskContext,
-    /// Virtual address of the very top of this task's stack. Kept so we
-    /// can free the stack frames later when the task exits.
+    /// Virtual address of the very top of this task's kernel stack. Kept
+    /// so we can free the stack frames later when the task exits.
     pub stack_top: u64,
     /// The user-provided entry function. Not called directly — `switch`
     /// jumps into `trampoline`, which looks this up and calls it after
-    /// enabling interrupts. See `trampoline` for why.
+    /// enabling interrupts. See `trampoline` for why. Unused for fork
+    /// children (they go through `fork_trampoline` instead).
     pub entry_fn: unsafe extern "C" fn(),
-    /// Parent task ID, if any. `None` for the initial main task. Set by
-    /// `fork` (when implemented). Used by `wait` and for orphan
-    /// reparenting on parent exit.
-    pub parent: Option<u64>,
-    /// Child task IDs. Empty until `fork` creates children. Used by
-    /// `wait(-1)` (wait for any child) and for reparenting on exit.
-    pub children: Vec<u64>,
-    /// Exit code set by `sys_exit`. `None` while the task is still
-    /// running. Read by the parent's `wait` call.
-    pub exit_status: Option<i64>,
-    /// This task's address space — the PML4 the CPU should use when
-    /// running this task. Switched via CR3 on context switch.
-    pub address_space: crate::memory::AddressSpace,
-    /// Top of this task's dedicated syscall stack. When this task is
-    /// running and user code executes `syscall`, `syscall_entry` switches
-    /// to this stack. Per-task because a shared syscall stack gets
-    /// overwritten when one task's syscall context is paused (via timer
-    /// preemption) and another task's syscall runs on top of it.
+    /// Top of this task's ring-3 entry stack. Syscall entry and timer
+    /// interrupts from user mode both land here. Per-task because shared
+    /// entry stacks corrupt paused syscall frames during preemption.
     /// Updated into `KERNEL_RSP` by `yield_now` on every context switch.
-    pub syscall_stack_top: u64,
-    /// Per-process file descriptor table. Maps FD numbers (0, 1, 2, ...)
-    /// to `Arc<File>` entries. Empty at task creation in Lesson 2 — fork
-    /// inheritance lands in a later slice. Accessed from syscall handlers
-    /// via `task::with_current_fd_table`.
-    pub fd_table: crate::fs::FdTable,
+    pub entry_stack_top: u64,
 }
 
 impl Task {
@@ -111,8 +100,12 @@ impl Task {
     /// - Pre-populates the top of the stack with faked "saved state" so
     ///   the same context-switch routine that resumes old tasks can also
     ///   start this brand-new one. See `docs/context-switch.html`.
-    pub fn new(id: u64, name: &'static str, entry_fn: unsafe extern "C" fn()) -> Self {
-        let stack_top = TASK_STACK_BASE + (id + 1) * STACK_SIZE;
+    ///
+    /// Process-side state (parent, address space, fd table, name) is
+    /// allocated separately via `Process::new` + `PROCESS_TABLE::allocate`
+    /// — the caller passes the resulting `Pid` here.
+    pub fn new(pid: Pid, entry_fn: unsafe extern "C" fn()) -> Self {
+        let stack_top = TASK_STACK_BASE + (pid.as_u64() + 1) * STACK_SIZE;
         let stack_bottom = stack_top - STACK_SIZE;
 
         // Allocate 16 frames and map them into the virtual range. The
@@ -169,9 +162,8 @@ impl Task {
         }
 
         println!(
-            "[task] created id={} name=\"{}\" stack=0x{:x}-0x{:x} ({} frames), context.rsp=0x{:x}, entry_fn=0x{:x}",
-            id,
-            name,
+            "[task] created pid={} stack=0x{:x}-0x{:x} ({} frames), context.rsp=0x{:x}, entry_fn=0x{:x}",
+            pid,
             stack_bottom,
             stack_top,
             frames_allocated,
@@ -180,23 +172,15 @@ impl Task {
         );
 
         Task {
-            id,
-            name,
+            pid,
             state: TaskState::Ready,
             context: TaskContext { rsp: init_rsp },
             stack_top,
             entry_fn,
-            parent: None,
-            children: Vec::new(),
-            exit_status: None,
-            address_space: crate::memory::AddressSpace::from_current(),
             // Kernel threads don't make syscalls (no user mode), so they
             // can share the dedicated syscall stack. Set to 0; yield_now
             // will leave KERNEL_RSP alone if it sees 0.
-            syscall_stack_top: 0,
-            // Empty FD table — kernel threads don't open files. Real user
-            // processes (forked from main) inherit their parent's table.
-            fd_table: crate::fs::FdTable::new(),
+            entry_stack_top: 0,
         }
     }
 }
@@ -396,37 +380,31 @@ lazy_static! {
     static ref SCHEDULER: Mutex<Scheduler> = Mutex::new(Scheduler::new());
 }
 
-/// Register the currently-running code as the "main" task (id 0) and
-/// add it to the scheduler. Must be called once, from main, before any
-/// `yield_now()`.
+/// Register the currently-running code as the "main" task and add it to
+/// the scheduler. Must be called once, from main, before any `yield_now()`.
 ///
 /// The main task has no allocated stack of its own — it uses whatever
 /// stack the bootloader set up. Its `context.rsp` starts at 0 and gets
 /// filled in by `switch()` the first time main yields. The `entry_fn`
 /// field is never used because main never goes through the trampoline
 /// (it's already running when init_main is called).
+///
+/// Lesson 17: the matching `Process` for the boot process is allocated
+/// by `process::init()` (PID 0) before this runs. `init_main` only
+/// registers the scheduler-side `Task` and points it at `Pid::ZERO`.
 pub fn init_main() {
     let mut sched = SCHEDULER.lock();
     sched.tasks.push(Box::new(Task {
-        id: 0,
-        name: "main",
+        pid: Pid::ZERO,
         state: TaskState::Running,
         context: TaskContext { rsp: 0 },
         stack_top: 0,
         entry_fn: main_never_called,
-        parent: None,
-        children: Vec::new(),
-        exit_status: None,
-        address_space: crate::memory::AddressSpace::from_current(),
         // Main uses the dedicated syscall stack allocated by `syscall::init`.
-        syscall_stack_top: crate::syscall::SYSCALL_STACK_TOP,
-        // Main starts with an empty FD table. (Stdin/stdout/stderr pre-
-        // population is a later design decision — see Lesson 2 design note
-        // on Option 2 vs Option 3.)
-        fd_table: crate::fs::FdTable::new(),
+        entry_stack_top: crate::syscall::SYSCALL_STACK_TOP,
     }));
     sched.current = 0;
-    println!("[sched] main task registered (id=0)");
+    println!("[sched] main task registered (pid={})", Pid::ZERO);
 }
 
 /// Placeholder entry function for the main task. Never actually called
@@ -436,14 +414,37 @@ unsafe extern "C" fn main_never_called() {
     panic!("main_never_called: should never run");
 }
 
-/// Spawn a new task. Allocates its stack, fakes its initial state, and
-/// adds it to the scheduler. Returns the task's id.
-pub fn spawn(name: &'static str, entry_fn: unsafe extern "C" fn()) -> u64 {
+/// Spawn a new kernel task. Allocates a `Process` (with the current
+/// task as parent) and the matching `Task`, then returns the new pid.
+///
+/// Used for kernel threads. User processes are created by `sys_fork`
+/// via `spawn_fork_child` instead.
+pub fn spawn(name: &'static str, entry_fn: unsafe extern "C" fn()) -> Pid {
+    // Get the parent pid before locking PROCESS_TABLE — current_pid
+    // locks SCHEDULER, and we never hold SCHEDULER + PROCESS_TABLE
+    // at the same time.
+    let parent_pid = current_pid();
+
+    let pid = x86_64::instructions::interrupts::without_interrupts(|| {
+        let mut table = PROCESS_TABLE.lock();
+        let proc = Process::new(
+            name,
+            Some(parent_pid),
+            crate::memory::AddressSpace::from_current(),
+            crate::fs::FdTable::new(),
+        );
+        table.allocate(proc)
+    });
+
     let mut sched = SCHEDULER.lock();
-    let id = sched.tasks.len() as u64;
-    sched.tasks.push(Box::new(Task::new(id, name, entry_fn)));
-    println!("[sched] spawned \"{}\" (id={}), {} tasks total", name, id, sched.tasks.len());
-    id
+    sched.tasks.push(Box::new(Task::new(pid, entry_fn)));
+    println!(
+        "[sched] spawned \"{}\" (pid={}), {} tasks total",
+        name,
+        pid,
+        sched.tasks.len()
+    );
+    pid
 }
 
 /// Spawn a fork-child task. Like `spawn`, but the new task:
@@ -470,20 +471,42 @@ pub fn spawn(name: &'static str, entry_fn: unsafe extern "C" fn()) -> u64 {
 /// FIRST, then create the AS + deep_clone (which inherits the new
 /// mappings), then build the Task struct using that AS.
 pub fn spawn_fork_child(
-    parent_pid: u64,
+    parent_pid: Pid,
     saved_callee_saves: SavedCalleeSaves,
-) -> u64 {
-    // Disable interrupts for the duration. While we hold SCHEDULER, the
-    // timer must not fire — its handler would try to lock SCHEDULER and
-    // deadlock. (Caller is sys_fork, which runs with interrupts on because
-    // syscall_entry does `sti` before calling the handler.)
+) -> Pid {
+    // Disable interrupts for the duration. While we hold SCHEDULER or
+    // PROCESS_TABLE, the timer must not fire — its handler would try to
+    // lock them and deadlock. (Caller is sys_fork, which runs with
+    // interrupts on because syscall_entry does `sti` before calling the
+    // handler.)
     let was_enabled = x86_64::instructions::interrupts::are_enabled();
     if was_enabled {
         x86_64::instructions::interrupts::disable();
     }
 
-    let mut sched = SCHEDULER.lock();
-    let id = sched.tasks.len() as u64;
+    // Step 1: allocate the child Process with a placeholder AS. We get
+    // the child's pid out of this; we'll overwrite address_space below
+    // once deep_clone has built the real one.
+    let pid = {
+        let mut table = PROCESS_TABLE.lock();
+        let proc = Process::new(
+            "fork-child",
+            Some(parent_pid),
+            // Placeholder — deep_clone_from_current() below produces the
+            // real AS, then we write it back into the Process.
+            memory::AddressSpace::from_current(),
+            // Lesson 2: child starts with an empty FD table. Lesson 5 will
+            // inherit the parent's table (POSIX fork semantics) by cloning
+            // each `Arc<File>` from the parent's table into the child's.
+            crate::fs::FdTable::new(),
+        );
+        table.allocate(proc)
+    };
+
+    // Stack placement uses pid.as_u64() — PIDs and scheduler indices stay
+    // in lockstep until Lesson 18 adds reaping, so this is byte-identical
+    // to the old `tasks.len() as u64` mapping.
+    let id = pid.as_u64();
 
     // Compute stack region (same layout as Task::new).
     let stack_top = TASK_STACK_BASE + (id + 1) * STACK_SIZE;
@@ -522,22 +545,21 @@ pub fn spawn_fork_child(
         virt += 4096;
     }
 
-    // Allocate a dedicated syscall stack for the child. Without this,
-    // the child shares the parent's syscall stack and the two collide:
-    // when the parent is preempted mid-syscall and the child then makes
-    // its own syscalls, the child overwrites the parent's paused state
-    // on the shared stack. Per-task stacks fix this.
+    // Allocate a dedicated entry stack for the child. Shared entry stacks
+    // collide when the parent is preempted mid-syscall and the child then
+    // makes its own syscalls: the child overwrites the parent's paused
+    // state on the shared stack.
     //
     // Stack placement: SYSCALL_STACK_BOTTOM + (id+1) * SYSCALL_STACK_SIZE.
     // Task 0 (main) uses slot 0 (the dedicated stack allocated by
     // syscall::init). Each fork child takes the next slot.
-    let child_syscall_stack_bottom =
+    let child_entry_stack_bottom =
         crate::syscall::SYSCALL_STACK_BOTTOM + (id + 1) * crate::syscall::SYSCALL_STACK_SIZE;
-    let child_syscall_stack_top =
-        child_syscall_stack_bottom + crate::syscall::SYSCALL_STACK_SIZE;
+    let child_entry_stack_top =
+        child_entry_stack_bottom + crate::syscall::SYSCALL_STACK_SIZE;
     {
-        let mut virt = child_syscall_stack_bottom;
-        while virt < child_syscall_stack_top {
+        let mut virt = child_entry_stack_bottom;
+        while virt < child_entry_stack_top {
             let frame_number = frame_allocator::allocate()
                 .expect("out of frames while allocating child syscall stack");
             let phys = PhysAddr::new(frame_number * 4096);
@@ -611,6 +633,22 @@ pub fn spawn_fork_child(
     let mut address_space = crate::memory::AddressSpace::new();
     address_space.deep_clone_from_current();
 
+    // Write the real AS back into the child Process (replacing the
+    // placeholder we allocated in step 1) and add the child to the
+    // parent's children list. Both process-table mutations in one lock
+    // acquisition.
+    {
+        let mut table = PROCESS_TABLE.lock();
+        let child_proc = table
+            .get_mut(pid)
+            .expect("spawn_fork_child: child process disappeared");
+        child_proc.address_space = address_space;
+        let parent_proc = table
+            .get_mut(parent_pid)
+            .expect("spawn_fork_child: parent process disappeared");
+        parent_proc.children.push(pid);
+    }
+
     // Build the Task struct. entry_fn is unused for fork children (they
     // go through fork_trampoline, not trampoline), but the field needs
     // *something* to satisfy the struct.
@@ -619,36 +657,20 @@ pub fn spawn_fork_child(
     }
 
     let task = Task {
-        id,
-        name: "fork-child",
+        pid,
         state: TaskState::Ready,
         context: TaskContext { rsp: init_rsp },
         stack_top,
         entry_fn: fork_child_unused_entry,
-        parent: Some(parent_pid),
-        children: Vec::new(),
-        exit_status: None,
-        address_space,
-        syscall_stack_top: child_syscall_stack_top,
-        // Lesson 2: child starts with an empty FD table. Lesson 5 will
-        // inherit the parent's table (POSIX fork semantics) by cloning
-        // each `Arc<File>` from the parent's table into the child's.
-        fd_table: crate::fs::FdTable::new(),
+        entry_stack_top: child_entry_stack_top,
     };
 
+    let mut sched = SCHEDULER.lock();
     sched.tasks.push(Box::new(task));
 
-    // Add the child to the parent's children list.
-    let parent_task = sched
-        .tasks
-        .iter_mut()
-        .find(|t| t.id == parent_pid)
-        .expect("parent task not found in spawn_fork_child");
-    parent_task.children.push(id);
-
     println!(
-        "[sched] spawned fork-child id={} (parent={}), stack=0x{:x}-0x{:x} ({} frames), context.rsp=0x{:x}",
-        id, parent_pid, stack_bottom, stack_top, frames_allocated, init_rsp,
+        "[sched] spawned fork-child pid={} (parent={}), stack=0x{:x}-0x{:x} ({} frames), context.rsp=0x{:x}",
+        pid, parent_pid, stack_bottom, stack_top, frames_allocated, init_rsp,
     );
 
     // Drop the lock BEFORE re-enabling interrupts. Otherwise the timer
@@ -663,7 +685,7 @@ pub fn spawn_fork_child(
         x86_64::instructions::interrupts::enable();
     }
 
-    id
+    pid
 }
 
 /// Saved register values from the moment of a `syscall` instruction,
@@ -705,10 +727,10 @@ pub struct SavedCalleeSaves {
 /// Linux's `spin_lock_irqsave` — disable interrupts on this CPU before
 /// acquiring the lock, restore on release. All public SCHEDULER accessors
 /// that syscall handlers can reach must do this.
-pub fn current_pid() -> u64 {
+pub fn current_pid() -> Pid {
     x86_64::instructions::interrupts::without_interrupts(|| {
         let sched = SCHEDULER.lock();
-        sched.tasks[sched.current].id
+        sched.tasks[sched.current].pid
     })
 }
 
@@ -731,12 +753,15 @@ where
     F: FnOnce(&mut crate::fs::FdTable) -> R,
 {
     x86_64::instructions::interrupts::without_interrupts(|| {
-        let mut sched = SCHEDULER.lock();
-        // Copy the index out first so we don't fight the borrow checker —
-        // indexing `sched.tasks[sched.current]` would otherwise need both a
-        // shared borrow of `.current` and a mutable borrow of `.tasks`.
-        let idx = sched.current;
-        f(&mut sched.tasks[idx].fd_table)
+        let pid = {
+            let sched = SCHEDULER.lock();
+            sched.tasks[sched.current].pid
+        };
+        let mut table = PROCESS_TABLE.lock();
+        let proc = table
+            .get_mut(pid)
+            .expect("with_current_fd_table: current process missing");
+        f(&mut proc.fd_table)
     })
 }
 
@@ -748,8 +773,16 @@ where
 /// the SCHEDULER access.
 pub fn current_pml4_frame() -> x86_64::structures::paging::PhysFrame {
     x86_64::instructions::interrupts::without_interrupts(|| {
-        let sched = SCHEDULER.lock();
-        sched.tasks[sched.current].address_space.pml4_frame()
+        let pid = {
+            let sched = SCHEDULER.lock();
+            sched.tasks[sched.current].pid
+        };
+        let table = PROCESS_TABLE.lock();
+        table
+            .get(pid)
+            .expect("current_pml4_frame: current process missing")
+            .address_space
+            .pml4_frame()
     })
 }
 
@@ -785,7 +818,7 @@ pub fn yield_now() {
     // Scan forward from the current task to find the next non-Zombie task.
     // This lets sys_exit mark the current task as Zombie and then yield,
     // knowing yield_now will pick somebody else (or halt if nobody can).
-    let switch_result: Option<(*mut TaskContext, *const TaskContext, u64, u64)> = {
+    let switch_result: Option<(*mut TaskContext, *const TaskContext, Pid, u64)> = {
         let mut sched = SCHEDULER.lock();
         // Note: no `len < 2` shortcut here. If current is Zombie/Blocked/Dead
         // and there's nothing else to run, we must halt — that check lives in
@@ -863,32 +896,38 @@ pub fn yield_now() {
                     sched.current = new_index;
                     let old_ptr = &mut sched.tasks[old_index].context as *mut TaskContext;
                     let new_ptr = &sched.tasks[new_index].context as *const TaskContext;
-                    let new_as_frame = sched.tasks[new_index]
-                        .address_space
-                        .pml4_frame()
-                        .start_address()
-                        .as_u64();
-                    let new_syscall_rsp = sched.tasks[new_index].syscall_stack_top;
-                    Some((old_ptr, new_ptr, new_as_frame, new_syscall_rsp))
+                    let new_pid = sched.tasks[new_index].pid;
+                    let new_entry_rsp = sched.tasks[new_index].entry_stack_top;
+                    Some((old_ptr, new_ptr, new_pid, new_entry_rsp))
                 }
             }
         }
     };
 
-    if let Some((old_ptr, new_ptr, new_as_frame, new_syscall_rsp)) = switch_result {
-        // Update KERNEL_RSP to the new task's syscall stack. If the new
-        // task has no dedicated syscall stack (kernel threads: field is 0),
-        // leave KERNEL_RSP alone so it stays at whatever the previous
-        // user task set.
-        if new_syscall_rsp != 0 {
-            crate::syscall::set_kernel_rsp(new_syscall_rsp);
+    if let Some((old_ptr, new_ptr, new_pid, new_entry_rsp)) = switch_result {
+        // Update KERNEL_RSP to the new task's entry stack. Kernel threads
+        // use 0, which leaves KERNEL_RSP at the previous user task's
+        // stack.
+        if new_entry_rsp != 0 {
+            crate::syscall::set_kernel_rsp(new_entry_rsp);
             // Mirror the same update into TSS.RSP0. The CPU uses RSP0 on
             // any ring-3 → ring-0 interrupt (timer firing in user mode).
             // If RSP0 stays at the previous task's stack, the next timer
             // preemption in user mode lands on the wrong stack and
             // corrupts whichever task "owns" it. See `gdt::set_rsp0`.
-            crate::gdt::set_rsp0(new_syscall_rsp);
+            crate::gdt::set_rsp0(new_entry_rsp);
         }
+
+        let new_as_frame = {
+            let table = PROCESS_TABLE.lock();
+            table
+                .get(new_pid)
+                .expect("yield_now: next process missing")
+                .address_space
+                .pml4_frame()
+                .start_address()
+                .as_u64()
+        };
 
         // Switch address space if the new task's PML4 differs from the
         // one currently in CR3. Skipping the write when ASes match saves
@@ -936,18 +975,26 @@ pub fn mark_current_zombie(exit_code: i64) {
     if was_enabled {
         x86_64::instructions::interrupts::disable();
     }
-    let parent_pid = {
+    let pid = {
         let mut sched = SCHEDULER.lock();
         let current = sched.current;
         sched.tasks[current].state = TaskState::Zombie;
-        sched.tasks[current].exit_status = Some(exit_code);
-        let parent_pid = sched.tasks[current].parent;
-        println!(
-            "[sched] task id={} \"{}\" marked Zombie (exit={})",
-            sched.tasks[current].id, sched.tasks[current].name, exit_code
-        );
-        parent_pid
+        sched.tasks[current].pid
     };
+
+    let (parent_pid, name) = {
+        let mut table = PROCESS_TABLE.lock();
+        let proc = table
+            .get_mut(pid)
+            .expect("mark_current_zombie: current process missing");
+        proc.exit_status = Some(exit_code);
+        (proc.parent, proc.name)
+    };
+
+    println!(
+        "[sched] task pid={} \"{}\" marked Zombie (exit={})",
+        pid, name, exit_code
+    );
 
     // If our parent is Blocked (e.g. inside sys_wait), wake it — its child
     // just exited, so it has a Zombie to reap.
@@ -956,13 +1003,13 @@ pub fn mark_current_zombie(exit_code: i64) {
         let parent_task = sched
             .tasks
             .iter_mut()
-            .find(|t| t.id == parent);
+            .find(|t| t.pid == parent);
         if let Some(task) = parent_task {
             if task.state == TaskState::Blocked {
                 task.state = TaskState::Ready;
                 println!(
-                    "[sched] task id={} \"{}\" woken (child exited)",
-                    task.id, task.name
+                    "[sched] task pid={} woken (child exited)",
+                    task.pid
                 );
             }
         }
@@ -976,7 +1023,7 @@ pub fn mark_current_zombie(exit_code: i64) {
 pub enum WaitResult {
     /// A child was found Zombie, marked Dead, and removed from the parent's
     /// child list.
-    Reaped { child_pid: u64, exit_status: i64 },
+    Reaped { child_pid: Pid, exit_status: i64 },
     /// The parent has no remaining children.
     NoChildren,
     /// The parent still has children, but none have exited yet. The parent
@@ -990,29 +1037,55 @@ pub enum WaitResult {
 /// "check children", "mark blocked", and "reap" into separate helpers left
 /// windows where the timer interrupt could fire while `SCHEDULER` was locked,
 /// then call `yield_now` and deadlock on the same lock.
-pub fn wait_for_zombie_child(parent_pid: u64) -> WaitResult {
+pub fn wait_for_zombie_child(parent_pid: Pid) -> WaitResult {
     x86_64::instructions::interrupts::without_interrupts(|| {
-        let mut sched = SCHEDULER.lock();
-
-        if let Some((child_pid, exit_status)) = sched
-            .tasks
-            .iter()
-            .find(|task| task.parent == Some(parent_pid) && task.state == TaskState::Zombie)
-            .map(|task| (task.id, task.exit_status.unwrap_or(0)))
-        {
-            let child = sched
+        let zombie_task_pids = {
+            let sched = SCHEDULER.lock();
+            sched
                 .tasks
-                .iter_mut()
-                .find(|task| task.id == child_pid)
-                .expect("wait_for_zombie_child: child disappeared");
-            child.state = TaskState::Dead;
+                .iter()
+                .filter(|task| task.state == TaskState::Zombie)
+                .map(|task| task.pid)
+                .collect::<Vec<_>>()
+        };
 
-            if let Some(parent) = sched.tasks.iter_mut().find(|task| task.id == parent_pid) {
-                parent.children.retain(|&pid| pid != child_pid);
+        let reaped = {
+            let mut table = PROCESS_TABLE.lock();
+            let child_pid = zombie_task_pids.into_iter().find(|&pid| {
+                table
+                    .get(pid)
+                    .map(|proc| proc.parent == Some(parent_pid))
+                    .unwrap_or(false)
+            });
+
+            child_pid.map(|child_pid| {
+                let child_proc = table
+                    .remove(child_pid)
+                    .expect("wait_for_zombie_child: child process disappeared");
+                let exit_status = child_proc.exit_status.unwrap_or(0);
+
+                let parent_proc = table
+                    .get_mut(parent_pid)
+                    .expect("wait_for_zombie_child: parent process missing");
+                parent_proc.children.retain(|&pid| pid != child_pid);
+
+                (child_pid, exit_status)
+            })
+        };
+
+        if let Some((child_pid, exit_status)) = reaped {
+            {
+                let mut sched = SCHEDULER.lock();
+                let child = sched
+                    .tasks
+                    .iter_mut()
+                    .find(|task| task.pid == child_pid)
+                    .expect("wait_for_zombie_child: child task disappeared");
+                child.state = TaskState::Dead;
             }
 
             println!(
-                "[sched] task id={} reaped by parent {} (exit={})",
+                "[sched] task pid={} reaped by parent {} (exit={})",
                 child_pid, parent_pid, exit_status
             );
             return WaitResult::Reaped {
@@ -1021,19 +1094,28 @@ pub fn wait_for_zombie_child(parent_pid: u64) -> WaitResult {
             };
         }
 
-        let parent = sched
-            .tasks
-            .iter_mut()
-            .find(|task| task.id == parent_pid)
-            .expect("wait_for_zombie_child: parent not found");
+        let parent_has_children = {
+            let table = PROCESS_TABLE.lock();
+            !table
+                .get(parent_pid)
+                .expect("wait_for_zombie_child: parent process missing")
+                .children
+                .is_empty()
+        };
 
-        if parent.children.is_empty() {
+        if !parent_has_children {
             WaitResult::NoChildren
         } else {
+            let mut sched = SCHEDULER.lock();
+            let parent = sched
+                .tasks
+                .iter_mut()
+                .find(|task| task.pid == parent_pid)
+                .expect("wait_for_zombie_child: parent task not found");
             parent.state = TaskState::Blocked;
             println!(
-                "[sched] task id={} \"{}\" marked Blocked",
-                parent.id, parent.name
+                "[sched] task pid={} marked Blocked",
+                parent.pid
             );
             WaitResult::WouldBlock
         }
@@ -1053,20 +1135,25 @@ pub fn replace_current_address_space(new_as: crate::memory::AddressSpace, new_na
         x86_64::instructions::interrupts::disable();
     }
     let old_as_frame = {
-        let mut sched = SCHEDULER.lock();
-        let current = sched.current;
-        let old = sched.tasks[current].address_space.pml4_frame();
-        sched.tasks[current].address_space = new_as;
-        sched.tasks[current].name = new_name;
+        let pid = {
+            let sched = SCHEDULER.lock();
+            sched.tasks[sched.current].pid
+        };
+        let mut table = PROCESS_TABLE.lock();
+        let proc = table
+            .get_mut(pid)
+            .expect("replace_current_address_space: current process missing");
+        let old = proc.address_space.pml4_frame();
+        proc.address_space = new_as;
+        proc.name = new_name;
         println!(
-            "[sched] task id={} exec: now \"{}\", AS pml4 frame {} → {}",
-            sched.tasks[current].id,
+            "[sched] task pid={} exec: now \"{}\", AS pml4 frame {} → {}",
+            pid,
             new_name,
             old.start_address().as_u64() / 4096,
-            sched.tasks[current].address_space.pml4_frame().start_address().as_u64() / 4096,
+            proc.address_space.pml4_frame().start_address().as_u64() / 4096,
         );
         old
     };
     let _ = old_as_frame; // old AS leaks (no cleanup yet)
 }
-

@@ -562,14 +562,12 @@ pub extern "C" fn _start(boot_info: &'static BootInfo) -> ! {
 
     // Switch CR3 to the new AS, then iretq to user mode.
     //
-    // **Must update the scheduler's record of main's address_space, not
-    // just write CR3.** `ctx.aspace.switch_to()` writes CR3 directly
-    // without telling the scheduler — so `task.address_space.pml4_frame`
-    // for main still points at the boot PML4 (frame 1). Later, when
-    // `yield_now` switches FROM child TO main, it reads main's stale
-    // pml4_frame and switches CR3 back to the boot PML4, which doesn't
-    // have any of the user code/stack mappings. Parent user code then
-    // crashes on the next instruction fetch.
+    // Update the process table before writing CR3. `ctx.aspace.switch_to()`
+    // writes CR3 directly and leaves the current Process record pointing
+    // at the boot PML4 (frame 1). Later, when `yield_now` switches from a
+    // child back to main, it reads main's stale pml4_frame and switches CR3
+    // back to a PML4 with no user code/stack mappings. Parent user code
+    // then crashes on the next instruction fetch.
     //
     // `replace_current_address_space` updates the scheduler's record;
     // then we write CR3 via the scheduler's now-correct view.

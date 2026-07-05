@@ -107,19 +107,18 @@ pub(crate) fn saved_user_rflags() -> u64 {
     USER_RFLAGS_SAVE.load(core::sync::atomic::Ordering::SeqCst)
 }
 
-/// Kernel RSP to switch to on syscall entry. Set during init to the
-/// TOP of a dedicated 16 KB stack region — guaranteed to have plenty
-/// of room below for handler frames.
+/// Kernel RSP to switch to on syscall entry. Set during init to the top
+/// of a dedicated 16 KB stack region with room below for handler frames.
 ///
 /// Updated by `task::yield_now` on every context switch to point at the
-/// NEW current task's `syscall_stack_top`. This is what makes per-task
-/// syscall stacks work — syscall_entry always reads this value, and we
-/// keep it current.
+/// NEW current task's `entry_stack_top`. This is what makes per-task
+/// entry stacks work: syscall_entry reads this value, and TSS.RSP0 is
+/// kept in sync for user-mode timer interrupts.
 static KERNEL_RSP: AtomicU64 = AtomicU64::new(0);
 
 /// Set the kernel-side RSP that `syscall_entry` switches to. Called by
-/// `task::yield_now` when switching to a new task — the new task's
-/// `syscall_stack_top` becomes the new "current" syscall stack.
+/// `task::yield_now` when switching to a new task. The new task's
+/// `entry_stack_top` becomes the current entry stack.
 pub(crate) fn set_kernel_rsp(rsp: u64) {
     KERNEL_RSP.store(rsp, core::sync::atomic::Ordering::SeqCst);
 }
@@ -655,7 +654,7 @@ fn sys_open(name_ptr: u64) -> u64 {
 fn sys_getpid() -> u64 {
     let pid = crate::task::current_pid();
     println!("[syscall] sys_getpid -> {}", pid);
-    pid
+    pid.into()
 }
 
 /// SYS_EXIT: terminate the calling process with the given exit code.
@@ -715,7 +714,7 @@ fn sys_wait(exit_status_ptr: u64) -> u64 {
                         core::ptr::write_volatile(user_ptr, exit_status);
                     }
                 }
-                return child_pid;
+                return child_pid.into();
             }
             crate::task::WaitResult::NoChildren => {
                 println!("[syscall] sys_wait4 -> no children, returning -1");
@@ -813,7 +812,7 @@ fn sys_fork() -> u64 {
     }
 
     // Step 5: Return child PID. Parent gets this in RAX.
-    child_pid
+    child_pid.into()
 }
 
 /// SYS_EXECVE: replace the calling process's program with a new one.
@@ -990,10 +989,10 @@ fn sys_exec(program_name_ptr: u64) -> u64 {
     }
 }
 
-/// "Leak" a program name `&str` into a `&'static str`. The program name
-/// came from a user pointer (so its lifetime is the user buffer's lifetime,
-/// not 'static), but `Task.name` requires `&'static str`. We copy the bytes
-/// into a small pool of static buffers and return a reference into one.
+/// "Leak" a program name `&str` into a `&'static str`. Process names live
+/// in `Process.name`, which stores a static string; user pointers only live
+/// for the duration of the syscall. We copy the bytes into a small static
+/// pool and return a reference into one slot.
 fn leak_program_name(name: &str) -> &'static str {
     use core::sync::atomic::{AtomicUsize, Ordering};
     static SLOT: AtomicUsize = AtomicUsize::new(0);

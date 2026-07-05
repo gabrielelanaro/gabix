@@ -520,6 +520,12 @@ A milestone is a "demo-able" checkpoint. Worth a commit + tag + log entry.
 
 Most recent entries at the top. One entry per work session.
 
+### 2026-07-05 (lesson 17) — Real process table wired into fork/exec/wait
+- **Done:** Finished Lesson 17's process-table refactor. Added `ProcessTable` as the owner of stable `Pid` allocation, moved process-shaped state (`name`, parent/children, exit status, address space, fd table) off `Task`, and left `Task` with scheduler state plus a `pid` back-reference. Re-pointed `current_pid`, fd-table access, address-space lookup, `mark_current_zombie`, `wait_for_zombie_child`, and `replace_current_address_space` through `PROCESS_TABLE` with scheduler/process locks acquired separately under interrupts-disabled sections. Renamed the per-task ring-3 entry stack field to `entry_stack_top` and linked Lesson 17 from Lesson 16's footer.
+- **Status:** No roadmap checkbox changed. Month 4 item 4.3 was already complete; this was structural cleanup before process lifecycle work.
+- **Notes / blockers / surprises:** `cargo check --features test-mode,test-fork` remains at the baseline 51 warnings. Cleared `target/x86_64-mini-os` before smoke tests to avoid stale bootimage behavior. `tests/test_fork_smoke.sh` passed, including child exit, parent wait, and PID 1 reap. `tests/test_hello.sh` passed on the plain exec/exit path.
+- **Next:** Lesson 18 / process lifecycle: decide how reaped `Task` entries are cleaned up, free retired process resources, and make PID/table state robust once scheduler indices diverge from PIDs.
+
 ### 2026-06-27 (slice 4.6) — Relink kernel at high addresses, simplify AddressSpace
 - **Done:** Closed the long-standing "kernel at low addresses" architectural wart. Two pieces:
     - **Linker flag:** added `rustflags = ["-C", "link-arg=--image-base=0xFFFFFFFF80000000"]` to `.cargo/config.toml`. No custom linker script needed — `rust-lld`'s `--image-base` shifts the entire kernel binary to start at the high canonical address. The bootloader crate reads the resulting ELF and maps the kernel there automatically.
