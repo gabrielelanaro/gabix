@@ -419,7 +419,7 @@ unsafe extern "C" fn main_never_called() {
 ///
 /// Used for kernel threads. User processes are created by `sys_fork`
 /// via `spawn_fork_child` instead.
-pub fn spawn(name: &'static str, entry_fn: unsafe extern "C" fn()) -> Pid {
+pub fn spawn(name: &str, entry_fn: unsafe extern "C" fn()) -> Pid {
     // Get the parent pid before locking PROCESS_TABLE — current_pid
     // locks SCHEDULER, and we never hold SCHEDULER + PROCESS_TABLE
     // at the same time.
@@ -1129,7 +1129,7 @@ pub fn wait_for_zombie_child(parent_pid: Pid) -> WaitResult {
 ///
 /// Returns nothing — caller is expected to immediately jump to user mode
 /// at the new program's entry point (via inline sysretq-style asm).
-pub fn replace_current_address_space(new_as: crate::memory::AddressSpace, new_name: &'static str) {
+pub fn replace_current_address_space(new_as: crate::memory::AddressSpace, new_name: &str) {
     let was_enabled = x86_64::instructions::interrupts::are_enabled();
     if was_enabled {
         x86_64::instructions::interrupts::disable();
@@ -1145,11 +1145,11 @@ pub fn replace_current_address_space(new_as: crate::memory::AddressSpace, new_na
             .expect("replace_current_address_space: current process missing");
         let old = proc.address_space.pml4_frame();
         proc.address_space = new_as;
-        proc.name = new_name;
+        proc.name.set(new_name);
         println!(
             "[sched] task pid={} exec: now \"{}\", AS pml4 frame {} → {}",
             pid,
-            new_name,
+            proc.name,
             old.start_address().as_u64() / 4096,
             proc.address_space.pml4_frame().start_address().as_u64() / 4096,
         );

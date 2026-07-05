@@ -65,12 +65,17 @@
     <div class="snippet-meta"><span class="snippet-file">src/process.rs</span><span class="snippet-what">stable PID allocation</span></div>
 <pre><span class="k">pub struct</span> <span class="t">Pid</span>(<span class="k">pub</span> <span class="t">u64</span>);
 
+<span class="k">pub struct</span> <span class="t">ProcessName</span> {
+    bytes: [<span class="t">u8</span>; <span class="t">PROCESS_NAME_MAX</span>],
+    len: <span class="t">usize</span>,
+}
+
 <span class="k">pub struct</span> <span class="t">Process</span> {
     <span class="k">pub</span> pid: <span class="t">Pid</span>,
     <span class="k">pub</span> parent: <span class="t">Option</span>&lt;<span class="t">Pid</span>&gt;,
     <span class="k">pub</span> children: <span class="t">Vec</span>&lt;<span class="t">Pid</span>&gt;,
     <span class="k">pub</span> exit_status: <span class="t">Option</span>&lt;<span class="t">i64</span>&gt;,
-    <span class="k">pub</span> name: &amp;<span class="k">'static</span> <span class="t">str</span>,
+    <span class="k">pub</span> name: <span class="t">ProcessName</span>,
     <span class="k">pub</span> address_space: <span class="t">AddressSpace</span>,
     <span class="k">pub</span> fd_table: <span class="t">FdTable</span>,
 }</pre>

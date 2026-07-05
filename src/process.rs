@@ -23,6 +23,10 @@ use alloc::vec::Vec;
 use lazy_static::lazy_static;
 use spin::Mutex;
 
+/// Maximum bytes kept for a process name. This is a fixed kernel-side
+/// display name, not a full path.
+pub const PROCESS_NAME_MAX: usize = 32;
+
 // ============================================================
 // Pid
 // ============================================================
@@ -71,6 +75,52 @@ impl core::fmt::Display for Pid {
 // Process
 // ============================================================
 
+/// Fixed-size process display name. Owns its bytes inside `Process`, so
+/// exec can store a name read from user memory without leaking it into a
+/// static buffer.
+#[derive(Copy, Clone)]
+pub struct ProcessName {
+    bytes: [u8; PROCESS_NAME_MAX],
+    len: usize,
+}
+
+impl ProcessName {
+    pub const fn empty() -> Self {
+        ProcessName {
+            bytes: [0; PROCESS_NAME_MAX],
+            len: 0,
+        }
+    }
+
+    pub fn new(name: &str) -> Self {
+        let mut process_name = ProcessName::empty();
+        process_name.set(name);
+        process_name
+    }
+
+    pub fn set(&mut self, name: &str) {
+        let bytes = name.as_bytes();
+        let len = bytes.len().min(PROCESS_NAME_MAX);
+        self.bytes[..len].copy_from_slice(&bytes[..len]);
+        if len < PROCESS_NAME_MAX {
+            self.bytes[len..].fill(0);
+        }
+        self.len = len;
+    }
+
+    pub fn as_str(&self) -> &str {
+        // SAFETY: the only way to populate `bytes[..len]` is through
+        // `set`, which copies from a valid UTF-8 `&str`.
+        unsafe { core::str::from_utf8_unchecked(&self.bytes[..self.len]) }
+    }
+}
+
+impl core::fmt::Display for ProcessName {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 /// The identity / process-tree / per-process-memory side of "a program
 /// in flight." Everything that answers "who am I, what do I own" lives
 /// here; everything that answers "how do I resume this paused register
@@ -92,9 +142,9 @@ pub struct Process {
     /// Exit code set by `sys_exit`. `None` while the process runs;
     /// read by the parent's `wait`. Kept until the parent reaps.
     pub exit_status: Option<i64>,
-    /// Human-readable name, for log lines. Owned by the process (was
-    /// on `Task` before Lesson 17); updated by `exec`.
-    pub name: &'static str,
+    /// Human-readable name, for log lines. Owned by the process as a
+    /// fixed-size buffer; updated by `exec`.
+    pub name: ProcessName,
     /// This process's address space — the PML4 the CPU should use when
     /// running it. Switched via CR3 on context switch.
     pub address_space: AddressSpace,
@@ -107,7 +157,7 @@ impl Process {
     /// Build a `Process` ready for `ProcessTable::allocate`. `pid` is
     /// filled in by the table; callers pass whatever (it is ignored).
     pub fn new(
-        name: &'static str,
+        name: &str,
         parent: Option<Pid>,
         address_space: AddressSpace,
         fd_table: FdTable,
@@ -117,7 +167,7 @@ impl Process {
             parent,
             children: Vec::new(),
             exit_status: None,
-            name,
+            name: ProcessName::new(name),
             address_space,
             fd_table,
         }

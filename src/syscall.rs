@@ -936,7 +936,7 @@ fn sys_exec(program_name_ptr: u64) -> u64 {
 
     // Step 6: Update the current task's address_space (and name, for clarity).
     // The task struct stays — same PID, same kernel stack, same scheduler entry.
-    crate::task::replace_current_address_space(new_as, leak_program_name(name));
+    crate::task::replace_current_address_space(new_as, name);
 
     // Step 7: Switch CR3 to the new AS. After this point, the old user
     // mappings are gone — if we accessed them now we'd page fault. But we
@@ -986,26 +986,5 @@ fn sys_exec(program_name_ptr: u64) -> u64 {
             rsp = in(reg) user_rsp,
             options(noreturn),
         );
-    }
-}
-
-/// "Leak" a program name `&str` into a `&'static str`. Process names live
-/// in `Process.name`, which stores a static string; user pointers only live
-/// for the duration of the syscall. We copy the bytes into a small static
-/// pool and return a reference into one slot.
-fn leak_program_name(name: &str) -> &'static str {
-    use core::sync::atomic::{AtomicUsize, Ordering};
-    static SLOT: AtomicUsize = AtomicUsize::new(0);
-    static mut BUFFER: [[u8; 32]; 4] = [[0; 32]; 4];
-    static mut LEN: [usize; 4] = [0; 4];
-    let idx = SLOT.fetch_add(1, Ordering::SeqCst) & 3;
-    let bytes = name.as_bytes();
-    let len = bytes.len().min(31);
-    // SAFETY: idx < 4, single CPU, interrupts off (caller is sys_exec).
-    unsafe {
-        core::ptr::copy_nonoverlapping(bytes.as_ptr(), BUFFER[idx].as_mut_ptr(), len);
-        BUFFER[idx][len] = 0;
-        LEN[idx] = len;
-        core::str::from_utf8_unchecked(&BUFFER[idx][..len])
     }
 }
