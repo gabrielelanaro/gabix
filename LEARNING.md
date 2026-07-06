@@ -520,6 +520,13 @@ A milestone is a "demo-able" checkpoint. Worth a commit + tag + log entry.
 
 Most recent entries at the top. One entry per work session.
 
+### 2026-07-06 (lesson 21) — first Ethernet frames over virtio-net
+- **Done:** Implemented Lesson 21's first-frame slice. Added `src/net/ethernet.rs` for Ethernet header parse/build with big-endian EtherType handling, wrapped the initialized virtio-net driver in `NetDevice`, built and sent a broadcast ARP request for slirp's gateway, added a two-descriptor TX chain, parsed the first RX Ethernet frame after stripping the 12-byte `virtio_net_hdr`, copied payload bytes into a `Frame`, and recycled the filled RX descriptor back into the avail ring.
+- **Status:** Roadmap checkboxes unchanged. This completes the first raw Ethernet TX/RX proof for the Phase 2 networking track; the next networking slice should parse the 28-byte ARP payload into structured fields and cache the gateway MAC.
+- **Verification:** `cargo check --features test-mode` passed with 50 warnings. `./tests/test_virtio_net_frames.sh` passed and confirmed TX completion, `TX broadcast frame sent, 54 bytes`, RX ARP from `52:55:0a:00:02:02` to `52:54:00:12:34:56`, RX buffer recycle, and the final first-frame proof. `./tests/run.sh` passed all 6 tests.
+- **Docs:** Added `tours/tour-0021-first-frames.html`, linked it from Lesson 21, linked Lesson 20 forward to Lesson 21, and kept the Lesson 21 page/style pass aligned with the project writing rules.
+- **Next:** Lesson 22 should replace the hand-crafted ARP payload with an `ArpPacket` parse/build helper, validate sender/target fields in the reply, and store the gateway MAC for IPv4/ICMP work.
+
 ### 2026-07-05 (lesson 20) — virtio-net handshake, MAC, queues, RX supply
 - **Done:** Implemented Lesson 20's virtio-net initialization slice. Added `VirtioNet` driver state, mapped common/notification/device-config capabilities, negotiated `VIRTIO_NET_F_MAC` plus modern transport, read and stored the MAC address from device config, configured RX queue 0 and TX queue 1, posted eight 2048-byte RX buffers, and set `DRIVER_OK`. Added `tests/test_virtio_net_init.sh` to lock the serial proof.
 - **Status:** Roadmap checkboxes unchanged. This continues the Phase 2 networking track; packet parsing and TX/RX frame helpers remain for Lesson 21.

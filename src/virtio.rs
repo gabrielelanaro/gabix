@@ -17,6 +17,7 @@ extern crate alloc;
 
 use crate::println;
 use crate::pci;
+use crate::net::ethernet::{EthernetHeader, ETHERNET_HEADER_LEN, ETHERTYPE_ARP};
 use core::ptr::{read_volatile, write_volatile};
 use core::sync::atomic::{AtomicU16, Ordering};
 
@@ -74,6 +75,18 @@ const VIRTIO_NET_RX_BUFFER_LEN: u32 = 2048;
 
 /// Initial receive-buffer supply for Lesson 20.
 const VIRTIO_NET_RX_BUFFER_COUNT: usize = 8;
+
+/// virtio-net prepends this fixed header to every TX/RX frame.
+const VIRTIO_NET_HDR_LEN: usize = 12;
+
+/// Payload bytes a raw Ethernet frame can carry without jumbo frames.
+const ETHERNET_MTU: usize = 1500;
+
+/// QEMU user-mode networking gives the guest this IPv4 address by default.
+const SLIRP_GUEST_IP: [u8; 4] = [10, 0, 2, 15];
+
+/// QEMU user-mode networking's default gateway address.
+const SLIRP_GATEWAY_IP: [u8; 4] = [10, 0, 2, 2];
 
 /// One parsed virtio vendor-specific capability.
 ///
@@ -671,6 +684,280 @@ pub struct RxBuffer {
     frame: u64,
 }
 
+/// One Ethernet frame returned by the device-facing network API.
+pub struct Frame {
+    pub dst: [u8; 6],
+    pub src: [u8; 6],
+    pub ethertype: u16,
+    pub payload: [u8; ETHERNET_MTU],
+    pub payload_len: usize,
+}
+
+impl Frame {
+    fn from_header_and_payload(
+        header: EthernetHeader,
+        payload_src: u64,
+        payload_len: usize,
+    ) -> Self {
+        assert!(
+            payload_len <= ETHERNET_MTU,
+            "Ethernet payload {} exceeds MTU {}",
+            payload_len,
+            ETHERNET_MTU
+        );
+
+        let mut payload = [0u8; ETHERNET_MTU];
+        unsafe {
+            for (i, byte) in payload.iter_mut().take(payload_len).enumerate() {
+                *byte = read_volatile((payload_src + i as u64) as *const u8);
+            }
+        }
+
+        Self {
+            dst: header.dst,
+            src: header.src,
+            ethertype: header.ethertype,
+            payload,
+            payload_len,
+        }
+    }
+
+    pub fn print_payload_prefix(&self, max_len: usize) {
+        let n = core::cmp::min(max_len, self.payload_len);
+        let mut offset = 0;
+        while offset < n {
+            crate::print!("[net]   {:02x}: ", offset);
+            let line_end = core::cmp::min(offset + 16, n);
+            for byte in &self.payload[offset..line_end] {
+                crate::print!("{:02x} ", byte);
+            }
+            crate::println!();
+            offset = line_end;
+        }
+    }
+}
+
+/// Driver-facing network device surface.
+pub struct NetDevice {
+    inner: VirtioNet,
+}
+
+impl NetDevice {
+    pub fn from_virtio_net(inner: VirtioNet) -> Self {
+        Self { inner }
+    }
+
+    pub fn mac(&self) -> [u8; 6] {
+        self.inner.mac
+    }
+
+    pub fn send_frame(&mut self, eth_frame: &[u8]) {
+        assert!(
+            eth_frame.len() >= ETHERNET_HEADER_LEN,
+            "send_frame needs at least an Ethernet header"
+        );
+        assert!(
+            eth_frame.len() <= ETHERNET_HEADER_LEN + ETHERNET_MTU,
+            "send_frame length {} exceeds Ethernet MTU",
+            eth_frame.len()
+        );
+
+        let buffers = NetTxBuffers::new(eth_frame);
+        let (head, tail) = {
+            let tx_queue = self
+                .inner
+                .tx_queue
+                .as_mut()
+                .expect("virtio-net TX queue not configured");
+            let (head, tail) = tx_queue.build_tx_chain(
+                buffers.header_phys,
+                VIRTIO_NET_HDR_LEN as u32,
+                buffers.frame_phys,
+                eth_frame.len() as u32,
+            );
+            tx_queue.submit_chain(head);
+            (head, tail)
+        };
+
+        self.inner.kick_queue(1);
+
+        let completion = (0..200_000u32)
+            .find_map(|_| {
+                self.inner
+                    .tx_queue
+                    .as_mut()
+                    .expect("virtio-net TX queue not configured")
+                    .poll_completion()
+            })
+            .expect("virtio-net TX completion did not arrive");
+
+        assert_eq!(
+            completion.0,
+            head as u32,
+            "virtio-net TX completed unexpected descriptor"
+        );
+
+        let tx_queue = self.inner.tx_queue.as_mut().unwrap();
+        tx_queue.free_descriptor(head);
+        tx_queue.free_descriptor(tail);
+
+        println!(
+            "[net] TX frame completion head={} len={} (descriptor bytes={})",
+            completion.0,
+            completion.1,
+            VIRTIO_NET_HDR_LEN + eth_frame.len()
+        );
+    }
+
+    pub fn recv_frame(&mut self) -> Option<Frame> {
+        let (desc_id, written_len) = {
+            let rx_queue = self.inner.rx_queue.as_mut()?;
+            rx_queue.poll_completion()?
+        };
+
+        let desc_idx = desc_id as u16;
+        let buffer_index = self
+            .inner
+            .rx_buffers
+            .iter()
+            .position(|buffer| buffer.desc_idx == desc_idx)
+            .expect("virtio-net RX completion used an unknown descriptor");
+
+        let (buffer_virt, buffer_len) = {
+            let buffer = &self.inner.rx_buffers[buffer_index];
+            (buffer.virt, buffer.len as usize)
+        };
+
+        let rx_len = core::cmp::min(written_len as usize, buffer_len);
+        let frame = if rx_len >= VIRTIO_NET_HDR_LEN + ETHERNET_HEADER_LEN {
+            let eth_start = buffer_virt + VIRTIO_NET_HDR_LEN as u64;
+            let eth_len = rx_len - VIRTIO_NET_HDR_LEN;
+            let mut header_bytes = [0u8; ETHERNET_HEADER_LEN];
+            unsafe {
+                for (i, byte) in header_bytes.iter_mut().enumerate() {
+                    *byte = read_volatile((eth_start + i as u64) as *const u8);
+                }
+            }
+            let header = EthernetHeader::parse(&header_bytes)
+                .expect("Ethernet header was length-checked above");
+            let payload_len = core::cmp::min(eth_len - ETHERNET_HEADER_LEN, ETHERNET_MTU);
+            let payload_start = eth_start + ETHERNET_HEADER_LEN as u64;
+            let frame = Frame::from_header_and_payload(header, payload_start, payload_len);
+
+            println!(
+                "[net] RX ethertype=0x{:04x} src={:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x} dst={:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x} payload_len={}",
+                frame.ethertype,
+                frame.src[0],
+                frame.src[1],
+                frame.src[2],
+                frame.src[3],
+                frame.src[4],
+                frame.src[5],
+                frame.dst[0],
+                frame.dst[1],
+                frame.dst[2],
+                frame.dst[3],
+                frame.dst[4],
+                frame.dst[5],
+                frame.payload_len
+            );
+            Some(frame)
+        } else {
+            println!(
+                "[net] RX dropped short virtio-net buffer desc={} len={}",
+                desc_idx,
+                rx_len
+            );
+            None
+        };
+
+        self.inner.recycle_rx_buffer(desc_idx);
+        frame
+    }
+
+    pub fn send_gateway_arp_request(&mut self) {
+        let header = EthernetHeader {
+            dst: [0xff; 6],
+            src: self.mac(),
+            ethertype: ETHERTYPE_ARP,
+        };
+        let mut frame = [0u8; ETHERNET_HEADER_LEN + 28];
+        frame[0..ETHERNET_HEADER_LEN].copy_from_slice(&header.to_bytes());
+        write_arp_request_payload(
+            &mut frame[ETHERNET_HEADER_LEN..],
+            self.mac(),
+            SLIRP_GUEST_IP,
+            SLIRP_GATEWAY_IP,
+        );
+
+        self.send_frame(&frame);
+        println!(
+            "[net] TX broadcast frame sent, {} bytes",
+            VIRTIO_NET_HDR_LEN + frame.len()
+        );
+    }
+}
+
+/// DMA buffers for one virtio-net TX frame.
+struct NetTxBuffers {
+    header_phys: u64,
+    frame_phys: u64,
+}
+
+impl NetTxBuffers {
+    fn new(eth_frame: &[u8]) -> Self {
+        assert!(
+            eth_frame.len() <= 4096,
+            "single-frame TX buffer cannot hold {} bytes",
+            eth_frame.len()
+        );
+
+        let header_frame = crate::frame_allocator::allocate()
+            .expect("out of frames for virtio-net TX header");
+        let frame_frame = crate::frame_allocator::allocate()
+            .expect("out of frames for virtio-net TX frame");
+        let offset = crate::memory::phys_offset();
+        let header_phys = header_frame * 4096;
+        let frame_phys = frame_frame * 4096;
+        let header_virt = header_phys + offset;
+        let frame_virt = frame_phys + offset;
+
+        unsafe {
+            core::ptr::write_bytes(header_virt as *mut u8, 0, 4096);
+            core::ptr::write_bytes(frame_virt as *mut u8, 0, 4096);
+            core::ptr::copy_nonoverlapping(
+                eth_frame.as_ptr(),
+                frame_virt as *mut u8,
+                eth_frame.len(),
+            );
+        }
+
+        Self {
+            header_phys,
+            frame_phys,
+        }
+    }
+}
+
+fn write_arp_request_payload(
+    out: &mut [u8],
+    sender_mac: [u8; 6],
+    sender_ip: [u8; 4],
+    target_ip: [u8; 4],
+) {
+    assert_eq!(out.len(), 28, "ARP request payload must be 28 bytes");
+
+    out[0..2].copy_from_slice(&1u16.to_be_bytes()); // Ethernet
+    out[2..4].copy_from_slice(&0x0800u16.to_be_bytes()); // IPv4
+    out[4] = 6; // MAC length
+    out[5] = 4; // IPv4 length
+    out[6..8].copy_from_slice(&1u16.to_be_bytes()); // request
+    out[8..14].copy_from_slice(&sender_mac);
+    out[14..18].copy_from_slice(&sender_ip);
+    out[18..24].copy_from_slice(&[0u8; 6]);
+    out[24..28].copy_from_slice(&target_ip);
+}
+
 /// Driver state for the virtio-net device after PCI probing.
 pub struct VirtioNet {
     bus: u8,
@@ -1036,6 +1323,47 @@ impl VirtioNet {
             self.notify_virt,
             self.notify_off_multiplier
         );
+    }
+
+    fn recycle_rx_buffer(&mut self, desc_idx: u16) {
+        let buffer = self
+            .rx_buffers
+            .iter()
+            .find(|buffer| buffer.desc_idx == desc_idx)
+            .expect("cannot recycle unknown RX descriptor");
+
+        unsafe {
+            core::ptr::write_bytes(buffer.virt as *mut u8, 0, buffer.len as usize);
+        }
+
+        {
+            let rx_queue = self
+                .rx_queue
+                .as_mut()
+                .expect("virtio-net RX queue not configured");
+            rx_queue.submit_chain(desc_idx);
+            let (avail_idx, used_idx, last_used_idx) = rx_queue.debug_state();
+            println!(
+                "[net] RX buffer desc={} recycled (avail_idx={}, used_idx={}, last_used_idx={})",
+                desc_idx,
+                avail_idx,
+                used_idx,
+                last_used_idx
+            );
+        }
+
+        self.kick_queue(0);
+    }
+
+    fn kick_queue(&self, queue_index: u16) {
+        self.write_common_u16(COMMON_QUEUE_SELECT, queue_index);
+        let queue_notify_off = self.read_common_u16(COMMON_QUEUE_NOTIFY_OFF) as u64;
+        let off = queue_notify_off * (self.notify_off_multiplier as u64);
+        let notify_addr = self.notify_virt + off;
+
+        unsafe {
+            write_volatile(notify_addr as *mut u16, queue_index);
+        }
     }
 }
 
@@ -1466,6 +1794,39 @@ impl VirtQueue {
         // );
 
         (head, mid, tail)
+    }
+
+    /// Build a 2-descriptor chain for virtio-net transmit.
+    ///
+    /// Layout:
+    ///   desc[head] addr=virtio_net_hdr len=12       flags=F_NEXT next=tail
+    ///   desc[tail] addr=Ethernet frame len=eth_len  flags=0      next=0
+    pub fn build_tx_chain(
+        &mut self,
+        header_phys: u64,
+        header_len: u32,
+        frame_phys: u64,
+        frame_len: u32,
+    ) -> (u16, u16) {
+        let head = self.alloc_descriptor().expect("no free TX descriptors");
+        let tail = self.alloc_descriptor().expect("no free TX descriptors");
+
+        self.write_descriptor(
+            head,
+            header_phys,
+            header_len,
+            VIRTQ_DESC_F_NEXT,
+            tail,
+        );
+        self.write_descriptor(
+            tail,
+            frame_phys,
+            frame_len,
+            0,
+            0,
+        );
+
+        (head, tail)
     }
 
     /// Publish a chain head to the available ring and advance `idx`.

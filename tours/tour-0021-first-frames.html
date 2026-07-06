@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Tour - Lesson 21 - First Frames</title>
+<link rel="stylesheet" href="../assets/lesson.css">
+<style>
+  .tour-step { margin: 3rem 0; padding-top: 1rem; border-top: 1px solid var(--border); }
+  .tour-step:first-of-type { border-top: none; padding-top: 0; }
+  .tour-step-num {
+    display: inline-block; font-family: var(--font-mono); font-size: 0.78rem;
+    font-weight: 600; color: var(--accent); background: var(--accent-soft);
+    padding: 2px 8px; border-radius: 3px; margin-right: 0.6rem;
+  }
+  .tour-step-title {
+    font-family: var(--font-sans); font-weight: 700; font-size: 1.3rem;
+    color: var(--text); margin: 0 0 0.4rem; display: inline;
+  }
+  .tour-step-h2 { margin: 0 0 1rem; }
+  .tour-files { font-family: var(--font-mono); font-size: 0.82rem; color: var(--text-dim); margin: 0.5rem 0 1.5rem; }
+  .tour-files strong { color: var(--text); font-weight: 600; }
+  .snippet-meta { font-family: var(--font-mono); font-size: 0.72rem; color: var(--text-dim); margin: 1.5rem 0 0.35rem; display: flex; align-items: baseline; gap: 0.6rem; }
+  .snippet-meta .snippet-file { color: var(--accent); font-weight: 600; background: var(--accent-soft); padding: 1px 6px; border-radius: 3px; }
+  .snippet-meta .snippet-what { color: var(--text-faint); font-style: italic; }
+  .snippet-meta + pre, .snippet-meta + pre.tour-output { margin-top: 0; }
+  pre.tour-output { background: #111827; color: #e5e7eb; border-left: 3px solid var(--accent); padding: 1rem 1.25rem; border-radius: 0 6px 6px 0; font-size: 0.8rem; line-height: 1.55; margin: 1rem 0; overflow-x: auto; }
+  pre.tour-output .ok { color: #86efac; }
+  .plain-map {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1rem 1.25rem;
+    margin: 1.25rem 0;
+    overflow-x: auto;
+  }
+  .plain-map pre { background: transparent; color: var(--text); padding: 0; margin: 0; }
+</style>
+</head>
+<body>
+<article class="lesson">
+  <header class="lesson-header">
+    <div class="lesson-eyebrow">Tour - Lesson 21 - Companion to <a href="../lessons/0021-first-frames.html" style="color:inherit;">the lesson</a></div>
+    <h1 class="lesson-title">Code Tour - First Frames on the Wire</h1>
+    <p class="lesson-subtitle">Build one ARP request, send it through TX queue 1, read slirp's ARP reply from RX queue 0, and put the filled RX buffer back into service.</p>
+    <div class="lesson-meta">
+      <span><strong>Files</strong> <code>src/net/ethernet.rs</code>, <code>src/virtio.rs</code>, <code>src/main.rs</code></span>
+      <span><strong>Test</strong> <code>tests/test_virtio_net_frames.sh</code></span>
+    </div>
+  </header>
+
+  <div class="content">
+  <p class="lead">
+    Lesson 21 turns the initialized network card into a tiny raw-frame
+    device. The kernel can hand it Ethernet bytes to send and can ask
+    whether a received Ethernet frame is waiting.
+  </p>
+
+  <div class="plain-map">
+<pre>EthernetHeader builds 14 bytes
+NetDevice builds a 42-byte ARP request
+virtio-net prepends a 12-byte zero header
+TX queue 1 sends the frame
+RX queue 0 returns slirp's ARP reply
+recv_frame strips the 12-byte header
+the RX descriptor goes back into the avail ring</pre>
+  </div>
+
+  <div class="tour-step">
+    <h2 class="tour-step-h2"><span class="tour-step-num">21.1</span><span class="tour-step-title">Add the Ethernet header helper</span></h2>
+    <div class="tour-files"><strong>File:</strong> <code>src/net/ethernet.rs</code></div>
+    <p>
+      Ethernet starts with 14 bytes: destination MAC, source MAC, and
+      EtherType. The helper keeps byte order in one place. EtherType uses
+      big-endian bytes on the wire, so ARP appears as <code>08 06</code>.
+    </p>
+    <div class="snippet-meta"><span class="snippet-file">src/net/ethernet.rs</span><span class="snippet-what">parse and build</span></div>
+<pre><span class="k">let</span> ethertype = <span class="t">u16</span>::from_be_bytes([buf[12], buf[13]]);
+
+out[0..6].copy_from_slice(&amp;self.dst);
+out[6..12].copy_from_slice(&amp;self.src);
+out[12..14].copy_from_slice(&amp;self.ethertype.to_be_bytes());</pre>
+    <p>
+      Later ARP, IPv4, ICMP, and UDP code can use this same header helper.
+    </p>
+  </div>
+
+  <div class="tour-step">
+    <h2 class="tour-step-h2"><span class="tour-step-num">21.2</span><span class="tour-step-title">Build a small NetDevice surface</span></h2>
+    <div class="tour-files"><strong>File:</strong> <code>src/virtio.rs</code></div>
+    <p>
+      <code>NetDevice</code> owns the initialized <code>VirtioNet</code>.
+      Callers see three useful methods: read the MAC, send a raw frame,
+      and receive one raw frame if the RX ring has a completion.
+    </p>
+    <div class="snippet-meta"><span class="snippet-file">src/virtio.rs</span><span class="snippet-what">public shape</span></div>
+<pre><span class="k">pub struct</span> <span class="t">NetDevice</span> {
+    inner: <span class="t">VirtioNet</span>,
+}
+
+<span class="k">pub fn</span> <span class="f">mac</span>(&amp;self) -&gt; [<span class="t">u8</span>; 6]
+<span class="k">pub fn</span> <span class="f">send_frame</span>(&amp;<span class="k">mut</span> self, eth_frame: &amp;[<span class="t">u8</span>])
+<span class="k">pub fn</span> <span class="f">recv_frame</span>(&amp;<span class="k">mut</span> self) -&gt; <span class="t">Option</span>&lt;<span class="t">Frame</span>&gt;</pre>
+    <p>
+      The queues, descriptor indices, and 12-byte virtio header stay inside
+      this layer.
+    </p>
+  </div>
+
+  <div class="tour-step">
+    <h2 class="tour-step-h2"><span class="tour-step-num">21.3</span><span class="tour-step-title">Send the ARP request</span></h2>
+    <div class="tour-files"><strong>Files:</strong> <code>src/virtio.rs</code>, <code>src/main.rs</code></div>
+    <p>
+      The request asks the virtual gateway, <code>10.0.2.2</code>, for its
+      MAC address. The destination MAC is broadcast because the kernel
+      begins without knowing the gateway's hardware address.
+    </p>
+    <div class="snippet-meta"><span class="snippet-file">src/virtio.rs</span><span class="snippet-what">ARP request bytes</span></div>
+<pre>dst MAC      ff:ff:ff:ff:ff:ff
+src MAC      52:54:00:12:34:56
+EtherType    0x0806
+sender IP    10.0.2.15
+target IP    10.0.2.2</pre>
+    <p>
+      <code>send_frame</code> allocates two DMA buffers. The first holds the
+      12 zero bytes required by virtio-net. The second holds the 42-byte
+      Ethernet frame.
+    </p>
+    <div class="snippet-meta"><span class="snippet-file">src/virtio.rs</span><span class="snippet-what">TX descriptor chain</span></div>
+<pre>desc[head] = virtio_net_hdr, len 12, F_NEXT
+desc[tail] = Ethernet frame, len 42
+
+submit head to TX queue 1
+kick queue 1
+poll TX used ring for completion</pre>
+  </div>
+
+  <div class="tour-step">
+    <h2 class="tour-step-h2"><span class="tour-step-num">21.4</span><span class="tour-step-title">Receive and parse the reply</span></h2>
+    <div class="tour-files"><strong>File:</strong> <code>src/virtio.rs</code></div>
+    <p>
+      The RX queue was stocked in Lesson 20. When slirp answers, the device
+      fills one posted buffer and writes its descriptor id to the used ring.
+      <code>recv_frame</code> maps that id back to the saved buffer.
+    </p>
+    <div class="snippet-meta"><span class="snippet-file">src/virtio.rs</span><span class="snippet-what">RX buffer layout</span></div>
+<pre>bytes 0..12      virtio_net_hdr
+bytes 12..26     Ethernet header
+bytes 26..       payload</pre>
+    <p>
+      The parser skips the first 12 bytes, parses the 14-byte Ethernet
+      header, copies up to 1500 payload bytes into a <code>Frame</code>,
+      and prints the line that proves the reply came from slirp.
+    </p>
+    <div class="snippet-meta"><span class="snippet-file">serial output</span><span class="snippet-what">first RX proof</span></div>
+<pre>[net] RX ethertype=0x0806 src=52:55:0a:00:02:02 dst=52:54:00:12:34:56 payload_len=50</pre>
+  </div>
+
+  <div class="tour-step">
+    <h2 class="tour-step-h2"><span class="tour-step-num">21.5</span><span class="tour-step-title">Recycle the RX buffer</span></h2>
+    <div class="tour-files"><strong>File:</strong> <code>src/virtio.rs</code></div>
+    <p>
+      The used descriptor goes straight back to the RX avail ring after
+      parsing. The buffer keeps its address, length, and <code>F_WRITE</code>
+      flag. Re-posting the descriptor restores the receive supply.
+    </p>
+    <div class="snippet-meta"><span class="snippet-file">src/virtio.rs</span><span class="snippet-what">recycle path</span></div>
+<pre>zero the filled buffer
+submit the same descriptor id to RX avail
+kick RX queue 0</pre>
+    <p>
+      The serial line includes the ring counters so you can see the supply
+      move forward after the first frame.
+    </p>
+  </div>
+
+  <div class="tour-step">
+    <h2 class="tour-step-h2"><span class="tour-step-num">21.6</span><span class="tour-step-title">Boot-test the path</span></h2>
+    <div class="tour-files"><strong>File:</strong> <code>tests/test_virtio_net_frames.sh</code></div>
+    <p>
+      The test boots QEMU with user-mode networking, waits for the kernel to
+      exit cleanly, then checks the serial log for TX, RX, recycle, and the
+      final proof line.
+    </p>
+    <div class="snippet-meta"><span class="snippet-file">serial output</span><span class="snippet-what">expected markers</span></div>
+<pre>[net] TX broadcast frame sent, 54 bytes
+[net] RX ethertype=0x0806
+[net] RX buffer desc=63 recycled
+[net] *** first Ethernet frame received and RX buffer recycled ***</pre>
+  </div>
+
+  <h2>Verification</h2>
+<pre class="tour-output"><span class="ok">cargo check --features test-mode</span>
+50 warnings
+
+<span class="ok">./tests/test_virtio_net_frames.sh</span>
+[net-frames] PASS</pre>
+
+  <h2>Where to Ask Questions</h2>
+  <p>
+    Good follow-ups: why TX uses two descriptors, why RX skips exactly
+    12 bytes, why the gateway MAC is <code>52:55:0a:00:02:02</code>, or how
+    Lesson 22 will turn the ARP bytes into fields.
+  </p>
+  </div>
+
+  <footer class="lesson-footer">
+    <div class="footer-block">
+      <h4>Practice</h4>
+      <p style="margin:0;">
+        Say the path out loud: build Ethernet, prepend virtio header,
+        submit TX, poll RX, strip virtio header, recycle descriptor.
+      </p>
+    </div>
+    <nav class="lesson-nav">
+      <a href="../lessons/0021-first-frames.html">Lesson 21</a>
+      <a href="../lessons/0020-virtio-net-init.html">Lesson 20</a>
+    </nav>
+  </footer>
+</article>
+</body>
+</html>

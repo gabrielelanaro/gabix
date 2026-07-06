@@ -20,6 +20,7 @@ mod process;
 mod user;
 mod syscall;
 mod fs;
+mod net;
 mod pci;
 mod virtio;
 mod ext2;
@@ -560,6 +561,47 @@ pub extern "C" fn _start(boot_info: &'static BootInfo) -> ! {
 
         println!("[virtio-net] handshake phase 3 — DRIVER_OK");
         net_dev.set_driver_ok();
+
+        println!("[test] first Ethernet frames over virtio-net (21.1-21.5)");
+        let mut net = virtio::NetDevice::from_virtio_net(net_dev);
+        {
+            let header = net::ethernet::EthernetHeader {
+                dst: [0xff; 6],
+                src: net.mac(),
+                ethertype: net::ethernet::ETHERTYPE_ARP,
+            };
+            let bytes = header.to_bytes();
+            assert_eq!(bytes[12], 0x08, "ARP EtherType high byte");
+            assert_eq!(bytes[13], 0x06, "ARP EtherType low byte");
+            assert_eq!(
+                net::ethernet::EthernetHeader::parse(&bytes),
+                Some(header),
+                "EthernetHeader should round-trip through bytes"
+            );
+        }
+        println!(
+            "[net] device MAC {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+            net.mac()[0],
+            net.mac()[1],
+            net.mac()[2],
+            net.mac()[3],
+            net.mac()[4],
+            net.mac()[5]
+        );
+        net.send_gateway_arp_request();
+        let mut frame = None;
+        for _ in 0..200_000u32 {
+            if let Some(candidate) = net.recv_frame() {
+                if candidate.ethertype == net::ethernet::ETHERTYPE_ARP {
+                    frame = Some(candidate);
+                    break;
+                }
+            }
+        }
+        let frame = frame.expect("Lesson 21 expected an ARP reply from slirp");
+        println!("[net] first RX payload prefix:");
+        frame.print_payload_prefix(28);
+        println!("[net] *** first Ethernet frame received and RX buffer recycled ***");
     } else {
         println!("[virtio-net] device not present; skipping init");
     }
