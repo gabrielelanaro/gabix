@@ -1,0 +1,708 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Lesson 22 — ARP — Who Has 10.0.2.2?</title>
+<link rel="stylesheet" href="../assets/lesson.css">
+<link rel="stylesheet" href="../assets/byte-layout.css">
+<style>
+  .req-rep {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 1.2rem;
+    margin: 1.5rem 0;
+  }
+  .req-rep .rr-col {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 0.9rem 1.1rem 1rem;
+  }
+  .req-rep .rr-col.request { border-top: 3px solid #b45309; background: #fffbeb; }
+  .req-rep .rr-col.reply   { border-top: 3px solid #15803d; background: #f0fdf4; }
+  .req-rep .rr-title {
+    font-family: var(--font-sans);
+    font-weight: 700;
+    font-size: 0.95rem;
+    margin-bottom: 0.6rem;
+  }
+  .req-rep .rr-row {
+    display: grid;
+    grid-template-columns: 6rem 1fr;
+    gap: 0.5rem;
+    padding: 0.2rem 0;
+    font-family: var(--font-mono);
+    font-size: 0.78rem;
+    border-bottom: 1px dashed var(--border);
+  }
+  .req-rep .rr-row:last-child { border-bottom: none; }
+  .req-rep .rr-row .rr-label { color: var(--text-faint); font-family: var(--font-sans); font-size: 0.74rem; }
+  .req-rep .rr-row .rr-value { color: var(--text); word-break: break-all; }
+  .req-rep .rr-row.changed .rr-value { color: var(--accent); font-weight: 600; }
+  .req-rep .rr-row.answer   .rr-value { color: #15803d; font-weight: 600; }
+  .req-rep .rr-note {
+    margin-top: 0.7rem;
+    padding-top: 0.5rem;
+    border-top: 1px dashed var(--border);
+    font-family: var(--font-serif);
+    font-size: 0.85rem;
+    color: var(--text-dim);
+    font-style: italic;
+  }
+
+  .merge-algo {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1rem 1.2rem;
+    margin: 1.25rem 0;
+    font-family: var(--font-mono);
+    font-size: 0.82rem;
+    line-height: 1.7;
+  }
+  .merge-algo .ma-step {
+    display: grid;
+    grid-template-columns: 1.5rem 1fr;
+    gap: 0.5rem;
+    padding: 0.15rem 0;
+  }
+  .merge-algo .ma-num {
+    color: var(--text-faint);
+    text-align: right;
+  }
+  .merge-algo .ma-text { color: var(--text); }
+  .merge-algo .ma-text strong { color: var(--accent); }
+  .merge-algo .ma-text .emph { color: #15803d; }
+  .merge-algo .ma-comment {
+    color: var(--text-faint);
+    font-family: var(--font-sans);
+    font-size: 0.78rem;
+    padding-left: 2rem;
+    display: block;
+  }
+
+  .cache-state {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1rem 1.2rem;
+    margin: 1.25rem 0;
+    font-family: var(--font-mono);
+    font-size: 0.82rem;
+    line-height: 1.6;
+  }
+  .cache-state .cs-empty {
+    color: var(--text-faint);
+    font-style: italic;
+  }
+  .cache-state .cs-entry {
+    display: grid;
+    grid-template-columns: 8rem 1fr;
+    gap: 0.5rem;
+    padding: 0.2rem 0;
+    border-bottom: 1px dashed var(--border);
+  }
+  .cache-state .cs-entry:last-child { border-bottom: none; }
+  .cache-state .cs-ip   { color: var(--accent); font-weight: 600; }
+  .cache-state .cs-mac  { color: var(--text); }
+  .cache-state .cs-when {
+    grid-column: 2;
+    color: var(--text-faint);
+    font-family: var(--font-sans);
+    font-size: 0.74rem;
+  }
+</style>
+</head>
+<body>
+<article class="lesson">
+
+  <header class="lesson-header">
+    <div class="lesson-eyebrow">Lesson 22 · Phase 2 · networking · first two-way conversation</div>
+    <h1 class="lesson-title">ARP — Who Has 10.0.2.2?</h1>
+    <p class="lesson-subtitle">Ethernet delivers to MAC addresses, IP names hosts. Nothing ties the two together until someone asks. ARP is the asking protocol — broadcast a question, get a unicast reply, cache the answer, and answer questions about your own address. By the end, the kernel has had its first real two-way conversation with another machine.</p>
+    <div class="lesson-meta">
+      <span><strong>Read time</strong> ~25 min</span>
+      <span><strong>Build time</strong> ~45–60 min</span>
+      <span><strong>Prereq</strong> <a href="0021-first-frames.html">Lesson 21</a></span>
+    </div>
+  </header>
+
+  <div class="content">
+
+  <p class="lead">
+    Lesson 19 introduced the two-address problem as a problem. Lesson
+    21 sent an ARP request as opaque bytes and proved the wire works.
+    This lesson takes the 28 bytes you hexdumped at the end of L21 and
+    builds them into a parser, a builder, a cache, and a reply path.
+    The result is the first protocol layer above raw Ethernet — the
+    glue between IP addresses and MAC addresses, specified in 1982 in
+    a six-page RFC that still describes how the internet finds things
+    on a wire.
+  </p>
+
+  <h2>The problem ARP closes</h2>
+
+  <p>
+    Two machines on a wire want to exchange an IP packet. The sending
+    kernel knows the destination's IP address — it got that from the
+    application or from a routing table. The Ethernet header it
+    builds needs a MAC address. The mapping from
+    <code>10.0.2.2</code> to <code>52:55:0a:00:02:02</code> lives on
+    the local wire; the two address spaces are independent by design.
+    The sending kernel starts without the destination's MAC and has no
+    offline registry to query.
+  </p>
+
+  <p>
+    ARP's move is charm itself: <strong>shout.</strong> The sender
+    broadcasts a single frame addressed to every card on the wire —
+    "I am <code>10.0.2.15</code>, my MAC is
+    <code>52:54:00:12:34:56</code>, who has
+    <code>10.0.2.2</code>?" Every other machine on the wire hears it.
+    The one machine whose IP matches <code>10.0.2.2</code> replies
+    unicast — "I do; my MAC is <code>52:55:0a:00:02:02</code>." The
+    sender caches the answer. The next send to
+    <code>10.0.2.2</code> hits the cache and skips the broadcast.
+  </p>
+
+  <p>
+    Two design choices fall out of the shouting model. First, ARP
+    packets travel inside Ethernet frames as an EtherType payload.
+    The frame's EtherType field is
+    <code>0x0806</code>, telling the receiver's Ethernet parser to
+    hand the payload to the ARP parser instead of the IP parser.
+    Second, ARP stays on the local wire. Routers drop ARP at the
+    segment boundary. The broadcast reaches the local segment instead
+    of the wider internet.
+  </p>
+
+  <h2>The packet layout — 28 bytes from RFC 826</h2>
+
+  <p>
+    Fixed-size, big-endian, no options. The format has been frozen
+    since the RFC was published in November 1982. Read it once,
+    remember it forever:
+  </p>
+
+  <div class="byte-layout">
+    <div class="byte-layout-header">
+      <span class="byte-layout-name">ARP packet for IPv4 over Ethernet — 28 bytes</span>
+      <span class="byte-layout-size">RFC 826 · all multi-byte fields big-endian</span>
+    </div>
+    <div class="byte-bar">
+      <div class="byte-field type-u16" style="--bytes: 2"
+           data-tip="htype · 0x0001 = Ethernet · hardware address type">
+        <span class="byte-field-name">htype</span>
+        <span class="byte-field-meta">u16 BE</span>
+        <span class="byte-field-range">0x00–0x01</span>
+      </div>
+      <div class="byte-field type-u16" style="--bytes: 2"
+           data-tip="ptype · 0x0800 = IPv4 · protocol address type (the same value as Ethernet's EtherType for IPv4)">
+        <span class="byte-field-name">ptype</span>
+        <span class="byte-field-meta">u16 BE</span>
+        <span class="byte-field-range">0x02–0x03</span>
+      </div>
+      <div class="byte-field type-u8" style="--bytes: 1"
+           data-tip="hlen · 6 · hardware address length in bytes (MAC = 6 bytes)">
+        <span class="byte-field-name">hlen</span>
+        <span class="byte-field-meta">u8</span>
+        <span class="byte-field-range">0x04</span>
+      </div>
+      <div class="byte-field type-u8" style="--bytes: 1"
+           data-tip="plen · 4 · protocol address length in bytes (IPv4 = 4 bytes)">
+        <span class="byte-field-name">plen</span>
+        <span class="byte-field-meta">u8</span>
+        <span class="byte-field-range">0x05</span>
+      </div>
+      <div class="byte-field type-u16" style="--bytes: 2"
+           data-tip="oper · 0x0001 = request, 0x0002 = reply · DEMUX KEY">
+        <span class="byte-field-name">oper</span>
+        <span class="byte-field-meta">u16 BE</span>
+        <span class="byte-field-range">0x06–0x07</span>
+      </div>
+      <div class="byte-field type-array" style="--bytes: 6"
+           data-tip="sha · sender hardware address · 6 bytes of MAC">
+        <span class="byte-field-name">sha</span>
+        <span class="byte-field-meta">6 B</span>
+        <span class="byte-field-range">0x08–0x0D</span>
+      </div>
+      <div class="byte-field type-array" style="--bytes: 4"
+           data-tip="spa · sender protocol address · 4 bytes of IPv4">
+        <span class="byte-field-name">spa</span>
+        <span class="byte-field-meta">4 B</span>
+        <span class="byte-field-range">0x0E–0x11</span>
+      </div>
+      <div class="byte-field type-array" style="--bytes: 6"
+           data-tip="tha · target hardware address · in a request, all zeros while the sender is asking; in a reply, the original sender's MAC">
+        <span class="byte-field-name">tha</span>
+        <span class="byte-field-meta">6 B</span>
+        <span class="byte-field-range">0x12–0x17</span>
+      </div>
+      <div class="byte-field type-array" style="--bytes: 4"
+           data-tip="tpa · target protocol address · in a request, the IP we're asking about; in a reply, the original sender's IP">
+        <span class="byte-field-name">tpa</span>
+        <span class="byte-field-meta">4 B</span>
+        <span class="byte-field-range">0x18–0x1B</span>
+      </div>
+    </div>
+    <div class="field-reference">
+      <dl>
+        <dt>htype, ptype <span class="type-tag type-u16">u16 BE ×2</span></dt>
+        <dd>
+          <p>
+            Hardware type and protocol type — a generic pairing so the
+            same packet format could carry "IPv4 over Ethernet,"
+            "IPv6 over Ethernet," "IPv4 over FireWire," or any other
+            combination. We only care about the one pairing: htype =
+            <code>1</code> (Ethernet), ptype = <code>0x0800</code>
+            (IPv4). If either differs, drop the packet.
+          </p>
+        </dd>
+        <dt>hlen, plen <span class="type-tag type-u8">u8 ×2</span></dt>
+        <dd>
+          <p>
+            Lengths of the hardware and protocol addresses. For us:
+            <code>6</code> (MAC) and <code>4</code> (IPv4). The
+            generic format plus explicit lengths is what lets ARP
+            scale across address sizes — the parser reads hlen and
+            plen first, then knows how many bytes sha, spa, tha, tpa
+            each occupy. We can hard-code 6 and 4 since we only do
+            IPv4-over-Ethernet.
+          </p>
+        </dd>
+        <dt>oper <span class="type-tag type-u16">u16 BE</span></dt>
+        <dd>
+          <p>
+            <strong>The demux key for this layer.</strong> Two values
+            matter: <code>1</code> = request, <code>2</code> = reply.
+            Same parser, same byte layout, different operation.
+            Everything else in the parser dispatches on this field.
+          </p>
+        </dd>
+        <dt>sha, spa <span class="type-tag type-array">6 B + 4 B</span></dt>
+        <dd>
+          <p>
+            The sender's hardware and protocol addresses — both at
+            once, in one packet. This is the load-bearing pair. The
+            receiver uses these to <em>learn</em>: "ah,
+            <code>10.0.2.2</code> is at
+            <code>52:55:0a:00:02:02</code>, I'll cache that." A reply
+            that contained only tha would force a second round-trip
+            to learn the sender's MAC, defeating the purpose.
+            Including sha in every ARP packet is the
+            trick that makes one packet teach two machines.
+          </p>
+        </dd>
+        <dt>tha, tpa <span class="type-tag type-array">6 B + 4 B</span></dt>
+        <dd>
+          <p>
+            The target's hardware and protocol addresses. In a
+            request, <code>tpa</code> is the IP we're asking about
+            and <code>tha</code> is zero because the sender is asking
+            for the MAC. In a reply, <code>tpa</code> is the original
+            asker's IP and <code>tha</code> is the original asker's
+            MAC; the reply is addressed <em>back</em> to the one
+            specific card that asked.
+          </p>
+        </dd>
+      </dl>
+    </div>
+  </div>
+
+  <p>
+    Two things to notice before moving on. First, the fixed sizes —
+    hlen and plen advertise 6 and 4, but our parser can hard-code
+    those because we accepted only Ethernet/IPv4 at the htype/ptype
+    check. Second, every multi-byte field is big-endian. The
+    <code>from_be_bytes</code> reflex from Lesson 21 applies to every
+    integer in this packet. The htype field is bytes
+    <code>00 01</code> on the wire; <code>from_le_bytes</code> would
+    read it as <code>0x0100</code> = 256. That value fails the
+    Ethernet hardware-type check and the packet is dropped.
+  </p>
+
+  <h2>The dance — request and reply side by side</h2>
+
+  <p>
+    Every field has a role. The fields that change between request
+    and reply are highlighted; the ones that stay the same tell you
+    which features of the protocol are load-bearing.
+  </p>
+
+  <div class="req-rep">
+    <div class="rr-col request">
+      <div class="rr-title">Request — "who has 10.0.2.2?"</div>
+      <div class="rr-row changed"><span class="rr-label">Ethernet dst</span><span class="rr-value">ff:ff:ff:ff:ff:ff  (broadcast)</span></div>
+      <div class="rr-row"><span class="rr-label">Ethernet src</span><span class="rr-value">52:54:00:12:34:56  (us)</span></div>
+      <div class="rr-row"><span class="rr-label">EtherType</span><span class="rr-value">0x0806</span></div>
+      <div class="rr-row"><span class="rr-label">htype / ptype</span><span class="rr-value">1 / 0x0800</span></div>
+      <div class="rr-row"><span class="rr-label">hlen / plen</span><span class="rr-value">6 / 4</span></div>
+      <div class="rr-row changed"><span class="rr-label">oper</span><span class="rr-value">1  (request)</span></div>
+      <div class="rr-row"><span class="rr-label">sha / spa</span><span class="rr-value">52:54:00:12:34:56 / 10.0.2.15</span></div>
+      <div class="rr-row changed"><span class="rr-label">tha</span><span class="rr-value">00:00:00:00:00:00  (unknown)</span></div>
+      <div class="rr-row"><span class="rr-label">tpa</span><span class="rr-value">10.0.2.2  (the question)</span></div>
+      <p class="rr-note">
+        Goes to every card on the wire. The broadcast is the shout.
+        Only the machine that owns <code>10.0.2.2</code> replies;
+        everyone else silently updates their cache with the sender's
+        mapping (the merge algorithm below).
+      </p>
+    </div>
+    <div class="rr-col reply">
+      <div class="rr-title">Reply — "I do, here is my MAC"</div>
+      <div class="rr-row changed"><span class="rr-label">Ethernet dst</span><span class="rr-value">52:54:00:12:34:56  (unicast to us)</span></div>
+      <div class="rr-row answer"><span class="rr-label">Ethernet src</span><span class="rr-value">52:55:0a:00:02:02  (gateway)</span></div>
+      <div class="rr-row"><span class="rr-label">EtherType</span><span class="rr-value">0x0806</span></div>
+      <div class="rr-row"><span class="rr-label">htype / ptype</span><span class="rr-value">1 / 0x0800</span></div>
+      <div class="rr-row"><span class="rr-label">hlen / plen</span><span class="rr-value">6 / 4</span></div>
+      <div class="rr-row changed"><span class="rr-label">oper</span><span class="rr-value">2  (reply)</span></div>
+      <div class="rr-row answer"><span class="rr-label">sha / spa</span><span class="rr-value">52:55:0a:00:02:02 / 10.0.2.2</span></div>
+      <div class="rr-row changed"><span class="rr-label">tha</span><span class="rr-value">52:54:00:12:34:56  (us)</span></div>
+      <div class="rr-row"><span class="rr-label">tpa</span><span class="rr-value">10.0.2.15</span></div>
+      <p class="rr-note">
+        Addressed to one card. <code>sha</code> is the answer to the
+        question — the gateway's MAC, now cacheable. The reply
+        structure mirrors the request exactly, with oper flipped and
+        sender/target swapped. A reply is a request reflected back,
+        with one bit different and the addresses rotated.
+      </p>
+    </div>
+  </div>
+
+  <p>
+    The stable fields tell you what the protocol considers
+    immutable: the hardware/protocol pairing, the address lengths,
+    and the EtherType. The fields that change carry the conversation:
+    oper (which way the question flows), sha (who is speaking now),
+    tha (who is being spoken to). One byte — oper — flips a request
+    into a reply.
+  </p>
+
+  <h2>The RFC 826 merge algorithm — both sides learn</h2>
+
+  <p>
+    Here is where ARP earns its reputation for elegance. A naive
+    design would have the asker broadcast a question, the answerer
+    reply, and the asker cache the answer — one machine learns per
+    round-trip. The actual RFC 826 algorithm, in four lines:
+  </p>
+
+  <div class="merge-algo">
+    <div class="ma-step"><span class="ma-num">1.</span><span class="ma-text">Receive an ARP packet. Check <strong>htype</strong>, <strong>ptype</strong>, <strong>hlen</strong>, <strong>plen</strong> match what we speak. Drop if not.</span></div>
+    <div class="ma-step"><span class="ma-num">2.</span><span class="ma-text">Look up <strong>spa → sha</strong> in the cache. If missing or changed, <span class="emph">update the cache</span>.</span><span class="ma-comment">Both sides learn from every ARP packet, even before checking if it's for them.</span></div>
+    <div class="ma-step"><span class="ma-num">3.</span><span class="ma-text">Check whether <strong>tpa</strong> is an IP we own. Other targets end processing after the cache merge.</span><span class="ma-comment">The packet can teach us even when another machine owns the target IP.</span></div>
+    <div class="ma-step"><span class="ma-num">4.</span><span class="ma-text">If <strong>oper</strong> is request, send a reply (swap sha/spa into tha/tpa, fill our MAC into sha, set oper=2). If <strong>oper</strong> is reply, complete any pending request.</span><span class="ma-comment">We answer requests for our own IP — that's what makes us "exist" on the network.</span></div>
+  </div>
+
+  <p>
+    Step 2 is the move. The cache update happens <em>before</em> the
+    target check, on every ARP packet the kernel sees — even ones
+    addressed to other machines, even ones we ultimately ignore. So
+    when machine A broadcasts "who has 10.0.2.2?", every machine on
+    the wire learns A's MAC, including machines that are only
+    listening.
+    Future transmissions to A skip the broadcast. The ARP traffic on
+    a real network is much sparser than the naive design would
+    produce, because step 2 makes every ARP packet a learning
+    opportunity for everyone who hears it.
+  </p>
+
+  <p>
+    For mini-os, this means the parser updates the cache on every
+    received ARP packet, regardless of whether the packet was for
+    us. The slirp gateway announces itself with every reply, and we
+    learn its MAC the moment the first reply lands — the gateway
+    never has to ask us.
+  </p>
+
+  <h2>The ARP cache</h2>
+
+  <p>
+    A simple map from IP to MAC. The choice of map matters less than
+    the operations on it: lookup before TX, insert on RX, optional
+    expiry. mini-os uses a <code>BTreeMap</code> from the alloc
+    crate — already in our dependency tree, with ordering for
+    <code>[u8; 4]</code> keys built in.
+  </p>
+
+  <p>
+    The cache state across a typical exchange:
+  </p>
+
+  <div class="cache-state">
+    <div style="color: var(--text-faint); font-family: var(--font-sans); font-size: 0.78rem; margin-bottom: 0.5rem;">T0 — before sending the request</div>
+    <div class="cs-empty">(empty)</div>
+
+    <div style="color: var(--text-faint); font-family: var(--font-sans); font-size: 0.78rem; margin: 1rem 0 0.5rem;">T1 — request sent, waiting for reply</div>
+    <div class="cs-empty">(still empty — our own MAC is local device state; the gateway entry arrives with the reply)</div>
+
+    <div style="color: var(--text-faint); font-family: var(--font-sans); font-size: 0.78rem; margin: 1rem 0 0.5rem;">T2 — reply received, merge step ran</div>
+    <div class="cs-entry">
+      <span class="cs-ip">10.0.2.2</span>
+      <span class="cs-mac">52:55:0a:00:02:02</span>
+      <span class="cs-when">learned from reply's sha — gateway exists</span>
+    </div>
+
+    <div style="color: var(--text-faint); font-family: var(--font-sans); font-size: 0.78rem; margin: 1rem 0 0.5rem;">T3 — gateway sends its own ARP request for us</div>
+    <div class="cs-entry">
+      <span class="cs-ip">10.0.2.2</span>
+      <span class="cs-mac">52:55:0a:00:02:02</span>
+      <span class="cs-when">already cached, merge step is a no-op</span>
+    </div>
+  </div>
+
+  <p>
+    Linux adds expiry and states. Entries go stale after minutes to
+    hours, so a replaced card is discovered again. Linux's neighbour
+    cache also has a state machine (INCOMPLETE, REACHABLE, STALE,
+    DELAY, PROBE) that drives retransmission and validation. mini-os
+    uses one state — <em>present</em> — and a synchronous poll that
+    returns <code>None</code> when the entry is missing. Future
+    scaling work can add the state machine; an echo server on a quiet
+    slirp wire can use the small version.
+  </p>
+
+  <h2>Answering requests — what makes us exist</h2>
+
+  <p>
+    Sending ARP requests is one half of the protocol. Answering them
+    is the other. When another machine broadcasts "who has
+    10.0.2.15?", we are obligated to reply — the RFC calls it a
+    "request, if the target protocol address is me." Without this
+    reply path, the gateway needs a way to learn us first. Every
+    inbound connection (an <code>nc -u localhost 5555</code> from
+    the host in Lesson 26) starts with the gateway asking ARP for
+    our MAC. Our reply gives the gateway the address it needs before
+    it can deliver the inbound frame.
+  </p>
+
+  <p>
+    The reply is a struct mutation away. Take the request's bytes,
+    flip oper from 1 to 2, rotate sha/spa into tha/tpa, fill our own
+    MAC and IP into sha/spa. Wrap in an Ethernet frame addressed to
+    the asker's MAC (which we just learned from the request's sha).
+    Send it.
+  </p>
+
+  <p>
+    Slirp will probe the guest with an ARP request for
+    <code>10.0.2.15</code> shortly after the kernel boots, before
+    any of our own traffic. If our reply path works, slirp adds us
+    to its internal ARP table and future inbound traffic can find
+    us. A missing reply leaves slirp without a MAC for the guest, and
+    the Lesson 26 echo server stays silent.
+  </p>
+
+  <h2>Our address — fixed by slirp</h2>
+
+  <p>
+    Real machines learn their IP address from the network via DHCP
+    (Dynamic Host Configuration Protocol) — broadcast a "please give
+    me an address" request, the network's DHCP server replies with a
+    lease. DHCP is itself a small protocol built on top of UDP, and
+    implementing it would be a worthwhile side quest outside the
+    critical path to a UDP echo server.
+  </p>
+
+  <p>
+    Slirp's guest address is fixed at <code>10.0.2.15</code> — it's
+    baked into slirp's design. Hard-coding it as a kernel constant is
+    therefore an accurate statement of how slirp works. The constant
+    lives in <code>src/net/mod.rs</code> as
+    <code>pub const OUR_IP: [u8; 4] = [10, 0, 2, 15];</code>. The
+    gateway IP is the same shape:
+    <code>pub const GATEWAY_IP: [u8; 4] = [10, 0, 2, 2];</code>.
+  </p>
+
+  <p>
+    The MAC, by contrast, comes from device config (Lesson 20). It's
+    per-card and read at boot. The asymmetry is real: MAC belongs to
+    the hardware, IP belongs to the network.
+  </p>
+
+  <h2>The build — four steps</h2>
+
+  <p>
+    The packet and cache pieces live in <code>src/net/arp.rs</code>.
+    The wire-facing resolver lives on <code>NetDevice</code> as
+    <code>resolve_arp(ip)</code>, because it needs to transmit a
+    request and poll the RX queue. Lesson 23's IPv4 path will call
+    that resolver before every TX.
+  </p>
+
+  <div class="recipe">
+    <div class="recipe-step">
+      <div class="recipe-num">1</div>
+      <div class="recipe-body">
+        <strong>ArpPacket parse and build.</strong>
+        <code>struct ArpPacket { htype, ptype, hlen, plen, oper, sha, spa, tha, tpa }</code>.
+        Two methods: <code>parse(buf: &amp;[u8]) -&gt; Option&lt;Self&gt;</code>
+        using <code>u16::from_be_bytes</code> for the four
+        multi-byte fields; <code>to_bytes(&amp;self) -&gt; [u8; 28]</code>
+        using <code>.to_be_bytes()</code> on the same fields.
+        Constants for the immutable values:
+        <code>HTYPE_ETHERNET = 1</code>,
+        <code>PTYPE_IPV4 = 0x0800</code>,
+        <code>OPER_REQUEST = 1</code>,
+        <code>OPER_REPLY = 2</code>. Unit test: round-trip a request
+        and a reply through build → parse, verify all fields match.
+        The boot probe checks this round trip before it talks to the
+        network card.
+      </div>
+    </div>
+    <div class="recipe-step">
+      <div class="recipe-num">2</div>
+      <div class="recipe-body">
+        <strong>Transmit a request, parse the reply.</strong>
+        Build an ArpPacket with oper=REQUEST,
+        sha=our MAC, spa=10.0.2.15, tha=zeros, tpa=10.0.2.2. Wrap
+        in Ethernet (broadcast dst, our src, EtherType 0x0806). Send
+        via <code>NetDevice::send_frame</code> from Lesson 21. Loop
+        on <code>recv_frame</code>, dispatch on ethertype, parse the
+        payload as ArpPacket. When oper=REPLY arrives, print
+        <code>[arp] 10.0.2.2 is at 52:55:0a:00:02:02</code>.
+        The serial proof is checked by <code>tests/test_arp.sh</code>.
+      </div>
+    </div>
+    <div class="recipe-step">
+      <div class="recipe-num">3</div>
+      <div class="recipe-body">
+        <strong>ARP cache and resolve().</strong>
+        <code>static ARP_CACHE: Mutex&lt;BTreeMap&lt;[u8;4], [u8;6]&gt;&gt;</code>.
+        <code>NetDevice::resolve_arp(ip) -&gt; Option&lt;[u8;6]&gt;</code>
+        — cache hit returns immediately; cache miss broadcasts a
+        request, polls for the reply up to a timeout (say 1 second),
+        returns the MAC. Pull the merge step (update on every
+        received ARP) into the receive path. Re-test step 2's
+        request — first call should broadcast and wait, second call
+        should return from cache without transmitting.
+      </div>
+    </div>
+    <div class="recipe-step">
+      <div class="recipe-num">4</div>
+      <div class="recipe-body">
+        <strong>Answer inbound requests.</strong> In the receive
+        path, after the merge step: if <code>oper == REQUEST</code>
+        and <code>tpa == OUR_IP</code>, build a reply (rotate
+        sha/spa into tha/tpa, fill our MAC and IP into sha/spa,
+        oper=2), wrap in Ethernet addressed to the asker's MAC, send
+        via <code>NetDevice::send_frame</code>. Test by leaving the
+        kernel idle for a few seconds after boot — slirp probes for
+        us around the 30-second mark. When the probe arrives, our
+        reply should print
+        <code>[arp] replied: 10.0.2.15 is at 52:54:00:12:34:56</code>.
+      </div>
+    </div>
+  </div>
+
+  <div class="callout">
+    <div class="callout-title">Lesson 22 scope</div>
+    <p style="margin:0;">
+      This slice keeps cache expiry, retransmission, duplicate-address
+      probing, and gratuitous ARP for later. Those features matter on
+      larger networks and changing hardware. The slirp path to ping
+      and UDP echo needs the parser, cache, resolver, and reply
+      builder first.
+    </p>
+  </div>
+
+  <h2>Primary source</h2>
+
+  <p>
+    <a href="https://www.rfc-editor.org/rfc/rfc826">RFC 826 — "An
+    Ethernet Address Resolution Protocol"</a>, Plummer, November
+    1982. Six pages including the merge algorithm quoted above. The
+    RFC is unusually readable — the protocol is small enough that
+    the spec and the implementation are nearly the same document.
+    For Linux's implementation:
+    <a href="https://elixir.bootlin.com/linux/latest/source/net/ipv4/arp.c">net/ipv4/arp.c</a>
+    — <code>arp_process</code> is the merge algorithm made code;
+    <code>net/core/neighbour.c</code> is the generic cache machinery
+    that ARP, IPv6 neighbor discovery, and DECnet all share. The
+    Linux version is several thousand lines; ours will be under two
+    hundred. The compression comes from skipping the state machine
+    and the expiry while preserving the protocol's core exchange.
+  </p>
+
+  <div class="probe">
+    <div class="probe-title">Probe — check the model before you build</div>
+    <p>
+      Three machines on a wire: A (10.0.2.15), B (10.0.2.16), G the
+      gateway (10.0.2.2). A broadcasts "who has 10.0.2.2?" B hears
+      it. G hears it and replies. <strong>After this exchange, what
+      does B's ARP cache contain?</strong> Specifically: did B learn
+      anything? If so, what? And does B's answer change if B already
+      had G in its cache before the broadcast?
+    </p>
+  </div>
+
+  <p>
+    Say your answer back to me, or push on whatever didn't land —
+    the merge algorithm, the request/reply symmetry, the difference
+    between broadcasting a request and replying unicast. I'm your
+    teacher for this phase; the probe is where the conversation
+    starts.
+  </p>
+
+  </div>
+
+  <footer class="lesson-footer">
+    <div class="footer-block">
+      <h4>What this unlocks</h4>
+      <p style="margin:0;">
+        Lesson 23 builds IPv4 — the layer that actually carries
+        payload across networks. IPv4's TX path needs ARP's
+        <code>resolve()</code> to translate the next-hop IP into a
+        MAC, so this cache becomes load-bearing the moment IPv4
+        starts sending.
+      </p>
+    </div>
+
+    <div class="footer-block">
+      <h4>Roadmap</h4>
+      <p style="margin:0;">
+        This is lesson 4 of 8 in
+        <a href="roadmap-networking.html">the Phase 2 networking roadmap</a> —
+        keystone: ping the gateway (L24); objective: user-space UDP
+        echo server (L26).
+      </p>
+    </div>
+
+    <div class="footer-block">
+      <h4>Primary source</h4>
+      <p style="margin:0;">
+        <a href="https://www.rfc-editor.org/rfc/rfc826">RFC 826 — ARP</a> ·
+        <a href="https://elixir.bootlin.com/linux/latest/source/net/ipv4/arp.c">Linux net/ipv4/arp.c</a> ·
+        <a href="https://elixir.bootlin.com/linux/latest/source/net/core/neighbour.c">Linux net/core/neighbour.c</a>
+      </p>
+    </div>
+
+    <div class="footer-block">
+      <h4>Code tour</h4>
+      <p style="margin:0;">
+        Read the companion walkthrough:
+        <a href="../tours/tour-0022-arp.html">tour-0022-arp.html</a>.
+        It follows the packet struct, cache merge, resolver, reply
+        path, and test proof.
+      </p>
+    </div>
+
+    <div class="footer-block">
+      <h4>Read next</h4>
+      <p style="margin:0;">
+        Lesson 23 builds IPv4 on top of this resolver. Every outbound
+        IPv4 frame needs the next-hop MAC before TX.
+      </p>
+    </div>
+
+    <nav class="lesson-nav">
+      <a href="0021-first-frames.html">← L21 first frames</a>
+      <a href="roadmap-networking.html">Phase 2 roadmap ↑</a>
+      <a href="../MISSION.md" class="placeholder">Mission</a>
+    </nav>
+  </footer>
+
+</article>
+</body>
+</html>

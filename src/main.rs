@@ -579,6 +579,26 @@ pub extern "C" fn _start(boot_info: &'static BootInfo) -> ! {
                 "EthernetHeader should round-trip through bytes"
             );
         }
+        {
+            let request =
+                net::arp::ArpPacket::request(net.mac(), net::OUR_IP, net::GATEWAY_IP);
+            let bytes = request.to_bytes();
+            assert_eq!(bytes[6], 0x00, "ARP request opcode high byte");
+            assert_eq!(bytes[7], 0x01, "ARP request opcode low byte");
+            assert_eq!(
+                net::arp::ArpPacket::parse(&bytes),
+                Some(request),
+                "ArpPacket request should round-trip through bytes"
+            );
+            let reply = net::arp::ArpPacket::reply_to(
+                &request,
+                [0x52, 0x55, 0x0a, 0, 2, 2],
+                net::GATEWAY_IP,
+            );
+            assert_eq!(reply.oper, net::arp::OPER_REPLY, "ARP reply opcode");
+            assert_eq!(reply.tha, net.mac(), "ARP reply targets the requester MAC");
+            assert_eq!(reply.tpa, net::OUR_IP, "ARP reply targets the requester IP");
+        }
         println!(
             "[net] device MAC {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
             net.mac()[0],
@@ -588,19 +608,28 @@ pub extern "C" fn _start(boot_info: &'static BootInfo) -> ! {
             net.mac()[4],
             net.mac()[5]
         );
-        net.send_gateway_arp_request();
-        let mut frame = None;
-        for _ in 0..200_000u32 {
-            if let Some(candidate) = net.recv_frame() {
-                if candidate.ethertype == net::ethernet::ETHERTYPE_ARP {
-                    frame = Some(candidate);
-                    break;
-                }
-            }
-        }
-        let frame = frame.expect("Lesson 21 expected an ARP reply from slirp");
-        println!("[net] first RX payload prefix:");
-        frame.print_payload_prefix(28);
+        let gateway_mac = net
+            .resolve_arp(net::GATEWAY_IP)
+            .expect("Lesson 22 expected an ARP reply from slirp");
+        assert_eq!(
+            gateway_mac,
+            [0x52, 0x55, 0x0a, 0x00, 0x02, 0x02],
+            "slirp gateway MAC should match QEMU user networking"
+        );
+        let cached_gateway_mac = net
+            .resolve_arp(net::GATEWAY_IP)
+            .expect("Lesson 22 expected a cache hit for slirp");
+        assert_eq!(
+            cached_gateway_mac,
+            gateway_mac,
+            "ARP cache should return gateway MAC"
+        );
+        assert_eq!(
+            net::arp::cache_len(),
+            1,
+            "ARP cache should contain the gateway entry"
+        );
+        println!("[arp] cache entries={}", net::arp::cache_len());
         println!("[net] *** first Ethernet frame received and RX buffer recycled ***");
     } else {
         println!("[virtio-net] device not present; skipping init");

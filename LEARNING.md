@@ -520,6 +520,13 @@ A milestone is a "demo-able" checkpoint. Worth a commit + tag + log entry.
 
 Most recent entries at the top. One entry per work session.
 
+### 2026-07-06 (lesson 22) — ARP parser, resolver, and cache
+- **Done:** Implemented Lesson 22's ARP slice. Added `src/net/arp.rs` with `ArpPacket` parse/build helpers, RFC 826 constants, request/reply builders, and a small `BTreeMap` ARP cache. Added `OUR_IP` and `GATEWAY_IP` constants in `src/net/mod.rs`. Reworked `NetDevice` to resolve ARP through cache lookup, broadcast-on-miss, RX polling, ARP payload parsing, cache merge, and cache-hit return. Added the inbound request reply path for packets targeting `10.0.2.15`.
+- **Status:** Roadmap checkboxes unchanged. This completes the MAC resolution layer needed by IPv4; Lesson 23 can ask `resolve_arp()` for the next-hop MAC before transmit.
+- **Verification:** `cargo check --features test-mode` passed with 50 warnings. `./tests/test_arp.sh` passed and confirmed cache miss, learned gateway mapping `10.0.2.2 -> 52:55:0a:00:02:02`, resolved gateway output, cache hit, and cache size 1. `./tests/test_virtio_net_frames.sh` still passed with the Lesson 21 serial markers. `./tests/run.sh` passed all 7 tests.
+- **Docs:** Updated `lessons/0022-arp.html` to match the implementation, linked Lesson 21 forward to Lesson 22, and added `tours/tour-0022-arp.html`.
+- **Next:** Lesson 23 should build IPv4 header parse/build, use ARP to choose the Ethernet destination MAC for the gateway, and prepare the path toward ICMP ping in Lesson 24.
+
 ### 2026-07-06 (lesson 21) — first Ethernet frames over virtio-net
 - **Done:** Implemented Lesson 21's first-frame slice. Added `src/net/ethernet.rs` for Ethernet header parse/build with big-endian EtherType handling, wrapped the initialized virtio-net driver in `NetDevice`, built and sent a broadcast ARP request for slirp's gateway, added a two-descriptor TX chain, parsed the first RX Ethernet frame after stripping the 12-byte `virtio_net_hdr`, copied payload bytes into a `Frame`, and recycled the filled RX descriptor back into the avail ring.
 - **Status:** Roadmap checkboxes unchanged. This completes the first raw Ethernet TX/RX proof for the Phase 2 networking track; the next networking slice should parse the 28-byte ARP payload into structured fields and cache the gateway MAC.

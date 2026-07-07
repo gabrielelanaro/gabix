@@ -17,6 +17,8 @@ extern crate alloc;
 
 use crate::println;
 use crate::pci;
+use crate::net;
+use crate::net::arp::{self, ArpPacket, ARP_PACKET_LEN, OPER_REPLY, OPER_REQUEST};
 use crate::net::ethernet::{EthernetHeader, ETHERNET_HEADER_LEN, ETHERTYPE_ARP};
 use core::ptr::{read_volatile, write_volatile};
 use core::sync::atomic::{AtomicU16, Ordering};
@@ -81,12 +83,6 @@ const VIRTIO_NET_HDR_LEN: usize = 12;
 
 /// Payload bytes a raw Ethernet frame can carry without jumbo frames.
 const ETHERNET_MTU: usize = 1500;
-
-/// QEMU user-mode networking gives the guest this IPv4 address by default.
-const SLIRP_GUEST_IP: [u8; 4] = [10, 0, 2, 15];
-
-/// QEMU user-mode networking's default gateway address.
-const SLIRP_GATEWAY_IP: [u8; 4] = [10, 0, 2, 2];
 
 /// One parsed virtio vendor-specific capability.
 ///
@@ -875,26 +871,141 @@ impl NetDevice {
         frame
     }
 
-    pub fn send_gateway_arp_request(&mut self) {
+    pub fn resolve_arp(&mut self, ip: [u8; 4]) -> Option<[u8; 6]> {
+        if let Some(mac) = arp::lookup(ip) {
+            println!(
+                "[arp] cache hit: {}.{}.{}.{} is at {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+                ip[0],
+                ip[1],
+                ip[2],
+                ip[3],
+                mac[0],
+                mac[1],
+                mac[2],
+                mac[3],
+                mac[4],
+                mac[5]
+            );
+            return Some(mac);
+        }
+
+        println!(
+            "[arp] cache miss: asking for {}.{}.{}.{}",
+            ip[0],
+            ip[1],
+            ip[2],
+            ip[3]
+        );
+        self.send_arp_request(ip);
+
+        for _ in 0..200_000u32 {
+            if let Some(frame) = self.recv_frame() {
+                if let Some(packet) = self.handle_arp_frame(&frame) {
+                    if packet.oper == OPER_REPLY && packet.spa == ip {
+                        println!("[net] first RX payload prefix:");
+                        frame.print_payload_prefix(ARP_PACKET_LEN);
+                        if let Some(mac) = arp::lookup(ip) {
+                            println!(
+                                "[arp] {}.{}.{}.{} is at {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+                                ip[0],
+                                ip[1],
+                                ip[2],
+                                ip[3],
+                                mac[0],
+                                mac[1],
+                                mac[2],
+                                mac[3],
+                                mac[4],
+                                mac[5]
+                            );
+                            return Some(mac);
+                        }
+                    }
+                }
+            }
+        }
+
+        println!(
+            "[arp] resolve timed out for {}.{}.{}.{}",
+            ip[0],
+            ip[1],
+            ip[2],
+            ip[3]
+        );
+        None
+    }
+
+    fn send_arp_request(&mut self, target_ip: [u8; 4]) {
+        let packet = ArpPacket::request(self.mac(), net::OUR_IP, target_ip);
+        self.send_arp_packet([0xff; 6], packet);
+    }
+
+    fn send_arp_reply(&mut self, request: &ArpPacket) {
+        let reply = ArpPacket::reply_to(request, self.mac(), net::OUR_IP);
+        self.send_arp_packet(request.sha, reply);
+        println!(
+            "[arp] replied: {}.{}.{}.{} is at {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+            net::OUR_IP[0],
+            net::OUR_IP[1],
+            net::OUR_IP[2],
+            net::OUR_IP[3],
+            self.mac()[0],
+            self.mac()[1],
+            self.mac()[2],
+            self.mac()[3],
+            self.mac()[4],
+            self.mac()[5]
+        );
+    }
+
+    fn send_arp_packet(&mut self, dst_mac: [u8; 6], packet: ArpPacket) {
         let header = EthernetHeader {
-            dst: [0xff; 6],
+            dst: dst_mac,
             src: self.mac(),
             ethertype: ETHERTYPE_ARP,
         };
-        let mut frame = [0u8; ETHERNET_HEADER_LEN + 28];
+        let mut frame = [0u8; ETHERNET_HEADER_LEN + ARP_PACKET_LEN];
         frame[0..ETHERNET_HEADER_LEN].copy_from_slice(&header.to_bytes());
-        write_arp_request_payload(
-            &mut frame[ETHERNET_HEADER_LEN..],
-            self.mac(),
-            SLIRP_GUEST_IP,
-            SLIRP_GATEWAY_IP,
-        );
+        frame[ETHERNET_HEADER_LEN..].copy_from_slice(&packet.to_bytes());
 
         self.send_frame(&frame);
         println!(
             "[net] TX broadcast frame sent, {} bytes",
             VIRTIO_NET_HDR_LEN + frame.len()
         );
+    }
+
+    fn handle_arp_frame(&mut self, frame: &Frame) -> Option<ArpPacket> {
+        if frame.ethertype != ETHERTYPE_ARP {
+            return None;
+        }
+
+        let packet = ArpPacket::parse(&frame.payload[..frame.payload_len])?;
+        if !packet.is_ipv4_over_ethernet() {
+            println!("[arp] dropped unsupported ARP packet");
+            return None;
+        }
+
+        arp::merge(&packet);
+        println!(
+            "[arp] learned {}.{}.{}.{} -> {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+            packet.spa[0],
+            packet.spa[1],
+            packet.spa[2],
+            packet.spa[3],
+            packet.sha[0],
+            packet.sha[1],
+            packet.sha[2],
+            packet.sha[3],
+            packet.sha[4],
+            packet.sha[5]
+        );
+
+        if packet.oper == OPER_REQUEST && packet.tpa == net::OUR_IP {
+            self.send_arp_reply(&packet);
+        }
+
+        Some(packet)
     }
 }
 
@@ -937,25 +1048,6 @@ impl NetTxBuffers {
             frame_phys,
         }
     }
-}
-
-fn write_arp_request_payload(
-    out: &mut [u8],
-    sender_mac: [u8; 6],
-    sender_ip: [u8; 4],
-    target_ip: [u8; 4],
-) {
-    assert_eq!(out.len(), 28, "ARP request payload must be 28 bytes");
-
-    out[0..2].copy_from_slice(&1u16.to_be_bytes()); // Ethernet
-    out[2..4].copy_from_slice(&0x0800u16.to_be_bytes()); // IPv4
-    out[4] = 6; // MAC length
-    out[5] = 4; // IPv4 length
-    out[6..8].copy_from_slice(&1u16.to_be_bytes()); // request
-    out[8..14].copy_from_slice(&sender_mac);
-    out[14..18].copy_from_slice(&sender_ip);
-    out[18..24].copy_from_slice(&[0u8; 6]);
-    out[24..28].copy_from_slice(&target_ip);
 }
 
 /// Driver state for the virtio-net device after PCI probing.
