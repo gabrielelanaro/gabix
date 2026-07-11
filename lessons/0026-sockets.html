@@ -1,0 +1,179 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Lesson 26 — Sockets: Deliver UDP to User Space</title>
+  <link rel="stylesheet" href="../assets/lesson.css">
+  <link rel="stylesheet" href="../assets/stepper.css">
+  <style>
+    .object-map { display:grid; gap:.55rem; margin:1.5rem 0; font-family:var(--font-mono); font-size:.8rem; }
+    .object-row { display:grid; grid-template-columns:8rem 1fr; gap:.8rem; padding:.7rem .85rem; border:1px solid var(--border); border-radius:7px; background:var(--surface); }
+    .object-row strong { color:var(--accent); }
+    .state-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:.75rem; margin:1.25rem 0; }
+    .state-card { padding:.85rem 1rem; border:1px solid var(--border); border-radius:7px; background:var(--surface); }
+    .state-card strong { display:block; margin-bottom:.25rem; font-family:var(--font-sans); }
+    .state-card p { margin:0; color:var(--text-dim); font-size:.9rem; }
+    .flow { padding:1rem 1.15rem; margin:1.25rem 0; overflow-x:auto; border-left:4px solid var(--accent); border-radius:0 7px 7px 0; background:var(--surface); font:.79rem/1.7 var(--font-mono); }
+    .queue { display:flex; gap:.5rem; align-items:center; padding:1rem; margin:1.25rem 0; border:1px solid var(--border); border-radius:7px; background:var(--surface); font:.78rem var(--font-mono); }
+    .queue-slot { padding:.5rem .65rem; border-radius:4px; color:#fff; background:#15803d; }
+    .queue-empty { color:var(--text-faint); font-style:italic; }
+    .invariant { padding:1rem; margin:1.25rem 0; text-align:center; border-radius:8px; color:var(--code-fg); background:var(--code-bg); font:.9rem var(--font-mono); }
+    .quiz { padding:1rem 1.1rem; margin:1.5rem 0; border:1px solid var(--border); border-radius:8px; background:var(--surface-soft); }
+    .quiz-options { display:flex; flex-wrap:wrap; gap:.5rem; }
+    .quiz button { padding:.5rem .7rem; border:1px solid var(--border-bright); border-radius:5px; color:var(--text); background:var(--surface); font:600 .8rem var(--font-mono); cursor:pointer; }
+    .quiz-result { min-height:1.5em; margin:.7rem 0 0; font-family:var(--font-sans); font-size:.85rem; }
+    @media(max-width:640px){.object-row{grid-template-columns:1fr}.state-grid{grid-template-columns:1fr}}
+  </style>
+  <script src="../assets/stepper.js" defer></script>
+</head>
+<body>
+<article class="lesson">
+  <header class="lesson-header">
+    <div class="lesson-eyebrow">Lesson 26 · Phase 2 · networking objective</div>
+    <h1 class="lesson-title">Sockets: Deliver UDP to User Space</h1>
+    <p class="lesson-subtitle">Replace one hardcoded kernel echo handler with a file descriptor, a port binding, and a queue owned by a user process.</p>
+    <div class="lesson-meta">
+      <span><strong>User program</strong> <code>/echo_server.elf</code></span>
+      <span><strong>Endpoint</strong> <code>10.0.2.15:5555</code></span>
+      <span><strong>Primary source</strong> Linux socket API</span>
+    </div>
+  </header>
+
+  <div class="content">
+    <p class="lead">Lesson 25 proved that mini-os can receive and return a UDP datagram. The kernel chose port <code>5555</code> with an <code>if</code> statement and echoed the bytes itself. Lesson 26 gives that endpoint to a ring-3 program. The kernel’s job becomes delivery: identify the bound socket, enqueue the complete datagram, and wake its sleeping owner.</p>
+
+    <h2>Why sockets exist</h2>
+    <p>The word <em>socket</em> predates the programming interface. Early ARPANET documents used it for one named end of network communication: a host/process attachment identified by network addressing information. <a href="https://www.rfc-editor.org/rfc/rfc147">RFC 147</a> described communication as moving from one socket associated with a process on one host to another. The 1974 TCP specification made the address concrete as network identifier + TCP identifier + port, and described a connection as a pair of sockets. That lineage is visible in today’s local and remote endpoint tuples.</p>
+    <p>Berkeley’s 4.2BSD release turned the idea into the API shape used across Unix-like systems today. Its 1983 <a href="https://www2.eecs.berkeley.edu/Pubs/TechRpts/1983/5451.html">Interprocess Communication Primer</a> presented sockets as a general facility for communication between processes. The API separated three concerns: create a communication object, give it an address, then transfer data through a descriptor. TCP/IP was one protocol family behind that interface; local Unix-domain communication could use the same API structure.</p>
+
+    <div class="callout"><div class="callout-title">The useful definition for systems work</div><p style="margin:0;">A socket is a kernel communication object that exposes one process-facing handle to a transport protocol. It stores the local communication state the protocol and application need: addresses, options, receive data, errors, and—depending on the transport—connection state.</p></div>
+
+    <h2>The three arguments choose three different things</h2>
+    <p>The call <code>socket(domain, type, protocol)</code> asks the kernel to compose an interface. Each argument answers one question.</p>
+    <div class="state-grid">
+      <div class="state-card"><strong>Domain · how is an address written?</strong><p><code>AF_INET</code> selects IPv4 addresses and ports. <code>AF_INET6</code> selects IPv6. <code>AF_UNIX</code> selects local kernel-managed names such as filesystem paths.</p></div>
+      <div class="state-card"><strong>Type · what data contract is exposed?</strong><p><code>SOCK_DGRAM</code> exposes independent messages with boundaries. <code>SOCK_STREAM</code> exposes an ordered byte stream.</p></div>
+      <div class="state-card"><strong>Protocol · who implements that contract?</strong><p><code>IPPROTO_UDP</code> implements IPv4/IPv6 datagrams. <code>IPPROTO_TCP</code> implements an Internet byte stream. A value of <code>0</code> asks for the domain/type default.</p></div>
+      <div class="state-card"><strong>Result · how does the process refer to it?</strong><p>The kernel installs the object in the process’s descriptor table and returns the lowest available FD.</p></div>
+    </div>
+
+    <div class="object-map" aria-label="Socket constructor examples">
+      <div class="object-row"><strong>IPv4 UDP</strong><span><code>socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)</code></span></div>
+      <div class="object-row"><strong>IPv4 TCP</strong><span><code>socket(AF_INET, SOCK_STREAM, IPPROTO_TCP)</code></span></div>
+      <div class="object-row"><strong>local stream</strong><span><code>socket(AF_UNIX, SOCK_STREAM, 0)</code></span></div>
+    </div>
+
+    <h2>Socket, endpoint, connection, and FD name different layers</h2>
+    <div class="state-grid">
+      <div class="state-card"><strong>Socket</strong><p>The kernel object holding communication state and queues.</p></div>
+      <div class="state-card"><strong>Endpoint</strong><p>One addressable end. For UDP over IPv4: local IP address + local port.</p></div>
+      <div class="state-card"><strong>Connection</strong><p>Persistent communication state relating local and remote endpoints. TCP creates this state through its handshake.</p></div>
+      <div class="state-card"><strong>File descriptor</strong><p>A process-local integer referring to the socket object. <code>fork</code> or <code>dup</code> can create additional descriptors sharing it.</p></div>
+    </div>
+    <p>A UDP socket can remain unconnected and use <code>sendto</code>/<code>recvfrom</code> with many peers. Calling <code>connect</code> on UDP records a default peer and filters incoming datagrams locally; UDP performs no handshake. A TCP server follows a different lifecycle: <code>bind → listen → accept</code>, where each successful <code>accept</code> returns a new connected socket while the listening socket remains available for more arrivals.</p>
+
+    <h2>Why sockets look like files—and where the analogy ends</h2>
+    <p>Unix descriptor machinery gives sockets familiar lifetime and sharing operations: <code>close</code>, <code>dup</code>, inheritance across <code>fork</code>, blocking mode, and readiness monitoring. The descriptor table provides common process bookkeeping. The referenced object determines the operation’s meaning.</p>
+    <p>For a regular file, <code>read</code> consumes bytes at a stored file offset. UDP <code>recvfrom</code> consumes one queued message and reports its sender. TCP <code>read</code> consumes whichever stream bytes are currently available and preserves no application-message boundary. This distinction explains many production bugs: one TCP <code>send</code> does not promise one matching <code>recv</code>, while one UDP receive corresponds to at most one datagram.</p>
+
+    <h2>Blocking is the original interface; readiness scales it</h2>
+    <p>The classic call model lets <code>recvfrom</code> sleep until data arrives. Production servers frequently set sockets nonblocking and ask a readiness facility—<code>select</code>, <code>poll</code>, <code>epoll</code>, or <code>kqueue</code>—which descriptors can make progress. Async runtimes build task scheduling around the same kernel readiness and completion mechanisms. Lesson 26 implements blocking first because it exposes the queue, sleep, delivery, and wakeup machinery directly. Those mechanisms remain underneath a future readiness API.</p>
+
+    <h2>A socket is a kernel object reached through an FD</h2>
+    <p><a href="https://man7.org/linux/man-pages/man2/socket.2.html"><code>socket()</code></a> creates a communication endpoint and returns a File Descriptor (FD). The integer remains a per-process lookup key. Its table entry can refer to a regular file or a socket.</p>
+    <div class="object-map" aria-label="File descriptor to socket object mapping">
+      <div class="object-row"><strong>user fd 3</strong><span>small integer carried in <code>bind(3, …)</code>, <code>recvfrom(3, …)</code>, and <code>sendto(3, …)</code></span></div>
+      <div class="object-row"><strong>FD table[3]</strong><span><code>OpenObject::Socket(Arc&lt;UdpSocket&gt;)</code></span></div>
+      <div class="object-row"><strong>UdpSocket</strong><span>bound local port + owned receive queue + waiting Process Identifiers (PIDs)</span></div>
+      <div class="object-row"><strong>port table</strong><span><code>5555 → Weak&lt;UdpSocket&gt;</code>, used by UDP receive demultiplexing</span></div>
+    </div>
+    <p><code>socket()</code> creates an unbound object. <a href="https://man7.org/linux/man-pages/man2/bind.2.html"><code>bind()</code></a> assigns its local endpoint. In this lesson the guest has one IP address, so binding port <code>5555</code> establishes <code>10.0.2.15:5555</code>.</p>
+
+    <div class="state-grid">
+      <div class="state-card"><strong>FD table owns access</strong><p><code>Arc&lt;UdpSocket&gt;</code> lets inherited or duplicated descriptors share one socket object.</p></div>
+      <div class="state-card"><strong>Port table owns routing</strong><p>A weak reference lets RX find the socket while the FD table controls its lifetime.</p></div>
+      <div class="state-card"><strong>Socket owns messages</strong><p><code>VecDeque&lt;Datagram&gt;</code> preserves UDP message boundaries and arrival order; a waiter queue handles shared sockets safely.</p></div>
+      <div class="state-card"><strong>Datagram owns its sender</strong><p>Payload bytes travel with the source IP address and source port needed by <code>recvfrom()</code>.</p></div>
+    </div>
+
+    <h2>Four calls define the user-space loop</h2>
+<pre><code><span class="k">let</span> fd = <span class="f">socket</span>(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+<span class="f">bind</span>(fd, <span class="t">UdpEndpoint</span> { ip: OUR_IP, port: <span class="n">5555</span> });
+
+<span class="k">loop</span> {
+    <span class="k">let</span> (count, peer) = <span class="f">recvfrom</span>(fd, &amp;<span class="k">mut</span> buffer);
+    <span class="f">sendto</span>(fd, &amp;buffer[..count], peer);
+}</code></pre>
+    <p><a href="https://man7.org/linux/man-pages/man2/recvfrom.2.html"><code>recvfrom()</code></a> returns the next complete datagram and the sender’s address. <a href="https://man7.org/linux/man-pages/man2/sendto.2.html"><code>sendto()</code></a> names the destination for one outgoing datagram. The echo program can therefore return bytes to the exact source endpoint without knowing it beforehand.</p>
+
+    <div class="callout"><div class="callout-title">A syscall ABI change is part of this lesson</div><p style="margin:0;">The current mini-os dispatcher carries three syscall arguments. Standard <code>sendto</code> and <code>recvfrom</code> need more. Step 26.2 extends syscall entry to preserve arguments 4–6 in registers <code>r10</code>, <code>r8</code>, and <code>r9</code>, then validates every user buffer and address structure before dereferencing it.</p></div>
+
+    <h2>Play one receive from sleep to reply</h2>
+    <div class="stepper" data-stepper>
+      <div class="stepper-meter">Socket journey · stage <span data-step-index>1</span> of 8</div>
+      <div class="stepper-stage">
+        <section data-step><h3>1 · User space creates fd 3</h3><p><code>socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)</code> allocates a kernel <code>UdpSocket</code> and installs an <code>Arc</code> in the current process’s lowest free FD slot.</p></section>
+        <section data-step hidden><h3>2 · User space binds port 5555</h3><p><code>bind(3, 10.0.2.15:5555)</code> checks that the port is free, records the local endpoint, and adds a weak socket reference to the global port table.</p></section>
+        <section data-step hidden><h3>3 · <code>recvfrom</code> finds an empty queue</h3><p>The syscall resolves fd 3 to the socket. No datagram is queued, so it records the current Process Identifier (PID) as a waiter and marks the task <code>Blocked</code>.</p></section>
+        <section data-step hidden><h3>4 · The scheduler runs the network worker</h3><p>The blocked echo server leaves the CPU. A small kernel task continues polling virtio-net and yields whenever no frame is ready.</p></section>
+        <section data-step hidden><h3>5 · UDP selects the bound socket</h3><p>A host datagram reaches protocol <code>17</code> with destination port <code>5555</code>. The port table upgrades its weak reference and finds the socket.</p></section>
+        <section data-step hidden><h3>6 · Delivery enqueues and wakes</h3><p>The kernel copies the payload and sender endpoint into one owned <code>Datagram</code>, pushes it onto the socket queue, and marks the waiting PID <code>Ready</code>.</p></section>
+        <section data-step hidden><h3>7 · <code>recvfrom</code> returns to ring 3</h3><p>The scheduler resumes the same paused syscall. It pops exactly one datagram, copies its bytes and source endpoint into validated user buffers, and returns the payload length.</p></section>
+        <section data-step hidden><h3>8 · <code>sendto</code> returns the message</h3><p>The user program supplies the source endpoint from stage 7 as its destination. UDP, IPv4, Ethernet, and virtio-net carry the reply back to the Mac socket.</p></section>
+      </div>
+      <div class="stepper-controls"><button type="button" data-step-previous>← Previous</button><button type="button" data-step-next>Next →</button></div>
+    </div>
+
+    <h2>Blocking needs a network worker</h2>
+    <p>Lesson 25’s syscall spins inside <code>device.poll_rx()</code>, so the calling process stays in the kernel until a packet arrives. A blocking socket should release the CPU. mini-os already has <code>TaskState::Blocked</code>, but a blocked process cannot poll its own packet into existence.</p>
+    <div class="flow">echo server: recvfrom → queue empty → register waiter → Blocked → yield
+kernel net task: poll RX → UDP parse → port lookup → enqueue → wake PID → yield
+echo server: Ready → resume recvfrom → dequeue → copy to user → return</div>
+    <p>The network worker is the active half of this design. It polls the existing virtio receive queue while applications sleep. Interrupt-driven receive remains a later optimization; the socket contract and wake path stay the same.</p>
+
+    <div class="invariant">check queue + register waiter + mark Blocked must be one atomic decision</div>
+    <p>This rule prevents a lost wakeup. If a packet could arrive after the empty check and before waiter registration, the queue would contain data while the process slept forever. On mini-os’s single CPU, disabling interrupts around that short transition prevents the network worker or timer from observing a half-finished state.</p>
+
+    <h2>Where one datagram lives</h2>
+    <div class="queue" aria-label="UDP socket receive queue"><span>front →</span><span class="queue-slot">{ peer: 10.0.2.2:53000, bytes: “hello” }</span><span class="queue-slot">{ peer: 10.0.2.2:53001, bytes: “again” }</span><span class="queue-empty">← back</span></div>
+    <p>Each queue entry owns one payload and one source endpoint. If the user buffer is smaller than the first payload, Lesson 26 follows datagram semantics: copy the available prefix, discard the remainder of that datagram, and move to the next queue entry on the next call.</p>
+
+    <div class="quiz" data-answer="queue">
+      <p><strong>Retrieval check.</strong> A UDP packet for port <code>5555</code> arrives while the echo server is blocked in <code>recvfrom</code>. What kernel object receives the complete datagram before the process wakes?</p>
+      <div class="quiz-options"><button data-choice="table">the port table</button><button data-choice="queue">the socket queue</button><button data-choice="entry">the fd table slot</button><button data-choice="worker">the network worker</button></div>
+      <p class="quiz-result" aria-live="polite"></p>
+    </div>
+
+    <h2>Build sequence</h2>
+    <div class="recipe">
+      <div class="recipe-step"><div class="recipe-num">26.1</div><div class="recipe-body"><strong>Socket objects and routing.</strong> Generalize FD entries to <code>OpenObject</code>; add <code>UdpSocket</code>, owned datagram queues, and a weak port-to-socket table.</div></div>
+      <div class="recipe-step"><div class="recipe-num">26.2</div><div class="recipe-body"><strong>User API.</strong> Extend syscall argument capture, then implement <code>socket</code>, <code>bind</code>, <code>recvfrom</code>, and <code>sendto</code> with FD/type checks and user-range validation.</div></div>
+      <div class="recipe-step"><div class="recipe-num">26.3</div><div class="recipe-body"><strong>Real blocking.</strong> Add the kernel network worker; make empty <code>recvfrom</code> atomically register, block, yield, and retry after UDP delivery wakes it.</div></div>
+      <div class="recipe-step"><div class="recipe-num">26.4</div><div class="recipe-body"><strong>Ring-3 objective.</strong> Install <code>/echo_server.elf</code> on ext2 and prove a byte-for-byte Mac → QEMU → socket queue → user process → Mac round trip.</div></div>
+    </div>
+
+    <div class="probe"><div class="probe-title">Probe — retrieve the ownership chain</div><p>The echo server has fd <code>3</code> bound to port <code>5555</code> and is blocked in <code>recvfrom</code>. A packet arrives from source port <code>53000</code>. Name the object that owns the FD mapping, the object that maps port <code>5555</code>, the object that owns the queued bytes, and the component that changes the process from <code>Blocked</code> to <code>Ready</code>.</p></div>
+    <p>Answer the probe when you are ready, or ask about any object, syscall, or sleep/wake boundary before implementation begins.</p>
+  </div>
+
+  <footer class="lesson-footer">
+    <div class="footer-block"><h4>Primary sources</h4><p style="margin:0;"><a href="https://www.rfc-editor.org/rfc/rfc147">RFC 147</a> and <a href="https://www.rfc-editor.org/rfc/rfc675#section-2.2">RFC 675 §2.2</a> show the early endpoint meaning. Berkeley’s <a href="https://www2.eecs.berkeley.edu/Pubs/TechRpts/1983/5451.html">4.2BSD IPC Primer</a> introduces the API lineage. <a href="https://man7.org/linux/man-pages/man2/socket.2.html">socket(2)</a>, <a href="https://man7.org/linux/man-pages/man2/bind.2.html">bind(2)</a>, <a href="https://man7.org/linux/man-pages/man2/recvfrom.2.html">recvfrom(2)</a>, and <a href="https://man7.org/linux/man-pages/man2/sendto.2.html">sendto(2)</a> define today’s Linux contract. <a href="https://www.rfc-editor.org/rfc/rfc1122#section-4.1.4">RFC 1122 §4.1.4</a> defines UDP/application requirements.</p></div>
+    <div class="footer-block"><h4>Keep nearby</h4><p style="margin:0;"><a href="../reference/sockets.html">Socket quick reference</a> · <a href="0025-udp.html">Lesson 25: UDP</a> · <a href="../tours/tour-0025-udp.html">Lesson 25 code tour</a></p></div>
+    <nav class="lesson-nav" aria-label="Lesson navigation"><a href="0025-udp.html">← Lesson 25: UDP</a><a href="roadmap-networking.html">Networking roadmap →</a></nav>
+  </footer>
+</article>
+<script>
+  document.querySelectorAll('.quiz').forEach(function (quiz) {
+    quiz.querySelectorAll('[data-choice]').forEach(function (button) {
+      button.addEventListener('click', function () {
+        const right = button.dataset.choice === quiz.dataset.answer;
+        quiz.querySelector('.quiz-result').textContent = right
+          ? 'Correct. The socket queue owns the datagram; the port table only finds that socket.'
+          : 'Try again. Separate routing metadata from the object that must retain payload bytes until user space runs.';
+      });
+    });
+  });
+</script>
+</body>
+</html>

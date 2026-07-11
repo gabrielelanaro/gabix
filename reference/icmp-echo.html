@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Reference — ICMP Echo</title>
+  <link rel="stylesheet" href="../assets/lesson.css">
+  <link rel="stylesheet" href="../assets/byte-layout.css">
+</head>
+<body>
+<article class="lesson">
+  <header class="lesson-header">
+    <div class="lesson-eyebrow">Reference · Phase 2 networking</div>
+    <h1 class="lesson-title">ICMP Echo Quick Reference</h1>
+    <p class="lesson-subtitle">Wire layout, reply match rule, and QEMU target for Lesson 24.</p>
+  </header>
+  <div class="content">
+    <div class="byte-layout">
+      <div class="byte-layout-header"><span class="byte-layout-name">ICMP echo</span><span class="byte-layout-size">8 bytes + payload</span></div>
+      <div class="byte-bar">
+        <div class="byte-field type-u8" style="--bytes:1"><span class="byte-field-name">type</span><span class="byte-field-meta">u8</span><span class="byte-field-range">0</span><span class="byte-field-mini">T</span></div>
+        <div class="byte-field type-u8" style="--bytes:1"><span class="byte-field-name">code</span><span class="byte-field-meta">u8</span><span class="byte-field-range">1</span><span class="byte-field-mini">C</span></div>
+        <div class="byte-field type-u16" style="--bytes:2"><span class="byte-field-name">checksum</span><span class="byte-field-meta">u16</span><span class="byte-field-range">2–3</span><span class="byte-field-mini">Σ</span></div>
+        <div class="byte-field type-u16" style="--bytes:2"><span class="byte-field-name">identifier</span><span class="byte-field-meta">u16</span><span class="byte-field-range">4–5</span><span class="byte-field-mini">ID</span></div>
+        <div class="byte-field type-u16" style="--bytes:2"><span class="byte-field-name">sequence</span><span class="byte-field-meta">u16</span><span class="byte-field-range">6–7</span><span class="byte-field-mini">SQ</span></div>
+        <div class="byte-field type-array" style="--bytes:4"><span class="byte-field-name">payload</span><span class="byte-field-meta">[u8]</span><span class="byte-field-range">8…</span><span class="byte-field-mini">…</span></div>
+      </div>
+    </div>
+
+    <h2>Constants</h2>
+    <dl>
+      <dt>IPv4 protocol</dt><dd><code>1</code> — ICMP.</dd>
+      <dt>Echo request</dt><dd><code>type = 8</code>, <code>code = 0</code>.</dd>
+      <dt>Echo reply</dt><dd><code>type = 0</code>, <code>code = 0</code>.</dd>
+      <dt>Checksum</dt><dd>RFC 1071 one’s-complement checksum across the full ICMP message, checksum field zero during calculation.</dd>
+      <dt>Byte order</dt><dd>Identifier, sequence, and checksum are big-endian.</dd>
+    </dl>
+
+    <h2>Reply acceptance rule</h2>
+    <ol>
+      <li>IPv4 source equals <code>GATEWAY_IP</code> (<code>10.0.2.2</code>); destination equals <code>OUR_IP</code> (<code>10.0.2.15</code>).</li>
+      <li>IPv4 protocol equals <code>1</code>.</li>
+      <li>ICMP message is at least eight bytes, has a valid checksum, type <code>0</code>, and code <code>0</code>.</li>
+      <li>Identifier, sequence, and payload equal the pending request.</li>
+    </ol>
+
+    <h2>QEMU proof target</h2>
+    <p>
+      QEMU user-mode networking uses <code>10.0.2.15</code> for the guest and <code>10.0.2.2</code> for its local router. QEMU documents that ping to the local router works. The implemented <code>test_icmp_ping.sh</code> fixture sends four requests with identifier <code>0x2400</code>, sequences <code>7..10</code>, and payload <code>mini-os</code>, then requires every matching reply.
+    </p>
+
+    <div class="callout"><div class="callout-title">Reply to an inbound request</div><p style="margin:0;">Copy identifier, sequence, and payload; change type <code>8 → 0</code>; recompute the ICMP checksum; reverse the IPv4 source and destination addresses; rebuild the IPv4 checksum; transmit through the existing ARP-backed path.</p></div>
+  </div>
+  <footer class="lesson-footer">
+    <div class="footer-block"><h4>Sources</h4><p style="margin:0;"><a href="https://www.rfc-editor.org/rfc/rfc792">RFC 792</a> · <a href="https://www.rfc-editor.org/rfc/rfc1071">RFC 1071</a> · <a href="https://www.qemu.org/docs/master/system/devices/net.html">QEMU network emulation</a></p></div>
+    <nav class="lesson-nav" aria-label="Reference navigation"><a href="../lessons/0024-icmp-ping.html">← Lesson 24</a><a href="../tours/tour-0024-icmp-ping.html">Code tour →</a></nav>
+  </footer>
+</article>
+</body>
+</html>

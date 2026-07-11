@@ -67,6 +67,14 @@ across Lessons 1–3. The sections below cover *style*; this one covers *method*
   (granular commits = granular rollback = safer to let the user drive).
 
 ## User's learning preferences (from earlier sessions)
+- **Introduce new domains in their own right.** When a phase enters genuinely
+  new territory (networking after disk, etc.), teach the domain from first
+  principles — what problem it solves, how it works, why it's shaped the way
+  it is. Parallels to prior work are seasoning, never the spine. The user
+  called out the first draft of Lesson 19 for framing networking as "same as
+  disk but different headers" — read it as dismissive, assuming knowledge he
+  doesn't have. A comparison table is fine as a *late* section ("what you
+  already own"), after the domain has been taught on its own terms.
 - Expand every acronym on first use (VFS = Virtual File System, FD = File Descriptor, etc.)
 - Short Socratic chunks: one paragraph max, then a probing question
 - Explain terminology with intuition, not just definitions — push back hard on jargon dumps
@@ -90,6 +98,8 @@ don't wait for the user to ask at the end.
   openers, no "It's worth noting", no "Notice that", no "The honest version
   is", no "Get the intuition for... and it clicks into place", no
   "The benefit is enormous". Direct statements only.
+- **Keep audit/status answers short.** User explicitly said long multi-page
+  answers are unreadable; prefer a tight checklist with the next decision.
 - **Be concrete about timelines.** "We'll get there" or "later" is too
   vague. Give specific triggers (e.g., "when the page-fault handler lands"
   or "possibly never if the goal stays educational").

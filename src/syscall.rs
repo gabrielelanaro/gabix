@@ -5,8 +5,7 @@
 //! that switches to the kernel stack, calls the Rust handler, then
 //! returns via SYSRET.
 //!
-//! Currently dispatches exactly one syscall: SYS_WRITE (write a buffer
-//! to the serial port). User programs call it like:
+//! User programs follow the Linux x86-64 register convention:
 //!   rax = 1 (SYS_WRITE)
 //!   rdi = buffer address
 //!   rsi = length
@@ -15,8 +14,10 @@
 use crate::frame_allocator;
 use crate::fs;
 use crate::memory;
+use crate::net;
 use crate::println;
 use crate::serial;
+use crate::virtio;
 use alloc::sync::Arc;
 use core::arch::naked_asm;
 use core::sync::atomic::AtomicU64;
@@ -51,6 +52,11 @@ const SYS_FORK: u64 = 57;
 const SYS_EXECVE: u64 = 59;
 const SYS_EXIT: u64 = 60;
 const SYS_WAIT4: u64 = 61;
+const SYS_NET_TX_TEST: u64 = 900;
+const SYS_NET_RX_WAIT: u64 = 901;
+const SYS_NET_ICMP_PING: u64 = 902;
+const SYS_NET_UDP_WAIT: u64 = 903;
+const ICMP_PING_PAYLOAD_CAPACITY: usize = 64;
 
 /// Virtual address where the dedicated syscall stack begins.
 /// Picked to be far from everything else (kernel image, heap, task
@@ -375,6 +381,10 @@ extern "C" fn syscall_handler(num: u64, arg1: u64, arg2: u64, arg3: u64) -> u64 
         SYS_EXECVE => sys_exec(arg1),
         SYS_EXIT => sys_exit(arg1),
         SYS_WAIT4 => sys_wait(arg1, arg2),
+        SYS_NET_TX_TEST => sys_net_tx_test(),
+        SYS_NET_RX_WAIT => sys_net_rx_wait(),
+        SYS_NET_ICMP_PING => sys_net_icmp_ping(),
+        SYS_NET_UDP_WAIT => sys_net_udp_wait(),
         _ => u64::MAX,
     }
 }
@@ -746,6 +756,201 @@ fn sys_wait(target_pid_raw: u64, exit_status_ptr: u64) -> u64 {
             }
         }
     }
+}
+
+/// SYS_NET_TX_TEST: ask the kernel-owned virtio-net device to send one IPv4
+/// packet. This gives user fixtures a direct way to trigger Lesson 23 TX.
+fn sys_net_tx_test() -> u64 {
+    let payload = [0xde, 0xad, 0xbe, 0xef];
+    println!(
+        "[net-sys] user pid={} requested IPv4 TX test",
+        crate::task::current_pid()
+    );
+
+    match virtio::with_net_device(|device| {
+        device.send_ipv4_packet(net::ipv4::PROTOCOL_UDP, net::GATEWAY_IP, &payload)
+    }) {
+        Some(Some(())) => {
+            println!("[ip] *** user-triggered IPv4 packet transmitted through QEMU ***");
+            0
+        }
+        Some(None) => {
+            println!("[net-sys] IPv4 TX test failed before transmit");
+            u64::MAX
+        }
+        None => {
+            println!("[net-sys] IPv4 TX test failed: no net device installed");
+            u64::MAX
+        }
+    }
+}
+
+/// SYS_NET_RX_WAIT: wait until QEMU user networking forwards one IPv4 UDP
+/// packet to the guest. The host side sends to 127.0.0.1:5555.
+fn sys_net_rx_wait() -> u64 {
+    println!(
+        "[net-sys] user pid={} requested IPv4 RX wait",
+        crate::task::current_pid()
+    );
+    println!("[ip] rx wait: user requested UDP receive on host 127.0.0.1:5555");
+
+    match virtio::with_net_device(|device| loop {
+        if let Some(virtio::NetRxEvent::Udp(packet)) = device.poll_rx() {
+            let header = packet.ip_header;
+            if header.dst_ip == net::OUR_IP {
+                println!(
+                    "[ip] *** user-triggered host-forwarded UDP packet received through QEMU: src={}.{}.{}.{}:{} dst={}.{}.{}.{}:{} len={} payload_len={} ***",
+                    header.src_ip[0],
+                    header.src_ip[1],
+                    header.src_ip[2],
+                    header.src_ip[3],
+                    packet.header.src_port,
+                    header.dst_ip[0],
+                    header.dst_ip[1],
+                    header.dst_ip[2],
+                    header.dst_ip[3],
+                    packet.header.dst_port,
+                    header.total_len,
+                    packet.payload().len()
+                );
+                break header.total_len as u64;
+            }
+        }
+    }) {
+        Some(len) => len,
+        None => {
+            println!("[net-sys] IPv4 RX wait failed: no net device installed");
+            u64::MAX
+        }
+    }
+}
+
+/// SYS_NET_UDP_WAIT: wait for one valid datagram delivered to the Lesson 25
+/// echo port. The IPv4/UDP receive path sends the reply before returning the
+/// event to this user-triggered wait.
+fn sys_net_udp_wait() -> u64 {
+    println!(
+        "[udp-sys] user pid={} requested UDP echo receive",
+        crate::task::current_pid()
+    );
+    println!(
+        "[udp] rx wait: user requested UDP echo on guest port {}",
+        net::udp::ECHO_PORT
+    );
+
+    match virtio::with_net_device(|device| loop {
+        if let Some(virtio::NetRxEvent::Udp(packet)) = device.poll_rx() {
+            if packet.header.dst_port == net::udp::ECHO_PORT {
+                println!(
+                    "[udp] *** user-triggered UDP datagram received and echoed: src_port={} payload_len={} ***",
+                    packet.header.src_port,
+                    packet.payload().len()
+                );
+                break packet.payload().len() as u64;
+            }
+        }
+    }) {
+        Some(payload_len) => payload_len,
+        None => {
+            println!("[udp-sys] UDP echo wait failed: no net device installed");
+            u64::MAX
+        }
+    }
+}
+
+/// SYS_NET_ICMP_PING: have ring 3 request one complete echo round trip.
+///
+/// The user fixture triggers this syscall; the kernel owns packet assembly,
+/// virtio queues, and the receive poll because those are kernel resources.
+fn sys_net_icmp_ping() -> u64 {
+    const IDENTIFIER: u16 = 0x2400;
+    const FIRST_SEQUENCE: u16 = 7;
+    const REQUEST_COUNT: u16 = 4;
+    const PAYLOAD: &[u8] = b"mini-os";
+
+    println!(
+        "[icmp] user pid={} requested {} echoes id=0x{:04x} first_seq={} payload_len={}",
+        crate::task::current_pid(),
+        REQUEST_COUNT,
+        IDENTIFIER,
+        FIRST_SEQUENCE,
+        PAYLOAD.len()
+    );
+
+    match virtio::with_net_device(|device| {
+        for sequence in FIRST_SEQUENCE..FIRST_SEQUENCE + REQUEST_COUNT {
+            let ttl = ping_gateway_once(device, IDENTIFIER, sequence, PAYLOAD)?;
+            println!(
+                "[icmp] reply id=0x{:04x} seq={} payload_len={} ttl={}",
+                IDENTIFIER,
+                sequence,
+                PAYLOAD.len(),
+                ttl
+            );
+        }
+
+        Some(())
+    }) {
+        Some(Some(())) => {
+            println!("[icmp] *** four user-triggered echo round trips verified ***");
+            0
+        }
+        Some(None) => {
+            println!("[icmp] echo reply timed out or did not match");
+            u64::MAX
+        }
+        None => {
+            println!("[icmp] ping failed: no net device installed");
+            u64::MAX
+        }
+    }
+}
+
+/// Send one request and wait for the exact reply before allowing the next one.
+fn ping_gateway_once(
+    device: &mut virtio::NetDevice,
+    identifier: u16,
+    sequence: u16,
+    payload: &[u8],
+) -> Option<u8> {
+    let mut request = [0u8; net::icmp::ECHO_HEADER_LEN + ICMP_PING_PAYLOAD_CAPACITY];
+    let request_len = net::icmp::write_echo_request(&mut request, identifier, sequence, payload)?;
+    device.send_ipv4_packet(
+        net::ipv4::PROTOCOL_ICMP,
+        net::GATEWAY_IP,
+        &request[..request_len],
+    )?;
+
+    for _ in 0..200_000u32 {
+        let Some(virtio::NetRxEvent::Ipv4(packet)) = device.poll_rx() else {
+            continue;
+        };
+
+        if packet.header.protocol != net::ipv4::PROTOCOL_ICMP
+            || packet.header.src_ip != net::GATEWAY_IP
+        {
+            continue;
+        }
+
+        let Some(reply) = net::icmp::EchoMessage::parse(packet.payload()) else {
+            println!("[icmp] dropped malformed ICMP payload");
+            continue;
+        };
+
+        if reply.is_reply_to(identifier, sequence, payload) {
+            return Some(packet.header.ttl);
+        }
+
+        println!(
+            "[icmp] ignored reply type={} code={} id=0x{:04x} seq={}",
+            reply.message_type,
+            reply.code,
+            reply.identifier,
+            reply.sequence
+        );
+    }
+
+    None
 }
 
 /// SYS_FORK: clone the calling process.

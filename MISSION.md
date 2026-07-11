@@ -62,18 +62,19 @@ The kernel currently runs one program then halts. This phase turns mini-os into 
 - **Linux sources:** `kernel/fork.c`, `kernel/exit.c`, `kernel/sched/`
 
 ### Phase 2 — Networking (parallel of the disk path)
-Same shape as Lessons 5–14 but for the network: discover device, init driver, build abstractions, send/receive.
-- [ ] PCI find virtio-net (Lesson 5 parallel)
-- [ ] virtio-net modern transport + RX/TX virtqueues (Lessons 6–8 parallel)
-- [ ] Ethernet frame parsing
-- [ ] ARP for L2 address resolution
-- [ ] IP for L3 routing
-- [ ] ICMP echo (ping) — the first network "hello world"
-- [ ] TCP or UDP for L4
-- [ ] Sockets API + syscalls
-- **Why second:** big satisfying parallel to the disk path. Lands a second hello-world (ping response or TCP echo). Lots of conceptual transfer from existing virtio work.
-- **Estimated:** ~8–12 lessons.
-- **Linux sources:** `net/`, `drivers/net/`, `net/socket.c`
+Same shape as Lessons 5–14 but for the network: discover device, init driver, build abstractions, send/receive. Planned in detail: [lessons/roadmap-networking.html](lessons/roadmap-networking.html). Decision made 2026-07-05: UDP is the L4 endpoint; TCP is a post-phase extension arc.
+- [x] L19 — shape of the network stack (concept) + PCI find virtio-net (device `0x1041`)
+- [x] L20 — virtio-net init: modern transport, MAC from device config, RX/TX virtqueues, pre-posted RX buffers
+- [x] L21 — first frames: Ethernet header parse/build, `send_frame`/`recv_frame` abstraction
+- [x] L22 — ARP: resolve gateway 10.0.2.2, answer requests for 10.0.2.15
+- [x] L23 — IPv4: header parse/build, RFC 1071 internet checksum, protocol demux
+- [x] L24 — ICMP echo: ping the gateway and print the reply — the network "hello world" (keystone)
+- [x] L25 — UDP: header + pseudo-header checksum, in-kernel echo via QEMU `hostfwd`
+- [ ] L26 — sockets: `socket`/`bind`/`sendto`/`recvfrom` syscalls, user-space `echo_server.elf` (objective)
+- **Why second:** big satisfying parallel to the disk path. Lands a second hello-world (ping reply) plus an objective the host can talk to (`nc -u localhost 5555`). Lots of conceptual transfer from existing virtio work.
+- **Environment constraint:** QEMU slirp networking — guest 10.0.2.15, gateway 10.0.2.2, inbound only via `hostfwd`, so the ping milestone is guest-initiated.
+- **Estimated:** 8 lessons.
+- **Linux sources:** `drivers/net/virtio_net.c`, `net/ethernet/eth.c`, `net/ipv4/{arp,ip_input,icmp,udp}.c`, `net/socket.c`
 
 ### Phase 3 — Page cache
 Internal cleanup that makes everything faster and unblocks mmap.

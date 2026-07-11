@@ -26,3 +26,16 @@ test-fork = []
 # Used together with test-mode by tests/test_inherit_wait.sh to verify fork
 # FD inheritance, exit-time FD cleanup, and wait-by-PID.
 test-inherit = []
+
+# When enabled, the kernel exec's /net_smoke.elf instead of /hello.elf.
+# The user program asks the kernel-owned virtio-net device to send one IPv4
+# packet and wait for one QEMU-forwarded UDP packet.
+test-net = []
+
+# When enabled, the kernel exec's /icmp_ping.elf. The fixture asks the
+# kernel-owned virtio-net device to ping QEMU's slirp gateway with ICMP.
+test-icmp = []
+
+# When enabled, the kernel exec's /udp_echo.elf for the Lesson 25
+# host-to-QEMU-to-guest-to-host UDP echo proof.
+test-udp = []

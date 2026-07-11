@@ -1,0 +1,642 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Roadmap — Networking: From virtio-net to a UDP Echo Server</title>
+<link rel="stylesheet" href="../assets/lesson.css">
+<script src="../assets/code-highlight.js" defer></script>
+<style>
+  .roadmap-lesson {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1.25rem 1.5rem;
+    margin: 1.5rem 0;
+    border-left: 4px solid var(--border-bright);
+  }
+  .roadmap-lesson.done {
+    border-left-color: #15803d;
+    background: #f0fdf4;
+  }
+  .roadmap-lesson.current {
+    border-left-color: var(--accent);
+    background: var(--accent-soft);
+  }
+  .roadmap-lesson.keystone {
+    border-left-color: var(--accent);
+    background: linear-gradient(to right, var(--accent-soft) 0%, var(--surface) 30%);
+  }
+  .roadmap-lesson.objective {
+    border-left-color: #15803d;
+    background: linear-gradient(to right, #f0fdf4 0%, var(--surface) 30%);
+    border-width: 2px;
+  }
+  .roadmap-lesson.upcoming {
+    border-left-color: var(--border-bright);
+  }
+  .roadmap-lesson-head {
+    display: flex;
+    align-items: baseline;
+    gap: 0.8rem;
+    margin-bottom: 0.5rem;
+    flex-wrap: wrap;
+  }
+  .roadmap-lesson-num {
+    font-family: var(--font-mono);
+    font-size: 0.78rem;
+    font-weight: 600;
+    color: var(--accent);
+    background: rgba(255,255,255,0.6);
+    padding: 2px 8px;
+    border-radius: 3px;
+  }
+  .roadmap-lesson.done .roadmap-lesson-num { background: #dcfce7; color: #15803d; }
+  .roadmap-lesson.current .roadmap-lesson-num { background: var(--accent); color: white; }
+  .roadmap-lesson.keystone .roadmap-lesson-num { background: var(--accent); color: white; }
+  .roadmap-lesson.objective .roadmap-lesson-num { background: #15803d; color: white; }
+  .roadmap-lesson-title {
+    font-family: var(--font-sans);
+    font-weight: 700;
+    font-size: 1.15rem;
+    color: var(--text);
+    margin: 0;
+    flex: 1;
+  }
+  .roadmap-lesson-status {
+    font-family: var(--font-sans);
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    color: var(--text-faint);
+  }
+  .roadmap-lesson.done .roadmap-lesson-status { color: #15803d; }
+  .roadmap-lesson.current .roadmap-lesson-status { color: var(--accent); font-weight: 600; }
+  .roadmap-lesson.keystone .roadmap-lesson-status { color: var(--accent); font-weight: 600; }
+  .roadmap-lesson.objective .roadmap-lesson-status { color: #15803d; font-weight: 600; }
+  .roadmap-lesson-body {
+    font-family: var(--font-serif);
+    font-size: 0.95rem;
+    color: var(--text);
+    margin: 0.5rem 0 0.8rem;
+  }
+  .roadmap-substeps {
+    margin: 0.5rem 0 0.8rem;
+    padding-left: 1.2rem;
+  }
+  .roadmap-substeps li {
+    font-family: var(--font-sans);
+    font-size: 0.85rem;
+    color: var(--text-dim);
+    margin: 0.2rem 0;
+  }
+  .roadmap-substeps li::marker { color: var(--text-faint); }
+  .roadmap-linux-ref {
+    font-family: var(--font-mono);
+    font-size: 0.78rem;
+    color: var(--text-faint);
+    margin-top: 0.6rem;
+    padding-top: 0.5rem;
+    border-top: 1px dashed var(--border);
+  }
+  .roadmap-linux-ref strong { color: var(--text-dim); }
+
+  .progress-banner {
+    background: var(--accent-soft);
+    border-left: 4px solid var(--accent);
+    padding: 1rem 1.25rem;
+    border-radius: 0 6px 6px 0;
+    margin: 2rem 0;
+    font-family: var(--font-sans);
+    font-size: 0.9rem;
+    color: var(--text);
+  }
+  .progress-banner strong { color: var(--accent); }
+
+  .objective {
+    background: #f0fdf4;
+    border: 1px solid #86efac;
+    border-radius: 8px;
+    padding: 1.25rem 1.5rem;
+    margin: 1.5rem 0 2rem;
+  }
+  .objective h3 {
+    margin: 0 0 0.4rem;
+    color: #15803d;
+    font-size: 0.85rem;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+  }
+  .objective p { margin: 0; font-size: 1rem; color: var(--text); }
+
+  .layer-mapping {
+    background: var(--surface-soft);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1rem 1.25rem;
+    margin: 1.5rem 0;
+    font-family: var(--font-mono);
+    font-size: 0.82rem;
+    line-height: 1.7;
+    overflow-x: auto;
+  }
+  .layer-mapping .lm-done { color: #15803d; }
+  .layer-mapping .lm-next { color: var(--accent); font-weight: 600; }
+
+  .parallel-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-family: var(--font-sans);
+    font-size: 0.85rem;
+    margin: 1.5rem 0;
+  }
+  .parallel-table th {
+    text-align: left;
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--text-faint);
+    border-bottom: 2px solid var(--border-bright);
+    padding: 0.4rem 0.8rem 0.4rem 0;
+  }
+  .parallel-table td {
+    padding: 0.45rem 0.8rem 0.45rem 0;
+    border-bottom: 1px solid var(--border);
+    color: var(--text-dim);
+    vertical-align: top;
+  }
+  .parallel-table td:first-child { color: #15803d; }
+  .parallel-table td:last-child { color: var(--accent); }
+  .parallel-table code { font-size: 0.8rem; }
+
+  .constraint-box {
+    background: #fffbeb;
+    border: 1px solid #fcd34d;
+    border-radius: 8px;
+    padding: 1rem 1.25rem;
+    margin: 1.5rem 0;
+    font-family: var(--font-sans);
+    font-size: 0.88rem;
+    color: var(--text);
+  }
+  .constraint-box h3 {
+    margin: 0 0 0.4rem;
+    color: #b45309;
+    font-size: 0.8rem;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+  }
+  .constraint-box p { margin: 0.3rem 0; }
+</style>
+</head>
+<body>
+<article class="lesson">
+
+  <header class="lesson-header">
+    <div class="lesson-eyebrow">Roadmap · Phase 2 · Networking</div>
+    <h1 class="lesson-title">From virtio-net to a UDP Echo Server</h1>
+    <p class="lesson-subtitle">Eight lessons that build a network stack the same way the disk path was built: discover the device, initialize the transport, move raw bytes, then climb the protocol layers one at a time. Two hello-worlds along the way: a ping reply from the gateway, and a user-space echo server the host can talk to.</p>
+    <div class="lesson-meta">
+      <span><strong>Start</strong> Lesson 19</span>
+      <span><strong>End</strong> Lesson 26</span>
+      <span><strong>Status</strong> 0 of 8 done</span>
+    </div>
+  </header>
+
+  <div class="content">
+
+  <div class="objective">
+    <h3>Objective</h3>
+    <p>
+      A user program running in ring 3 calls <code>socket()</code>,
+      <code>bind()</code>, <code>recvfrom()</code>, and <code>sendto()</code>.
+      On the host, <code>nc -u localhost 5555</code> sends a line of text;
+      QEMU forwards it to the guest; the frame travels up through
+      virtio-net → Ethernet → IPv4 → UDP → socket → user buffer; the user
+      program echoes it; the reply travels back down the same stack and
+      appears in the host terminal. Every layer of the Linux network
+      receive and transmit path re-implemented, not skipped.
+    </p>
+  </div>
+
+  <p>
+    This phase is a deliberate parallel of the disk path (Lessons 5–14).
+    The bottom three lessons reuse mental models you already own — PCI
+    enumeration, the virtio modern transport, virtqueues. The new
+    material starts where virtio-blk had nothing to teach: a device with
+    <em>two</em> queues, buffers you must post <em>before</em> data
+    arrives, and a protocol tower where each layer wraps the next.
+  </p>
+
+  <table class="parallel-table">
+    <tr><th>Disk path (done)</th><th>What transferred</th><th>Network path (this phase)</th></tr>
+    <tr><td>L5 — find virtio-blk (device ID 0x1042)</td><td>PCI enumeration, BARs, capability list</td><td>L19 — find virtio-net (device ID 0x1041)</td></tr>
+    <tr><td>L6 — virtio handshake</td><td>reset → ACKNOWLEDGE → DRIVER → features → DRIVER_OK</td><td>L20 — same handshake, different feature bits, two queues</td></tr>
+    <tr><td>L7–L8 — one virtqueue, request/response</td><td>descriptor chains, kick, poll, barriers</td><td>L21 — RX queue (pre-posted buffers) + TX queue</td></tr>
+    <tr><td>L9 — block layer (<code>read_sector</code>)</td><td>clean abstraction over the driver</td><td>L21 — <code>send_frame</code> / <code>recv_frame</code></td></tr>
+    <tr><td>L10–L14 — ext2 parsing (superblock → inode → dirent)</td><td>byte-layout parsing with <code>from_le_bytes</code>… except network byte order is <strong>big-endian</strong></td><td>L22–L25 — Ethernet → ARP → IPv4 → ICMP → UDP headers</td></tr>
+    <tr><td>L14 — mount: VFS trait wires ext2 in</td><td>syscall surface over the stack</td><td>L26 — sockets: FDs wire the stack to user space</td></tr>
+  </table>
+
+  <div class="constraint-box">
+    <h3>Environment constraint — slirp shapes the milestones</h3>
+    <p>
+      QEMU user-mode networking (slirp) gives the guest address
+      <code>10.0.2.15</code>, gateway <code>10.0.2.2</code>, with no host
+      configuration and no root. The tradeoff: inbound traffic only
+      reaches the guest through explicit port forwards
+      (<code>hostfwd</code>), and the host cannot ping the guest.
+    </p>
+    <p>
+      So the ICMP hello-world is <strong>guest-initiated</strong>: the
+      kernel pings the gateway and prints the reply (keystone 1). The
+      UDP echo server is reachable from the host via
+      <code>hostfwd=udp::5555-:5555</code> (the objective). See
+      <a href="https://www.qemu.org/docs/master/system/devices/net.html">QEMU
+      network emulation docs</a>.
+    </p>
+  </div>
+
+  <div class="layer-mapping">
+    <span class="lm-next">L19</span>  Shape of the network stack + find virtio-net   <span style="color: var(--text-faint)">— next</span>
+    <span class="lm-next">L20</span>  virtio-net init — two queues, MAC, RX posting
+    <span class="lm-next">L21</span>  First frames on the wire                        <span style="color: var(--accent); font-weight: 600">— first RX bytes</span>
+    <span class="lm-next">L22</span>  ARP — who has 10.0.2.2?
+    <span class="lm-next">L23</span>  IPv4 — header, checksum, demux
+    <span class="lm-next">L24</span>  ICMP — ping the gateway                         <span style="color: #15803d; font-weight: 600">— keystone 1 ✓</span>
+    <span class="lm-next">L25</span>  UDP — datagrams in, datagrams out
+    <span class="lm-next">L26</span>  Sockets — user-space echo server                <span style="color: #15803d; font-weight: 600">— objective</span>
+  </div>
+
+  <!-- ============================================================
+       LESSON 19
+       ============================================================ -->
+  <section class="roadmap-lesson upcoming">
+    <div class="roadmap-lesson-head">
+      <span class="roadmap-lesson-num">L19</span>
+      <h2 class="roadmap-lesson-title">How Networks Work + Find virtio-net</h2>
+      <span class="roadmap-lesson-status">Next · concept + build</span>
+    </div>
+    <p class="roadmap-lesson-body">
+      Concept: networking from first principles. Two machines on a
+      shared wire → frames and MAC addresses; a world of connected
+      networks → routers, IP addresses, and why identity (MAC) and
+      location (IP) must be separate address systems; many programs per
+      machine → ports; best-effort delivery and where reliability
+      lives; encapsulation and the layer model, made concrete by a
+      byte-by-byte dissection of one real UDP packet. Two implementer's
+      rules: network byte order is big-endian, and receive is
+      unsolicited.
+    </p>
+    <p class="roadmap-lesson-body">
+      Build: familiar territory, done just-do-it style. Attach a
+      virtio-net NIC (Network Interface Card) to QEMU, find it on the
+      PCI bus with the Lesson 5 enumeration code, confirm its identity.
+    </p>
+    <p class="roadmap-lesson-body"><strong>Build steps:</strong></p>
+    <ul class="roadmap-substeps">
+      <li><strong>19.1</strong> — Add <code>-netdev user,id=n0 -device virtio-net-pci,netdev=n0</code> to the QEMU invocation. Boot; confirm nothing breaks.</li>
+      <li><strong>19.2</strong> — Extend the PCI walk output: virtio-net appears as vendor <code>0x1AF4</code>, device <code>0x1041</code> (modern; virtio device ID 1). Print its BARs.</li>
+      <li><strong>19.3</strong> — Generalize the Lesson 5 "find virtio-blk" helper into <code>find_virtio_device(device_id)</code> so both drivers share it.</li>
+    </ul>
+    <p class="roadmap-linux-ref">
+      <strong>Linux counterparts:</strong>
+      <code>drivers/net/virtio_net.c</code> (probe entry),
+      <code>drivers/virtio/virtio_pci_modern.c</code> (shared with blk).
+      <strong>Spec:</strong>
+      <a href="https://docs.oasis-open.org/virtio/virtio/v1.2/csd01/virtio-v1.2-csd01.html#x1-2170001">VIRTIO 1.2 §5.1 Network Device</a>.
+    </p>
+    <p class="roadmap-lesson-body">
+      <a href="0019-shape-of-network-stack.html">Read the lesson →</a>
+    </p>
+  </section>
+
+  <!-- ============================================================
+       LESSON 20
+       ============================================================ -->
+  <section class="roadmap-lesson current">
+    <div class="roadmap-lesson-head">
+      <span class="roadmap-lesson-num">L20</span>
+      <h2 class="roadmap-lesson-title">virtio-net Initialization — Two Queues, MAC, RX Posting</h2>
+      <span class="roadmap-lesson-status">Upcoming · concept + build</span>
+    </div>
+    <p class="roadmap-lesson-body">
+      The handshake is the one you know: reset → ACKNOWLEDGE → DRIVER →
+      feature negotiation → FEATURES_OK → DRIVER_OK. What's new is the
+      device on the other side. Feature bits to negotiate:
+      <code>VIRTIO_NET_F_MAC</code> (device supplies its MAC address in
+      device config) and explicitly <em>not</em>
+      <code>VIRTIO_NET_F_MRG_RXBUF</code> (one frame per buffer keeps the
+      RX path simple). Two virtqueues instead of one: queue 0 is the
+      receive queue, queue 1 is the transmit queue. Every frame in both
+      directions is prefixed by a 12-byte <code>virtio_net_hdr</code>
+      (checksum-offload and segmentation metadata — all zeros for us,
+      since we negotiate none of those features). The conceptual novelty:
+      the RX queue must be stocked with empty buffers <em>before</em>
+      anything can arrive. The device is a consumer of buffers you
+      produce.
+    </p>
+    <p class="roadmap-lesson-body"><strong>Build steps:</strong></p>
+    <ul class="roadmap-substeps">
+      <li><strong>20.1</strong> — Reuse the virtio modern-transport code from Lesson 6 for the net device: capability walk, common config mapping, handshake through FEATURES_OK.</li>
+      <li><strong>20.2</strong> — Read the MAC address from device config space; print it.</li>
+      <li><strong>20.3</strong> — Set up virtqueue 0 (RX) and virtqueue 1 (TX) with the Lesson 7 <code>VirtQueue</code> code.</li>
+      <li><strong>20.4</strong> — Post 8 empty 2048-byte RX buffers (device-writable descriptors) into the receive queue. Set DRIVER_OK.</li>
+    </ul>
+    <p class="roadmap-linux-ref">
+      <strong>Linux counterparts:</strong>
+      <code>drivers/net/virtio_net.c</code> — <code>virtnet_probe</code>
+      (feature negotiation, MAC read), <code>try_fill_recv</code> (RX
+      buffer posting).
+      <strong>Spec:</strong> VIRTIO 1.2 §5.1.4 (device config), §5.1.6
+      (device operation, <code>virtio_net_hdr</code>).
+    </p>
+  </section>
+
+  <!-- ============================================================
+       LESSON 21
+       ============================================================ -->
+  <section class="roadmap-lesson keystone done">
+    <div class="roadmap-lesson-head">
+      <span class="roadmap-lesson-num">L21</span>
+      <h2 class="roadmap-lesson-title">First Frames on the Wire</h2>
+      <span class="roadmap-lesson-status">First RX bytes · build</span>
+    </div>
+    <p class="roadmap-lesson-body">
+      The Ethernet frame layout: destination MAC (6 bytes), source MAC
+      (6), EtherType (2, big-endian — <code>0x0806</code> ARP,
+      <code>0x0800</code> IPv4), then payload. Transmit path: build a
+      broadcast frame, prefix the zeroed <code>virtio_net_hdr</code>,
+      chain it into the TX queue, kick, confirm the device consumed it.
+      Receive path: poll the RX used ring, strip the header, parse the
+      Ethernet header, print source/destination/EtherType, recycle the
+      buffer back into the queue. Slirp answers broadcast ARP traffic,
+      which guarantees something arrives to parse. Driver abstraction at
+      the end: <code>send_frame(&amp;[u8])</code> and
+      <code>recv_frame() -&gt; Option&lt;Frame&gt;</code> — the network
+      parallel of Lesson 9's <code>read_sector</code>.
+    </p>
+    <p class="roadmap-lesson-body"><strong>Build steps:</strong></p>
+    <ul class="roadmap-substeps">
+      <li><strong>21.1</strong> — <code>EthernetHeader</code> parse/build with explicit big-endian handling (<code>from_be_bytes</code> enters the codebase).</li>
+      <li><strong>21.2</strong> — TX: send a broadcast frame with a recognizable payload; verify the used ring reports completion.</li>
+      <li><strong>21.3</strong> — RX: poll, strip <code>virtio_net_hdr</code>, hexdump the first frame that arrives.</li>
+      <li><strong>21.4</strong> — Buffer recycling: consumed RX buffers get re-posted, keeping the queue stocked.</li>
+      <li><strong>21.5</strong> — Wrap as <code>NetDevice { send_frame, recv_frame, mac }</code>.</li>
+    </ul>
+    <p class="roadmap-linux-ref">
+      <strong>Linux counterparts:</strong>
+      <code>drivers/net/virtio_net.c</code> — <code>start_xmit</code>,
+      <code>receive_buf</code>;
+      <code>net/ethernet/eth.c</code> — <code>eth_type_trans</code>.
+    </p>
+  </section>
+
+  <!-- ============================================================
+       LESSON 22
+       ============================================================ -->
+  <section class="roadmap-lesson upcoming">
+    <div class="roadmap-lesson-head">
+      <span class="roadmap-lesson-num">L22</span>
+      <h2 class="roadmap-lesson-title">ARP — Who Has 10.0.2.2?</h2>
+      <span class="roadmap-lesson-status">Upcoming · concept + build</span>
+    </div>
+    <p class="roadmap-lesson-body">
+      The problem ARP (Address Resolution Protocol) solves: IP addresses
+      name hosts, but Ethernet delivers to MAC addresses, and nothing
+      ties the two together until someone asks. The packet layout from
+      RFC 826: hardware type, protocol type, operation
+      (1&nbsp;=&nbsp;request, 2&nbsp;=&nbsp;reply), then sender/target
+      MAC+IP pairs. The kernel adopts its slirp identity —
+      <code>10.0.2.15</code> — as a compile-time constant (no DHCP
+      client; that is a side quest). Broadcast "who has 10.0.2.2?",
+      receive the reply, cache the mapping. Also answer incoming
+      requests for our own address: that is what makes the guest exist
+      on the network. First two-way conversation the kernel has ever had.
+    </p>
+    <p class="roadmap-lesson-body"><strong>Build steps:</strong></p>
+    <ul class="roadmap-substeps">
+      <li><strong>22.1</strong> — <code>ArpPacket</code> parse/build (28 bytes for IPv4-over-Ethernet).</li>
+      <li><strong>22.2</strong> — Transmit a request for <code>10.0.2.2</code>; parse the reply; print the gateway MAC.</li>
+      <li><strong>22.3</strong> — ARP cache: <code>BTreeMap&lt;Ipv4Addr, MacAddr&gt;</code> with a <code>resolve()</code> entry point.</li>
+      <li><strong>22.4</strong> — Reply path: answer requests targeting <code>10.0.2.15</code>.</li>
+    </ul>
+    <p class="roadmap-linux-ref">
+      <strong>Linux counterparts:</strong>
+      <code>net/ipv4/arp.c</code> — <code>arp_process</code> (the RFC 826
+      merge algorithm), <code>net/core/neighbour.c</code> (the cache).
+      <strong>Spec:</strong> <a href="https://www.rfc-editor.org/rfc/rfc826">RFC 826</a>.
+    </p>
+  </section>
+
+  <!-- ============================================================
+       LESSON 23
+       ============================================================ -->
+  <section class="roadmap-lesson upcoming">
+    <div class="roadmap-lesson-head">
+      <span class="roadmap-lesson-num">L23</span>
+      <h2 class="roadmap-lesson-title">IPv4 — Header, Checksum, Demux</h2>
+      <span class="roadmap-lesson-status">Upcoming · concept + build</span>
+    </div>
+    <p class="roadmap-lesson-body">
+      The 20-byte IPv4 header from RFC 791: version + IHL (Internet
+      Header Length), total length, TTL (Time To Live), protocol number
+      (1&nbsp;=&nbsp;ICMP, 17&nbsp;=&nbsp;UDP — the demux key for the
+      layer above), source and destination addresses, and the header
+      checksum. The internet checksum algorithm (RFC 1071): sum 16-bit
+      words in one's complement, fold the carries, invert — shared by
+      IP, ICMP, and UDP, so it is written once as a utility and reused
+      three times. Fragmentation fields get parsed and rejected rather
+      than implemented (slirp will not fragment our small packets).
+      Transmit side: build a header, compute its checksum, resolve the
+      next hop via Lesson 22's ARP cache, hand to
+      <code>send_frame</code>.
+    </p>
+    <p class="roadmap-lesson-body"><strong>Build steps:</strong></p>
+    <ul class="roadmap-substeps">
+      <li><strong>23.1</strong> — <code>internet_checksum(&amp;[u8]) -&gt; u16</code> utility + unit test against a hand-computed example.</li>
+      <li><strong>23.2</strong> — <code>Ipv4Header</code> parse: validate version, IHL, checksum; extract protocol + addresses.</li>
+      <li><strong>23.3</strong> — <code>Ipv4Header</code> build: fill fields, compute checksum, prepend to payload.</li>
+      <li><strong>23.4</strong> — RX demux: Ethernet EtherType → IPv4 → protocol number dispatch (ICMP / UDP / drop). Print one line per received packet.</li>
+    </ul>
+    <p class="roadmap-linux-ref">
+      <strong>Linux counterparts:</strong>
+      <code>net/ipv4/ip_input.c</code> — <code>ip_rcv</code>,
+      <code>net/ipv4/ip_output.c</code>,
+      <code>lib/checksum.c</code>.
+      <strong>Specs:</strong> <a href="https://www.rfc-editor.org/rfc/rfc791">RFC 791</a>,
+      <a href="https://www.rfc-editor.org/rfc/rfc1071">RFC 1071</a>.
+    </p>
+  </section>
+
+  <!-- ============================================================
+       LESSON 24 — KEYSTONE 1
+       ============================================================ -->
+  <section class="roadmap-lesson keystone">
+    <div class="roadmap-lesson-head">
+      <span class="roadmap-lesson-num">L24</span>
+      <h2 class="roadmap-lesson-title">ICMP — Ping the Gateway (Keystone 1)</h2>
+      <span class="roadmap-lesson-status">Keystone · complete</span>
+    </div>
+    <p class="roadmap-lesson-body">
+      The network hello-world. ICMP (Internet Control Message Protocol)
+      echo request: type 8, code 0, checksum, identifier, sequence
+      number, payload. The gateway's reply is the same packet with
+      type 0 and a recomputed checksum. The kernel sends four sequential echo requests
+      to <code>10.0.2.2</code> through the full transmit stack (ICMP →
+      IPv4 → ARP-resolved Ethernet → virtio-net) and matches the reply
+      coming back up the receive stack. When
+      <code>reply id=0x2400 seq=7..10 ttl=255</code> prints on serial,
+      the stack works end-to-end — the moment that parallels Lesson 8's
+      first disk read. Echo <em>replies</em> to inbound pings are also
+      implemented, even though slirp can't deliver any from the host —
+      correctness per RFC 792 costs five lines here.
+    </p>
+    <p class="roadmap-lesson-body"><strong>Build steps:</strong></p>
+    <ul class="roadmap-substeps">
+      <li><strong>24.1</strong> — <code>EchoMessage</code> parse/build; checksum over header + payload.</li>
+      <li><strong>24.2</strong> — Send echo requests to <code>10.0.2.2</code> through syscall <code>902</code>; poll RX until the matching replies arrive.</li>
+      <li><strong>24.3</strong> — Loop: 4 pings with sequences <code>7..10</code>, verifying all 4 replies.</li>
+      <li><strong>24.4</strong> — Reply path: answer inbound echo requests addressed to <code>10.0.2.15</code>.</li>
+    </ul>
+    <p class="roadmap-linux-ref">
+      <strong>Linux counterparts:</strong>
+      <code>net/ipv4/icmp.c</code> — <code>icmp_echo</code>,
+      <code>icmp_reply</code>.
+      <strong>Spec:</strong> <a href="https://www.rfc-editor.org/rfc/rfc792">RFC 792</a>.
+    </p>
+  </section>
+
+  <!-- ============================================================
+       LESSON 25
+       ============================================================ -->
+  <section class="roadmap-lesson current">
+    <div class="roadmap-lesson-head">
+      <span class="roadmap-lesson-num">L25</span>
+      <h2 class="roadmap-lesson-title">UDP — Datagrams In, Datagrams Out</h2>
+      <span class="roadmap-lesson-status">Complete · host round trip</span>
+    </div>
+    <p class="roadmap-lesson-body">
+      The 8-byte UDP (User Datagram Protocol) header from RFC 768:
+      source port, destination port, length, checksum. Ports are the
+      new idea — the address <em>within</em> a host, the demux key that
+      lets one machine hold many conversations. The UDP checksum covers
+      a pseudo-header borrowing fields from the IP layer (a deliberate
+      layering violation worth understanding, since TCP inherits it).
+      In-kernel echo first: a hardcoded port-5555 handler that swaps
+      source and destination and sends the payload back. QEMU gains
+      <code>hostfwd=udp::5555-:5555</code>; the host runs
+      <code>nc -u localhost 5555</code> and sees its line come back.
+      First inbound traffic from outside the virtual machine.
+    </p>
+    <p class="roadmap-lesson-body"><strong>Build steps:</strong></p>
+    <ul class="roadmap-substeps">
+      <li><strong>25.1</strong> — <code>UdpHeader</code> parse/build; pseudo-header checksum (reusing <code>internet_checksum</code>).</li>
+      <li><strong>25.2</strong> — RX: IPv4 protocol 17 dispatch → parse UDP → print (src port, dst port, payload).</li>
+      <li><strong>25.3</strong> — TX: <code>send_udp(dst_ip, dst_port, src_port, payload)</code> down the full stack.</li>
+      <li><strong>25.4</strong> — In-kernel echo on port 5555 + <code>hostfwd</code> in the QEMU script; verify with <code>nc -u</code> from the host.</li>
+    </ul>
+    <p class="roadmap-linux-ref">
+      <strong>Linux counterparts:</strong>
+      <code>net/ipv4/udp.c</code> — <code>__udp4_lib_rcv</code>,
+      <code>udp_send_skb</code>.
+      <strong>Lesson:</strong> <a href="0025-udp.html">Open Lesson 25</a>.
+      <strong>Tour:</strong> <a href="../tours/tour-0025-udp.html">Follow the implementation</a>.
+      <strong>Spec:</strong> <a href="https://www.rfc-editor.org/rfc/rfc768">RFC 768</a>.
+    </p>
+  </section>
+
+  <!-- ============================================================
+       LESSON 26 — OBJECTIVE
+       ============================================================ -->
+  <section class="roadmap-lesson current">
+    <div class="roadmap-lesson-head">
+      <span class="roadmap-lesson-num">L26</span>
+      <h2 class="roadmap-lesson-title">Sockets — The User-Space Echo Server (Objective)</h2>
+      <span class="roadmap-lesson-status">Current · concept</span>
+    </div>
+    <p class="roadmap-lesson-body">
+      The syscall surface. A socket is a file descriptor whose backing
+      object is a network endpoint instead of an inode — the same move
+      Lesson 2 made for files, now for the network. Kernel side: a
+      <code>Socket</code> struct (bound port, RX datagram queue), a
+      port → socket demux table replacing Lesson 25's hardcoded handler,
+      and four syscalls: <code>socket()</code>, <code>bind()</code>,
+      <code>recvfrom()</code> (blocking — the process yields until a
+      datagram lands, exercising the Phase 1 scheduler),
+      <code>sendto()</code>. User side: <code>echo_server.elf</code>,
+      compiled externally like <code>hello.elf</code>, loaded from the
+      ext2 disk by <code>exec</code>, serving UDP echo from ring 3.
+      Phase 1 and Phase 2 and the original mission all meet in this one
+      binary.
+    </p>
+    <p class="roadmap-lesson-body"><strong>Build steps:</strong></p>
+    <ul class="roadmap-substeps">
+      <li><strong>26.1</strong> — <code>Socket</code> struct + kernel socket table; UDP RX demux delivers into per-socket queues.</li>
+      <li><strong>26.2</strong> — Syscalls: <code>socket</code>, <code>bind</code>, <code>sendto</code>, <code>recvfrom</code> (with user-pointer validation, as in Lesson 2).</li>
+      <li><strong>26.3</strong> — Blocking <code>recvfrom</code>: park the process, wake on datagram arrival.</li>
+      <li><strong>26.4</strong> — <code>echo_server.elf</code> user program; write to disk image; <code>exec</code> it; drive it from the host with <code>nc -u localhost 5555</code>.</li>
+    </ul>
+    <p class="roadmap-linux-ref">
+      <strong>Linux counterparts:</strong>
+      <code>net/socket.c</code> — <code>sys_socket</code>,
+      <code>sys_bind</code>, <code>sys_recvfrom</code>;
+      <code>net/ipv4/udp.c</code> — <code>__udp4_lib_lookup</code>
+      (the port demux). This is where everything connects: virtio-net
+      fetches frames, Ethernet/ARP/IP/UDP parse them, the socket table
+      routes them, the scheduler wakes the blocked process, and a ring-3
+      binary loaded from your ext2 disk answers the host.
+      <strong>Lesson:</strong> <a href="0026-sockets.html">Open Lesson 26</a>.
+    </p>
+  </section>
+
+  <h2>After the objective</h2>
+
+  <ul>
+    <li><strong>TCP.</strong> The deferred arc: three-way handshake, sequence/acknowledgment numbers, the state machine, retransmission. ~4–5 lessons on top of the same IPv4 layer. <a href="https://www.rfc-editor.org/rfc/rfc9293">RFC 9293</a> is the modern consolidated spec.</li>
+    <li><strong>DHCP client.</strong> Replace the hardcoded <code>10.0.2.15</code> with real address acquisition. ~1 lesson, pure UDP application code.</li>
+    <li><strong>DNS resolver.</strong> Query <code>10.0.2.3</code>, parse the response. ~1 lesson, also pure UDP.</li>
+    <li><strong>Interrupt-driven RX.</strong> Replace polling with the virtio ISR (Interrupt Status Register) → MSI-X or legacy interrupt → wake the stack. Pairs well with Phase 1 signal work.</li>
+    <li><strong>tap networking.</strong> Swap slirp for a tap device to let the host ping the guest and run tcpdump on real frames. Host-side setup, no kernel changes.</li>
+  </ul>
+
+  <h2>How to use this roadmap</h2>
+
+  <p>
+    Same convention as the disk roadmap: each lesson is a discrete HTML
+    file with a concept section and a build section; build substeps are
+    each independently committable; a code tour
+    (<code>tours/tour-NNNN-*.html</code>) gets built alongside. Open this
+    roadmap to orient, pick the current lesson, drive the steps,
+    commit each.
+  </p>
+
+  <p>
+    Pace expectation from the disk phase: 1–3 hours per lesson once the
+    concept lands, and the concept conversation is the long pole. L19–L21
+    are mostly familiar (virtio-shaped); expect them fast. L22 (ARP) and
+    L26 (blocking sockets) carry the genuinely new models; protect
+    conversation time there.
+  </p>
+
+  </div>
+
+  <footer class="lesson-footer">
+    <div class="footer-block">
+      <h4>Related files</h4>
+      <p style="margin:0;">
+        <a href="../MISSION.md">MISSION.md</a> — Phase 2 in the beyond-the-mission plan.
+        <a href="roadmap-disk-to-exec.html">Disk roadmap</a> — the completed parallel this phase mirrors.
+        <a href="../RESOURCES.md">RESOURCES.md</a> — networking specs, Linux sources, and books.
+      </p>
+    </div>
+
+    <nav class="lesson-nav">
+      <a href="0019-shape-of-network-stack.html">Lesson 19: Shape of the Network Stack →</a>
+      <a href="roadmap-disk-to-exec.html">Disk roadmap ↑</a>
+    </nav>
+  </footer>
+
+</article>
+</body>
+</html>

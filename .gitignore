@@ -1,3 +1,10 @@
 /target
 /qemu.log
 /disk.img
+
+# Local agent and browser test state
+/.agents/skills/lavish
+/.claude
+/.lavish
+/.playwright-cli
+/.playwright-mcp

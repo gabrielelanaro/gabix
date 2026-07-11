@@ -1,0 +1,10 @@
+.stepper { margin: 1.5rem 0; padding: 1rem 1.15rem; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-soft); }
+.stepper-meter { color: var(--accent); font: .75rem var(--font-mono); }
+.stepper-stage { min-height: 10rem; padding: .75rem 0; }
+.stepper-stage h3 { margin: .25rem 0 .5rem; }
+.stepper-stage p { margin: 0; }
+.stepper-controls { display: flex; justify-content: space-between; gap: .75rem; }
+.stepper-controls button { padding: .5rem .75rem; border: 1px solid var(--border-bright); border-radius: 5px; color: var(--text); background: var(--surface); font: 600 .8rem var(--font-sans); cursor: pointer; }
+.stepper-controls button:hover { border-color: var(--accent); background: var(--accent-soft); }
+.stepper-controls button:disabled { opacity: .35; cursor: default; }
+@media (max-width: 640px) { .stepper-stage { min-height: 14rem; } }

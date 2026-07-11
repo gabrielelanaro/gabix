@@ -388,7 +388,7 @@ pub extern "C" fn _start(boot_info: &'static BootInfo) -> ! {
                 println!("[ext2] walk complete: {} live entries", entries.len());
 
                 // Verify we got exactly the entries mkfs + Lesson 14 + fixture builds created
-                assert_eq!(entries.len(), 8, "expected 8 entries (., .., lost+found, hello.txt, secret.txt, hello.elf, fork_smoke.elf, inherit_wait.elf)");
+                assert_eq!(entries.len(), 11, "expected 11 entries (., .., lost+found, hello.txt, secret.txt, hello.elf, fork_smoke.elf, inherit_wait.elf, net_smoke.elf, icmp_ping.elf, udp_echo.elf)");
 
                 // Find by name to verify each
                 let dot = entries.iter().find(|e| e.name == b".").expect("missing .");
@@ -630,7 +630,132 @@ pub extern "C" fn _start(boot_info: &'static BootInfo) -> ! {
             "ARP cache should contain the gateway entry"
         );
         println!("[arp] cache entries={}", net::arp::cache_len());
+
+        println!("[test] IPv4 header checksum and parse (23.1-23.4)");
+        {
+            let checksum = net::checksum::internet_checksum(&[0x00, 0x01, 0xf2, 0x03]);
+            println!("[ip] checksum example 00 01 f2 03 -> 0x{:04X}", checksum);
+            assert_eq!(checksum, 0x0dfb, "RFC 1071-style checksum example");
+
+            let payload = [0xde, 0xad, 0xbe, 0xef];
+            let header = net::ipv4::Ipv4Header::build(
+                net::ipv4::PROTOCOL_UDP,
+                net::OUR_IP,
+                net::GATEWAY_IP,
+                payload.len(),
+            );
+            assert_eq!(
+                net::checksum::internet_checksum(&header),
+                0,
+                "IPv4 header with checksum should fold to zero"
+            );
+
+            let mut packet = [0u8; net::ipv4::IPV4_HEADER_LEN + 4];
+            packet[0..net::ipv4::IPV4_HEADER_LEN].copy_from_slice(&header);
+            packet[net::ipv4::IPV4_HEADER_LEN..].copy_from_slice(&payload);
+
+            let parsed = net::ipv4::Ipv4Header::parse(&packet)
+                .expect("built IPv4 header should parse");
+            assert_eq!(parsed.protocol, net::ipv4::PROTOCOL_UDP);
+            assert_eq!(parsed.src_ip, net::OUR_IP);
+            assert_eq!(parsed.dst_ip, net::GATEWAY_IP);
+            assert_eq!(parsed.payload_len(), payload.len());
+            println!(
+                "[ip] parsed header proto={} src={}.{}.{}.{} dst={}.{}.{}.{} len={} checksum ok",
+                parsed.protocol,
+                parsed.src_ip[0],
+                parsed.src_ip[1],
+                parsed.src_ip[2],
+                parsed.src_ip[3],
+                parsed.dst_ip[0],
+                parsed.dst_ip[1],
+                parsed.dst_ip[2],
+                parsed.dst_ip[3],
+                parsed.total_len
+            );
+
+            println!("[ip] *** IPv4 header built, checksum verified, parse proof complete ***");
+        }
+        #[cfg(feature = "test-icmp")]
+        {
+            println!("[test] ICMP echo build, parse, and checksum rejection (24.1)");
+            const PAYLOAD: &[u8] = b"mini-os";
+            let mut bytes = [0u8; net::icmp::ECHO_HEADER_LEN + PAYLOAD.len()];
+            let message_len = net::icmp::write_echo_request(&mut bytes, 0x2400, 7, PAYLOAD)
+                .expect("test buffer has the exact ICMP message size");
+            let parsed = net::icmp::EchoMessage::parse(&bytes[..message_len])
+                .expect("freshly built ICMP request must parse");
+            assert_eq!(parsed.message_type, net::icmp::ECHO_REQUEST);
+            assert_eq!(parsed.identifier, 0x2400);
+            assert_eq!(parsed.sequence, 7);
+            assert_eq!(parsed.payload, PAYLOAD);
+
+            let mut reply_bytes = [0u8; net::icmp::ECHO_HEADER_LEN + PAYLOAD.len()];
+            let reply_len = net::icmp::write_echo_reply(
+                &mut reply_bytes,
+                parsed.identifier,
+                parsed.sequence,
+                parsed.payload,
+            )
+            .expect("reply buffer has the exact ICMP message size");
+            let reply = net::icmp::EchoMessage::parse(&reply_bytes[..reply_len])
+                .expect("freshly built ICMP reply must parse");
+            assert!(reply.is_reply_to(0x2400, 7, PAYLOAD));
+
+            bytes[message_len - 1] ^= 0x01;
+            assert!(
+                net::icmp::EchoMessage::parse(&bytes[..message_len]).is_none(),
+                "a changed payload byte must fail the ICMP checksum"
+            );
+            println!("[icmp] *** request/reply layout builds, parses, matches, and rejects corruption ***");
+        }
+        #[cfg(feature = "test-udp")]
+        {
+            println!("[test] UDP header build, parse, length validation, and pseudo-header checksum (25.1)");
+            const PAYLOAD: &[u8] = b"hello";
+            let mut bytes = [0u8; net::udp::UDP_HEADER_LEN + PAYLOAD.len()];
+            let message_len = net::udp::write_datagram(
+                &mut bytes,
+                [10, 0, 2, 2],
+                net::OUR_IP,
+                53000,
+                5555,
+                PAYLOAD,
+            )
+            .expect("UDP test buffer has the exact datagram size");
+            let parsed = net::udp::UdpDatagram::parse(
+                &bytes[..message_len],
+                [10, 0, 2, 2],
+                net::OUR_IP,
+            )
+            .expect("freshly built UDP datagram must parse");
+            assert_eq!(parsed.header.src_port, 53000);
+            assert_eq!(parsed.header.dst_port, 5555);
+            assert_eq!(parsed.payload, PAYLOAD);
+            assert!(net::udp::UdpDatagram::parse(
+                &bytes[..message_len],
+                [10, 0, 2, 3],
+                net::OUR_IP,
+            )
+            .is_none());
+            assert!(net::udp::UdpDatagram::parse(
+                &[0, 0, 0, 0, 0, 7, 0, 0],
+                [10, 0, 2, 2],
+                net::OUR_IP,
+            )
+            .is_none());
+
+            bytes[message_len - 1] ^= 1;
+            assert!(net::udp::UdpDatagram::parse(
+                &bytes[..message_len],
+                [10, 0, 2, 2],
+                net::OUR_IP,
+            )
+            .is_none());
+            println!("[udp] *** header, length rules, and IPv4 pseudo-header checksum proof complete ***");
+        }
         println!("[net] *** first Ethernet frame received and RX buffer recycled ***");
+        virtio::install_net_device(net);
     } else {
         println!("[virtio-net] device not present; skipping init");
     }
@@ -655,11 +780,17 @@ pub extern "C" fn _start(boot_info: &'static BootInfo) -> ! {
     // The program runs in ring 3 from a binary that came from disk.
     //
     // Under test fixtures, exec the selected user program from disk.
-    #[cfg(feature = "test-inherit")]
+    #[cfg(feature = "test-udp")]
+    let user_elf_path: &str = "/udp_echo.elf";
+    #[cfg(all(not(feature = "test-udp"), feature = "test-icmp"))]
+    let user_elf_path: &str = "/icmp_ping.elf";
+    #[cfg(all(not(feature = "test-udp"), not(feature = "test-icmp"), feature = "test-net"))]
+    let user_elf_path: &str = "/net_smoke.elf";
+    #[cfg(all(not(feature = "test-udp"), not(feature = "test-icmp"), not(feature = "test-net"), feature = "test-inherit"))]
     let user_elf_path: &str = "/inherit_wait.elf";
-    #[cfg(all(not(feature = "test-inherit"), feature = "test-fork"))]
+    #[cfg(all(not(feature = "test-udp"), not(feature = "test-icmp"), not(feature = "test-net"), not(feature = "test-inherit"), feature = "test-fork"))]
     let user_elf_path: &str = "/fork_smoke.elf";
-    #[cfg(all(not(feature = "test-inherit"), not(feature = "test-fork")))]
+    #[cfg(all(not(feature = "test-udp"), not(feature = "test-icmp"), not(feature = "test-net"), not(feature = "test-inherit"), not(feature = "test-fork")))]
     let user_elf_path: &str = "/hello.elf";
 
     println!("[test] exec {} (16.1-16.4) — the mission", user_elf_path);

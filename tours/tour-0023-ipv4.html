@@ -1,0 +1,642 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Tour - Lesson 23 - IPv4</title>
+<link rel="stylesheet" href="../assets/lesson.css">
+<script src="../assets/code-highlight.js" defer></script>
+<style>
+  .tour-step { margin: 3rem 0; padding-top: 1rem; border-top: 1px solid var(--border); }
+  .tour-step:first-of-type { border-top: none; padding-top: 0; }
+  .tour-step-num {
+    display: inline-block; font-family: var(--font-mono); font-size: 0.78rem;
+    font-weight: 600; color: var(--accent); background: var(--accent-soft);
+    padding: 2px 8px; border-radius: 3px; margin-right: 0.6rem;
+  }
+  .tour-step-title {
+    font-family: var(--font-sans); font-weight: 700; font-size: 1.3rem;
+    color: var(--text); margin: 0 0 0.4rem; display: inline;
+  }
+  .tour-step-h2 { margin: 0 0 1rem; }
+  .tour-files { font-family: var(--font-mono); font-size: 0.82rem; color: var(--text-dim); margin: 0.5rem 0 1.5rem; }
+  .tour-files strong { color: var(--text); font-weight: 600; }
+  .snippet-meta { font-family: var(--font-mono); font-size: 0.72rem; color: var(--text-dim); margin: 1.5rem 0 0.35rem; display: flex; align-items: baseline; gap: 0.6rem; }
+  .snippet-meta .snippet-file { color: var(--accent); font-weight: 600; background: var(--accent-soft); padding: 1px 6px; border-radius: 3px; }
+  .snippet-meta .snippet-what { color: var(--text-faint); font-style: italic; }
+  .snippet-meta + pre, .snippet-meta + pre.tour-output { margin-top: 0; }
+  pre.tour-output { background: #111827; color: #e5e7eb; border-left: 3px solid var(--accent); padding: 1rem 1.25rem; border-radius: 0 6px 6px 0; font-size: 0.8rem; line-height: 1.55; margin: 1rem 0; overflow-x: auto; }
+  pre.tour-output .ok { color: #86efac; }
+  .plain-map {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1rem 1.25rem;
+    margin: 1.25rem 0;
+    overflow-x: auto;
+  }
+  .plain-map pre { background: transparent; color: var(--text); padding: 0; margin: 0; }
+  .change-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 1.25rem 0;
+    font-size: 0.9rem;
+  }
+  .change-table th,
+  .change-table td {
+    text-align: left;
+    vertical-align: top;
+    padding: 0.5rem 0.65rem;
+    border-bottom: 1px solid var(--border);
+  }
+  .change-table th {
+    font-family: var(--font-sans);
+    font-size: 0.76rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--text-dim);
+  }
+  .change-table code { white-space: nowrap; }
+  .tour-callout {
+    background: #fffbeb;
+    border-left: 4px solid #b45309;
+    padding: 0.9rem 1rem;
+    margin: 1.25rem 0;
+  }
+  .tour-callout p { margin: 0; }
+</style>
+</head>
+<body>
+<article class="lesson">
+  <header class="lesson-header">
+    <div class="lesson-eyebrow">Tour - Lesson 23 - Companion to <a href="../lessons/0023-ipv4.html" style="color:inherit;">the lesson</a></div>
+    <h1 class="lesson-title">Code Tour - IPv4 Header, Checksum, Demux</h1>
+    <p class="lesson-subtitle">Every Lesson 23 code addition, in packet order: publish the modules, compute the checksum, build and parse IPv4, wrap it in Ethernet, prove it from a user program in QEMU.</p>
+    <div class="lesson-meta">
+      <span><strong>Rust files</strong> 8 touched</span>
+      <span><strong>Docs/test files</strong> 6 touched</span>
+      <span><strong>Tests</strong> <code>test_ipv4.sh</code>, <code>test_net_smoke.sh</code></span>
+    </div>
+  </header>
+
+  <div class="content">
+  <p class="lead">
+    The earlier version of this tour was too thin. This version covers
+    all Lesson 23 additions: the two new network modules, the two
+    small module exports, the virtio-net integration, the syscall
+    bridge, the user fixture, the shell tests, and the lesson navigation.
+  </p>
+
+  <div class="tour-callout">
+    <p>
+      Short answer: the code added for Lesson 23 is larger than the
+      first tour showed. The new kernel behavior lives in
+      <code>src/net/checksum.rs</code>, <code>src/net/ipv4.rs</code>,
+      <code>src/virtio.rs</code>, <code>src/syscall.rs</code>, and
+      <code>src/main.rs</code>. The end-to-end packet proof starts in
+      <code>/net_smoke.elf</code>.
+    </p>
+  </div>
+
+  <h2>Complete Change Map</h2>
+  <table class="change-table">
+    <thead>
+      <tr><th>File</th><th>What changed</th><th>Why it exists</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><code>Cargo.toml</code></td>
+        <td>Adds feature <code>test-net</code>.</td>
+        <td>Execs the network smoke-test user program for the QEMU packet proof.</td>
+      </tr>
+      <tr>
+        <td><code>src/net/mod.rs</code></td>
+        <td>Exports <code>checksum</code> and <code>ipv4</code>.</td>
+        <td>Lets the kernel call <code>net::checksum</code> and <code>net::ipv4</code> from boot and virtio-net code.</td>
+      </tr>
+      <tr>
+        <td><code>src/net/ethernet.rs</code></td>
+        <td>Adds <code>ETHERTYPE_IPV4 = 0x0800</code>.</td>
+        <td>Names the Ethernet demux value for IPv4 frames.</td>
+      </tr>
+      <tr>
+        <td><code>src/net/checksum.rs</code></td>
+        <td>Adds <code>internet_checksum</code> and carry folding.</td>
+        <td>Computes and verifies IPv4 header checksums. ICMP and UDP can reuse it later.</td>
+      </tr>
+      <tr>
+        <td><code>src/net/ipv4.rs</code></td>
+        <td>Adds constants, <code>Ipv4Header</code>, <code>parse</code>, <code>build</code>, and <code>payload_len</code>.</td>
+        <td>Owns the 20-byte IPv4 header rules.</td>
+      </tr>
+      <tr>
+        <td><code>src/virtio.rs</code></td>
+        <td>Adds IPv4 imports, <code>NetRxEvent</code>, <code>poll_rx</code>, <code>send_ipv4_packet</code>, <code>handle_ipv4_frame</code>, <code>next_hop_for</code>, and a stored kernel network device.</td>
+        <td>Connects IPv4 to the real virtio-net TX/RX path and lets syscall code borrow the initialized device.</td>
+      </tr>
+      <tr>
+        <td><code>src/syscall.rs</code></td>
+        <td>Adds <code>SYS_NET_TX_TEST</code> and <code>SYS_NET_RX_WAIT</code>.</td>
+        <td>Lets a ring-3 fixture trigger TX and RX without putting the packet proof in the boot path.</td>
+      </tr>
+      <tr>
+        <td><code>src/main.rs</code></td>
+        <td>Adds boot-time checksum/build/parse proof, installs the network device, and selects <code>/net_smoke.elf</code> under <code>test-net</code>.</td>
+        <td>Keeps pure IPv4 parsing visible during boot and leaves packet actions to user code.</td>
+      </tr>
+      <tr>
+        <td><code>tests/fixtures/net_smoke.rs</code></td>
+        <td>Adds the ring-3 program that calls the network test syscalls.</td>
+        <td>Starts the TX/RX proof from user space.</td>
+      </tr>
+      <tr>
+        <td><code>scripts/make-disk.sh</code></td>
+        <td>Adds <code>/net_smoke.elf</code> to the ext2 disk image.</td>
+        <td>Makes the fixture available to <code>exec_elf</code>.</td>
+      </tr>
+      <tr>
+        <td><code>tests/test_ipv4.sh</code></td>
+        <td>Adds a focused QEMU serial-log test.</td>
+        <td>Locks the checksum, parse, and final pure-header proof lines.</td>
+      </tr>
+      <tr>
+        <td><code>tests/test_net_smoke.sh</code></td>
+        <td>Starts QEMU in the background, waits for the user RX marker, and sends UDP to <code>127.0.0.1:5555</code>.</td>
+        <td>Locks the user-triggered host-to-QEMU-to-mini-os TX/RX proof.</td>
+      </tr>
+      <tr>
+        <td><code>lessons/0023-ipv4.html</code></td>
+        <td>Records the lesson and links this tour.</td>
+        <td>Keeps the teaching artifact aligned with the code.</td>
+      </tr>
+      <tr>
+        <td><code>tours/tour-0023-ipv4.html</code></td>
+        <td>Walks every Lesson 23 code path and proof file.</td>
+        <td>Gives the code-first companion page for review and study.</td>
+      </tr>
+      <tr>
+        <td><code>lessons/0022-arp.html</code></td>
+        <td>Links forward to Lesson 23.</td>
+        <td>Keeps lesson navigation connected.</td>
+      </tr>
+      <tr>
+        <td><code>LEARNING.md</code></td>
+        <td>Adds the Lesson 23 progress entry.</td>
+        <td>Leaves a session log for the next slice.</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div class="plain-map">
+<pre>TX packet path:
+main.rs proof payload
+  -> NetDevice::send_ipv4_packet
+  -> Ipv4Header::build
+  -> internet_checksum
+  -> next_hop_for
+  -> resolve_arp
+  -> EthernetHeader { ethertype: 0x0800 }
+  -> send_frame
+  -> virtio-net TX queue
+
+RX packet path:
+host UDP 127.0.0.1:5555
+  -> QEMU hostfwd udp::5555-:5555
+  -> virtio-net RX queue
+  -> NetDevice::poll_rx
+  -> handle_ipv4_frame
+  -> NetRxEvent::Ipv4</pre>
+  </div>
+
+  <div class="tour-step">
+    <h2 class="tour-step-h2"><span class="tour-step-num">23.1</span><span class="tour-step-title">Publish the new helpers</span></h2>
+    <div class="tour-files"><strong>Files:</strong> <code>src/net/mod.rs</code>, <code>src/net/ethernet.rs</code></div>
+    <p>
+      Lesson 23 adds two network helper modules and one Ethernet
+      demux constant. This is the smallest wiring layer: it makes
+      the new code visible to the rest of the kernel.
+    </p>
+    <div class="snippet-meta"><span class="snippet-file">src/net/mod.rs</span><span class="snippet-what">new module exports</span></div>
+<pre data-lang="rust">pub mod arp;
+pub mod checksum;
+pub mod ethernet;
+pub mod ipv4;</pre>
+    <div class="snippet-meta"><span class="snippet-file">src/net/ethernet.rs</span><span class="snippet-what">EtherType names</span></div>
+<pre data-lang="rust">pub const ETHERNET_HEADER_LEN: usize = 14;
+pub const ETHERTYPE_IPV4: u16 = 0x0800;
+pub const ETHERTYPE_ARP: u16 = 0x0806;</pre>
+  </div>
+
+  <div class="tour-step">
+    <h2 class="tour-step-h2"><span class="tour-step-num">23.2</span><span class="tour-step-title">Compute the internet checksum</span></h2>
+    <div class="tour-files"><strong>File:</strong> <code>src/net/checksum.rs</code></div>
+    <p>
+      IPv4 protects its header with the internet checksum. The helper
+      reads bytes as big-endian 16-bit words, folds overflow back into
+      the low 16 bits, handles an odd trailing byte, then inverts the
+      folded sum.
+    </p>
+    <div class="snippet-meta"><span class="snippet-file">src/net/checksum.rs</span><span class="snippet-what">full helper</span></div>
+<pre data-lang="rust">pub fn internet_checksum(data: &amp;[u8]) -&gt; u16 {
+    let mut sum = 0u32;
+    let mut i = 0;
+
+    while i + 1 &lt; data.len() {
+        sum += u16::from_be_bytes([data[i], data[i + 1]]) as u32;
+        sum = fold_carry_once(sum);
+        i += 2;
+    }
+
+    if i &lt; data.len() {
+        sum += ((data[i] as u16) &lt;&lt; 8) as u32;
+    }
+
+    while sum &gt; 0xffff {
+        sum = fold_carry_once(sum);
+    }
+
+    !(sum as u16)
+}
+
+fn fold_carry_once(sum: u32) -&gt; u32 {
+    (sum &amp; 0xffff) + (sum &gt;&gt; 16)
+}</pre>
+    <p>
+      The important verification trick: after a checksum has been
+      written into a header, running the same helper over the header
+      returns <code>0</code>. The helper returns the inverted sum, so
+      a correct header inverts to zero.
+    </p>
+  </div>
+
+  <div class="tour-step">
+    <h2 class="tour-step-h2"><span class="tour-step-num">23.3</span><span class="tour-step-title">Name the IPv4 constants and fields</span></h2>
+    <div class="tour-files"><strong>File:</strong> <code>src/net/ipv4.rs</code></div>
+    <p>
+      The IPv4 module begins with names for the fixed 20-byte header,
+      the outbound TTL, the fragment bits, and the protocol numbers
+      mini-os will use in the next lessons.
+    </p>
+    <div class="snippet-meta"><span class="snippet-file">src/net/ipv4.rs</span><span class="snippet-what">constants</span></div>
+<pre data-lang="rust">pub const IPV4_HEADER_LEN: usize = 20;
+pub const VERSION_IHL_NO_OPTIONS: u8 = 0x45;
+pub const DEFAULT_TTL: u8 = 64;
+pub const FLAG_DONT_FRAGMENT: u16 = 0x4000;
+pub const FLAG_MORE_FRAGMENTS: u16 = 0x2000;
+pub const FRAGMENT_OFFSET_MASK: u16 = 0x1fff;
+
+pub const PROTOCOL_ICMP: u8 = 1;
+pub const PROTOCOL_TCP: u8 = 6;
+pub const PROTOCOL_UDP: u8 = 17;</pre>
+    <div class="snippet-meta"><span class="snippet-file">src/net/ipv4.rs</span><span class="snippet-what">parsed header shape</span></div>
+<pre data-lang="rust">pub struct Ipv4Header {
+    pub total_len: u16,
+    pub identification: u16,
+    pub flags_fragment: u16,
+    pub ttl: u8,
+    pub protocol: u8,
+    pub checksum: u16,
+    pub src_ip: [u8; 4],
+    pub dst_ip: [u8; 4],
+}</pre>
+  </div>
+
+  <div class="tour-step">
+    <h2 class="tour-step-h2"><span class="tour-step-num">23.4</span><span class="tour-step-title">Parse and validate an inbound header</span></h2>
+    <div class="tour-files"><strong>File:</strong> <code>src/net/ipv4.rs</code></div>
+    <p>
+      <code>Ipv4Header::parse</code> receives the whole IPv4 packet:
+      header plus payload. It returns early on malformed input. Each
+      early return is a small gate that keeps later code simple.
+    </p>
+    <div class="snippet-meta"><span class="snippet-file">src/net/ipv4.rs</span><span class="snippet-what">validation gates</span></div>
+<pre data-lang="rust">if packet.len() &lt; IPV4_HEADER_LEN {
+    return None;
+}
+
+let version = packet[0] &gt;&gt; 4;
+let ihl = packet[0] &amp; 0x0f;
+if version != 4 || ihl != 5 {
+    return None;
+}
+
+let total_len = u16::from_be_bytes([packet[2], packet[3]]);
+if total_len &lt; IPV4_HEADER_LEN as u16 || total_len as usize &gt; packet.len() {
+    return None;
+}
+
+if checksum::internet_checksum(&amp;packet[..IPV4_HEADER_LEN]) != 0 {
+    return None;
+}</pre>
+    <p>
+      The fragment check is deliberately strict for this lesson. A
+      packet with More Fragments set, or a non-zero fragment offset,
+      is left for a later reassembly lesson.
+    </p>
+    <div class="snippet-meta"><span class="snippet-file">src/net/ipv4.rs</span><span class="snippet-what">fragment gate and field copy</span></div>
+<pre data-lang="rust">let flags_fragment = u16::from_be_bytes([packet[6], packet[7]]);
+if flags_fragment &amp; FLAG_MORE_FRAGMENTS != 0 {
+    return None;
+}
+if flags_fragment &amp; FRAGMENT_OFFSET_MASK != 0 {
+    return None;
+}
+
+let mut src_ip = [0u8; 4];
+let mut dst_ip = [0u8; 4];
+src_ip.copy_from_slice(&amp;packet[12..16]);
+dst_ip.copy_from_slice(&amp;packet[16..20]);</pre>
+  </div>
+
+  <div class="tour-step">
+    <h2 class="tour-step-h2"><span class="tour-step-num">23.5</span><span class="tour-step-title">Build the outbound IPv4 header</span></h2>
+    <div class="tour-files"><strong>File:</strong> <code>src/net/ipv4.rs</code></div>
+    <p>
+      <code>Ipv4Header::build</code> creates exactly 20 bytes. The
+      checksum field is zero while the checksum is computed, then
+      bytes 10 and 11 receive the result.
+    </p>
+    <div class="snippet-meta"><span class="snippet-file">src/net/ipv4.rs</span><span class="snippet-what">header builder</span></div>
+<pre data-lang="rust">let mut header = [0u8; IPV4_HEADER_LEN];
+header[0] = VERSION_IHL_NO_OPTIONS;
+header[1] = 0;
+header[2..4].copy_from_slice(&amp;(total_len as u16).to_be_bytes());
+header[4..6].copy_from_slice(&amp;0u16.to_be_bytes());
+header[6..8].copy_from_slice(&amp;FLAG_DONT_FRAGMENT.to_be_bytes());
+header[8] = DEFAULT_TTL;
+header[9] = protocol;
+header[10..12].copy_from_slice(&amp;0u16.to_be_bytes());
+header[12..16].copy_from_slice(&amp;src_ip);
+header[16..20].copy_from_slice(&amp;dst_ip);
+
+let checksum = checksum::internet_checksum(&amp;header);
+header[10..12].copy_from_slice(&amp;checksum.to_be_bytes());</pre>
+    <p>
+      <code>payload_len</code> is a small convenience for logs and
+      future protocol dispatch: total length minus the fixed header
+      length.
+    </p>
+  </div>
+
+  <div class="tour-step">
+    <h2 class="tour-step-h2"><span class="tour-step-num">23.6</span><span class="tour-step-title">Send IPv4 through the real device path</span></h2>
+    <div class="tour-files"><strong>File:</strong> <code>src/virtio.rs</code></div>
+    <p>
+      <code>send_ipv4_packet</code> is the main Lesson 23 integration
+      point. It builds the IP header, chooses the next hop, resolves
+      that hop through ARP, wraps the IP packet in an Ethernet frame,
+      and calls the existing <code>send_frame</code>.
+    </p>
+    <div class="snippet-meta"><span class="snippet-file">src/virtio.rs</span><span class="snippet-what">TX integration</span></div>
+<pre data-lang="rust">pub fn send_ipv4_packet(
+    &amp;mut self,
+    protocol: u8,
+    dst_ip: [u8; 4],
+    payload: &amp;[u8],
+) -&gt; Option&lt;()&gt; {
+    assert!(payload.len() &lt;= ETHERNET_MTU - IPV4_HEADER_LEN);
+
+    let next_hop_ip = next_hop_for(dst_ip);
+    let next_hop_mac = self.resolve_arp(next_hop_ip)?;
+    let ip_header = Ipv4Header::build(protocol, net::OUR_IP, dst_ip, payload.len());
+
+    let ethernet_header = EthernetHeader {
+        dst: next_hop_mac,
+        src: self.mac(),
+        ethertype: ETHERTYPE_IPV4,
+    };
+
+    let frame_len = ETHERNET_HEADER_LEN + IPV4_HEADER_LEN + payload.len();
+    let mut frame = [0u8; ETHERNET_HEADER_LEN + ETHERNET_MTU];
+    frame[0..ETHERNET_HEADER_LEN].copy_from_slice(&amp;ethernet_header.to_bytes());
+    frame[ETHERNET_HEADER_LEN..ETHERNET_HEADER_LEN + IPV4_HEADER_LEN]
+        .copy_from_slice(&amp;ip_header);
+    frame[ETHERNET_HEADER_LEN + IPV4_HEADER_LEN..frame_len].copy_from_slice(payload);
+
+    self.send_frame(&amp;frame[..frame_len]);
+    Some(())
+}</pre>
+  </div>
+
+  <div class="tour-step">
+    <h2 class="tour-step-h2"><span class="tour-step-num">23.7</span><span class="tour-step-title">Choose the next hop</span></h2>
+    <div class="tour-files"><strong>File:</strong> <code>src/virtio.rs</code></div>
+    <p>
+      <code>next_hop_for</code> is tiny routing logic. For another
+      <code>10.0.2.x</code> address, mini-os can ask ARP for that
+      destination directly. For any other network, mini-os sends the
+      Ethernet frame to the slirp gateway.
+    </p>
+    <div class="snippet-meta"><span class="snippet-file">src/virtio.rs</span><span class="snippet-what">first routing rule</span></div>
+<pre data-lang="rust">fn next_hop_for(dst_ip: [u8; 4]) -&gt; [u8; 4] {
+    if dst_ip[0] == net::OUR_IP[0]
+        &amp;&amp; dst_ip[1] == net::OUR_IP[1]
+        &amp;&amp; dst_ip[2] == net::OUR_IP[2]
+    {
+        dst_ip
+    } else {
+        net::GATEWAY_IP
+    }
+}</pre>
+  </div>
+
+  <div class="tour-step">
+    <h2 class="tour-step-h2"><span class="tour-step-num">23.8</span><span class="tour-step-title">Dispatch received frames centrally</span></h2>
+    <div class="tour-files"><strong>File:</strong> <code>src/virtio.rs</code></div>
+    <p>
+      <code>poll_rx</code> is the receive entry point. It reads one
+      completed RX descriptor, dispatches the Ethernet frame, and
+      returns an event the caller can match on.
+    </p>
+    <div class="snippet-meta"><span class="snippet-file">src/virtio.rs</span><span class="snippet-what">RX event and dispatcher</span></div>
+<pre data-lang="rust">pub enum NetRxEvent {
+    Arp(ArpPacket),
+    Ipv4(Ipv4Header),
+    Other,
+}
+
+pub fn poll_rx(&amp;mut self) -&gt; Option&lt;NetRxEvent&gt; {
+    let frame = self.recv_frame()?;
+    Some(self.dispatch_frame(&amp;frame))
+}
+
+fn dispatch_frame(&amp;mut self, frame: &amp;Frame) -&gt; NetRxEvent {
+    if let Some(packet) = self.handle_arp_frame(frame) {
+        return NetRxEvent::Arp(packet);
+    }
+
+    if let Some(header) = self.handle_ipv4_frame(frame) {
+        return NetRxEvent::Ipv4(header);
+    }
+
+    NetRxEvent::Other
+}</pre>
+    <div class="snippet-meta"><span class="snippet-file">src/virtio.rs</span><span class="snippet-what">IPv4 handler</span></div>
+<pre data-lang="rust">pub fn handle_ipv4_frame(&amp;mut self, frame: &amp;Frame) -&gt; Option&lt;Ipv4Header&gt; {
+    if frame.ethertype != ETHERTYPE_IPV4 {
+        return None;
+    }
+
+    let header = Ipv4Header::parse(&amp;frame.payload[..frame.payload_len])?;
+    if header.dst_ip != net::OUR_IP {
+        println!("[ip] dropped frame for {}.{}.{}.{}",
+            header.dst_ip[0], header.dst_ip[1], header.dst_ip[2], header.dst_ip[3]);
+        return None;
+    }
+
+    println!("[ip] rx proto={} src={}.{}.{}.{} dst={}.{}.{}.{} len={}",
+        header.protocol,
+        header.src_ip[0], header.src_ip[1], header.src_ip[2], header.src_ip[3],
+        header.dst_ip[0], header.dst_ip[1], header.dst_ip[2], header.dst_ip[3],
+        header.total_len);
+
+    Some(header)
+}</pre>
+  </div>
+
+  <div class="tour-step">
+    <h2 class="tour-step-h2"><span class="tour-step-num">23.9</span><span class="tour-step-title">Keep boot to the pure IPv4 proof</span></h2>
+    <div class="tour-files"><strong>File:</strong> <code>src/main.rs</code></div>
+    <p>
+      Boot still checks the checksum helper and the IPv4 header parser.
+      It builds a small UDP-marked IPv4 header, verifies that the
+      checksum folds to zero, parses the packet back, then installs the
+      initialized network device for later syscall use.
+    </p>
+    <div class="snippet-meta"><span class="snippet-file">src/main.rs</span><span class="snippet-what">checksum and parse proof</span></div>
+<pre data-lang="rust">let checksum = net::checksum::internet_checksum(&amp;[0x00, 0x01, 0xf2, 0x03]);
+println!("[ip] checksum example 00 01 f2 03 -&gt; 0x{:04X}", checksum);
+assert_eq!(checksum, 0x0dfb);
+
+let header = net::ipv4::Ipv4Header::build(
+    net::ipv4::PROTOCOL_UDP,
+    net::OUR_IP,
+    net::GATEWAY_IP,
+    payload.len(),
+);
+assert_eq!(net::checksum::internet_checksum(&amp;header), 0);
+
+let parsed = net::ipv4::Ipv4Header::parse(&amp;packet)
+    .expect("built IPv4 header should parse");</pre>
+    <div class="snippet-meta"><span class="snippet-file">src/main.rs</span><span class="snippet-what">device handoff to syscall layer</span></div>
+<pre data-lang="rust">println!("[net] *** first Ethernet frame received and RX buffer recycled ***");
+virtio::install_net_device(net);</pre>
+  </div>
+
+  <div class="tour-step">
+    <h2 class="tour-step-h2"><span class="tour-step-num">23.10</span><span class="tour-step-title">Let a user program request TX and RX</span></h2>
+    <div class="tour-files"><strong>Files:</strong> <code>src/syscall.rs</code>, <code>tests/fixtures/net_smoke.rs</code>, <code>scripts/make-disk.sh</code></div>
+    <p>
+      The network smoke fixture is a normal ring-3 ELF on the ext2
+      disk. It prints a marker, calls a TX syscall, prints another
+      marker, then calls an RX-wait syscall. The kernel keeps ownership
+      of the virtio-net driver; the user program chooses when the proof
+      starts.
+    </p>
+    <div class="snippet-meta"><span class="snippet-file">tests/fixtures/net_smoke.rs</span><span class="snippet-what">user-space trigger</span></div>
+<pre data-lang="rust">sys_write(1, b"[net_smoke] request ipv4 tx\n");
+if sys_net_tx_test() != 0 {
+    fail(10, b"[net_smoke] ipv4 tx failed\n");
+}
+
+sys_write(1, b"[net_smoke] request ipv4 rx\n");
+let rx_len = sys_net_rx_wait();
+if rx_len == 0 || rx_len == u64::MAX {
+    fail(20, b"[net_smoke] ipv4 rx failed\n");
+}</pre>
+    <div class="snippet-meta"><span class="snippet-file">src/syscall.rs</span><span class="snippet-what">network syscall dispatch</span></div>
+<pre data-lang="rust">const SYS_NET_TX_TEST: u64 = 900;
+const SYS_NET_RX_WAIT: u64 = 901;
+
+match num {
+    SYS_NET_TX_TEST =&gt; sys_net_tx_test(),
+    SYS_NET_RX_WAIT =&gt; sys_net_rx_wait(),
+    _ =&gt; u64::MAX,
+}</pre>
+  </div>
+
+  <div class="tour-step">
+    <h2 class="tour-step-h2"><span class="tour-step-num">23.11</span><span class="tour-step-title">Drive real QEMU packets from the test</span></h2>
+    <div class="tour-files"><strong>File:</strong> <code>tests/test_net_smoke.sh</code></div>
+    <p>
+      The shell test starts QEMU in the background and waits for the
+      user-triggered RX marker. After that marker appears, the host sends
+      UDP datagrams to <code>127.0.0.1:5555</code>. QEMU forwards them to
+      the guest, virtio-net receives an Ethernet frame, and the IPv4
+      dispatcher parses the packet.
+    </p>
+    <div class="snippet-meta"><span class="snippet-file">tests/test_net_smoke.sh</span><span class="snippet-what">host packet injection</span></div>
+<pre data-lang="sh">while [ "$i" -lt 200 ]; do
+    if grep -q "\[ip\] rx wait: user requested UDP receive on host 127.0.0.1:5555" "$out"; then
+        ready=1
+        break
+    fi
+    sleep 0.05
+done
+
+python3 - &lt;&lt;'PY'
+import socket
+import time
+
+payload = b"mini-os-net-smoke"
+sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+for _ in range(30):
+    sock.sendto(payload, ("127.0.0.1", 5555))
+    time.sleep(0.05)
+sock.close()
+PY</pre>
+    <div class="snippet-meta"><span class="snippet-file">tests/test_net_smoke.sh</span><span class="snippet-what">serial markers</span></div>
+<pre data-lang="sh">tx_count=$(grep -c "\[ip\] \*\*\* user-triggered IPv4 packet transmitted through QEMU \*\*\*" "$out")
+rx_eth_count=$(grep -c "\[net\] RX ethertype=0x0800" "$out")
+ip_rx_count=$(grep -c "\[ip\] rx proto=17 .* dst=10.0.2.15" "$out")
+proof_count=$(grep -c "\[ip\] \*\*\* user-triggered host-forwarded UDP packet received through QEMU:" "$out")</pre>
+  </div>
+
+  <h2>Verification</h2>
+<pre class="tour-output"><span class="ok">cargo check --features test-mode,test-net</span>
+53 warnings
+
+<span class="ok">./tests/test_ipv4.sh</span>
+[ip] checksum example 00 01 f2 03 -&gt; 0x0DFB
+[ip] parsed header proto=17 src=10.0.2.15 dst=10.0.2.2 len=24 checksum ok
+[ip] *** IPv4 header built, checksum verified, parse proof complete ***
+[ipv4-test] PASS
+
+<span class="ok">./tests/test_net_smoke.sh</span>
+[net_smoke] request ipv4 tx
+[ip] tx proto=17 src=10.0.2.15 dst=10.0.2.2 len=24 next-hop=10.0.2.2 (52:55:0a:00:02:02)
+[ip] *** user-triggered IPv4 packet transmitted through QEMU ***
+[net_smoke] request ipv4 rx
+[net] RX ethertype=0x0800 src=52:55:0a:00:02:02 dst=52:54:00:12:34:56 payload_len=46
+[ip] rx proto=17 src=10.0.2.2 dst=10.0.2.15 len=45
+[ip] *** user-triggered host-forwarded UDP packet received through QEMU: src=10.0.2.2 dst=10.0.2.15 len=45 ***
+[net-smoke-test] PASS</pre>
+
+  <h2>What to Read in Order</h2>
+  <p>
+    Start with <code>src/net/checksum.rs</code>, then
+    <code>src/net/ipv4.rs</code>. After that, read
+    <code>NetDevice::send_ipv4_packet</code> and
+    <code>NetDevice::poll_rx</code> in <code>src/virtio.rs</code>, then
+    <code>sys_net_tx_test</code> and <code>sys_net_rx_wait</code> in
+    <code>src/syscall.rs</code>, then <code>tests/fixtures/net_smoke.rs</code>.
+    That order follows the packet from bytes to user-triggered device work.
+  </p>
+  </div>
+
+  <footer class="lesson-footer">
+    <div class="footer-block">
+      <h4>Practice</h4>
+      <p style="margin:0;">
+        Say the TX path from memory: build IPv4 header, resolve
+        next-hop MAC, wrap in Ethernet, submit through virtio-net.
+      </p>
+    </div>
+    <nav class="lesson-nav">
+      <a href="../lessons/0023-ipv4.html">Lesson 23</a>
+      <a href="../lessons/0022-arp.html">Lesson 22</a>
+    </nav>
+  </footer>
+</article>
+</body>
+</html>

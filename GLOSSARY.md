@@ -1,10 +1,11 @@
-# VFS Glossary
+# mini-os Glossary
 
-Vocabulary for the mini-os VFS (Virtual File System) work. Terms get added as the user
-demonstrates understanding — this is a record of compressed knowledge, not a dictionary
-to learn from.
+Vocabulary for the mini-os project. Started as VFS-only, grew through the
+memory, syscall, and disk path layers, and now includes the networking phase.
+Terms get added as the user demonstrates understanding — this is a record of
+compressed knowledge, not a dictionary to learn from.
 
-A visual review version of this glossary lives at
+A visual review version of the VFS portion lives at
 [reference/vfs-glossary.html](reference/vfs-glossary.html).
 
 ## Core VFS abstractions
@@ -214,3 +215,162 @@ pointers — that requires a page-fault handler we don't have.
 - TTY (TeleTYpewriter) — terminal device abstraction
 - `ptrace` — process-trace primitive used by debuggers; can rewrite FDs of a running process
 - `TIOCSTI` — Terminal I/O Control Simulate Terminal Input; pushes bytes into TTY input queue
+
+## Networking
+
+**MAC (Media Access Control) address**:
+6-byte hardware identifier on a network card. Flat — no structure
+naming where the card is. Names the card itself, like a serial number.
+Meaningful only on one wire; unrelated to the card's IP address.
+E.g., `52:54:00:12:34:56`. Read from device config in Lesson 20.
+_Avoid_: confusing with IP — MAC names identity, IP names location.
+
+**IP address (IPv4)**:
+4-byte hierarchical network address. Names a place in some network
+(network prefix + host within it). Meaningful across the whole
+internet; constant end-to-end during a multi-hop journey. E.g.,
+`10.0.2.15`. The hierarchical structure is what routers exploit to
+scale — a routing table names networks (thousands), not hosts
+(billions).
+
+**EtherType**:
+The 2-byte demux key in an Ethernet header (offset 12) that names
+which parser owns the bytes that follow. `0x0800` = IPv4,
+`0x0806` = ARP, `0x86DD` = IPv6. Big-endian on the wire — bytes
+`08 00` read as `0x0800`, not `0x0008`.
+
+**Frame**:
+A bounded chunk of bytes transmitted as one unit on a wire. Carries
+its own header (Ethernet: dst MAC, src MAC, EtherType — 14 bytes) and
+a payload. Up to ~1500 bytes payload (MTU). The wire's native unit;
+every protocol above inherits its chunk-at-a-time rhythm.
+
+**Packet / datagram / segment**:
+Layer-specific names for "a bounded chunk of bytes." IP calls them
+packets, UDP calls them datagrams, TCP calls them segments. All are
+"frames" at the Ethernet layer; the differences are about which
+layer's header is on top.
+
+**Encapsulation**:
+Each protocol layer prepends its own header and treats the layer
+above's whole packet as opaque payload. Ethernet wraps IP wraps UDP
+wraps application bytes. Each header carries a demux key naming the
+next parser down. Receive unwraps outside-in; transmit wraps
+inside-out. The reason layer implementations stay independent.
+
+**Demux key**:
+The field in a protocol header that names which parser owns the
+payload that follows. EtherType (link → network), IP protocol number
+(network → transport), UDP/TCP port (transport → application).
+Receiving code is a sequence of demux-key lookups, one per layer,
+each stripping a header and dispatching.
+
+**ARP (Address Resolution Protocol)**:
+The protocol that connects the IP and MAC address spaces on a local
+wire. Given a target IP, ARP broadcasts "who has X?" and caches the
+reply. RFC 826. Routers don't forward ARP — broadcast stays on one
+segment. The "merge algorithm" updates the cache from every received
+ARP packet, regardless of target, so one packet teaches both
+machines.
+
+**Unicast**:
+Addressed to one specific card. The destination MAC names a single
+receiver; only the card whose MAC matches picks the frame off the
+wire, everyone else drops it silently. Most traffic is unicast. ARP
+replies are unicast because only the original asker needs the answer.
+_Avoid_: confusing with "point-to-point" — unicast is about
+destination addressing, point-to-point is about the link having only
+two endpoints.
+
+**Broadcast**:
+Addressed to every card on the local wire. dst MAC =
+`ff:ff:ff:ff:ff:ff`. Switches forward broadcasts to every port;
+routers do NOT forward them across network boundaries — broadcast
+stays on its segment. ARP requests are broadcast, DHCP requests are
+broadcast, old NetBIOS name lookups were broadcast. Cheap to use,
+expensive to suffer: every card on the wire has to interrupt its CPU.
+
+**Multicast**:
+Addressed to a subscribed group, not everyone. IPv4 multicast
+addresses are in `224.0.0.0/4`; the L2 MAC for IPv4 multicast starts
+with `01:00:5e`. Switches with IGMP (Internet Group Management
+Protocol) snooping forward only to ports that subscribed. Used by
+OSPF routing updates, mDNS (`.local`), IPTV, streaming video. IPv6
+killed broadcast entirely — every IPv4 broadcast use case maps to
+multicast in IPv6.
+
+**Anycast**:
+Addressed to "the nearest of several equivalent instances." The
+address names a service, not a card; routers deliver to whichever
+instance is topologically nearest. Same address range as unicast —
+the routing makes it anycast, not the address. Used by DNS root
+servers (~1500 instances sharing 13 anycast addresses), CDN edge
+nodes, Cloudflare's `1.1.1.1`.
+
+**CSMA/CD (Carrier Sense Multiple Access with Collision Detection)**:
+The 1973 Ethernet rule for sharing a wire: listen before talking,
+listen while talking; if signals collide, stop, send a jam, wait a
+random doubling interval (binary exponential backoff), retry. Dormant
+on modern switched full-duplex links — collisions are physically
+impossible there. Shaped the protocol's design even though the wire
+itself went away.
+
+**MTU (Maximum Transmission Unit)**:
+The largest payload a single frame can carry on a link. Standard
+Ethernet: 1500 bytes. Picked in 1980 as a tradeoff between header
+overhead per byte and latency; stuck because changing it breaks every
+deployed switch and router. Jumbo frames (9000 B) exist for
+data-centers but never reach the public internet. Anything bigger
+gets fragmented at the IP layer or refused.
+
+**DHCP (Dynamic Host Configuration Protocol)**:
+How real machines learn their IP address from the network — broadcast
+"please give me an address," the DHCP server replies with a lease.
+Built on UDP. mini-os hardcodes `10.0.2.15` instead, because slirp's
+guest address is fixed; DHCP is a future side quest.
+
+**NDP (Neighbor Discovery Protocol)**:
+IPv6's replacement for ARP. Uses ICMPv6 messages addressed to
+multicast groups instead of ARP-style broadcasts. One packet only
+interrupts the relevant group of cards, not everyone on the wire.
+IPv6 killed broadcast entirely; NDP is the cleanup of that decision
+for the address-resolution problem.
+
+**RX / TX**:
+Old radio-telegraphy shorthand for receive / transmit. The X is a
+generic "this word continues" marker, like Xmas or Rx prescriptions.
+RX queue (queue 0 in virtio-net): device → kernel. TX queue
+(queue 1): kernel → device. Labels persisted from ham radio into
+RS-232 serial, then into networking.
+
+**virtio_net_hdr**:
+12-byte device-specific header that virtio-net prepends to every
+frame in both directions. Every field is a hook for an offload
+feature (checksum acceleration, segmentation) we negotiate off, so
+the entire header is zero on transmit and ignored on receive. TX
+builds a 12-byte zero header and prepends it; RX skips 12 bytes and
+starts parsing at offset 12.
+
+**Best-effort delivery**:
+The internet's core promise: packets may be lost, duplicated, or
+reordered, with no notification. Routers whose queues overflow drop
+packets silently. Reliability, when needed, is rebuilt at the
+endpoints — TCP numbers packets, acknowledges receipt, retransmits
+the missing ones. UDP passes best-effort straight through to the
+application.
+
+**Network byte order (big-endian)**:
+The convention that every multi-byte integer in a network header is
+stored most-significant-byte first on the wire. Fixed by RFC 791 in
+1981. Little-endian x86-64 won the desktop afterward, so the parser
+reflex of `u16::from_le_bytes` (ext2) must become
+`u16::from_be_bytes` for every network field. A swapped byte order
+fails silently — the port number just goes somewhere else.
+
+**Slirp (QEMU user-mode networking)**:
+QEMU's default network backend. Provides a complete simulated network
+with zero host configuration: guest `10.0.2.15`, gateway `10.0.2.2`,
+outbound traffic works freely, inbound traffic requires explicit
+`hostfwd` port forwards. Cannot be pinged from the host. Shaped our
+phase's milestones: the ICMP hello-world is guest-initiated, the UDP
+echo server listens behind a port forward.

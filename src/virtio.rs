@@ -19,7 +19,14 @@ use crate::println;
 use crate::pci;
 use crate::net;
 use crate::net::arp::{self, ArpPacket, ARP_PACKET_LEN, OPER_REPLY, OPER_REQUEST};
-use crate::net::ethernet::{EthernetHeader, ETHERNET_HEADER_LEN, ETHERTYPE_ARP};
+use crate::net::ethernet::{
+    EthernetHeader,
+    ETHERNET_HEADER_LEN,
+    ETHERTYPE_ARP,
+    ETHERTYPE_IPV4,
+};
+use crate::net::ipv4::{Ipv4Header, IPV4_HEADER_LEN};
+use crate::net::udp::{self, UdpDatagram, UdpHeader, UDP_HEADER_LEN};
 use core::ptr::{read_volatile, write_volatile};
 use core::sync::atomic::{AtomicU16, Ordering};
 
@@ -738,6 +745,66 @@ pub struct NetDevice {
     inner: VirtioNet,
 }
 
+/// One packet-level event produced by the network RX dispatcher.
+pub enum NetRxEvent {
+    Arp(ArpPacket),
+    Udp(UdpPacket),
+    Ipv4(Ipv4Packet),
+    Other,
+}
+
+/// An IPv4 header paired with the exact payload bytes that followed it.
+///
+/// The RX buffer is recycled as soon as a frame is dispatched. Copying the
+/// bounded IPv4 payload here gives higher protocols stable bytes to parse.
+pub struct Ipv4Packet {
+    pub header: Ipv4Header,
+    payload: [u8; ETHERNET_MTU - IPV4_HEADER_LEN],
+    payload_len: usize,
+}
+
+impl Ipv4Packet {
+    pub fn payload(&self) -> &[u8] {
+        &self.payload[..self.payload_len]
+    }
+}
+
+/// A checksum-verified UDP datagram with its IPv4 endpoints.
+pub struct UdpPacket {
+    pub ip_header: Ipv4Header,
+    pub header: UdpHeader,
+    payload: [u8; ETHERNET_MTU - IPV4_HEADER_LEN - UDP_HEADER_LEN],
+    payload_len: usize,
+}
+
+impl UdpPacket {
+    pub fn payload(&self) -> &[u8] {
+        &self.payload[..self.payload_len]
+    }
+}
+
+lazy_static::lazy_static! {
+    static ref NET_DEVICE: spin::Mutex<Option<NetDevice>> = spin::Mutex::new(None);
+}
+
+pub fn install_net_device(device: NetDevice) {
+    let mac = device.mac();
+    *NET_DEVICE.lock() = Some(device);
+    println!(
+        "[net] device installed for syscall-triggered tests mac={:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+        mac[0],
+        mac[1],
+        mac[2],
+        mac[3],
+        mac[4],
+        mac[5]
+    );
+}
+
+pub fn with_net_device<R>(f: impl FnOnce(&mut NetDevice) -> R) -> Option<R> {
+    NET_DEVICE.lock().as_mut().map(f)
+}
+
 impl NetDevice {
     pub fn from_virtio_net(inner: VirtioNet) -> Self {
         Self { inner }
@@ -871,6 +938,62 @@ impl NetDevice {
         frame
     }
 
+    pub fn poll_rx(&mut self) -> Option<NetRxEvent> {
+        let frame = self.recv_frame()?;
+        Some(self.dispatch_frame(&frame))
+    }
+
+    fn dispatch_frame(&mut self, frame: &Frame) -> NetRxEvent {
+        if let Some(packet) = self.handle_arp_frame(frame) {
+            return NetRxEvent::Arp(packet);
+        }
+
+        if let Some(packet) = self.handle_ipv4_frame(frame) {
+            if packet.header.protocol == net::ipv4::PROTOCOL_UDP {
+                let Some(datagram) = UdpDatagram::parse(
+                    packet.payload(),
+                    packet.header.src_ip,
+                    packet.header.dst_ip,
+                ) else {
+                    println!("[udp] dropped malformed datagram");
+                    return NetRxEvent::Other;
+                };
+
+                println!(
+                    "[udp] rx src={}.{}.{}.{}:{} dst={}.{}.{}.{}:{} len={} payload_len={} checksum ok",
+                    packet.header.src_ip[0],
+                    packet.header.src_ip[1],
+                    packet.header.src_ip[2],
+                    packet.header.src_ip[3],
+                    datagram.header.src_port,
+                    packet.header.dst_ip[0],
+                    packet.header.dst_ip[1],
+                    packet.header.dst_ip[2],
+                    packet.header.dst_ip[3],
+                    datagram.header.dst_port,
+                    datagram.header.length,
+                    datagram.payload.len()
+                );
+
+                let mut payload =
+                    [0u8; ETHERNET_MTU - IPV4_HEADER_LEN - UDP_HEADER_LEN];
+                payload[..datagram.payload.len()].copy_from_slice(datagram.payload);
+                let udp_packet = UdpPacket {
+                    ip_header: packet.header,
+                    header: datagram.header,
+                    payload,
+                    payload_len: datagram.payload.len(),
+                };
+                self.handle_udp_packet(&udp_packet);
+                return NetRxEvent::Udp(udp_packet);
+            }
+
+            return NetRxEvent::Ipv4(packet);
+        }
+
+        NetRxEvent::Other
+    }
+
     pub fn resolve_arp(&mut self, ip: [u8; 4]) -> Option<[u8; 6]> {
         if let Some(mac) = arp::lookup(ip) {
             println!(
@@ -899,11 +1022,10 @@ impl NetDevice {
         self.send_arp_request(ip);
 
         for _ in 0..200_000u32 {
-            if let Some(frame) = self.recv_frame() {
-                if let Some(packet) = self.handle_arp_frame(&frame) {
+            if let Some(event) = self.poll_rx() {
+                if let NetRxEvent::Arp(packet) = event {
                     if packet.oper == OPER_REPLY && packet.spa == ip {
                         println!("[net] first RX payload prefix:");
-                        frame.print_payload_prefix(ARP_PACKET_LEN);
                         if let Some(mac) = arp::lookup(ip) {
                             println!(
                                 "[arp] {}.{}.{}.{} is at {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
@@ -933,6 +1055,88 @@ impl NetDevice {
             ip[3]
         );
         None
+    }
+
+    pub fn send_ipv4_packet(
+        &mut self,
+        protocol: u8,
+        dst_ip: [u8; 4],
+        payload: &[u8],
+    ) -> Option<()> {
+        assert!(
+            payload.len() <= ETHERNET_MTU - IPV4_HEADER_LEN,
+            "IPv4 payload {} exceeds Ethernet MTU room {}",
+            payload.len(),
+            ETHERNET_MTU - IPV4_HEADER_LEN
+        );
+
+        let next_hop_ip = next_hop_for(dst_ip);
+        let next_hop_mac = self.resolve_arp(next_hop_ip)?;
+        let ip_header = Ipv4Header::build(protocol, net::OUR_IP, dst_ip, payload.len());
+
+        let ethernet_header = EthernetHeader {
+            dst: next_hop_mac,
+            src: self.mac(),
+            ethertype: ETHERTYPE_IPV4,
+        };
+
+        let frame_len = ETHERNET_HEADER_LEN + IPV4_HEADER_LEN + payload.len();
+        let mut frame = [0u8; ETHERNET_HEADER_LEN + ETHERNET_MTU];
+        frame[0..ETHERNET_HEADER_LEN].copy_from_slice(&ethernet_header.to_bytes());
+        frame[ETHERNET_HEADER_LEN..ETHERNET_HEADER_LEN + IPV4_HEADER_LEN]
+            .copy_from_slice(&ip_header);
+        frame[ETHERNET_HEADER_LEN + IPV4_HEADER_LEN..frame_len].copy_from_slice(payload);
+
+        self.send_frame(&frame[..frame_len]);
+        println!(
+            "[ip] tx proto={} src={}.{}.{}.{} dst={}.{}.{}.{} len={} next-hop={}.{}.{}.{} ({:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x})",
+            protocol,
+            net::OUR_IP[0],
+            net::OUR_IP[1],
+            net::OUR_IP[2],
+            net::OUR_IP[3],
+            dst_ip[0],
+            dst_ip[1],
+            dst_ip[2],
+            dst_ip[3],
+            IPV4_HEADER_LEN + payload.len(),
+            next_hop_ip[0],
+            next_hop_ip[1],
+            next_hop_ip[2],
+            next_hop_ip[3],
+            next_hop_mac[0],
+            next_hop_mac[1],
+            next_hop_mac[2],
+            next_hop_mac[3],
+            next_hop_mac[4],
+            next_hop_mac[5]
+        );
+
+        Some(())
+    }
+
+    /// Build and send one UDP datagram through the IPv4 and Ethernet paths.
+    pub fn send_udp(
+        &mut self,
+        dst_ip: [u8; 4],
+        dst_port: u16,
+        src_port: u16,
+        payload: &[u8],
+    ) -> Option<()> {
+        let mut datagram = [0u8; ETHERNET_MTU - IPV4_HEADER_LEN];
+        let datagram_len = udp::write_datagram(
+            &mut datagram,
+            net::OUR_IP,
+            dst_ip,
+            src_port,
+            dst_port,
+            payload,
+        )?;
+        self.send_ipv4_packet(
+            net::ipv4::PROTOCOL_UDP,
+            dst_ip,
+            &datagram[..datagram_len],
+        )
     }
 
     fn send_arp_request(&mut self, target_ip: [u8; 4]) {
@@ -1006,6 +1210,130 @@ impl NetDevice {
         }
 
         Some(packet)
+    }
+
+    pub fn handle_ipv4_frame(&mut self, frame: &Frame) -> Option<Ipv4Packet> {
+        if frame.ethertype != ETHERTYPE_IPV4 {
+            return None;
+        }
+
+        let header = Ipv4Header::parse(&frame.payload[..frame.payload_len])?;
+        if header.dst_ip != net::OUR_IP {
+            println!(
+                "[ip] dropped frame for {}.{}.{}.{}",
+                header.dst_ip[0],
+                header.dst_ip[1],
+                header.dst_ip[2],
+                header.dst_ip[3]
+            );
+            return None;
+        }
+
+        println!(
+            "[ip] rx proto={} src={}.{}.{}.{} dst={}.{}.{}.{} len={}",
+            header.protocol,
+            header.src_ip[0],
+            header.src_ip[1],
+            header.src_ip[2],
+            header.src_ip[3],
+            header.dst_ip[0],
+            header.dst_ip[1],
+            header.dst_ip[2],
+            header.dst_ip[3],
+            header.total_len
+        );
+
+        let payload_len = header.payload_len();
+        let ip_payload = &frame.payload[IPV4_HEADER_LEN..IPV4_HEADER_LEN + payload_len];
+
+        if header.protocol == net::ipv4::PROTOCOL_ICMP {
+            if let Some(request) = net::icmp::EchoMessage::parse(ip_payload) {
+                if request.message_type == net::icmp::ECHO_REQUEST
+                    && request.code == net::icmp::ECHO_CODE
+                {
+                    let mut reply = [0u8; ETHERNET_MTU - IPV4_HEADER_LEN];
+                    let reply_len = net::icmp::write_echo_reply(
+                        &mut reply,
+                        request.identifier,
+                        request.sequence,
+                        request.payload,
+                    )
+                    .expect("maximum IPv4 payload fits in an Ethernet frame");
+
+                    if self
+                        .send_ipv4_packet(net::ipv4::PROTOCOL_ICMP, header.src_ip, &reply[..reply_len])
+                        .is_some()
+                    {
+                        println!(
+                            "[icmp] echoed request id=0x{:04x} seq={} to {}.{}.{}.{}",
+                            request.identifier,
+                            request.sequence,
+                            header.src_ip[0],
+                            header.src_ip[1],
+                            header.src_ip[2],
+                            header.src_ip[3]
+                        );
+                    }
+                }
+            }
+        }
+
+        let mut payload = [0u8; ETHERNET_MTU - IPV4_HEADER_LEN];
+        payload[..payload_len].copy_from_slice(ip_payload);
+
+        Some(Ipv4Packet {
+            header,
+            payload,
+            payload_len,
+        })
+    }
+
+    fn handle_udp_packet(&mut self, packet: &UdpPacket) {
+        if packet.header.dst_port != udp::ECHO_PORT {
+            println!(
+                "[udp] no receiver for destination port {}",
+                packet.header.dst_port
+            );
+            return;
+        }
+
+        if self
+            .send_udp(
+                packet.ip_header.src_ip,
+                packet.header.src_port,
+                udp::ECHO_PORT,
+                packet.payload(),
+            )
+            .is_some()
+        {
+            println!(
+                "[udp] echoed port {} payload_len={} to {}.{}.{}.{}:{}",
+                udp::ECHO_PORT,
+                packet.payload().len(),
+                packet.ip_header.src_ip[0],
+                packet.ip_header.src_ip[1],
+                packet.ip_header.src_ip[2],
+                packet.ip_header.src_ip[3],
+                packet.header.src_port
+            );
+            println!(
+                "[udp] *** guest port {} echoed one datagram ***",
+                udp::ECHO_PORT
+            );
+        } else {
+            println!("[udp] echo transmit failed");
+        }
+    }
+}
+
+fn next_hop_for(dst_ip: [u8; 4]) -> [u8; 4] {
+    if dst_ip[0] == net::OUR_IP[0]
+        && dst_ip[1] == net::OUR_IP[1]
+        && dst_ip[2] == net::OUR_IP[2]
+    {
+        dst_ip
+    } else {
+        net::GATEWAY_IP
     }
 }
 

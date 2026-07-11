@@ -208,6 +208,9 @@ pre code {
 .n { color: var(--code-number); }
 .c { color: var(--code-comment); font-style: italic; }
 .f { color: #93c5fd; }
+.m { color: #f472b6; }
+.sh-var { color: var(--code-number); }
+.sh-cmd { color: var(--code-keyword); }
 
 /* ============ MARGIN NOTES ============ */
 
@@ -375,6 +378,103 @@ dd { margin: 0.3rem 0 0 1rem; color: var(--text-dim); }
 .lesson-nav .placeholder {
   color: var(--text-faint);
   font-style: italic;
+}
+
+/* ============ RECIPE (numbered step list) ============ */
+
+.recipe {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.5rem 1.25rem;
+  margin: 1.5rem 0;
+}
+.recipe-step {
+  display: grid;
+  grid-template-columns: 30px 1fr;
+  grid-template-rows: auto auto;
+  column-gap: 0.8rem;
+  padding: 0.4rem 0;
+}
+.recipe-num {
+  grid-column: 1;
+  grid-row: 2;
+  color: var(--accent);
+  font-weight: 700;
+  text-align: right;
+}
+.recipe-body {
+  grid-column: 2;
+  grid-row: 2;
+  color: var(--text);
+}
+.recipe-body code { color: var(--accent); }
+.recipe-step:not(:first-child)::before {
+  content: "↓";
+  grid-column: 1;
+  grid-row: 1;
+  color: var(--accent);
+  text-align: right;
+  font-size: 1rem;
+  line-height: 1;
+}
+.recipe-step:first-child {
+  grid-template-rows: auto;
+}
+.recipe-step:first-child .recipe-num,
+.recipe-step:first-child .recipe-body {
+  grid-row: 1;
+}
+.layer-stack {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  margin: 1.5rem 0;
+}
+.layer-row {
+  display: grid;
+  grid-template-columns: 1fr 2fr;
+  gap: 1rem;
+  padding: 0.5rem 1rem;
+  border-bottom: 1px solid var(--border);
+  align-items: baseline;
+}
+.layer-row:last-child { border-bottom: none; }
+.layer-name { color: var(--accent); font-weight: 600; }
+.layer-desc { color: var(--text); font-size: 0.92rem; }
+.layer-row.current {
+  background: var(--accent-soft);
+  margin: 0 -0.5rem;
+  padding: 0.4rem 0.5rem;
+}
+
+/* ============ SPLIT VIEW (before / after comparison) ============ */
+
+.split-view {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1rem;
+  margin: 1.5rem 0;
+}
+.split-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 1rem 1.25rem;
+}
+.split-card h4 {
+  margin: 0 0 0.5rem;
+  font-family: var(--font-sans);
+  font-size: 0.8rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+.split-card.before { border-left: 4px solid var(--text-faint); }
+.split-card.after  { border-left: 4px solid var(--accent); }
+@media (max-width: 700px) {
+  .split-view { grid-template-columns: 1fr; }
 }
 
 /* ============ RESPONSIVE ============ */

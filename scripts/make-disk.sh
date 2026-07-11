@@ -69,7 +69,10 @@ fi
 # Each line: <source-relative-to-repo-root> <dest-path-on-disk>
 FIXTURES="tests/fixtures/hello.rs:/hello.elf
 tests/fixtures/fork_smoke.rs:/fork_smoke.elf
-tests/fixtures/inherit_wait.rs:/inherit_wait.elf"
+tests/fixtures/inherit_wait.rs:/inherit_wait.elf
+tests/fixtures/net_smoke.rs:/net_smoke.elf
+tests/fixtures/icmp_ping.rs:/icmp_ping.elf
+tests/fixtures/udp_echo.rs:/udp_echo.elf"
 
 for entry in $FIXTURES; do
     src=${entry%%:*}

@@ -3,7 +3,8 @@
 #
 # Provides:
 #   build_kernel <feature-flags>           cargo bootimage with the given features
-#   boot_qemu <output-log-path>           run QEMU with isa-debug-exit, capture serial
+#   boot_qemu <output-log-path>           run QEMU with UDP host forwarding, capture serial
+#   boot_qemu_no_hostfwd <output-log-path> run QEMU without a host port reservation
 #   qemu_exit_was_success <qemu-exit-code> 0 if exit 33 (PASS), 1 otherwise
 #   serial_contains <log-path> <pattern>  0 if pattern found in serial log
 #
@@ -51,7 +52,19 @@ build_kernel() {
 # Boot QEMU with isa-debug-exit. Captures serial + QEMU's own stderr to $1.
 # Returns QEMU's exit code via global QEMU_EXIT_CODE.
 boot_qemu() {
+    boot_qemu_with_netdev "$1" "user,id=n0,hostfwd=udp::5555-:5555"
+}
+
+# ICMP and the lower networking lessons need slirp networking, but they do
+# not need host-to-guest UDP. Avoid reserving port 5555 for those tests.
+boot_qemu_no_hostfwd() {
+    boot_qemu_with_netdev "$1" "user,id=n0"
+}
+
+boot_qemu_with_netdev() {
     out_log=$1
+    netdev=$2
+    qemu_log="${out_log}.qemu"
 
     if [ ! -f "$REPO_ROOT/$DISK_IMG" ]; then
         echo "[test] missing $DISK_IMG — run ./scripts/make-disk.sh first" >&2
@@ -68,14 +81,21 @@ boot_qemu() {
             -drive format=raw,file="$KERNEL" \
             -drive file="$DISK_IMG",format=raw,if=none,id=drv0 \
             -device virtio-blk-pci,drive=drv0 \
-            -netdev user,id=n0,hostfwd=udp::5555-:5555 \
+            -netdev "$netdev" \
             -device virtio-net-pci,netdev=n0,disable-legacy=on,disable-modern=off \
             -device isa-debug-exit,iobase=0xf4,iosize=0x04 \
             -display none \
-            -serial stdio \
+            -serial "file:$out_log" \
             -no-reboot
-    ) > "$out_log" 2>&1
+    ) > "$qemu_log" 2>&1
     QEMU_EXIT_CODE=$?
+
+    # QEMU owns the serial file, so guest bytes survive a timeout. Append
+    # emulator diagnostics afterward so callers still inspect one log path.
+    if [ -s "$qemu_log" ]; then
+        cat "$qemu_log" >> "$out_log"
+    fi
+    rm -f "$qemu_log"
 
     # 124 = timeout killed QEMU (didn't exit cleanly within the window).
     # 137 = SIGKILL (kill -9); shouldn't happen but log if it does.
