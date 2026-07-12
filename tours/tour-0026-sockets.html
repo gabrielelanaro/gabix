@@ -1,0 +1,287 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Code Tour — Lesson 26 — UDP Sockets</title>
+  <link rel="stylesheet" href="../assets/lesson.css">
+  <link rel="icon" href="data:,">
+  <script src="../assets/code-highlight.js" defer></script>
+  <style>
+    .tour-step { margin: 3rem 0; padding-top: 1rem; border-top: 1px solid var(--border); }
+    .tour-step:first-of-type { border-top: 0; padding-top: 0; }
+    .tour-step-num { display: inline-block; margin-right: .55rem; padding: 2px 8px; border-radius: 3px; font: 600 .78rem var(--font-mono); color: var(--accent); background: var(--accent-soft); }
+    .tour-step-title { display: inline; margin: 0; font: 700 1.3rem var(--font-sans); }
+    .tour-files { margin: .55rem 0 1.25rem; color: var(--text-dim); font: .8rem var(--font-mono); }
+    .tour-files a, .snippet-file { color: var(--accent); }
+    .snippet-meta { display: flex; gap: .55rem; align-items: baseline; margin: 1.35rem 0 .35rem; color: var(--text-faint); font: .72rem var(--font-mono); }
+    .snippet-file { padding: 1px 6px; border-radius: 3px; background: var(--accent-soft); font-weight: 600; text-decoration: none; }
+    .snippet-what { font-style: italic; }
+    .snippet-meta + pre { margin-top: 0; }
+    .route-map, .ownership, .tour-output { margin: 1.25rem 0; padding: 1rem 1.2rem; overflow-x: auto; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); }
+    .route-map pre { margin: 0; padding: 0; background: transparent; color: var(--text); font-size: .8rem; }
+    .ownership { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: .75rem; }
+    .ownership-card { padding: .8rem; border: 1px solid var(--border); border-radius: 6px; background: var(--surface-soft); }
+    .ownership-card strong { display: block; margin-bottom: .25rem; color: var(--accent); font: 600 .78rem var(--font-mono); }
+    .ownership-card p { margin: 0; color: var(--text-dim); font-size: .88rem; }
+    .walk { margin: 1.5rem 0; padding: 1rem 1.15rem; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-soft); }
+    .walk-meter { color: var(--accent); font: .75rem var(--font-mono); }
+    .walk-stage { min-height: 10rem; padding: .75rem 0; }
+    .walk-stage h3 { margin: .25rem 0 .5rem; }
+    .walk-stage p { margin: 0; }
+    .walk-controls { display: flex; justify-content: space-between; gap: .75rem; }
+    .walk-controls button { padding: .5rem .75rem; border: 1px solid var(--border-bright); border-radius: 5px; color: var(--text); background: var(--surface); font: 600 .8rem var(--font-sans); cursor: pointer; }
+    .walk-controls button:disabled { opacity: .35; cursor: default; }
+    .question { margin: 1.2rem 0; padding: .8rem 1rem; border-left: 4px solid #15803d; background: #f0fdf4; }
+    .question summary { cursor: pointer; font-family: var(--font-sans); font-weight: 600; }
+    .question p { margin: .7rem 0 0; }
+    .tour-output { border-left: 4px solid #15803d; background: #111827; color: #e5e7eb; font: .8rem/1.55 var(--font-mono); }
+    .ok { color: #86efac; }
+    @media (max-width: 720px) { .ownership { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+<article class="lesson">
+  <header class="lesson-header">
+    <div class="lesson-eyebrow">Code tour · Lesson 26 · companion to <a href="../lessons/0026-sockets.html" style="color:inherit">the lesson</a></div>
+    <h1 class="lesson-title">From FD 0 to a sleeping UDP echo server</h1>
+    <p class="lesson-subtitle">Follow one datagram through the socket object, receive queue, scheduler, network worker, and ring-3 reply.</p>
+    <div class="lesson-meta">
+      <span><strong>Entry point</strong> <code>/echo_server.elf</code></span>
+      <span><strong>Guest endpoint</strong> <code>10.0.2.15:5555</code></span>
+      <span><strong>Syscalls</strong> <code>41, 49, 44, 45</code></span>
+      <span><strong>Proof</strong> <code>tests/test_udp.sh</code></span>
+    </div>
+  </header>
+
+  <div class="content">
+    <p class="lead">Lesson 25 delivered UDP to a fixed kernel handler. Lesson 26 gives the endpoint to a user program. The kernel creates a socket object, names it with an FD, queues incoming messages, blocks the process, and wakes it when a message arrives.</p>
+
+    <div class="route-map"><pre>host UDP socket
+      │  sendto(127.0.0.1:5555)
+      ▼
+QEMU hostfwd → virtio RX → Ethernet → IPv4 → UDP
+      ▼
+port table → UdpSocket queue → wake PID 0
+      ▼
+recvfrom(fd 0) → user buffer + sender endpoint
+      ▼
+sendto(fd 0) → UDP → IPv4 → virtio TX → host socket</pre></div>
+
+    <div class="ownership" aria-label="Lesson 26 ownership chain">
+      <div class="ownership-card"><strong>fd 0</strong><p>A process-local number returned by <code>socket()</code>.</p></div>
+      <div class="ownership-card"><strong>FD table</strong><p>Maps the number to <code>OpenObject::Socket</code>.</p></div>
+      <div class="ownership-card"><strong>UdpSocket</strong><p>Owns the bound port, FIFO queue, and waiter PID.</p></div>
+      <div class="ownership-card"><strong>Port table</strong><p>Maps destination port <code>5555</code> to a weak socket reference.</p></div>
+      <div class="ownership-card"><strong>Task state</strong><p>Changes from <code>Blocked</code> to <code>Ready</code> after delivery.</p></div>
+      <div class="ownership-card"><strong>User program</strong><p>Receives bytes and sender information through validated buffers.</p></div>
+    </div>
+
+    <div class="callout"><div class="callout-title">Read the tour in execution order</div><p style="margin:0">Use the walk first. Each implementation section then shows the code owner for that stage.</p></div>
+
+    <div class="walk" data-walk aria-label="Interactive Lesson 26 execution walk">
+      <div class="walk-meter">Execution walk · stage <span data-index>1</span> of 8</div>
+      <div class="walk-stage">
+        <section data-step><h3>1 · The kernel starts the network worker</h3><p><code>main</code> installs the virtio-net device and, for the UDP test, spawns a kernel task that keeps polling RX while user programs sleep.</p></section>
+        <section data-step hidden><h3>2 · User space creates fd 0</h3><p><code>socket(AF_INET, SOCK_DGRAM, 0)</code> creates an <code>Arc&lt;UdpSocket&gt;</code> and inserts it into the current process’s lowest free FD slot.</p></section>
+        <section data-step hidden><h3>3 · User space binds port 5555</h3><p><code>bind(0, 10.0.2.15:5555)</code> records the local port and inserts a weak reference into the global port table.</p></section>
+        <section data-step hidden><h3>4 · recvfrom finds an empty queue</h3><p>The syscall pops nothing, registers PID 0 as the socket waiter, marks the current task <code>Blocked</code>, and yields. The user program sleeps inside one syscall.</p></section>
+        <section data-step hidden><h3>5 · The worker receives the host datagram</h3><p>The worker polls a virtio completion, parses Ethernet, validates IPv4, parses UDP protocol 17, and copies the payload into an owned packet value.</p></section>
+        <section data-step hidden><h3>6 · Delivery fills the socket queue</h3><p>The port table finds port 5555. <code>deliver</code> pushes a datagram containing payload and sender endpoint, takes the waiter PID, and calls <code>wake</code>.</p></section>
+        <section data-step hidden><h3>7 · recvfrom resumes</h3><p>The scheduler runs PID 0 again. The syscall pops one datagram, copies its bytes and sender endpoint into user buffers, and returns the byte count.</p></section>
+        <section data-step hidden><h3>8 · sendto returns the reply</h3><p>The user program supplies the sender endpoint returned by <code>recvfrom</code>. The kernel builds UDP/IPv4/Ethernet bytes and sends them through virtio TX.</p></section>
+      </div>
+      <div class="walk-controls"><button type="button" data-prev>← Previous</button><button type="button" data-next>Next →</button></div>
+    </div>
+
+    <section class="tour-step">
+      <h2><span class="tour-step-num">26.1</span><span class="tour-step-title">An FD can name a socket</span></h2>
+      <div class="tour-files"><strong>Files:</strong> <a href="../src/fs.rs">src/fs.rs</a>, <a href="../src/process.rs">src/process.rs</a></div>
+      <p>The existing VFS already gives each process an FD table. The implementation changes the table value from “file only” to an enum that can hold a file or a socket. The integer interface stays process-local.</p>
+      <div class="snippet-meta"><a class="snippet-file" href="../src/fs.rs">src/fs.rs</a><span class="snippet-what">one FD table, two object kinds</span></div>
+<pre data-lang="rust"><span class="k">pub enum</span> <span class="t">OpenObject</span> {
+    <span class="t">File</span>(<span class="t">Arc</span>&lt;<span class="t">File</span>&gt;),
+    <span class="t">Socket</span>(<span class="t">Arc</span>&lt;<span class="t">UdpSocket</span>&gt;),
+}
+
+<span class="k">pub fn</span> open_socket(&amp;<span class="k">mut self</span>, socket: <span class="t">Arc</span>&lt;<span class="t">UdpSocket</span>&gt;) -&gt; <span class="t">u64</span> {
+    <span class="k">self</span>.open_object(<span class="t">OpenObject</span>::<span class="t">Socket</span>(socket))
+}</pre>
+      <details class="question"><summary>What does fd 0 contain?</summary><p>The number 0 indexes the current process’s table. The table slot contains an <code>OpenObject::Socket</code>, which owns an <code>Arc</code> pointing to the UDP socket object.</p></details>
+    </section>
+
+    <section class="tour-step">
+      <h2><span class="tour-step-num">26.2</span><span class="tour-step-title">The socket owns queue state</span></h2>
+      <div class="tour-files"><strong>Files:</strong> <a href="../src/net/socket.rs">src/net/socket.rs</a>, <a href="../src/net/mod.rs">src/net/mod.rs</a></div>
+      <p><code>UdpSocket</code> stores the state that belongs to one user-visible endpoint. The receive queue owns complete datagrams, including the sender needed for the echo reply.</p>
+      <div class="snippet-meta"><a class="snippet-file" href="../src/net/socket.rs">src/net/socket.rs</a><span class="snippet-what">socket state and global port lookup</span></div>
+<pre data-lang="rust"><span class="k">pub struct</span> <span class="t">Datagram</span> {
+    <span class="k">pub</span> sender: <span class="t">Endpoint</span>,
+    <span class="k">pub</span> payload: <span class="t">Vec</span>&lt;<span class="t">u8</span>&gt;,
+}
+
+<span class="k">struct</span> <span class="t">State</span> {
+    port: <span class="t">Option</span>&lt;<span class="t">u16</span>&gt;,
+    queue: <span class="t">VecDeque</span>&lt;<span class="t">Datagram</span>&gt;,
+    waiter: <span class="t">Option</span>&lt;<span class="t">Pid</span>&gt;,
+}
+
+<span class="k">static</span> <span class="t">PORTS</span>: <span class="t">Mutex</span>&lt;<span class="t">BTreeMap</span>&lt;<span class="t">u16</span>, <span class="t">Weak</span>&lt;<span class="t">UdpSocket</span>&gt;&gt;&gt;;</pre>
+      <p>The port map uses weak references. The process FD table owns the strong reference that keeps the socket alive. Routing metadata can disappear after the last FD closes.</p>
+      <details class="question"><summary>Which object owns the message bytes?</summary><p>The socket’s <code>VecDeque&lt;Datagram&gt;</code> owns them. The port table only finds the socket, and the FD table only provides access to it.</p></details>
+    </section>
+
+    <section class="tour-step">
+      <h2><span class="tour-step-num">26.3</span><span class="tour-step-title">bind gives the socket a local port</span></h2>
+      <div class="tour-files"><strong>Files:</strong> <a href="../src/syscall.rs">src/syscall.rs</a>, <a href="../tests/fixtures/udp_echo.rs">tests/fixtures/udp_echo.rs</a></div>
+      <p>The user fixture builds a small IPv4 address structure. The kernel validates it, looks up fd 0 as a socket, records port 5555, and publishes the socket in <code>PORTS</code>.</p>
+      <div class="snippet-meta"><a class="snippet-file" href="../src/syscall.rs">src/syscall.rs</a><span class="snippet-what">validate the address and bind the typed FD</span></div>
+<pre data-lang="rust"><span class="k">fn</span> <span class="f">sys_bind</span>(fd: <span class="t">u64</span>, addr: <span class="t">u64</span>, addr_len: <span class="t">u64</span>) -&gt; <span class="t">u64</span> {
+    <span class="k">let</span> <span class="t">Some</span>(endpoint) = <span class="f">read_sockaddr</span>(addr, addr_len) <span class="k">else</span> {
+        <span class="k">return</span> <span class="t">u64</span>::<span class="t">MAX</span>;
+    };
+    <span class="k">let</span> <span class="t">Some</span>(socket) = <span class="f">get_socket</span>(fd) <span class="k">else</span> {
+        <span class="k">return</span> <span class="t">u64</span>::<span class="t">MAX</span>;
+    };
+    <span class="k">if</span> socket.<span class="f">bind</span>(endpoint.port).<span class="f">is_ok</span>() { <span class="n">0</span> } <span class="k">else</span> { <span class="t">u64</span>::<span class="t">MAX</span> }
+}</pre>
+      <p>Lesson 26 binds the server. A client can later let the kernel choose an ephemeral source port; this fixture needs a known destination port so QEMU host forwarding can find it.</p>
+    </section>
+
+    <section class="tour-step">
+      <h2><span class="tour-step-num">26.4</span><span class="tour-step-title">The syscall entry preserves six arguments</span></h2>
+      <div class="tour-files"><strong>Files:</strong> <a href="../src/syscall.rs">src/syscall.rs</a>, <a href="../tests/fixtures/udp_echo.rs">tests/fixtures/udp_echo.rs</a></div>
+      <p>Linux-style <code>recvfrom</code> and <code>sendto</code> need six arguments. The syscall entry saves registers <code>r10</code>, <code>r8</code>, and <code>r9</code> before the handler uses them for kernel work.</p>
+      <div class="snippet-meta"><a class="snippet-file" href="../src/syscall.rs">syscall_entry</a><span class="snippet-what">save arguments 4–6 before changing register state</span></div>
+<pre data-lang="asm">mov [{arg4_save}], r10
+mov [{arg5_save}], r8
+mov [{arg6_save}], r9
+
+; later, the Rust handler reads the saved values
+let arg4 = SYSCALL_ARG4.load(Ordering::Relaxed);
+let arg5 = SYSCALL_ARG5.load(Ordering::Relaxed);
+let arg6 = SYSCALL_ARG6.load(Ordering::Relaxed);</pre>
+      <p>The fixture mirrors that ABI: fd, buffer, length, flags, address pointer, and address-length pointer travel in <code>rdi</code>, <code>rsi</code>, <code>rdx</code>, <code>r10</code>, <code>r8</code>, and <code>r9</code>.</p>
+      <details class="question"><summary>Why save r10 before switching stacks?</summary><p>The entry code needs scratch registers while moving from the user stack to the kernel stack. Saving the incoming value first preserves the fourth user argument.</p></details>
+    </section>
+
+    <section class="tour-step">
+      <h2><span class="tour-step-num">26.5</span><span class="tour-step-title">recvfrom parks the current task</span></h2>
+      <div class="tour-files"><strong>Files:</strong> <a href="../src/syscall.rs">src/syscall.rs</a>, <a href="../src/task.rs">src/task.rs</a></div>
+      <p><code>sys_recvfrom</code> first tries the queue. An empty queue enters a short interrupt-disabled region that checks the queue again, records the waiter, and marks the task blocked. That ordering closes the lost-wakeup window.</p>
+      <div class="snippet-meta"><a class="snippet-file" href="../src/syscall.rs">sys_recvfrom</a><span class="snippet-what">pop, atomically register, block, yield, retry</span></div>
+<pre data-lang="rust"><span class="k">loop</span> {
+    <span class="k">if let</span> <span class="t">Some</span>(datagram) = socket.<span class="f">pop</span>() {
+        <span class="c">// copy payload and sender to validated user buffers</span>
+        <span class="k">return</span> count <span class="k">as</span> <span class="t">u64</span>;
+    }
+
+    <span class="k">let</span> should_block = <span class="f">without_interrupts</span>(|| {
+        <span class="k">if</span> socket.<span class="f">register_waiter_if_empty</span>(<span class="f">current_pid</span>()) {
+            <span class="f">block_current</span>();
+            <span class="t">true</span>
+        } <span class="k">else</span> { <span class="t">false</span> }
+    });
+    <span class="k">if</span> should_block { <span class="f">yield_now</span>(); }
+}</pre>
+      <div class="route-map"><pre>queue check → register waiter → Blocked → yield
+                                           ↑
+                           must be one atomic decision</pre></div>
+      <p>A packet can arrive between a queue check and waiter registration. Disabling interrupts around both operations lets the single-CPU kernel make one indivisible decision.</p>
+    </section>
+
+    <section class="tour-step">
+      <h2><span class="tour-step-num">26.6</span><span class="tour-step-title">The network worker delivers and wakes</span></h2>
+      <div class="tour-files"><strong>Files:</strong> <a href="../src/virtio.rs">src/virtio.rs</a>, <a href="../src/net/udp.rs">src/net/udp.rs</a>, <a href="../src/net/socket.rs">src/net/socket.rs</a></div>
+      <p>The network worker keeps polling the device while the echo task is blocked. The RX dispatcher turns the frame into an owned <code>UdpPacket</code>, then hands the destination port and sender endpoint to the socket layer.</p>
+      <div class="snippet-meta"><a class="snippet-file" href="../src/virtio.rs">network_worker</a><span class="snippet-what">poll RX, then yield so blocked work can wake</span></div>
+<pre data-lang="rust"><span class="k">pub unsafe extern</span> <span class="s">"C"</span> <span class="k">fn</span> <span class="f">network_worker</span>() {
+    <span class="k">loop</span> {
+        <span class="k">let</span> _ = <span class="f">with_net_device</span>(|device| device.<span class="f">poll_rx</span>());
+        crate::task::<span class="f">yield_now</span>();
+    }
+}</pre>
+      <div class="snippet-meta"><a class="snippet-file" href="../src/net/socket.rs">deliver</a><span class="snippet-what">queue the complete message and wake its waiter</span></div>
+<pre data-lang="rust"><span class="k">pub fn</span> <span class="f">deliver</span>(port: <span class="t">u16</span>, sender: <span class="t">Endpoint</span>, payload: &amp;[<span class="t">u8</span>]) -&gt; <span class="t">bool</span> {
+    <span class="k">let</span> socket = <span class="t">PORTS</span>.<span class="f">lock</span>().<span class="f">get</span>(&amp;port).<span class="f">and_then</span>(<span class="t">Weak</span>::<span class="f">upgrade</span>);
+    <span class="k">let</span> waiter = { <span class="c">/* push Datagram, take waiter PID */</span> };
+    <span class="k">if let</span> <span class="t">Some</span>(pid) = waiter { crate::task::<span class="f">wake</span>(pid); }
+    <span class="t">true</span>
+}</pre>
+      <p>The socket lock protects queue state. The scheduler lock protects task state. Delivery releases the socket state before calling <code>wake</code>, so the two ownership domains stay separate.</p>
+    </section>
+
+    <section class="tour-step">
+      <h2><span class="tour-step-num">26.7</span><span class="tour-step-title">sendto rebuilds the reply from the returned endpoint</span></h2>
+      <div class="tour-files"><strong>Files:</strong> <a href="../src/syscall.rs">src/syscall.rs</a>, <a href="../src/virtio.rs">src/virtio.rs</a>, <a href="../src/net/udp.rs">src/net/udp.rs</a></div>
+      <p>The user program keeps the sender address written by <code>recvfrom</code>. <code>sendto</code> validates that destination, reads the user payload, and passes the local bound port plus destination endpoint to the existing UDP transmit path.</p>
+      <div class="snippet-meta"><a class="snippet-file" href="../src/syscall.rs">sys_sendto</a><span class="snippet-what">FD lookup, user buffer, destination, existing TX path</span></div>
+<pre data-lang="rust"><span class="k">let</span> <span class="t">Some</span>(socket) = <span class="f">get_socket</span>(fd) <span class="k">else</span> {
+    <span class="k">return</span> <span class="t">u64</span>::<span class="t">MAX</span>;
+};
+<span class="k">let</span> <span class="t">Some</span>(src_port) = socket.<span class="f">local_port</span>() <span class="k">else</span> {
+    <span class="k">return</span> <span class="t">u64</span>::<span class="t">MAX</span>;
+};
+<span class="k">let</span> payload = <span class="k">unsafe</span> { <span class="t">slice</span>::<span class="f">from_raw_parts</span>(buf <span class="k">as</span> *<span class="k">const</span> <span class="t">u8</span>, len <span class="k">as</span> <span class="t">usize</span>) };
+
+<span class="f">with_net_device</span>(|device| device.<span class="f">send_udp</span>(dst.ip, dst.port, src_port, payload))</pre>
+      <p>The reply route reverses the endpoint pair: guest <code>10.0.2.15:5555</code> becomes the source, and the original sender becomes the destination.</p>
+    </section>
+
+    <section class="tour-step">
+      <h2><span class="tour-step-num">26.8</span><span class="tour-step-title">The ring-3 fixture proves the ownership chain</span></h2>
+      <div class="tour-files"><strong>Files:</strong> <a href="../tests/fixtures/udp_echo.rs">tests/fixtures/udp_echo.rs</a>, <a href="../scripts/make-disk.sh">scripts/make-disk.sh</a>, <a href="../tests/test_udp.sh">tests/test_udp.sh</a>, <a href="../src/main.rs">src/main.rs</a></div>
+      <p>The fixture uses Linux syscall numbers directly. It binds port 5555, receives two datagrams, sends each one back to the returned address, prints a success marker, and exits.</p>
+      <div class="snippet-meta"><a class="snippet-file" href="../tests/fixtures/udp_echo.rs">udp_echo.elf</a><span class="snippet-what">the complete ring-3 loop</span></div>
+<pre data-lang="rust"><span class="k">let</span> fd = <span class="f">syscall3</span>(<span class="n">41</span>, AF_INET, SOCK_DGRAM, <span class="n">0</span>);
+<span class="f">syscall3</span>(<span class="n">49</span>, fd, &amp;local <span class="k">as</span> *<span class="k">const</span> _ <span class="k">as</span> <span class="t">u64</span>, <span class="n">16</span>);
+
+<span class="k">for</span> _ <span class="k">in</span> <span class="n">0</span>..<span class="n">2</span> {
+    <span class="k">let</span> count = <span class="f">syscall6</span>(<span class="n">45</span>, fd, buffer, buffer_len, <span class="n">0</span>, &amp;<span class="k">mut</span> peer, &amp;<span class="k">mut</span> peer_len);
+    <span class="f">syscall6</span>(<span class="n">44</span>, fd, buffer, count, <span class="n">0</span>, &amp;peer, <span class="n">16</span>);
+}
+
+<span class="f">write</span>(b<span class="s">"[echo_server] echoed two datagrams from ring 3\n"</span>);</pre>
+      <p><code>scripts/make-disk.sh</code> cross-compiles the fixture and writes <code>/udp_echo.elf</code> into ext2. <code>src/main.rs</code> selects it under <code>test-udp</code> and starts the network worker.</p>
+      <div class="snippet-meta"><a class="snippet-file" href="../tests/test_udp.sh">tests/test_udp.sh</a><span class="snippet-what">host sends two messages and checks exact replies</span></div>
+<pre data-lang="python">sock.sendto(b<span class="s">"hello from lesson 26"</span>, (<span class="s">"127.0.0.1"</span>, <span class="n">5555</span>))
+reply, address = sock.recvfrom(<span class="n">2048</span>)
+<span class="k">if</span> reply != payload:
+    <span class="k">raise</span> SystemExit(<span class="s">"UDP echo mismatch"</span>)</pre>
+    </section>
+
+    <h2>Verification snapshot</h2>
+<pre class="tour-output"><span class="ok">[udp-test] host received two byte-for-byte echoes</span>
+[udp] rx src=10.0.2.2:&lt;ephemeral&gt; dst=10.0.2.15:5555 len=28 payload_len=20 checksum ok
+[udp] rx src=10.0.2.2:&lt;ephemeral&gt; dst=10.0.2.15:5555 len=72 payload_len=64 checksum ok
+<span class="ok">[echo_server] echoed two datagrams from ring 3</span>
+<span class="ok">[udp-test] QEMU exit code: 33</span>
+<span class="ok">[udp-test] PASS</span></pre>
+
+    <div class="probe"><div class="probe-title">Retrieve the ownership chain</div><p>A datagram arrives for port <code>5555</code> while PID 0 sleeps in <code>recvfrom</code>. Name the object that maps fd 0, the object that maps port 5555, the object that owns the bytes, and the function that wakes PID 0.</p></div>
+    <details class="question"><summary>Answer</summary><p>The process FD table maps fd 0 to <code>OpenObject::Socket(Arc&lt;UdpSocket&gt;)</code>. <code>PORTS</code> maps port 5555 to a weak socket reference. The socket’s queue owns the <code>Datagram</code>. <code>deliver</code> calls <code>task::wake(pid)</code>.</p></details>
+  </div>
+
+  <footer class="lesson-footer">
+    <div class="footer-block"><h4>Primary sources</h4><p style="margin:0"><a href="https://man7.org/linux/man-pages/man2/socket.2.html">socket(2)</a>, <a href="https://man7.org/linux/man-pages/man2/bind.2.html">bind(2)</a>, <a href="https://man7.org/linux/man-pages/man2/recvfrom.2.html">recvfrom(2)</a>, and <a href="https://man7.org/linux/man-pages/man2/sendto.2.html">sendto(2)</a> define the Linux syscall contracts. <a href="https://www.rfc-editor.org/rfc/rfc1122#section-4.1.4">RFC 1122 §4.1.4</a> describes the UDP/application interface.</p></div>
+    <div class="footer-block"><h4>Keep nearby</h4><p style="margin:0"><a href="../lessons/0026-sockets.html">Lesson 26</a> · <a href="../reference/sockets.html">socket reference</a> · <a href="../lessons/0027-nonblocking-sockets.html">Lesson 27: readiness</a></p></div>
+    <nav class="lesson-nav" aria-label="Tour navigation"><a href="../tours/tour-0025-udp.html">← Lesson 25 tour</a><a href="../lessons/0027-nonblocking-sockets.html">Lesson 27: readiness →</a></nav>
+  </footer>
+</article>
+<script>
+  document.querySelectorAll('[data-walk]').forEach((walk) => {
+    const steps = [...walk.querySelectorAll('[data-step]')];
+    let index = 0;
+    const draw = () => {
+      steps.forEach((step, stepIndex) => { step.hidden = stepIndex !== index; });
+      walk.querySelector('[data-index]').textContent = index + 1;
+      walk.querySelector('[data-prev]').disabled = index === 0;
+      walk.querySelector('[data-next]').disabled = index === steps.length - 1;
+    };
+    walk.querySelector('[data-prev]').addEventListener('click', () => { if (index > 0) { index -= 1; draw(); } });
+    walk.querySelector('[data-next]').addEventListener('click', () => { if (index < steps.length - 1) { index += 1; draw(); } });
+    draw();
+  });
+</script>
+</body>
+</html>
