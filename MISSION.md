@@ -71,6 +71,7 @@ Same shape as Lessons 5–14 but for the network: discover device, init driver, 
 - [x] L24 — ICMP echo: ping the gateway and print the reply — the network "hello world" (keystone)
 - [x] L25 — UDP: header + pseudo-header checksum, in-kernel echo via QEMU `hostfwd`
 - [ ] L26 — sockets: `socket`/`bind`/`sendto`/`recvfrom` syscalls, user-space `echo_server.elf` (objective)
+- [x] L30 — ring-3 DHCP client acquires the slirp lease and installs runtime network configuration
 - **Why second:** big satisfying parallel to the disk path. Lands a second hello-world (ping reply) plus an objective the host can talk to (`nc -u localhost 5555`). Lots of conceptual transfer from existing virtio work.
 - **Environment constraint:** QEMU slirp networking — guest 10.0.2.15, gateway 10.0.2.2, inbound only via `hostfwd`, so the ping milestone is guest-initiated.
 - **Estimated:** 8 lessons.

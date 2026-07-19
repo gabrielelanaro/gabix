@@ -811,6 +811,7 @@ pub struct NetDevice {
 pub enum NetRxEvent {
     Arp(ArpPacket),
     Udp(UdpPacket),
+    Tcp,
     Ipv4(Ipv4Packet),
     Other,
 }
@@ -1109,6 +1110,14 @@ impl NetDevice {
         }
 
         if let Some(packet) = self.handle_ipv4_frame(frame) {
+            if packet.header.protocol == net::ipv4::PROTOCOL_TCP {
+                if let Some(reply) = net::tcp::receive(
+                    packet.header.src_ip, packet.header.dst_ip, packet.payload())
+                {
+                    let _ = self.send_ipv4_packet(net::ipv4::PROTOCOL_TCP, reply.dst_ip, &reply.bytes);
+                }
+                return NetRxEvent::Tcp;
+            }
             if packet.header.protocol == net::ipv4::PROTOCOL_UDP {
                 let udp_bytes = packet.payload();
                 let Some(datagram) =
@@ -1218,6 +1227,7 @@ impl NetDevice {
             ETHERNET_MTU - IPV4_HEADER_LEN
         );
 
+        let broadcast = dst_ip == [255; 4];
         let next_hop_ip = next_hop_for(dst_ip);
         // ARP is resolved before this function is called, either at boot
         // (gateway entry) or by `resolve_arp_blocking` on the syscall
@@ -1225,7 +1235,7 @@ impl NetDevice {
         // same device lock to deliver the ARP reply we're waiting for.
         // On a miss, send an ARP request to prime the cache and drop the
         // packet — the caller's retry or the next packet gets through.
-        let Some(next_hop_mac) = arp::lookup(next_hop_ip) else {
+        let next_hop_mac = if broadcast { [0xff; 6] } else if let Some(mac) = arp::lookup(next_hop_ip) { mac } else {
             println!(
                 "[arp] no cache entry for next hop {}.{}.{}.{} — priming and dropping packet",
                 next_hop_ip[0], next_hop_ip[1], next_hop_ip[2], next_hop_ip[3]
@@ -1233,7 +1243,8 @@ impl NetDevice {
             self.send_arp_request(next_hop_ip);
             return None;
         };
-        let ip_header = Ipv4Header::build(protocol, net::OUR_IP, dst_ip, payload.len());
+        let source_ip = net::source_ip();
+        let ip_header = Ipv4Header::build(protocol, source_ip, dst_ip, payload.len());
 
         let ethernet_header = EthernetHeader {
             dst: next_hop_mac,
@@ -1252,10 +1263,7 @@ impl NetDevice {
         println!(
             "[ip] tx proto={} src={}.{}.{}.{} dst={}.{}.{}.{} len={} next-hop={}.{}.{}.{} ({:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x})",
             protocol,
-            net::OUR_IP[0],
-            net::OUR_IP[1],
-            net::OUR_IP[2],
-            net::OUR_IP[3],
+            source_ip[0], source_ip[1], source_ip[2], source_ip[3],
             dst_ip[0],
             dst_ip[1],
             dst_ip[2],
@@ -1287,7 +1295,7 @@ impl NetDevice {
         let mut datagram = [0u8; ETHERNET_MTU - IPV4_HEADER_LEN];
         let datagram_len = udp::write_datagram(
             &mut datagram,
-            net::OUR_IP,
+            net::source_ip(),
             dst_ip,
             src_port,
             dst_port,
@@ -1299,19 +1307,16 @@ impl NetDevice {
     /// Send one ARP request for `target_ip`. Public so the blocking
     /// resolver can prime the cache without owning the device.
     pub fn send_arp_request(&mut self, target_ip: [u8; 4]) {
-        let packet = ArpPacket::request(self.mac(), net::OUR_IP, target_ip);
+        let packet = ArpPacket::request(self.mac(), net::source_ip(), target_ip);
         self.send_arp_packet([0xff; 6], packet);
     }
 
     fn send_arp_reply(&mut self, request: &ArpPacket) {
-        let reply = ArpPacket::reply_to(request, self.mac(), net::OUR_IP);
+        let reply = ArpPacket::reply_to(request, self.mac(), net::source_ip());
         self.send_arp_packet(request.sha, reply);
         println!(
             "[arp] replied: {}.{}.{}.{} is at {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
-            net::OUR_IP[0],
-            net::OUR_IP[1],
-            net::OUR_IP[2],
-            net::OUR_IP[3],
+            net::source_ip()[0], net::source_ip()[1], net::source_ip()[2], net::source_ip()[3],
             self.mac()[0],
             self.mac()[1],
             self.mac()[2],
@@ -1364,7 +1369,7 @@ impl NetDevice {
             packet.sha[5]
         );
 
-        if packet.oper == OPER_REQUEST && packet.tpa == net::OUR_IP {
+        if packet.oper == OPER_REQUEST && net::config().map(|c| packet.tpa == c.address).unwrap_or(false) {
             self.send_arp_reply(&packet);
         }
 
@@ -1377,7 +1382,7 @@ impl NetDevice {
         }
 
         let header = Ipv4Header::parse(&frame.payload[..frame.payload_len])?;
-        if header.dst_ip != net::OUR_IP {
+        if !net::accepts_destination(header.dst_ip) {
             println!(
                 "[ip] dropped frame for {}.{}.{}.{}",
                 header.dst_ip[0], header.dst_ip[1], header.dst_ip[2], header.dst_ip[3]
@@ -1487,10 +1492,19 @@ impl NetDevice {
 }
 
 fn next_hop_for(dst_ip: [u8; 4]) -> [u8; 4] {
-    if dst_ip[0] == net::OUR_IP[0] && dst_ip[1] == net::OUR_IP[1] && dst_ip[2] == net::OUR_IP[2] {
-        dst_ip
+    let config = net::config();
+    if let Some(value) = config {
+        if dst_ip[0] & value.subnet_mask[0] == value.address[0] & value.subnet_mask[0]
+            && dst_ip[1] & value.subnet_mask[1] == value.address[1] & value.subnet_mask[1]
+            && dst_ip[2] & value.subnet_mask[2] == value.address[2] & value.subnet_mask[2]
+            && dst_ip[3] & value.subnet_mask[3] == value.address[3] & value.subnet_mask[3]
+        {
+            dst_ip
+        } else {
+            value.gateway
+        }
     } else {
-        net::GATEWAY_IP
+        dst_ip
     }
 }
 

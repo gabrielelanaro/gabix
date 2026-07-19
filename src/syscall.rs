@@ -62,6 +62,10 @@ const SYS_NET_TX_TEST: u64 = 900;
 const SYS_NET_RX_WAIT: u64 = 901;
 const SYS_NET_ICMP_PING: u64 = 902;
 const SYS_NET_UDP_WAIT: u64 = 903;
+const SYS_NET_CONFIGURE: u64 = 904;
+const SYS_NET_TCP_CONNECT: u64 = 905;
+const SYS_NET_TCP_SEND: u64 = 906;
+const SYS_NET_TCP_RECV: u64 = 907;
 const ICMP_PING_PAYLOAD_CAPACITY: usize = 64;
 
 /// Virtual address where the dedicated syscall stack begins.
@@ -417,7 +421,50 @@ extern "C" fn syscall_handler(num: u64, arg1: u64, arg2: u64, arg3: u64) -> u64 
         SYS_NET_RX_WAIT => sys_net_rx_wait(),
         SYS_NET_ICMP_PING => sys_net_icmp_ping(),
         SYS_NET_UDP_WAIT => sys_net_udp_wait(),
+        SYS_NET_CONFIGURE => sys_net_configure(arg1, arg2),
+        SYS_NET_TCP_CONNECT => sys_net_tcp_connect(),
+        SYS_NET_TCP_SEND => sys_net_tcp_send(arg1, arg2),
+        SYS_NET_TCP_RECV => sys_net_tcp_recv(),
         _ => u64::MAX,
+    }
+}
+
+fn transmit_tcp(outbound: net::tcp::Outbound) -> bool {
+    if virtio::resolve_next_hop(outbound.dst_ip).is_none() { return false; }
+    matches!(virtio::with_net_device(|device| device.send_ipv4_packet(
+        net::ipv4::PROTOCOL_TCP, outbound.dst_ip, &outbound.bytes)), Some(Some(())))
+}
+
+fn sys_net_tcp_connect() -> u64 {
+    let local_ip = net::source_ip();
+    if local_ip == [0; 4] { return u64::MAX; }
+    let isn = (crate::interrupts::TICKS.load(Ordering::Relaxed) as u32)
+        .wrapping_mul(1103515245).wrapping_add(0x31c0_ffee);
+    let Some(syn) = net::tcp::active_open(net::tcp::Endpoints {
+        local_ip, remote_ip: [10, 0, 2, 3], local_port: 49152, remote_port: 53,
+    }, isn) else { return u64::MAX };
+    if !transmit_tcp(syn) { return u64::MAX; }
+    while net::tcp::state() != net::tcp::TcpState::Established {
+        crate::task::block_current_if(|pid| net::tcp::register_connect_waiter(pid));
+        crate::task::yield_now();
+    }
+    0
+}
+
+fn sys_net_tcp_send(buf: u64, len: u64) -> u64 {
+    if len == 0 || len > 512 || !is_user_range(buf, len) { return u64::MAX; }
+    let payload = unsafe { core::slice::from_raw_parts(buf as *const u8, len as usize) };
+    match net::tcp::send_data(payload) {
+        Some(out) => if transmit_tcp(out) { len } else { u64::MAX },
+        None => u64::MAX,
+    }
+}
+
+fn sys_net_tcp_recv() -> u64 {
+    loop {
+        if let Some(byte) = net::tcp::pop_byte() { return byte as u64; }
+        crate::task::block_current_if(|pid| net::tcp::register_recv_waiter(pid));
+        crate::task::yield_now();
     }
 }
 
@@ -484,7 +531,7 @@ fn sys_bind(fd: u64, addr: u64, addr_len: u64) -> u64 {
     let Some(endpoint) = read_sockaddr(addr, addr_len) else {
         return u64::MAX;
     };
-    if endpoint.ip != [0, 0, 0, 0] && endpoint.ip != net::OUR_IP {
+    if endpoint.ip != [0, 0, 0, 0] && endpoint.ip != net::source_ip() {
         return u64::MAX;
     }
     let Some(socket) = crate::task::with_current_fd_table(|fdt| fdt.get_socket(fd)) else {
@@ -514,7 +561,7 @@ fn sys_sendto(fd: u64, buf: u64, len: u64, _flags: u64, addr: u64, addr_len: u64
     // Resolve the next hop BEFORE taking the device lock. A cold ARP
     // cache means sleeping until the reply arrives, and the network task
     // needs that same lock to deliver the reply.
-    if virtio::resolve_next_hop(dst.ip).is_none() {
+    if dst.ip != [255; 4] && virtio::resolve_next_hop(dst.ip).is_none() {
         return u64::MAX;
     }
     let result = match virtio::with_net_device(|device| {
@@ -524,6 +571,48 @@ fn sys_sendto(fd: u64, buf: u64, len: u64, _flags: u64, addr: u64, addr_len: u64
         _ => u64::MAX,
     };
     result
+}
+
+#[repr(C)]
+struct UserNetworkConfig {
+    address: [u8; 4],
+    subnet_mask: [u8; 4],
+    gateway: [u8; 4],
+    dns: [u8; 4],
+    lease_seconds: u32,
+    mac: [u8; 6],
+    _padding: [u8; 2],
+}
+
+/// Operation 0 copies the device MAC address to user memory. Operation 1
+/// installs the lease fields supplied by the DHCP client.
+fn sys_net_configure(config_ptr: u64, operation: u64) -> u64 {
+    if !is_user_range(config_ptr, core::mem::size_of::<UserNetworkConfig>() as u64) {
+        return u64::MAX;
+    }
+    let config = unsafe { &mut *(config_ptr as *mut UserNetworkConfig) };
+    match operation {
+        0 => match virtio::with_net_device(|device| device.mac()) {
+            Some(mac) => { config.mac = mac; 0 }
+            None => u64::MAX,
+        },
+        1 if config.address != [0; 4] && config.subnet_mask != [0; 4] => {
+            net::configure(net::NetworkConfig {
+                address: config.address,
+                subnet_mask: config.subnet_mask,
+                gateway: config.gateway,
+                dns: config.dns,
+                lease_seconds: config.lease_seconds,
+            });
+            println!("[dhcp] configured address={}.{}.{}.{} mask={}.{}.{}.{} gateway={}.{}.{}.{} dns={}.{}.{}.{} lease={}s",
+                config.address[0], config.address[1], config.address[2], config.address[3],
+                config.subnet_mask[0], config.subnet_mask[1], config.subnet_mask[2], config.subnet_mask[3],
+                config.gateway[0], config.gateway[1], config.gateway[2], config.gateway[3],
+                config.dns[0], config.dns[1], config.dns[2], config.dns[3], config.lease_seconds);
+            0
+        }
+        _ => u64::MAX,
+    }
 }
 
 fn sys_recvfrom(fd: u64, buf: u64, len: u64, _flags: u64, addr: u64, addr_len: u64) -> u64 {
@@ -935,7 +1024,7 @@ fn sys_getpid() -> u64 {
 fn sys_exit(exit_code: u64) -> u64 {
     println!("[syscall] sys_exit({})", exit_code);
     crate::task::mark_current_zombie(exit_code as i64);
-    #[cfg(any(feature = "test-udp", feature = "test-nonblocking"))]
+    #[cfg(any(feature = "test-udp", feature = "test-nonblocking", feature = "test-dhcp", feature = "test-tcp"))]
     crate::qemu_exit::exit_qemu(if exit_code == 0 {
         crate::qemu_exit::EXIT_SUCCESS
     } else {

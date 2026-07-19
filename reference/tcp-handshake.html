@@ -1,0 +1,14 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>TCP handshake quick reference</title><link rel="stylesheet" href="../assets/lesson.css"><link rel="stylesheet" href="../assets/sequence-diagram.css"></head>
+<body><article class="lesson"><header class="lesson-header"><div class="lesson-eyebrow">Quick reference · TCP</div><h1 class="lesson-title">Active open and byte positions</h1><p class="lesson-subtitle">The fields and state changes implemented in Lesson 31.</p></header><div class="content">
+<h2>Handshake</h2><pre><code>client                                      server
+CLOSED
+SYN_SENT     SYN seq=x                  →
+             ← SYN,ACK seq=y ack=x+1
+ESTABLISHED  ACK seq=x+1 ack=y+1         →
+</code></pre>
+<p><code>SYN</code> consumes one sequence number. A payload consumes one sequence number per byte. An acknowledgment value names the next byte the receiver expects.</p>
+<h2>Minimum header</h2><table><thead><tr><th>Bytes</th><th>Field</th><th>Lesson 31 use</th></tr></thead><tbody><tr><td>0–3</td><td>source, destination ports</td><td>49152 → 53</td></tr><tr><td>4–7</td><td>sequence</td><td>first payload byte position</td></tr><tr><td>8–11</td><td>acknowledgment</td><td>next expected peer byte</td></tr><tr><td>12–13</td><td>data offset, flags</td><td>SYN, ACK, PSH</td></tr><tr><td>14–15</td><td>window</td><td>4096 bytes advertised</td></tr><tr><td>16–17</td><td>checksum</td><td>header + payload + IPv4 pseudo-header</td></tr></tbody></table>
+<h2>Current limits</h2><p>One global TCP Control Block stores one active connection. The sender emits one bounded segment. There is no retransmission, sliding window, passive open, or teardown yet.</p>
+<p>Primary source: <a href="https://www.rfc-editor.org/rfc/rfc9293">RFC 9293</a>. Ask the agent about any field or state transition that is unclear.</p>
+</div><footer class="lesson-footer"><nav class="lesson-nav"><a href="../lessons/0031-tcp-handshake.html">← Lesson 31</a><a href="../lessons/0032-tcp-reliable-stream.html">Lesson 32 →</a></nav></footer></article></body></html>

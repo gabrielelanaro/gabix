@@ -1,0 +1,254 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Lesson 32 — Reliable Stream</title>
+  <link rel="stylesheet" href="../assets/lesson.css">
+  <link rel="stylesheet" href="../assets/sequence-diagram.css">
+  <style>
+    .window-bar {
+      font-family: var(--font-mono);
+      font-size: 0.82rem;
+      line-height: 1.7;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 1rem 1.2rem;
+      margin: 1.5rem 0;
+      overflow-x: auto;
+      white-space: pre;
+      color: var(--text);
+    }
+    .formula {
+      font-family: var(--font-mono);
+      background: var(--code-bg);
+      color: var(--code-fg);
+      padding: 0.9rem 1.1rem;
+      border-radius: 6px;
+      margin: 1rem 0;
+      overflow-x: auto;
+      white-space: pre;
+      font-size: 0.88rem;
+      line-height: 1.7;
+    }
+    .term-list { padding-left: 1.2rem; line-height: 1.7; }
+    .term-list li { margin: 0.4rem 0; }
+    .term-list code { color: var(--accent); }
+  </style>
+</head>
+<body>
+<article class="lesson">
+  <header class="lesson-header">
+    <div class="lesson-eyebrow">Lesson 32 · TCP arc · 2 of 3</div>
+    <h1 class="lesson-title">Reliable stream</h1>
+    <p class="lesson-subtitle">Hold a copy of every byte sent. Resend what goes unconfirmed.</p>
+    <div class="lesson-meta">
+      <span><strong>Primary spec</strong> <a href="https://www.rfc-editor.org/rfc/rfc9293">RFC 9293</a> · <a href="https://www.rfc-editor.org/rfc/rfc6298">RFC 6298</a></span>
+      <span><strong>Linux counterpart</strong> <code>net/ipv4/tcp_timer.c</code></span>
+      <span><strong>Proof</strong> 1 KB exchange with slirp DNS over TCP</span>
+    </div>
+  </header>
+
+  <div class="content">
+
+    <p class="lead">A TCP socket promises the application that every byte written will arrive at the peer, in order, exactly once. Lesson 31 made that promise for one byte: the sender transmitted a byte, the receiver sent an ACK, the sender advanced its bookkeeping. The exchange worked because the segment arrived.</p>
+    <p>Real networks drop packets. A router under load discards a frame when its queue fills; a noisy cable corrupts a byte and the receiver's checksum fails; a busy receiver overflows its buffer and the segment vanishes. Neither sender nor receiver gets a notification. If TCP just sent bytes and hoped, a single dropped segment would break the stream: bytes after the gap would arrive, the application would see the gap, and the missing bytes would never come.</p>
+    <p>TCP keeps its promise by holding a copy of every byte sent, until the receiver confirms it arrived. Bytes that go unconfirmed for too long are sent again. The machinery has three pieces, built in this lesson: the <strong>retransmit queue</strong> (the held copies), the <strong>sliding window</strong> (how many bytes can be in flight at once), and the <strong>retransmission timer</strong> (how long counts as "too long", derived from measured round-trip time, with Karn's algorithm for handling retransmitted segments).</p>
+
+    <h2>The cost of one byte at a time</h2>
+
+    <p>Lesson 31 sent a single byte and waited for its ACK before doing anything else. This pattern is <strong>stop-and-wait</strong>. Every byte costs one full round-trip time (RTT). On a 100 ms link that caps throughput at 10 bytes per second.</p>
+
+    <p>Real TCP keeps many bytes in flight at once. While byte 100 is traveling toward the receiver, byte 200 is being prepared, byte 300 is queued behind it. Each byte still gets acknowledged, but the acknowledgments stream back alongside the data instead of blocking each successive send. The cap on in-flight bytes is the sliding window, covered below.</p>
+
+    <h2>The retransmit queue</h2>
+
+    <p>For every byte the sender has transmitted but not yet had acknowledged, it keeps a copy. The collection of held bytes, organized by segment, is the <strong>retransmit queue</strong>. Linux calls it <code>sk_write_queue</code> on <code>struct sock</code>. mini-os stores a <code>Vec&lt;TcpSegment&gt;</code> on the TCB.</p>
+
+    <p>When an ACK arrives with <code>ack_number = N</code>, every byte in the queue whose sequence is below <code>N</code> has been received. The sender removes those entries. If the queue is non-empty after the removal, the retransmit timer is restarted on the new oldest entry.</p>
+
+    <h2>The sliding window</h2>
+
+    <p>The sender tracks two positions on its outbound byte stream: <code>send_unacked</code>, the oldest byte still in flight, and <code>send_next</code>, the next byte to send. The bytes between them are <strong>in flight</strong>: transmitted, copy held, awaiting ACK.</p>
+
+    <div class="window-bar">  send_unacked               send_next
+       v                          v
+stream  |======= in flight ======|=== can send ===|------------
+       |                          |                |
+                                  +-- window edge = send_unacked + send_window</div>
+
+    <p>The maximum distance the right edge can sit ahead of <code>send_unacked</code> is the <strong>send window</strong>:</p>
+
+    <div class="formula">send_window = min(advertised_window, congestion_window)</div>
+
+    <ul class="term-list">
+      <li><code>advertised_window</code> comes from the <code>window</code> field in the most recent segment the receiver sent. It is the receiver's remaining buffer space. The receiver can shrink it to zero ("stop sending") when its application is slow to read.</li>
+      <li><code>congestion_window</code> is the sender's own estimate of how much the network can absorb before packet loss kicks in. mini-os uses a fixed value of four segments. A real TCP implements slow start and congestion avoidance (RFC 5681), which grows and shrinks this value based on observed loss. mini-os skips that to keep the lesson focused.</li>
+    </ul>
+
+    <p>When an ACK arrives and <code>send_unacked</code> advances, the window slides forward: bytes that were past the right edge become eligible for sending.</p>
+
+    <h2>The retransmission timer</h2>
+
+    <p>Each in-flight segment starts a timer when it is transmitted. If the timer fires before the segment's ACK arrives, the segment is resent.</p>
+
+    <p>The timer length is the <strong>RTO</strong> (Retransmission Timeout). Set it too short and the sender resends segments that are still in transit, wasting bandwidth. Set it too long and recovery from real loss is sluggish. The right value is a small multiple of the measured round-trip time.</p>
+
+    <h2>Measuring round-trip time (RFC 6298)</h2>
+
+    <p>Each time an ACK arrives for a segment that was sent exactly once, measure the time between send and ACK. This is one <strong>RTT sample</strong>.</p>
+
+    <p>From a stream of samples, maintain two running values:</p>
+
+    <div class="formula">SRTT    = (7/8) * SRTT    + (1/8) * sample
+RTTVAR  = (3/4) * RTTVAR  + (1/4) * |SRTT_old - sample|
+
+RTO     = SRTT + max(G, K * RTTVAR)     where K = 4</div>
+
+    <p><code>SRTT</code> is the smoothed RTT: an exponential moving average that weights recent samples more heavily than old ones. <code>RTTVAR</code> is the smoothed mean deviation, a measure of how much RTT bounces around. <code>G</code> is the clock granularity, which for mini-os is the 100 Hz timer tick (10 ms). The initial value of RTO before any sample is taken is 1 second (RFC 6298 section 2.1). On the first sample, set <code>SRTT = sample</code> and <code>RTTVAR = sample / 2</code>.</p>
+
+    <p>Each time the sender retransmits, RTO doubles. This is <strong>exponential backoff</strong> (RFC 6298 section 2.5): a persistently lossy path slows the sender down instead of flooding it. The backoff resets to the computed RTO when a fresh ACK arrives for an unretransmitted segment.</p>
+
+    <h2>Karn's algorithm</h2>
+
+    <p>If a segment was retransmitted and an ACK for it later arrives, the ACK might be confirming the original transmission (which was slow) or the retransmit (which was faster). The sender cannot tell. Sampling RTT from that ambiguous ACK would feed a wrong value into SRTT.</p>
+
+    <p><strong>Karn's algorithm</strong> (Phil Karn, 1987, originally for amateur packet radio) says: do not update SRTT or RTTVAR for any segment that has been retransmitted. Sample RTT only from segments that succeeded on their first transmission. The retransmit timer still uses the current RTO; the measurement is simply discarded for averaging purposes.</p>
+
+    <h2>A loss, end to end</h2>
+
+    <div class="seq-diagram">
+      <div class="seq-actors" style="--lanes:2">
+        <div class="seq-actor"><strong>sender</strong><span class="seq-ep">send_unacked=100, send_next=200</span></div>
+        <div class="seq-actor"><strong>receiver</strong><span class="seq-ep">recv_next=100</span></div>
+      </div>
+      <div class="seq-body">
+        <div class="seq-lane" style="--x:25%"></div>
+        <div class="seq-lane" style="--x:75%"></div>
+        <div class="seq-msg" style="--x1:25%; --x2:75%">
+          <span class="seq-tag"><span class="seq-num">1</span> segment seq=100 len=100</span>
+          <div class="seq-line arr-r"></div>
+          <span class="seq-detail">bytes 100-199 sent · copy held in retransmit queue · timer started</span>
+        </div>
+        <div class="seq-msg" style="--x1:25%; --x2:75%">
+          <span class="seq-tag" style="background:#b91c1c"><span class="seq-num">x</span> lost in transit</span>
+          <div class="seq-line"></div>
+          <span class="seq-detail">IP drops the packet · no notification to either side</span>
+        </div>
+        <div class="seq-msg" style="--x1:25%; --x2:25%">
+          <span class="seq-tag"><span class="seq-num">!</span> RTO expires</span>
+          <div class="seq-line"></div>
+          <span class="seq-detail">timer fires after SRTT + 4*RTTVAR · sender notices no ACK arrived</span>
+        </div>
+        <div class="seq-msg" style="--x1:25%; --x2:75%">
+          <span class="seq-tag"><span class="seq-num">2</span> retransmit seq=100 len=100</span>
+          <div class="seq-line arr-r"></div>
+          <span class="seq-detail">same segment sent again · RTO doubled · Karn: do not sample RTT</span>
+        </div>
+        <div class="seq-msg" style="--x1:75%; --x2:25%">
+          <span class="seq-tag"><span class="seq-num">3</span> ACK ack=200</span>
+          <div class="seq-line arr-l"></div>
+          <span class="seq-detail">receiver confirms bytes 100-199 · sender dequeues them · send_unacked := 200</span>
+        </div>
+      </div>
+    </div>
+
+    <h2>What to build in mini-os</h2>
+
+    <p>Lesson 32 layers reliability on top of the Lesson 31 connection. The wire format is unchanged; the work is in the TCB and the per-connection timer.</p>
+
+    <div class="recipe">
+      <div class="recipe-step">
+        <div class="recipe-num">32.1</div>
+        <div class="recipe-body">
+          <strong>Retransmit queue.</strong> Add <code>retransmit_queue: Vec&lt;TcpSegment&gt;</code> to the TCB. Every transmitted segment that carries data or SYN or FIN is pushed onto the queue with its <code>sent_at</code> timestamp. When an ACK arrives, drop every entry whose highest sequence is below <code>ack_number</code>.
+        </div>
+      </div>
+
+      <div class="recipe-step">
+        <div class="recipe-num">32.2</div>
+        <div class="recipe-body">
+          <strong>Sliding window send.</strong> Replace Lesson 31's "send one byte" with a <code>tcp_send(&amp;buf)</code> that loops: while <code>send_next - send_unacked &lt; send_window</code> and the buffer still has bytes, build a segment of up to MSS bytes from <code>send_next</code>, transmit it, push it onto the retransmit queue, advance <code>send_next</code>. Use MSS 1460 and a fixed congestion window of four segments (skips RFC 5681).
+        </div>
+      </div>
+
+      <div class="recipe-step">
+        <div class="recipe-num">32.3</div>
+        <div class="recipe-body">
+          <strong>RTT measurement.</strong> Add <code>srtt_ms</code> and <code>rttvar_ms</code> to the TCB, initialized to 1000 and 500. On each ACK for a segment that was transmitted exactly once, compute the sample RTT from the segment's <code>sent_at</code> timestamp, then update SRTT and RTTVAR per the RFC 6298 formulas above.
+        </div>
+      </div>
+
+      <div class="recipe-step">
+        <div class="recipe-num">32.4</div>
+        <div class="recipe-body">
+          <strong>RTO and retransmit timer.</strong> Compute <code>rto_ms = srtt_ms + max(10, 4 * rttvar_ms)</code>. Give the TCB a <code>retransmit_deadline</code> field set to <code>now + rto_ms</code> whenever the queue is non-empty. Each timer tick, check whether the deadline has passed. If it has, retransmit the oldest queue entry, double <code>rto_ms</code>, reset the deadline.
+        </div>
+      </div>
+
+      <div class="recipe-step">
+        <div class="recipe-num">32.5</div>
+        <div class="recipe-body">
+          <strong>On ACK.</strong> Dequeue acknowledged segments. Restart the retransmit timer using the new oldest entry's <code>sent_at</code> if the queue is non-empty. Reset <code>rto_ms</code> to the computed value (cancelling backoff) if the ACK covers a segment that was not retransmitted.
+        </div>
+      </div>
+
+      <div class="recipe-step">
+        <div class="recipe-num">32.6</div>
+        <div class="recipe-body">
+          <strong>End-to-end proof.</strong> Extend the Lesson 31 fixture to exchange 1 KB with the slirp DNS server at <code>10.0.2.3:53</code>: open, send a DNS-over-TCP query, read the response. Serial output must show: each segment transmitted with its sequence number, the ACK stream advancing <code>send_unacked</code>, the retransmit queue draining, the SRTT and RTO values updating. Optionally inject artificial loss (drop every Nth TX frame in a test build) and observe the retransmit fire and recover.
+        </div>
+      </div>
+    </div>
+
+    <div class="callout">
+      <div class="callout-title">Skipped on purpose</div>
+      <p style="margin:0;">
+        Slow start, congestion avoidance, fast retransmit, fast recovery (RFC 5681, RFC 5682). SACK (RFC 2018). Window scaling (RFC 7323). Timestamp options for RTTM. These all live in real TCP and are not built here. The Lesson 32 sender uses a fixed congestion window and recovers from loss only by timeout, not by duplicate-ACK counting. That is enough to deliver bytes reliably on a slirp link; a real network would warrant the rest.
+      </p>
+    </div>
+
+    <div class="probe">
+      <div class="probe-title">Probe — duplicate segments and the byte stream</div>
+      <p>
+        If the sender's retransmit timer fires before the original ACK arrives, the segment is resent. The original might still be in transit, or might have arrived already with its ACK still traveling back. Either way, the receiver will see the same bytes twice. How does TCP prevent the duplicate from being delivered twice to the application?
+      </p>
+    </div>
+
+    <p>Answer the probe when ready, or ask about any field or build step before implementation. The build starts at step 32.1.</p>
+
+  </div>
+
+  <footer class="lesson-footer">
+    <div class="footer-block">
+      <h4>What this completes</h4>
+      <p style="margin:0;">
+        Lesson 32 makes the TCP sender reliable. The TCB holds a retransmit queue, an RTT estimate, and an RTO. The sender transmits multiple segments in flight within the sliding window and retransmits any segment whose ACK does not arrive within the RTO. Combined with Lesson 31's handshake, mini-os can now open a connection and exchange arbitrary amounts of data with correctness under loss.
+      </p>
+    </div>
+
+    <div class="footer-block">
+      <h4>Primary sources</h4>
+      <p style="margin:0;">
+        <a href="https://www.rfc-editor.org/rfc/rfc9293">RFC 9293</a> section 3.8 (retransmission) and section 3.7 (data communication). <a href="https://www.rfc-editor.org/rfc/rfc6298">RFC 6298</a>: the SRTT/RTTVAR/RTO algorithm and the exponential backoff rule. <a href="https://www.rfc-editor.org/rfc/rfc5681">RFC 5681</a>: congestion control (skipped in mini-os, documented here for reference). Karn and Partridge, "Estimating Round-Trip Times in Reliable Transport," SIGCOMM 1987: Karn's algorithm. Linux counterparts: <a href="https://elixir.bootlin.com/linux/latest/source/net/ipv4/tcp_timer.c"><code>net/ipv4/tcp_timer.c</code></a> (retransmit timer), <a href="https://elixir.bootlin.com/linux/latest/source/net/ipv4/tcp_output.c"><code>net/ipv4/tcp_output.c</code></a> (segment transmission).
+      </p>
+    </div>
+
+    <div class="footer-block">
+      <h4>Keep nearby</h4>
+      <p style="margin:0;">
+        <a href="0031-tcp-handshake.html">Lesson 31: TCP handshake</a>: the connection this lesson makes reliable.<br>
+        <a href="0027-nonblocking-sockets.html">Lesson 27: nonblocking sockets</a>: the <code>without_interrupts</code> pattern the retransmit-timer check will reuse to close races with the receive ISR.
+      </p>
+    </div>
+
+    <nav class="lesson-nav" aria-label="Lesson navigation">
+      <a href="0031-tcp-handshake.html">&larr; Lesson 31: TCP handshake</a>
+      <a href="roadmap-networking.html">Networking roadmap</a>
+      <a href="0033-tcp-teardown-echo.html">Lesson 33: teardown + echo &rarr;</a>
+    </nav>
+  </footer>
+</article>
+</body>
+</html>

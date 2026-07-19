@@ -2,6 +2,7 @@
 /qemu.log
 /disk.img
 /serial.log
+/learning-records/
 
 # Local agent and browser test state
 /.agents/skills/lavish

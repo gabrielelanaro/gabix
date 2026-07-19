@@ -960,3 +960,11 @@ Most recent entries at the top. One entry per work session.
 - **Status:** All roadmap items still `[ ]`. M0 not started.
 - **Notes:** Mental model that ties it all together: a kernel is just a program with no OS beneath it; every config tweak is about telling the compiler "don't assume an OS." Concepts reference is for lookup, not memorization.
 - **Next:** Scaffold Cargo project, install nightly, write freestanding `_start`.
+- [x] Lesson 30 DHCP client and runtime network configuration
+
+### TCP arc — the connection-oriented transport
+- [x] Lesson 31 TCP segment, three-way handshake, and first byte exchanged
+- [ ] Lesson 32 Reliable stream — sliding window, retransmission, RTT
+- [ ] Lesson 33 Connection teardown and ring-3 TCP echo server over slirp
+
+**Primary spec:** RFC 9293 (the modern consolidated TCP spec, obsoletes RFC 793). **Linux to read alongside:** `net/ipv4/tcp_*.c`, especially `tcp_input.c` (receive path), `tcp_output.c` (segment generation), `tcp_timer.c` (retransmit), `include/net/tcp.h` (`struct tcp_sock`).

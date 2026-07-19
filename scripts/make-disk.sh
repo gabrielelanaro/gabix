@@ -77,6 +77,10 @@ tests/fixtures/net_smoke.rs:/net_smoke.elf
 tests/fixtures/icmp_ping.rs:/icmp_ping.elf
 tests/fixtures/udp_echo.rs:/udp_echo.elf
 tests/fixtures/nonblocking_echo.rs:/nonblocking_echo.elf"
+FIXTURES="$FIXTURES
+tests/fixtures/dhcp.rs:/dhcp.elf"
+FIXTURES="$FIXTURES
+tests/fixtures/tcp_handshake.rs:/tcp_handshake.elf"
 
 for entry in $FIXTURES; do
     src=${entry%%:*}
@@ -91,6 +95,7 @@ for entry in $FIXTURES; do
     elf=$(mktemp /tmp/mini-os-fixture-XXXXXX.elf)
     rustc --target x86_64-unknown-none --edition 2021 \
           -C relocation-model=static \
+          -C opt-level=s -C strip=symbols \
           -o "$elf" "$src_path"
 
     file_info=$(file "$elf")

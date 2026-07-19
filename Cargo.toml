@@ -42,3 +42,9 @@ test-udp = []
 
 # Lesson 27: run the two-socket nonblocking poll fixture.
 test-nonblocking = []
+
+# Lesson 30: acquire the QEMU slirp lease from a ring-3 DHCP client.
+test-dhcp = []
+
+# Lesson 31: active TCP handshake and byte-position proof against slirp DNS.
+test-tcp = []

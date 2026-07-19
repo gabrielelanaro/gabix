@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Tour 30 — DHCP</title><link rel="stylesheet" href="../assets/lesson.css"><script src="../assets/code-highlight.js" defer></script></head>
+<body><article class="lesson"><header class="lesson-header"><div class="lesson-eyebrow">Code tour · Lesson 30</div><h1 class="lesson-title">DHCP and runtime network configuration</h1><p class="lesson-subtitle">From <code>0.0.0.0</code> to an installed DHCP lease.</p></header>
+<div class="content">
+<p class="lead">When the kernel boots, its IP address is <code>0.0.0.0</code>. It cannot send IP packets in that state: every IPv4 packet carries a source address, and <code>0.0.0.0</code> is not a usable source on the wire. DHCP (Dynamic Host Configuration Protocol) is how a host asks the network for an address &mdash; the host broadcasts a request, a server replies with an offered address, and the host holds that address for a fixed period called a <em>lease</em>.</p>
+<p>This tour follows one exchange end to end. A ring-3 client program runs the four-message DORA exchange (DISCOVER, OFFER, REQUEST, ACK) with QEMU&rsquo;s built-in DHCP server (slirp, at <code>10.0.2.2</code>), then installs the leased address into kernel state through the <code>net_configure</code> syscall. The five sections below walk through this exchange: where the lease lives, how a broadcast packet reaches the wire, what the client sends and receives, how the syscall installs the result, and the serial output that proves it worked.</p>
+
+<h2>1. Kernel configuration state</h2>
+<p><code>NetworkConfig</code> stores the address, subnet mask, gateway, DNS server, and lease duration. <code>source_ip()</code> returns <code>0.0.0.0</code> while this state is empty.</p>
+<div class="snippet-meta"><span class="snippet-file">src/net/mod.rs</span><span class="snippet-what"> — runtime configuration</span></div><pre><code>static CONFIG: IrqMutex&lt;Option&lt;NetworkConfig&gt;&gt; = IrqMutex::new(None);
+
+pub fn source_ip() -&gt; [u8; 4] {
+    config().map(|value| value.address).unwrap_or([0; 4])
+}</code></pre>
+
+<h2>2. Broadcast before configuration</h2>
+<p><code>send_ipv4_packet</code> maps <code>255.255.255.255</code> directly to the Ethernet broadcast address. This path skips ARP because no host owns the limited-broadcast IPv4 address.</p>
+<div class="snippet-meta"><span class="snippet-file">src/virtio.rs</span><span class="snippet-what"> — DHCP transmit path</span></div><pre><code>let broadcast = dst_ip == [255; 4];
+let next_hop_mac = if broadcast {
+    [0xff; 6]
+} else if let Some(mac) = arp::lookup(next_hop_ip) {
+    mac
+} else {
+    self.send_arp_request(next_hop_ip);
+    return None;
+};</code></pre>
+
+<h2>3. The ring-3 exchange</h2>
+<p>The client reads the device MAC address, binds UDP port 68, and runs the four-message exchange. The parser verifies the magic cookie and transaction identifier before reading type-length-value options.</p>
+<div class="snippet-meta"><span class="snippet-file">tests/fixtures/dhcp.rs</span><span class="snippet-what"> — DORA sequence</span></div><pre><code>send(DHCPDISCOVER);
+let offer = receive(DHCPOFFER);
+send(DHCPREQUEST, offer.address, offer.server);
+let ack = receive(DHCPACK);
+net_configure(ack);</code></pre>
+
+<h2>4. Syscall boundary</h2>
+<p>Syscall 904 operation 0 returns the MAC address. Operation 1 validates the required address and mask fields, copies the lease into kernel state, and prints the installed values.</p>
+<div class="snippet-meta"><span class="snippet-file">src/syscall.rs</span><span class="snippet-what"> — configuration installation</span></div><pre><code>net::configure(net::NetworkConfig {
+    address: config.address,
+    subnet_mask: config.subnet_mask,
+    gateway: config.gateway,
+    dns: config.dns,
+    lease_seconds: config.lease_seconds,
+});</code></pre>
+
+<h2>5. End-to-end proof</h2>
+<div class="snippet-meta"><span class="snippet-what">Expected serial output</span></div><pre><code>[dhcp-client] DISCOVER
+[dhcp-client] OFFER
+[dhcp-client] REQUEST
+[dhcp-client] ACK
+[dhcp] configured address=10.0.2.15 ... gateway=10.0.2.2 ...
+[dhcp-client] lease 10.0.2.15 installed from ring 3</code></pre>
+<p>Ask the agent about the BOOTP header, DHCP options, UDP broadcast path, or syscall structure if any step is unclear.</p>
+</div><footer class="lesson-footer"><nav class="lesson-nav"><a href="../lessons/0030-dhcp.html">← Lesson 30</a><a href="../reference/dhcp.html">DHCP quick reference →</a></nav></footer></article></body></html>
