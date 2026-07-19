@@ -1,6 +1,6 @@
 //! Memory management: page-table mapper, exposed as a global API.
 //!
-//! Wraps the `x86_64` crate's `OffsetPageTable` in a `Mutex<Option<...>>`
+//! Wraps the `x86_64` crate's `OffsetPageTable` in an `IrqMutex<Option<...>>`
 //! behind `lazy_static!`. After `init()` populates it, any module can call
 //! `memory::translate(virt)` or `memory::map_to(virt, phys, flags)` without
 //! recreating the mapper.
@@ -12,11 +12,11 @@
 //! - Slice 2.5 (this version): extracted the mapper into a global so other
 //!   modules can use it. Required by M3 (page-fault handlers, user processes).
 
+use crate::irq_mutex::IrqMutex;
 use crate::println;
 use bootloader::bootinfo::BootInfo;
 use core::sync::atomic::{AtomicU64, Ordering};
 use lazy_static::lazy_static;
-use spin::Mutex;
 use x86_64::{
     registers::control::Cr3,
     structures::paging::{
@@ -39,7 +39,7 @@ const HEAP_SIZE: u64 = 100 * 1024;
 // construction time — we fill it in from `init()`. After init, callers can
 // assume it's `Some` and lock it to translate or modify mappings.
 lazy_static! {
-    static ref MAPPER: Mutex<Option<OffsetPageTable<'static>>> = Mutex::new(None);
+    static ref MAPPER: IrqMutex<Option<OffsetPageTable<'static>>> = IrqMutex::new(None);
 }
 
 /// The bootloader's physical-memory offset, captured at init. Adding this
@@ -129,7 +129,9 @@ pub fn map_mmio(phys_start: u64, size: u64) -> u64 {
             // anything other than the MMIO mapping. We pass a physical
             // address that points at device registers, not RAM.
             unsafe {
-                aspace.map_to(page.start_address(), current_phys, flags).unwrap();
+                aspace
+                    .map_to(page.start_address(), current_phys, flags)
+                    .unwrap();
             }
         }
         current_phys += 4096u64;
@@ -395,8 +397,7 @@ impl AddressSpace {
         // no locks but we're also the only CPU).
         unsafe {
             let (src_pml4_frame, _) = Cr3::read();
-            let src_pml4: *const PageTable =
-                phys_to_virt(src_pml4_frame.start_address()).as_ptr();
+            let src_pml4: *const PageTable = phys_to_virt(src_pml4_frame.start_address()).as_ptr();
             let dst_pml4: *mut PageTable =
                 phys_to_virt(self.pml4_frame.start_address()).as_mut_ptr();
 
@@ -488,7 +489,8 @@ impl AddressSpace {
                             }
                             if src_entry.flags().contains(PageTableFlags::USER_ACCESSIBLE) {
                                 // User page: private copy for the dest.
-                                let src_frame_phys = src_entry.frame().expect("src PT entry had no frame");
+                                let src_frame_phys =
+                                    src_entry.frame().expect("src PT entry had no frame");
                                 let dst_frame = BitmapFrameAllocator
                                     .allocate_frame()
                                     .expect("out of frames for deep_clone user page");
@@ -497,7 +499,8 @@ impl AddressSpace {
                                 let src_ptr: *const u8 = src_virt.as_u64() as *const u8;
                                 let dst_ptr: *mut u8 = dst_virt.as_u64() as *mut u8;
                                 core::ptr::copy_nonoverlapping(src_ptr, dst_ptr, 4096);
-                                (&mut *dst_pt)[pt_idx as usize].set_frame(dst_frame, src_entry.flags());
+                                (&mut *dst_pt)[pt_idx as usize]
+                                    .set_frame(dst_frame, src_entry.flags());
                             } else {
                                 // Low-half kernel page (heap, VGA, phys-offset):
                                 // share the frame (copy entry as-is).
@@ -546,7 +549,10 @@ pub fn copy_frame(src_phys: PhysAddr, dst_phys: PhysAddr) {
 ///
 /// Caller must guarantee `bytes.len() <= 4096`.
 pub fn write_to_frame(dst_phys: PhysAddr, bytes: &[u8]) {
-    assert!(bytes.len() <= 4096, "write_to_frame: bytes too long for one frame");
+    assert!(
+        bytes.len() <= 4096,
+        "write_to_frame: bytes too long for one frame"
+    );
     let dst = phys_to_virt(dst_phys).as_u64() as *mut u8;
     // SAFETY: frame is mapped via the direct map.
     unsafe {
@@ -561,7 +567,9 @@ pub fn write_to_frame(dst_phys: PhysAddr, bytes: &[u8]) {
 pub fn zero_frame(dst_phys: PhysAddr) {
     let dst = phys_to_virt(dst_phys).as_u64() as *mut u8;
     // SAFETY: frame is mapped via the direct map.
-    unsafe { core::ptr::write_bytes(dst, 0, 4096); }
+    unsafe {
+        core::ptr::write_bytes(dst, 0, 4096);
+    }
 }
 
 /// Write `bytes.len()` bytes into a physical frame starting at `offset`
@@ -575,7 +583,8 @@ pub fn write_to_frame_at(dst_phys: PhysAddr, offset: usize, bytes: &[u8]) {
     assert!(
         offset.checked_add(bytes.len()).map_or(false, |n| n <= 4096),
         "write_to_frame_at: write out of bounds (offset={}, len={})",
-        offset, bytes.len()
+        offset,
+        bytes.len()
     );
     let dst = phys_to_virt(dst_phys).as_u64() as *mut u8;
     // SAFETY: frame is mapped via the direct map; bounds checked above.
@@ -645,9 +654,7 @@ fn init_heap() {
     // SAFETY: the heap range is now mapped and writable, and we're not
     // using it for anything else.
     unsafe {
-        ALLOCATOR
-            .lock()
-            .init(heap_start.as_u64() as *mut u8, HEAP_SIZE as usize);
+        ALLOCATOR.init(heap_start.as_u64() as *mut u8, HEAP_SIZE as usize);
     }
     println!("[mem] heap initialized: {} bytes", HEAP_SIZE);
 }
@@ -661,14 +668,18 @@ fn heap_end() -> VirtAddr {
 /// mapper hasn't been initialized yet (i.e., `init()` not called).
 fn with_mapper<R>(f: impl FnOnce(&OffsetPageTable) -> R) -> R {
     let guard = MAPPER.lock();
-    let mapper = guard.as_ref().expect("MAPPER not initialized — call memory::init first");
+    let mapper = guard
+        .as_ref()
+        .expect("MAPPER not initialized — call memory::init first");
     f(mapper)
 }
 
 /// Like `with_mapper` but for mutable access (needed by `map_to`).
 fn with_mapper_mut<R>(f: impl FnOnce(&mut OffsetPageTable) -> R) -> R {
     let mut guard = MAPPER.lock();
-    let mapper = guard.as_mut().expect("MAPPER not initialized — call memory::init first");
+    let mapper = guard
+        .as_mut()
+        .expect("MAPPER not initialized — call memory::init first");
     f(mapper)
 }
 
@@ -681,9 +692,8 @@ struct BitmapFrameAllocator;
 
 unsafe impl FrameAllocator<Size4KiB> for BitmapFrameAllocator {
     fn allocate_frame(&mut self) -> Option<PhysFrame<Size4KiB>> {
-        crate::frame_allocator::allocate().map(|frame_number| {
-            PhysFrame::containing_address(PhysAddr::new(frame_number * 4096))
-        })
+        crate::frame_allocator::allocate()
+            .map(|frame_number| PhysFrame::containing_address(PhysAddr::new(frame_number * 4096)))
     }
 }
 

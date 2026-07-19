@@ -9,19 +9,19 @@
 //!   - File    = an open instance (cursor + access mode). Private per `open()`.
 //!   - FdTable = per-process table of FDs (integer keys to Files).
 //!
-//! `Arc<Mutex<...>>` patterns are required because (a) two `open()`s of the
+//! `Arc<IrqMutex<...>>` patterns are required because (a) two `open()`s of the
 //! same inode share its data, (b) two FDs from `dup()` would share one File,
 //! and (c) we have no borrow checker across the kernel/user boundary — syscalls
 //! hand `Arc<File>` clones out so the scheduler and the syscall handler can
 //! both touch the same File without aliasing.
 
+use crate::irq_mutex::IrqMutex;
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
-use spin::Mutex;
 
 // ============================================================
 // InodeKind — what kind of bytes an inode holds
@@ -64,7 +64,7 @@ pub struct Inode {
     /// The file's bytes. `Mutex` for interior mutability so two `File`
     /// instances pointing at the same `Inode` can both write without aliasing
     /// violations. For directories, the bytes are dirent records.
-    pub data: Mutex<Vec<u8>>,
+    pub data: IrqMutex<Vec<u8>>,
 }
 
 /// Monotonic counter for allocating fresh inode numbers. Starts at 1 — Linux
@@ -92,7 +92,7 @@ impl Inode {
         let inode = Arc::new(Inode {
             ino,
             kind,
-            data: Mutex::new(data),
+            data: IrqMutex::new(data),
         });
         REGISTRY.lock().insert(ino, inode.clone());
         inode
@@ -116,8 +116,8 @@ impl Inode {
 /// directory entry's `ino` field is resolved during path walk, this is where
 /// the actual inode struct is fetched from.
 lazy_static::lazy_static! {
-    pub static ref REGISTRY: Mutex<BTreeMap<u64, Arc<Inode>>> =
-        Mutex::new(BTreeMap::new());
+    pub static ref REGISTRY: IrqMutex<BTreeMap<u64, Arc<Inode>>> =
+        IrqMutex::new(BTreeMap::new());
 }
 
 // ============================================================
@@ -169,9 +169,7 @@ pub fn lookup_in_dir(dir_bytes: &[u8], name: &str) -> Option<u64> {
         let entry_name = &dir_bytes[i + 1..i + 1 + name_len];
         if entry_name == name_bytes {
             let ino_start = i + 1 + name_len;
-            let ino_bytes: [u8; 8] = dir_bytes[ino_start..ino_start + 8]
-                .try_into()
-                .ok()?;
+            let ino_bytes: [u8; 8] = dir_bytes[ino_start..ino_start + 8].try_into().ok()?;
             return Some(u64::from_le_bytes(ino_bytes));
         }
         i += entry_size;
@@ -208,10 +206,9 @@ pub fn resolve_path(path: &str) -> Option<Arc<Inode>> {
         return None;
     }
 
-    // Lock the mounted filesystem for the duration of the walk.
-    // Single-threaded kernel, so no contention.
-    let fs_guard = MOUNTED_FS.lock();
-    let fs = fs_guard.as_ref()?;
+    // Clone the mounted filesystem handle, then release the registry lock
+    // before any disk operation that may sleep waiting for an interrupt.
+    let fs = MOUNTED_FS.lock().as_ref()?.clone();
 
     let mut current_ino: u64 = 2; // ext2 root, by convention
 
@@ -246,7 +243,7 @@ pub fn resolve_path(path: &str) -> Option<Arc<Inode>> {
     let inode = Arc::new(Inode {
         ino: current_ino,
         kind,
-        data: Mutex::new(data),
+        data: IrqMutex::new(data),
     });
     REGISTRY.lock().insert(current_ino, inode.clone());
     Some(inode)
@@ -270,7 +267,7 @@ pub struct File {
     /// The read/write offset. `Mutex` so multiple syscalls on the same File
     /// can update it without re-borrowing the File — which matters because
     /// the scheduler hands `Arc<File>` clones out, not `&mut File`.
-    pub cursor: Mutex<u64>,
+    pub cursor: IrqMutex<u64>,
 }
 
 impl File {
@@ -278,7 +275,7 @@ impl File {
     pub fn new(inode: Arc<Inode>) -> Self {
         Self {
             inode,
-            cursor: Mutex::new(0),
+            cursor: IrqMutex::new(0),
         }
     }
 }
@@ -297,7 +294,13 @@ impl File {
 /// "0=stdin, 1=stdout, 2=stderr" live at the syscall-handler level, not here
 /// — this table is purely an integer→File map.
 pub struct FdTable {
-    table: Vec<Option<Arc<File>>>,
+    table: Vec<Option<OpenObject>>,
+}
+
+#[derive(Clone)]
+pub enum OpenObject {
+    File(Arc<File>),
+    Socket(Arc<crate::net::socket::UdpSocket>),
 }
 
 impl FdTable {
@@ -325,23 +328,41 @@ impl FdTable {
     /// "Lowest free" matches POSIX `open()` semantics — after closing FD 3,
     /// the next `open()` reuses 3 rather than appending at the end.
     pub fn open(&mut self, file: Arc<File>) -> u64 {
+        self.open_object(OpenObject::File(file))
+    }
+
+    pub fn open_socket(&mut self, socket: Arc<crate::net::socket::UdpSocket>) -> u64 {
+        self.open_object(OpenObject::Socket(socket))
+    }
+
+    fn open_object(&mut self, object: OpenObject) -> u64 {
         // Scan for the first None slot.
         for (i, slot) in self.table.iter_mut().enumerate() {
             if slot.is_none() {
-                *slot = Some(file);
+                *slot = Some(object);
                 return i as u64;
             }
         }
         // No free slot — append.
         let fd = self.table.len() as u64;
-        self.table.push(Some(file));
+        self.table.push(Some(object));
         fd
     }
 
     /// Look up the `File` for `fd`, if any. Returns a cloned `Arc` (cheap
     /// refcount bump) so the caller can use it without holding the FdTable.
     pub fn get(&self, fd: u64) -> Option<Arc<File>> {
-        self.table.get(fd as usize).and_then(|slot| slot.clone())
+        match self.table.get(fd as usize)?.as_ref()? {
+            OpenObject::File(file) => Some(file.clone()),
+            OpenObject::Socket(_) => None,
+        }
+    }
+
+    pub fn get_socket(&self, fd: u64) -> Option<Arc<crate::net::socket::UdpSocket>> {
+        match self.table.get(fd as usize)?.as_ref()? {
+            OpenObject::Socket(socket) => Some(socket.clone()),
+            OpenObject::File(_) => None,
+        }
     }
 
     /// Remove the entry for `fd`. Returns `true` if there was an entry to
@@ -404,12 +425,12 @@ pub trait Filesystem {
 /// The currently-mounted filesystem. One at a time (Linux supports
 /// many simultaneous mounts; we don't need that yet).
 lazy_static::lazy_static! {
-    pub static ref MOUNTED_FS: Mutex<Option<Box<dyn Filesystem + Send + Sync>>> =
-        Mutex::new(None);
+    pub static ref MOUNTED_FS: IrqMutex<Option<Arc<dyn Filesystem + Send + Sync>>> =
+        IrqMutex::new(None);
 }
 
 /// Install `fs` as the mounted filesystem. Subsequent `resolve_path`
 /// calls dispatch to it via the trait.
 pub fn mount(fs: Box<dyn Filesystem + Send + Sync>) {
-    *MOUNTED_FS.lock() = Some(fs);
+    *MOUNTED_FS.lock() = Some(Arc::from(fs));
 }

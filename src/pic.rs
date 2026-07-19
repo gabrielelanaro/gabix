@@ -8,7 +8,7 @@
 //! After `init()`, all IRQs are masked (no interrupts delivered yet).
 //! Later slices will unmask specific ones — the timer first.
 
-use spin::Mutex;
+use crate::irq_mutex::IrqMutex;
 use pic8259::ChainedPics;
 
 /// Offset for the master PIC. IRQs 0-7 → CPU vectors 0x20-0x27 (32-39).
@@ -21,9 +21,8 @@ pub const PIC_2_OFFSET: u8 = 0x28;
 ///
 /// Locked because we mutate it from multiple places: init, mask/unmask,
 /// and sending EOI from interrupt handlers.
-pub static PICS: Mutex<ChainedPics> = Mutex::new(unsafe {
-    ChainedPics::new(PIC_1_OFFSET, PIC_2_OFFSET)
-});
+pub static PICS: IrqMutex<ChainedPics> =
+    IrqMutex::new(unsafe { ChainedPics::new(PIC_1_OFFSET, PIC_2_OFFSET) });
 
 /// Initialize the PICs with our remapped offsets and unmask the timer.
 ///

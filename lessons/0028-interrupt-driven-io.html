@@ -128,7 +128,7 @@
     <div class="lesson-meta">
       <span><strong>Prereq</strong> <a href="0009-block-layer.html">Lesson 9</a> (block layer), <a href="0027-nonblocking-sockets.html">Lesson 27</a> (poll)</span>
       <span><strong>Focus</strong> APIC + MSI-X + ISR</span>
-      <span><strong>Build status</strong> planned</span>
+      <span><strong>Build status</strong> implemented and tested</span>
     </div>
   </header>
 
@@ -233,7 +233,7 @@
       <div class="dd-arrow">&darr;</div>
       <div class="dd-stage">
         <span class="dd-num">6</span>
-        <span class="dd-label"><code>timer_inner</code>: increment tick counter, send EOI to PIC, call <code>yield_now()</code></span>
+        <span class="dd-label"><code>timer_inner</code>: increment tick counter, send EOI to PIC and Local APIC, call <code>yield_now()</code></span>
       </div>
       <div class="dd-arrow">&darr;</div>
       <div class="dd-stage">
@@ -411,7 +411,9 @@
       <div class="callout-title">EOI: two controllers, two destinations</div>
       <p style="margin:0;">
         The timer interrupt arrives through the PIC, so
-        <code>timer_inner</code> sends EOI to the PIC. The virtio-blk
+        <code>timer_inner</code> sends EOI to the PIC and to the Local APIC
+        because QEMU routes the legacy PIC through its ExtINT virtual-wire
+        input after xAPIC is enabled. The virtio-blk
         interrupt will arrive through the APIC via MSI-X, so its ISR
         must send EOI to the APIC &mdash; write <code>0</code> to
         <code>0xFEE000B0</code>. Sending EOI to the wrong controller
@@ -522,11 +524,13 @@
     <p>The replacement loop:</p>
 
     <div class="poll-code"><span class="k">let</span> completion = <span class="k">loop</span> {
+    interrupts::<span class="f">disable</span>();
     <span class="k">if let</span> <span class="f">Some</span>(c) = <span class="k">self</span>.queue.<span class="f">as_mut</span>().<span class="f">unwrap</span>().<span class="f">poll_completion</span>() {
+        interrupts::<span class="f">enable</span>();
         <span class="k">break</span> c;
     }
-    <span class="c">// CPU sleeps until next interrupt: timer, device completion, etc.</span>
-    <span class="k">unsafe</span> { core::arch::asm!(<span class="c">"hlt"</span>); }
+    <span class="c">// Atomic sti; hlt closes the check-to-sleep race.</span>
+    interrupts::<span class="f">enable_and_hlt</span>();
 };</div>
 
     <p>
@@ -534,15 +538,40 @@
       <code>hlt</code> wakes, <code>poll_completion</code> returns
       <code>None</code>, the loop goes back to <code>hlt</code>. A
       brief check, then back to sleep. When the device finishes, its
-      MSI-X write hits the APIC, the ISR drains the used ring, and
+      MSI-X write hits the APIC, the ISR sends EOI and returns, and
       the next <code>poll_completion</code> call returns the result.
     </p>
+
+    <div class="callout">
+      <div class="callout-title">hlt and the scheduler</div>
+      <p style="margin:0 0 0.6rem;">
+        <code>hlt</code> does not freeze the scheduler. When the timer
+        fires during <code>hlt</code>, the timer ISR runs
+        <code>yield_now()</code> as usual &mdash; the scheduler switches
+        to another task. That task gets CPU time. Eventually we come
+        back, resume after <code>hlt</code>, and check the used ring.
+        <code>hlt</code> just prevents the CPU from burning cycles
+        between timer ticks; it does not prevent other processes from
+        running.
+      </p>
+      <p style="margin:0;">
+        This means two processes could both call
+        <code>read_sector</code> while each other's requests are in
+        flight. The current virtqueue is single-outstanding (one
+        request at a time) and has no lock. For Lesson&nbsp;28 this is
+        safe &mdash; boot is single-user, and user programs that read
+        from disk don't run concurrently in the test scenarios. Lesson&nbsp;29
+        replaces the <code>hlt</code> loop with proper blocking states
+        (task marked <code>Blocked</code>, ISR wakes it) and adds the
+        locking that concurrent access requires.
+      </p>
+    </div>
 
     <p>
       This is still synchronous I/O &mdash; <code>read_sector</code>
       blocks until the data arrives. But the CPU is no longer burning
-      cycles during the wait. It sleeps. That is the difference
-      between polling and interrupt-driven I/O.
+      cycles during the wait. It sleeps between timer ticks. That is
+      the difference between polling and interrupt-driven I/O.
     </p>
 
     <h2>Build steps</h2>
@@ -611,12 +640,18 @@
           <strong>IDT entry and ISR handler.</strong> Write a naked
           wrapper for vector <code>0x21</code> &mdash; identical shape
           to <code>timer_wrapper</code> (push 15 registers, call inner,
-          pop 15 registers, <code>iretq</code>). The inner handler:
-          call <code>poll_completion</code> in a loop to drain all
-          pending used-ring entries, then send EOI to the Local APIC
-          (write <code>0</code> to APIC offset <code>0xB0</code>).
-          Register in <code>IDT[0x21]</code> and reload the IDT. Verify:
-          boot reaches the same point without triple-faulting.
+          pop 15 registers, <code>iretq</code>). The inner handler does
+          one thing: send EOI to the Local APIC (write <code>0</code>
+          to APIC offset <code>0xB0</code>). Do <em>not</em> call
+          <code>poll_completion</code> from the ISR &mdash;
+          <code>read_sector</code> checks the used ring itself after
+          <code>hlt</code> wakes. If the ISR drained the ring,
+          <code>read_sector</code>'s <code>poll_completion</code> would
+          find nothing. The ISR's only job is to acknowledge the
+          interrupt so the APIC can deliver the next one, and to cause
+          <code>hlt</code> to return. Register in
+          <code>IDT[0x21]</code> and reload the IDT. Verify: boot
+          reaches the same point without triple-faulting.
         </div>
       </div>
 
@@ -672,7 +707,8 @@
       <div class="probe-title">Probe &mdash; check the model before you build</div>
       <p>
         The timer ISR sends EOI to the PIC
-        (<code>PICS.lock().notify_end_of_interrupt(0x20)</code>). The
+        (<code>PICS.lock().notify_end_of_interrupt(0x20)</code>) and the
+        Local APIC virtual-wire path. The
         virtio-blk ISR will send EOI to the Local APIC (write
         <code>0</code> to APIC offset <code>0xB0</code>). Two
         questions: what happens to future virtio-blk interrupts if the

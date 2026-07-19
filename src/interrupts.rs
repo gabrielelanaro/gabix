@@ -13,10 +13,16 @@ use x86_64::structures::idt::{
 /// every tick. Public so other modules (e.g. main's monitoring loop)
 /// can read it for periodic actions.
 pub static TICKS: AtomicUsize = AtomicUsize::new(0);
+pub static VIRTIO_BLK_INTERRUPTS: AtomicUsize = AtomicUsize::new(0);
+pub static VIRTIO_NET_RX_INTERRUPTS: AtomicUsize = AtomicUsize::new(0);
+pub static VIRTIO_NET_TX_INTERRUPTS: AtomicUsize = AtomicUsize::new(0);
 
 /// Vector number for the timer (PIC IRQ 0, mapped to vector 0x20 = 32).
 /// Matches `crate::pic::PIC_1_OFFSET`.
 const TIMER_VECTOR: u8 = 0x20;
+pub const VIRTIO_BLK_VECTOR: u8 = 0x21;
+pub const VIRTIO_NET_RX_VECTOR: u8 = 0x30;
+pub const VIRTIO_NET_TX_VECTOR: u8 = 0x31;
 
 lazy_static! {
     /// The kernel's IDT. Add handlers here as we implement them.
@@ -34,6 +40,18 @@ lazy_static! {
             unsafe { core::mem::transmute(timer_wrapper as unsafe extern "C" fn()) };
         idt[TIMER_VECTOR].set_handler_fn(timer);
 
+        let virtio_blk: HandlerFunc =
+            unsafe { core::mem::transmute(virtio_blk_wrapper as unsafe extern "C" fn()) };
+        idt[VIRTIO_BLK_VECTOR].set_handler_fn(virtio_blk);
+
+        let virtio_net_rx: HandlerFunc =
+            unsafe { core::mem::transmute(virtio_net_rx_wrapper as unsafe extern "C" fn()) };
+        idt[VIRTIO_NET_RX_VECTOR].set_handler_fn(virtio_net_rx);
+
+        let virtio_net_tx: HandlerFunc =
+            unsafe { core::mem::transmute(virtio_net_tx_wrapper as unsafe extern "C" fn()) };
+        idt[VIRTIO_NET_TX_VECTOR].set_handler_fn(virtio_net_tx);
+
         // Page fault handler (vector 14). Different signature: has an
         // error code pushed by the CPU. The wrapper extracts both the
         // stack frame and the error code and passes them to the inner.
@@ -46,6 +64,91 @@ lazy_static! {
 
         idt
     };
+}
+
+#[unsafe(naked)]
+unsafe extern "C" fn virtio_blk_wrapper() {
+    naked_asm!(
+        "push rax", "push rbx", "push rcx", "push rdx", "push rsi",
+        "push rdi", "push rbp", "push r8", "push r9", "push r10",
+        "push r11", "push r12", "push r13", "push r14", "push r15",
+        "call {inner}",
+        "pop r15", "pop r14", "pop r13", "pop r12", "pop r11",
+        "pop r10", "pop r9", "pop r8", "pop rbp", "pop rdi",
+        "pop rsi", "pop rdx", "pop rcx", "pop rbx", "pop rax",
+        "iretq",
+        inner = sym virtio_blk_inner,
+    );
+}
+
+extern "C" fn virtio_blk_inner() {
+    VIRTIO_BLK_INTERRUPTS.fetch_add(1, Ordering::Relaxed);
+    crate::apic::end_of_interrupt();
+}
+
+/// Naked wrapper for the virtio-net RX interrupt (vector 0x30).
+///
+/// Same shape as `virtio_blk_wrapper`: save all 15 general-purpose
+/// registers, call the inner handler, restore, `iretq`. The 40-byte CPU
+/// frame plus 120 bytes of pushes leaves RSP 16-aligned for the call.
+#[unsafe(naked)]
+unsafe extern "C" fn virtio_net_rx_wrapper() {
+    naked_asm!(
+        "push rax", "push rbx", "push rcx", "push rdx", "push rsi",
+        "push rdi", "push rbp", "push r8", "push r9", "push r10",
+        "push r11", "push r12", "push r13", "push r14", "push r15",
+        "call {inner}",
+        "pop r15", "pop r14", "pop r13", "pop r12", "pop r11",
+        "pop r10", "pop r9", "pop r8", "pop rbp", "pop rdi",
+        "pop rsi", "pop rdx", "pop rcx", "pop rbx", "pop rax",
+        "iretq",
+        inner = sym virtio_net_rx_inner,
+    );
+}
+
+/// The RX interrupt does almost nothing itself: count it, wake the
+/// deferred network task, EOI. The actual work (draining the RX ring,
+/// parsing frames, delivering datagrams, replying to ARP/ICMP) happens
+/// in `network_task` — task context, where printing, locking, and
+/// transmitting are all safe. This split is Linux's NAPI shape: the
+/// hardirq handler schedules the poll; the poll runs in a context that
+/// can sleep.
+///
+/// Why not dispatch here: `poll_rx` prints to the serial port and can
+/// transmit replies (ARP reply, ICMP echo reply). Printing takes the
+/// serial spinlock — if this ISR interrupted a task holding that lock,
+/// locking again would deadlock. Transmitting sleeps in `send_frame`'s
+/// hlt wait, which an ISR must not do. Both rules were learned the hard
+/// way (see the timer ISR's no-printing rule from Lesson 28).
+extern "C" fn virtio_net_rx_inner() {
+    VIRTIO_NET_RX_INTERRUPTS.fetch_add(1, Ordering::Relaxed);
+    if let Some(pid) = crate::virtio::net_task_pid() {
+        crate::task::wake(pid);
+    }
+    crate::apic::end_of_interrupt();
+}
+
+/// Naked wrapper for the virtio-net TX interrupt (vector 0x31). The
+/// handler only counts and EOIs — `send_frame` re-checks the TX used
+/// ring itself after its hlt wakes, the same design as virtio-blk.
+#[unsafe(naked)]
+unsafe extern "C" fn virtio_net_tx_wrapper() {
+    naked_asm!(
+        "push rax", "push rbx", "push rcx", "push rdx", "push rsi",
+        "push rdi", "push rbp", "push r8", "push r9", "push r10",
+        "push r11", "push r12", "push r13", "push r14", "push r15",
+        "call {inner}",
+        "pop r15", "pop r14", "pop r13", "pop r12", "pop r11",
+        "pop r10", "pop r9", "pop r8", "pop rbp", "pop rdi",
+        "pop rsi", "pop rdx", "pop rcx", "pop rbx", "pop rax",
+        "iretq",
+        inner = sym virtio_net_tx_inner,
+    );
+}
+
+extern "C" fn virtio_net_tx_inner() {
+    VIRTIO_NET_TX_INTERRUPTS.fetch_add(1, Ordering::Relaxed);
+    crate::apic::end_of_interrupt();
 }
 
 /// Load our IDT. After this, the CPU consults our table when an
@@ -156,19 +259,23 @@ unsafe extern "C" fn timer_wrapper() {
     );
 }
 
-/// The actual timer handler. Prints "tick" occasionally, sends EOI to
-/// the PIC so the next tick can fire, then preempts the current task
+/// The actual timer handler. Increments the tick counter, acknowledges
+/// both interrupt controllers, then preempts the current task
 /// by calling `yield_now()`. The EOI must come *before* the yield —
 /// otherwise the next tick stays queued in the PIC and we never
 /// preempt again.
 ///
+/// Interrupt handlers must not print: a timer can interrupt code holding
+/// the serial lock, and trying to acquire it again would deadlock.
 /// Because the wrapper saved all GP registers, this function (and
 /// anything it calls, including `yield_now` → `switch`) can freely
 /// clobber any register. The wrapper restores them on the way out.
 extern "C" fn timer_inner() {
-    let count = TICKS.fetch_add(1, Ordering::SeqCst) + 1;
-    if count % 100 == 0 {
-        println!("tick #{}", count);
+    TICKS.fetch_add(1, Ordering::Relaxed);
+    // Bounded-latency backstop for deferred RX while virtio-net MSI-X
+    // delivery remains unreliable in the current QEMU configuration.
+    if let Some(pid) = crate::virtio::net_task_pid() {
+        crate::task::wake(pid);
     }
     // Send EOI before preempting so the next tick can fire.
     unsafe {
@@ -176,6 +283,9 @@ extern "C" fn timer_inner() {
             .lock()
             .notify_end_of_interrupt(TIMER_VECTOR);
     }
+    // The legacy PIC reaches the CPU through the Local APIC's ExtINT
+    // virtual-wire input once xAPIC is enabled. Both controllers need EOI.
+    crate::apic::end_of_interrupt();
     // Preempt: switch to the next task. When we eventually get switched
     // back to, we resume here, then iretq returns to wherever the
     // interrupted task was.
@@ -224,10 +334,10 @@ extern "C" fn page_fault_inner(stack_frame: &InterruptStackFrame, error_code: u6
     println!(
         "  error code: {:#b}  (P={}, W/R={}, U/S={}, RSVD={})",
         error_code,
-        error_code & 1,                          // bit 0: page present?
-        (error_code >> 1) & 1,                   // bit 1: write vs read
-        (error_code >> 2) & 1,                   // bit 2: user vs supervisor
-        (error_code >> 3) & 1,                   // bit 3: reserved bits violation
+        error_code & 1,        // bit 0: page present?
+        (error_code >> 1) & 1, // bit 1: write vs read
+        (error_code >> 2) & 1, // bit 2: user vs supervisor
+        (error_code >> 3) & 1, // bit 3: reserved bits violation
     );
 
     // Read what the user wrote to its own memory (kernel can access any
@@ -235,7 +345,10 @@ extern "C" fn page_fault_inner(stack_frame: &InterruptStackFrame, error_code: u6
     // before triggering the fault — proves user code actually ran.
     let user_magic_addr = 0x7000_0000usize as *const u64;
     let user_magic = unsafe { core::ptr::read_volatile(user_magic_addr) };
-    println!("  user wrote to its memory at 0x7000_0000: 0x{:x}", user_magic);
+    println!(
+        "  user wrote to its memory at 0x7000_0000: 0x{:x}",
+        user_magic
+    );
 
     println!("\n{:#?}", stack_frame);
 

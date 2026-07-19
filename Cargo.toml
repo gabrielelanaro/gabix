@@ -39,3 +39,6 @@ test-icmp = []
 # When enabled, the kernel exec's /udp_echo.elf for the Lesson 25
 # host-to-QEMU-to-guest-to-host UDP echo proof.
 test-udp = []
+
+# Lesson 27: run the two-socket nonblocking poll fixture.
+test-nonblocking = []

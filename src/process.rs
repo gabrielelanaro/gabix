@@ -17,11 +17,11 @@
 //! "once a process has been named N, no other process is ever N" rule.
 
 use crate::fs::FdTable;
+use crate::irq_mutex::IrqMutex;
 use crate::memory::AddressSpace;
 use crate::println;
 use alloc::vec::Vec;
 use lazy_static::lazy_static;
-use spin::Mutex;
 
 /// Maximum bytes kept for a process name. This is a fixed kernel-side
 /// display name, not a full path.
@@ -251,11 +251,10 @@ impl ProcessTable {
 
 lazy_static! {
     /// The kernel's one process table. Mirrors the `SCHEDULER` pattern:
-    /// a `spin::Mutex` behind `lazy_static!`. Every access from a
-    /// syscall path happens under `without_interrupts`, the same
-    /// discipline the recently-fixed `SCHEDULER` accesses use —
-    /// otherwise the timer could fire mid-access and try to re-lock.
-    pub static ref PROCESS_TABLE: Mutex<ProcessTable> = Mutex::new(ProcessTable::new());
+    /// an `IrqMutex` behind `lazy_static!`. The guard disables interrupts
+    /// before acquiring the spinlock and restores the previous IF state
+    /// after unlocking, so timer preemption cannot strand the lock owner.
+    pub static ref PROCESS_TABLE: IrqMutex<ProcessTable> = IrqMutex::new(ProcessTable::new());
 }
 
 /// Register the kernel's first process as PID 0. Called once, from
@@ -269,12 +268,7 @@ lazy_static! {
 pub fn init() {
     x86_64::instructions::interrupts::without_interrupts(|| {
         let mut table = PROCESS_TABLE.lock();
-        let boot = Process::new(
-            "main",
-            None,
-            AddressSpace::from_current(),
-            FdTable::new(),
-        );
+        let boot = Process::new("main", None, AddressSpace::from_current(), FdTable::new());
         let pid = table.allocate(boot);
         // The boot process is, by construction, the first allocation.
         assert_eq!(pid, Pid::ZERO, "boot process must be PID 0");

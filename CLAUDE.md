@@ -40,3 +40,5 @@ State the positive claim directly. If a contrast is genuinely load-bearing (e.g.
 
 Audit every draft before sending. The user reads these tics as condescension — being told what to think before being given the thought.
 
+For lessons, tours, and explanatory prose, also follow the **`plainspoken`** skill (`~/.config/opencode/skills/plainspoken/SKILL.md`): name the actual component, action, and value; strip metaphor, personification, vague verbs, and compressed phrasing that makes the reader infer what literally happens. The contrastive-opener ban above is the narrow chat-reply rule; plainspoken is the broader technical-prose rule.
+

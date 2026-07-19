@@ -1,0 +1,305 @@
+/* ============================================================
+   lease-office.css — "The Lease Office" DHCP server minigame
+   Embedded at the end of a lesson. The player runs the DHCP
+   server: clients arrive with DISCOVER/REQUEST messages and
+   the player replies OFFER / ACK / NAK before patience runs
+   out. Palette and type come from lesson.css variables, so
+   the game reads as part of the course.
+
+   Markup lives in the lesson; behavior in lease-office.js.
+   ============================================================ */
+
+.lease-office {
+  margin: 1.5rem 0;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+  font-family: var(--font-sans);
+  overflow: hidden;
+}
+
+/* ---- top bar ---- */
+.lo-topbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1rem;
+  padding: 0.7rem 1rem;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-soft);
+  flex-wrap: wrap;
+}
+
+.lo-title {
+  font-weight: 700;
+  font-size: 0.95rem;
+  color: var(--text);
+}
+
+.lo-title span {
+  font-weight: 400;
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  color: var(--text-dim);
+  margin-left: 0.5rem;
+}
+
+.lo-score { display: flex; gap: 0.5rem; align-items: center; }
+
+.lo-chip {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  padding: 0.2rem 0.6rem;
+  border-radius: 999px;
+  border: 1px solid var(--border-bright);
+  color: var(--text-dim);
+  background: var(--surface);
+}
+
+.lo-chip.lo-good { border-color: #15803d; color: #15803d; }
+.lo-chip.lo-bad  { border-color: #b91c1c; color: #b91c1c; }
+
+.lo-restart,
+.lo-end button {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  padding: 0.25rem 0.7rem;
+  border-radius: 4px;
+  border: 1px solid var(--border-bright);
+  background: var(--surface);
+  color: var(--text);
+  cursor: pointer;
+}
+.lo-restart:hover, .lo-end button:hover { background: var(--surface-soft); }
+
+/* ---- main grid ---- */
+.lo-grid {
+  display: grid;
+  grid-template-columns: 11rem 1fr 15rem;
+  gap: 0;
+  min-height: 22rem;
+}
+
+.lo-col {
+  padding: 0.75rem 0.9rem;
+  border-right: 1px solid var(--border);
+}
+.lo-col:last-child { border-right: none; }
+
+.lo-col h3 {
+  margin: 0 0 0.6rem;
+  font-family: var(--font-sans);
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+.lo-col h3 small {
+  display: block;
+  text-transform: none;
+  letter-spacing: 0;
+  font-weight: 400;
+  color: var(--text-faint);
+  margin-top: 0.15rem;
+}
+
+/* ---- address pool ---- */
+.lo-pool { display: flex; flex-direction: column; gap: 0.5rem; }
+
+.lo-slot {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.45rem 0.6rem;
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  background: var(--surface);
+}
+
+.lo-slot code { background: none; padding: 0; color: var(--text); font-weight: 600; }
+
+.lo-slot-state {
+  display: block;
+  font-size: 0.68rem;
+  color: var(--text-dim);
+  margin-top: 0.15rem;
+}
+
+.lo-slot[data-state="held"]   { border-color: var(--accent); background: var(--accent-soft); }
+.lo-slot[data-state="leased"] { border-color: #15803d; background: #f0fdf4; }
+.lo-slot[data-state="leased"] .lo-slot-state { color: #15803d; }
+.lo-slot[data-state="held"] .lo-slot-state { color: var(--accent); }
+
+.lo-slot-bar {
+  display: block;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--border);
+  margin-top: 0.35rem;
+  overflow: hidden;
+}
+.lo-slot-bar i {
+  display: block;
+  height: 100%;
+  background: var(--text-faint);
+  transition: width 0.1s linear;
+}
+.lo-slot[data-state="held"] .lo-slot-bar i { background: var(--accent); }
+.lo-slot[data-state="leased"] .lo-slot-bar i { background: #15803d; }
+
+/* ---- waiting room ---- */
+.lo-room { display: flex; flex-direction: column; gap: 0.55rem; }
+
+.lo-empty {
+  color: var(--text-faint);
+  font-size: 0.85rem;
+  font-style: italic;
+  margin: 0.5rem 0;
+}
+
+.lo-client {
+  display: grid;
+  grid-template-columns: 2rem 1fr;
+  gap: 0.15rem 0.6rem;
+  text-align: left;
+  padding: 0.5rem 0.65rem;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--surface);
+  cursor: pointer;
+  font-family: var(--font-sans);
+}
+
+.lo-client:hover { background: var(--surface-soft); }
+.lo-client.selected { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.lo-client.lo-gone { opacity: 0; transition: opacity 0.4s; }
+
+.lo-avatar {
+  grid-row: 1 / 3;
+  width: 2rem;
+  height: 2rem;
+  border-radius: 50%;
+  background: var(--surface-soft);
+  border: 1px solid var(--border-bright);
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+  font-weight: 700;
+  font-size: 0.9rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  align-self: center;
+}
+
+.lo-who { font-size: 0.78rem; color: var(--text); }
+.lo-who code { font-size: 0.66rem; color: var(--text-faint); background: none; padding: 0; margin-left: 0.3rem; }
+
+.lo-bubble {
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  color: var(--text-dim);
+  background: var(--surface-soft);
+  border-radius: 5px;
+  padding: 0.3rem 0.5rem;
+  line-height: 1.5;
+}
+.lo-bubble strong { color: var(--accent); font-weight: 700; }
+
+.lo-patience {
+  grid-column: 1 / 3;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--border);
+  overflow: hidden;
+}
+.lo-patience i {
+  display: block;
+  height: 100%;
+  width: 100%;
+  background: #15803d;
+  transition: width 0.1s linear;
+}
+.lo-client.impatient .lo-patience i { background: var(--accent); }
+.lo-client.desperate .lo-patience i { background: #b91c1c; }
+
+/* ---- side column: preview + log ---- */
+.lo-preview {
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  line-height: 1.6;
+  color: var(--text-dim);
+  background: var(--surface-soft);
+  border-radius: 6px;
+  padding: 0.5rem 0.6rem;
+  min-height: 4.5rem;
+  margin-bottom: 0.9rem;
+  white-space: pre-wrap;
+}
+.lo-preview strong { color: var(--accent); }
+
+.lo-log {
+  margin: 0;
+  padding: 0 0 0 1.1rem;
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  line-height: 1.55;
+  color: var(--text-dim);
+  max-height: 12rem;
+  overflow-y: auto;
+}
+.lo-log li { margin: 0.15rem 0; }
+.lo-log li.lo-ok   { color: #15803d; }
+.lo-log li.lo-err  { color: #b91c1c; }
+.lo-log li.lo-wire { color: var(--text-dim); }
+
+/* ---- action bar ---- */
+.lo-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.7rem 1rem;
+  border-top: 1px solid var(--border);
+  background: var(--surface-soft);
+  flex-wrap: wrap;
+}
+
+.lo-actions button {
+  font-family: var(--font-mono);
+  font-weight: 700;
+  font-size: 0.78rem;
+  padding: 0.45rem 1.1rem;
+  border-radius: 5px;
+  cursor: pointer;
+  border: 1px solid var(--border-bright);
+  background: var(--surface);
+  color: var(--text);
+}
+.lo-actions button:hover { background: var(--surface-soft); }
+.lo-actions button[data-lo-act="offer"] { border-color: var(--accent); color: var(--accent); }
+.lo-actions button[data-lo-act="ack"]   { border-color: #15803d; color: #15803d; }
+.lo-actions button[data-lo-act="nak"]   { border-color: #b91c1c; color: #b91c1c; }
+
+.lo-hint {
+  font-size: 0.72rem;
+  color: var(--text-faint);
+  font-family: var(--font-mono);
+}
+.lo-hint.flash { color: #b91c1c; font-weight: 600; }
+
+/* ---- end panel ---- */
+.lo-end {
+  padding: 1.25rem 1.5rem;
+  border-top: 1px solid var(--border);
+  background: var(--accent-soft);
+  text-align: center;
+}
+.lo-end h3 { margin: 0 0 0.4rem; color: var(--accent); font-size: 1rem; }
+.lo-end p { margin: 0 0 0.8rem; font-size: 0.9rem; color: var(--text); }
+
+/* ---- responsive ---- */
+@media (max-width: 860px) {
+  .lo-grid { grid-template-columns: 1fr; }
+  .lo-col { border-right: none; border-bottom: 1px solid var(--border); }
+  .lo-col:last-child { border-bottom: none; }
+  .lo-log { max-height: 8rem; }
+}

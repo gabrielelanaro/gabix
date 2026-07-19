@@ -5,9 +5,9 @@
 //! See docs/frame-allocator.html for the design rationale and a side-by-
 //! side comparison with the buddy allocator Linux uses.
 
+use crate::irq_mutex::IrqMutex;
 use bootloader::bootinfo::{MemoryMap, MemoryRegionType};
 use lazy_static::lazy_static;
-use spin::Mutex;
 
 /// Size of one physical frame (same as one virtual page on x86_64).
 const FRAME_SIZE: usize = 4096;
@@ -74,8 +74,8 @@ impl FrameAllocator {
         let mut free = 0usize;
         for region in memory_map.iter() {
             if region.region_type == MemoryRegionType::Usable {
-                for frame in region.range.start_frame_number as usize
-                    ..region.range.end_frame_number as usize
+                for frame in
+                    region.range.start_frame_number as usize..region.range.end_frame_number as usize
                 {
                     self.clear_bit(frame);
                     free += 1;
@@ -133,7 +133,7 @@ impl FrameAllocator {
 lazy_static! {
     /// Global frame allocator. Locked because we mutate the bitmap from
     /// any context (eventually including page-fault handlers).
-    pub static ref FRAMES: Mutex<FrameAllocator> = Mutex::new(FrameAllocator::empty());
+    pub static ref FRAMES: IrqMutex<FrameAllocator> = IrqMutex::new(FrameAllocator::empty());
 }
 
 /// One-time initialization. Call from `_start` once `boot_info` is available.

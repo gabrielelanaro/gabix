@@ -6,6 +6,12 @@ Approach: follow the "Writing an OS in Rust" tutorial (phil-opp.com) as the spin
 
 ## Roadmap
 
+### Networking objective
+- [x] Lesson 26.1 UDP socket objects, per-process FDs, and port routing
+- [x] Lesson 26.2 `socket`, `bind`, `sendto`, and `recvfrom` syscalls
+- [~] Lesson 26.3 blocking receive with scheduler wakeup and network worker
+- [~] Lesson 26.4 ring-3 UDP echo server and host-forwarded E2E test
+
 Status legend: `[ ]` not started · `[~]` in progress · `[x]` done
 
 ### Month 1 — Skeleton & boot
@@ -518,7 +524,73 @@ A milestone is a "demo-able" checkpoint. Worth a commit + tag + log entry.
 
 ## Progress Log
 
+### 2026-07-19 (IRQ-safe locking refactor) — encode preemption safety in the lock type
+- **Done:** Added `IrqMutex<T>` and its RAII guard. `lock()` saves the caller's IF state, disables interrupts before acquiring the underlying spinlock, and the guard releases the spinlock before restoring IF. Nested locks preserve an already-disabled state. Migrated the console, serial port, scheduler, process table, PIC, frame allocator, page-table mapper, heap allocator, UDP socket/port state, ARP cache, inode cache, inode data, file cursors, and mounted-filesystem registry. The mounted filesystem now stores an `Arc` and clones it before disk operations, so its registry lock is never held across interrupt-driven I/O. The virtio-net and ext2 device locks retain their explicit sleeping/try-lock designs because those paths enable interrupts while waiting for device completion.
+- **Verification:** `cargo check --features test-mode,test-udp` passes. The complete QEMU suite passes 14/14 with `CARGO_BUILD_JOBS=1 tests/run.sh`, covering fork/preemption, inheritance, disk MSI-X, deferred networking, blocking and nonblocking UDP, ARP, IPv4, ICMP, and every virtio-net layer.
+- **Status:** Roadmap checkboxes unchanged. Short shared-state spinlocks now enforce the single-core preemption invariant through their type instead of relying on every caller to remember an outer `without_interrupts` block.
+- **Next:** Introduce a task-blocking mutex before allowing multiple tasks to perform concurrent ext2 I/O; sleeping device operations must never use `IrqMutex` across their wait.
+
+### 2026-07-19 (lesson 29 reliability diagnosis) — console spinlock deadlock fixed
+- **Done:** Characterized the intermittent two-datagram echo failure across the host, QEMU, virtqueue, syscall, scheduler, and console boundaries. QEMU packet capture contained the second inbound request, and QEMU virtqueue tracing showed the device consuming TX work. The guest halted after its first `sendto`. Controlled variants showed that busy-polling TX could still fail, while keeping interrupts disabled after TX completion passed 10/10. A QEMU monitor register dump caught the CPU at `spin_loop_hint`, with `RDI=0xffffffff800c0008`; the kernel symbol map resolved that address to the VGA `WRITER` mutex. The stack resolved through `vga_buffer::_print` and `NetDevice::recv_frame` on the deferred network task. The timer had paused the echo task while it owned the console lock, then scheduled the network task, which printed and waited forever for the paused owner. Wrapped the VGA and serial console writes in one `interrupts::without_interrupts` critical section so a task cannot be preempted while it owns either console spinlock.
+- **Verification:** The original build reproduced the deadlock within 1–3 runs. A TX busy-poll variant still reproduced it, rejecting QEMU completion timing as the cause. A timer-wrapper alignment experiment also reproduced it, rejecting stack alignment as this failure's cause. The console fix passed one clean rebuild, 20 consecutive repeated QEMU boots, and a final clean E2E run; every run echoed both 64-byte and 256-byte UDP payloads byte-for-byte and exited through `isa-debug-exit` with code 33. `tests/test_interrupt_driven_io.sh` also passed when rebuilt with one Cargo job after the first parallel build was killed under host memory pressure. `cargo fmt --check` could not run because `rustfmt` is absent from the pinned nightly.
+- **Status:** Roadmap checkboxes unchanged. Lesson 29's host echo path is reliable under the repeated test. QEMU/slirp delivered the packets correctly; the failure lived in the guest's preemptible console locking.
+- **Next:** Install the pinned toolchain's `rustfmt` component when convenient, and keep console/diagnostic spinlocks inside interrupt-disabled or preemption-disabled critical sections.
+
+### 2026-07-18 (lesson 29 implementation repair + code tour) — deferred virtio-net RX and valid Ethernet TX
+- **Done:** Recovered the unfinished Lesson 29 work and traced the failed host echo through QEMU. Kept RX/TX work in a blockable `network_task`, added an atomic `block_current_if` waiter/scheduler transition, assigned virtio-net's per-device MSI-X entries to dedicated vectors `0x30`/`0x31`, and added a 100 Hz timer wake as a bounded-latency QEMU backstop because the device accepts the MSI-X mappings without reliably delivering messages. Fixed the wire-level failure by padding TX Ethernet frames shorter than 60 bytes before the NIC-generated FCS. Hardened the E2E test so early failures retain QEMU diagnostics. Added `tours/tour-0029-deferred-networking.html` and linked it from Lesson 29.
+- **Verification:** One QEMU run completed two byte-for-byte echoes and exited cleanly. Repeated runs remain unreliable: the guest consistently receives the datagram and submits a checksum-valid TX frame, while slirp sometimes drops the reply or a following TX completion stalls. `cargo check --features test-mode,test-udp` passes. Packet capture exposed the original 58-byte short TX frame and confirmed checksum-valid replies after padding.
+- **Boundary:** virtio-blk MSI-X is proven interrupt-delivered. virtio-net queue/vector programming is present, while RX progress currently uses the timer backstop. The host-forwarded UDP test still has an unresolved QEMU/slirp or TX-ring reliability failure, so Lesson 29 is documented as an implementation tour with that boundary rather than marked fully reliable.
+- **Next:** Diagnose QEMU virtio-net MSI-X delivery independently, then remove the timer wake once RX and TX messages are observed reliably. After that, begin Lesson 30's DHCP implementation.
+
+### 2026-07-16 (lesson 30 preparation) — DHCP concept lesson with Lease Office minigame
+- **Done:** Authored `lessons/0030-dhcp.html` concept-first. The lesson opens with the bootstrap paradox (sending IP needs an address; `0.0.0.0` + `255.255.255.255` break the circle), walks the DISCOVER/OFFER/REQUEST/ACK exchange on a new reusable `assets/sequence-diagram.css` swimlane, shows the inherited BOOTP packet with the byte-layout component (192 of 236 fixed bytes are legacy), covers lease timers T1/T2 on a timeline visual, and uses slirp's built-in server (10.0.2.2, assigns from 10.0.2.15) as the test hook: the leased address must equal the deleted `OUR_IP` constant. Build sequence 30.1–30.4: unconfigured-stack TX/RX concessions, user-space packet module, `/dhcp.elf` + new `net_configure` syscall, retiring the constant. Added the "Lease Office" minigame at the end of the lesson (`assets/lease-office.{css,js}`): the player runs the server — OFFER/ACK/NAK against patience timers, pool exhaustion, hold/lease expiry, rogue REQUESTs. Added `reference/dhcp.html`. Chained Lesson 29's nav forward to 30, linked the roadmap's "After the objective" DHCP item to the lesson, and added RFC 2131/2132/951 plus Linux `net/ipv4/ipconfig.c` to RESOURCES.md.
+- **Status:** Roadmap checkboxes unchanged. Every prerequisite for the build exists: blocking sockets (Lesson 26), readiness (Lesson 27), interrupt-driven delivery (Lesson 29). `assets/sequence-diagram.css` is generic and will serve the TCP arc's handshake diagrams. Numbering note: this lesson was first drafted as "Lesson 27" in a stale worktree; consolidated here as Lesson 30 after Lessons 27–29 landed in the main repo.
+- **Primary sources:** RFC 2131 (exchange §3.1, broadcast §4.1, state machine §4.4, T1/T2 §4.4.5 — verified against the RFC text), RFC 2132 (option codes 53/50/54/51/58/59, magic cookie `0x63825363`), QEMU network emulation docs (slirp DHCP at 10.0.2.2, assignments from 10.0.2.15).
+- **Next:** Work the Lesson 30 probe (INIT-REBOOT shortcut: ACK confirms the remembered address, NAK sends the client back to DISCOVER), then build step 30.1 (unconfigured-stack TX/RX concessions).
+
+### 2026-07-12 (lesson 28) — interrupt-driven virtio-blk I/O
+- **Done:** Enabled and mapped the Local APIC, registered a dedicated vector `0x21` ISR, parsed and enabled virtio-blk's PCI MSI-X capability, programmed table entry 0, bound request queue 0 to it, and replaced `read_sector`'s bounded busy-wait with an interrupt-driven `hlt` loop. The wait disables interrupts around its used-ring check and uses atomic `sti; hlt` to close the lost-wakeup window. Moved interrupt enablement ahead of disk initialization once the interrupt controllers and main scheduler task are ready. Removed serial printing from the timer ISR after early interrupt enablement exposed a reentrant serial-lock deadlock; the handler retains tick accounting and sends EOI to both the PIC and Local APIC virtual-wire path. Added an end-to-end regression test and marked the lesson implemented.
+- **Status:** Roadmap checkboxes unchanged. Virtio-blk completion is interrupt-driven; virtio-net still uses its polling worker.
+- **Verification:** `cargo check --features test-mode` and `./tests/test_interrupt_driven_io.sh` passed. The targeted test confirms Local APIC setup, MSI-X queue/vector binding, an interrupt-delivered disk completion, ext2 mount, ELF loading, ring-3 execution, and clean exit. Five additional QEMU cold boots passed consecutively with the same proof markers.
+- **Next:** Lesson 29 should give virtio-net RX/TX queues MSI-X vectors, wake blocked socket waiters from deferred interrupt work, and remove the network polling task.
+
+### 2026-07-12 — lesson 27 implemented: nonblocking UDP and poll
+- **Done:** Added per-socket nonblocking state selected by `SOCK_NONBLOCK`, empty-queue `EAGAIN`, and Linux syscall 7 `poll` for UDP `POLLIN`. Poll performs its readiness check and waiter registration with interrupts disabled to close the lost-wakeup window. Packet delivery wakes blocking receivers and every registered poll waiter.
+- **Proof:** Added `/nonblocking_echo.elf`, which binds ports 5555 and 7777 and runs one ring-3 event loop. It drains each ready socket through `recvfrom` until `EAGAIN` and echoes each datagram to its sender.
+- **Verification:** `cargo check --features test-mode,test-nonblocking` passes. `tests/test_nonblocking_sockets.sh` passes with host datagrams and byte-for-byte echoes on both ports.
+- **Boundary:** The poll slice supports UDP `POLLIN`, immediate timeout `0`, and infinite timeout `-1`. Finite timers, writable/error events, `select`, and `epoll` remain future lessons.
+- **Next:** Walk the Lesson 27 code path from the ring-3 `poll` call through waiter registration, packet delivery, wakeup, queue drain, and `EAGAIN`.
+
 Most recent entries at the top. One entry per work session.
+
+### 2026-07-11 — Lesson 26 implementation code tour
+- **Done:** Added `tours/tour-0026-sockets.html`, following one datagram through FD lookup, socket state, six-argument syscall entry, blocking `recvfrom`, network-worker delivery, wakeup, `sendto`, the ring-3 fixture, and the two-datagram host test. Linked it from Lesson 26 and the networking roadmap.
+- **Status:** Lesson 26 code and the explanatory tour are complete. No roadmap checkbox changed.
+- **Verification:** The tour, Lesson 26, and the networking roadmap return HTTP 200 from the Tailscale lesson server. All referenced local files exist and `git diff --check` passes.
+- **Next:** Work through the tour’s ownership-chain probe before beginning the nonblocking implementation from Lesson 27.
+
+### 2026-07-11 — Lesson 26 user-space UDP sockets
+- **Done:** Added UDP socket kernel objects, process FD integration, port routing, Linux-numbered socket syscalls with six-argument capture, blocking receive/wakeup, a polling network worker, and a ring-3 echo server that handles two datagrams.
+- **Status:** Lesson 26.1–26.4 are complete. The ring-3 echo server blocks in `recvfrom`, wakes when the network worker delivers each datagram, and echoes both host messages.
+- **Verification:** `cargo check --features test-mode,test-udp` passed. `./tests/test_udp.sh` passed with two byte-for-byte echoes and QEMU exit code 33. The fresh kernel-task stack alignment fix prevents the compiler-generated `movaps` fault in the RX worker; the worker is scoped to the socket test path so earlier network tests retain their existing shutdown behavior.
+- **Next:** Work through the Lesson 26 retrieval probe, then continue with Lesson 27’s nonblocking socket design.
+
+### 2026-07-11 — lesson 27: nonblocking sockets and readiness
+- **Done:** Added a concept lesson and quick reference for blocking versus nonblocking `recvfrom`, `EAGAIN`, `poll`/`select`/`epoll`, readiness over `fd → socket → receive queue`, and the separate NIC-delivery layer. Added a two-socket event-loop stepper, retrieval check, implementation sequence, and roadmap/navigation links.
+- **Status:** Lesson 27 is complete as a concept lesson. Nonblocking mode and readiness remain unimplemented in mini-os. No Month 4 checkbox changed.
+- **Verification:** Lesson 27, its reference page, Lesson 26, the networking roadmap, and shared CSS/JavaScript all return HTTP 200 over the Tailscale lesson server. `git diff --check` passes.
+- **Next:** Work through the Lesson 27 retrieval check, then add the per-socket nonblocking flag and `EAGAIN` behavior.
+
+### 2026-07-11 — clarify UDP peer selection
+- **Done:** Rewrote Lesson 26’s unconnected-versus-connected UDP explanation around a server receiving from two clients and replying with `recvfrom`/`sendto`. Defined “client” directly and removed the unexplained “peer” term. Added plain-language definitions of “datagram,” socket, FD, the four basic socket calls, and why servers bind while clients can use a kernel-selected source port.
+- **Status:** No roadmap checkboxes changed.
+- **Next:** Continue the Lesson 26 retrieval probe.
+
+### 2026-07-11 — serve lessons over Tailscale
+- **Done:** Replaced the Tailscale-bound Python server on `100.127.51.0:8000` with a detached server rooted at the repository, so lesson pages and their shared assets resolve together.
+- **Status:** No roadmap checkboxes changed.
+- **Notes / blockers / surprises:** The previous process served `/home/gabriele/newspapers`. Serving `lessons/` alone broke `../assets/...` links; the repository root fixes the CSS and JavaScript paths. Verified the lesson, both stylesheets, and the stepper script return HTTP 200. The process is detached with PID 102289 and has no system service definition.
+- **Next:** Open `http://100.127.51.0:8000/lessons/0026-sockets.html` from a device on the tailnet.
 
 ### 2026-07-10 (lesson 26 preparation) — sockets, queues, and genuine blocking
 - **Done:** Added the concept-first Lesson 26 and UDP socket quick reference. The lesson introduces the ARPANET endpoint meaning and 4.2BSD API lineage, separates socket/endpoint/connection/FD, explains domain/type/protocol, compares UDP and TCP lifecycles, and connects blocking calls to modern readiness-driven runtimes. It then connects the existing per-process FD table to a new socket object, weak port-binding table, owned datagram queue, waiter queue, and four user-facing socket syscalls. Its interactive route follows one server from `socket` and `bind` through an empty `recvfrom`, scheduler blocking, kernel-network-worker delivery, wakeup, and `sendto`. Added reusable forward/back stepper assets, linked Lesson 25 and the networking roadmap forward, and recorded the socket API primary sources.

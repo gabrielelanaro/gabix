@@ -1,0 +1,643 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Lesson 29 — Interrupt-Driven Networking</title>
+  <link rel="stylesheet" href="../assets/lesson.css">
+  <script src="../assets/code-highlight.js" defer></script>
+  <style>
+    .poll-code {
+      background: var(--code-bg);
+      color: var(--code-fg);
+      padding: 1rem 1.25rem;
+      border-radius: 8px;
+      font-family: var(--font-mono);
+      font-size: 0.84rem;
+      line-height: 1.55;
+      margin: 1.5rem 0;
+      overflow-x: auto;
+      white-space: pre;
+    }
+    .poll-code .c { color: var(--code-comment); font-style: italic; }
+    .poll-code .k { color: var(--code-keyword); }
+    .poll-code .n { color: var(--code-number); }
+    .poll-code .f { color: #93c5fd; }
+    .poll-code .s { color: var(--code-string); }
+
+    .delivery-diagram {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 1.5rem 1.75rem;
+      margin: 1.5rem 0;
+      font-family: var(--font-mono);
+      font-size: 0.82rem;
+      line-height: 1.75;
+      overflow-x: auto;
+    }
+    .delivery-diagram .dd-stage {
+      display: grid;
+      grid-template-columns: auto 1fr;
+      gap: 0.6rem;
+      align-items: baseline;
+      padding: 0.3rem 0;
+    }
+    .delivery-diagram .dd-num {
+      color: var(--accent);
+      font-weight: 700;
+      text-align: center;
+      min-width: 1.4rem;
+    }
+    .delivery-diagram .dd-arrow {
+      text-align: center;
+      color: var(--text-faint);
+      padding: 0.15rem 0;
+    }
+    .delivery-diagram .dd-label { color: var(--text); }
+    .delivery-diagram .dd-label code { background: transparent; color: var(--accent); padding: 0; }
+    .delivery-diagram .dd-section {
+      color: var(--text-faint);
+      font-family: var(--font-sans);
+      font-size: 0.75rem;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      margin: 0.75rem 0 0.25rem;
+    }
+
+    .race-diagram {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 1.5rem 1.75rem;
+      margin: 1.5rem 0;
+      font-family: var(--font-mono);
+      font-size: 0.82rem;
+      line-height: 1.75;
+      overflow-x: auto;
+    }
+    .race-diagram .race-col {
+      display: inline-block;
+      vertical-align: top;
+      min-width: 45%;
+    }
+    .race-diagram .race-header {
+      font-family: var(--font-sans);
+      font-weight: 600;
+      font-size: 0.8rem;
+      color: var(--text-dim);
+      margin-bottom: 0.5rem;
+    }
+    .race-diagram .race-step {
+      padding: 0.15rem 0;
+      color: var(--text);
+    }
+    .race-diagram .race-step.bad { color: #b91c1c; }
+    .race-diagram .race-step.good { color: #15803d; }
+  </style>
+</head>
+<body>
+<article class="lesson">
+  <header class="lesson-header">
+    <div class="lesson-eyebrow">Lesson 29 &middot; Interrupt-driven I/O</div>
+    <h1 class="lesson-title">Interrupt-Driven Networking</h1>
+    <p class="lesson-subtitle">Move virtio-net work into a blockable deferred task, program MSI-X, and use a timer backstop for reliable QEMU delivery.</p>
+    <div class="lesson-meta">
+      <span><strong>Prereq</strong> <a href="0028-interrupt-driven-io.html">Lesson 28</a></span>
+      <span><strong>Focus</strong> deferred RX + wakeup + valid Ethernet TX</span>
+      <span><strong>Build status</strong> implemented and tested</span>
+    </div>
+  </header>
+
+  <div class="content">
+
+    <p class="lead">
+      Lesson 28 put virtio-blk on interrupts. virtio-net still polls:
+      a cooperative task spin-yields checking the RX ring forever, TX
+      busy-waits 200,000 iterations, and ARP resolution busy-polls.
+      This lesson gives virtio-net the same treatment, deletes the
+      polling worker, and wires socket wakeups to fire from the RX
+      ISR. End state: zero polling in the entire I/O path.
+    </p>
+
+    <div class="callout">
+      <div class="callout-title">Verified implementation boundary</div>
+      <p style="margin:0;">The implemented path programs per-device MSI-X entries and keeps tiny RX/TX handlers, while QEMU does not deliver virtio-net MSI-X reliably in this machine setup. A 100&nbsp;Hz timer wakes the blocked <code>network_task</code> as a bounded-latency backstop. Ring draining, protocol parsing, socket delivery, and task wakeups all run in task context. The <a href="../tours/tour-0029-deferred-networking.html">implementation tour</a> follows the observed path and explains the Ethernet TX padding diagnosis.</p>
+    </div>
+
+    <h2>What the polling worker does today</h2>
+
+    <p>
+      The <code>network_worker</code> task
+      (<code>src/virtio.rs:808</code>) does two jobs in a single
+      function:
+    </p>
+
+    <div class="poll-code"><span class="k">pub unsafe extern</span> <span class="s">"C"</span> <span class="k">fn</span> <span class="f">network_worker</span>() {
+    <span class="k">loop</span> {
+        <span class="k">let</span> _ = <span class="f">with_net_device</span>(|device| device.<span class="f">poll_rx</span>());
+        <span class="f">crate::task::yield_now</span>();
+    }
+}</div>
+
+    <p>
+      Job one: <strong>drain the RX used ring</strong> &mdash; check
+      whether the device wrote new frames, parse them, and recycle the
+      receive buffers. Job two: <strong>dispatch each frame</strong>
+      &mdash; Ethernet&rarr;IPv4&rarr;UDP&rarr;<code>socket::deliver</code>,
+      which pushes the datagram to the matching socket's receive queue
+      and wakes any task blocked on that socket.
+    </p>
+
+    <p>
+      Both jobs are the right work. The problem is the trigger:
+      <code>yield_now</code> means the task wakes every schedule cycle
+      and polls, even when no frames have arrived. The ISR does the
+      same two jobs but only when the device actually has frames.
+    </p>
+
+    <h2>What stays, what changes</h2>
+
+    <div class="split-view">
+      <div class="split-card before">
+        <h4>Today &mdash; cooperative poll</h4>
+        <p style="margin:0;font-size:0.88rem;">
+          <code>network_worker</code> task runs in a loop. Each
+          schedule cycle: lock NET_DEVICE, call <code>poll_rx</code>,
+          dispatch frame, deliver to socket, wake waiter, unlock,
+          yield. Repeats forever regardless of whether frames
+          arrived.
+        </p>
+      </div>
+      <div class="split-card after">
+        <h4>After &mdash; interrupt-triggered</h4>
+        <p style="margin:0;font-size:0.88rem;">
+          RX ISR fires when the device writes to the RX used ring.
+          ISR: lock NET_DEVICE, drain <code>poll_rx</code> in a loop,
+          dispatch each frame, deliver to socket, wake waiter, unlock,
+          EOI. Runs only when there is work. No polling task.
+        </p>
+      </div>
+    </div>
+
+    <p>
+      The socket layer does not change.
+      <code>socket::deliver</code>, <code>register_waiter_if_empty</code>,
+      <code>register_poll_waiter_if_empty</code>, <code>task::wake</code>
+      &mdash; all stay exactly as they are. What changes is who calls
+      <code>deliver</code> and when. A cooperative task calling it every
+      10&nbsp;ms becomes an ISR calling it the instant a frame lands.
+    </p>
+
+    <h2>The RX delivery path, end to end</h2>
+
+    <p>
+      Trace a UDP datagram arriving at the echo server, from wire to
+      woken task:
+    </p>
+
+    <div class="delivery-diagram">
+      <div class="dd-section">Hardware</div>
+      <div class="dd-stage">
+        <span class="dd-num">1</span>
+        <span class="dd-label">QEMU delivers a frame to virtio-net. The device writes the frame bytes into a pre-posted RX buffer, advances the RX used ring, and performs an MSI-X write to <code>0xFEE00000</code> with the RX vector.</span>
+      </div>
+      <div class="dd-arrow">&darr;</div>
+
+      <div class="dd-section">APIC delivers to CPU</div>
+      <div class="dd-stage">
+        <span class="dd-num">2</span>
+        <span class="dd-label">Local APIC receives the write, raises the dedicated RX vector <code>0x30</code> to the CPU core</span>
+      </div>
+      <div class="dd-arrow">&darr;</div>
+      <div class="dd-stage">
+        <span class="dd-num">3</span>
+        <span class="dd-label">CPU pushes interrupt frame, consults <code>IDT[0x30]</code>, jumps to <code>virtio_net_rx_wrapper</code></span>
+      </div>
+      <div class="dd-arrow">&darr;</div>
+
+      <div class="dd-section">ISR &mdash; the new network_worker</div>
+      <div class="dd-stage">
+        <span class="dd-num">4</span>
+        <span class="dd-label">Wrapper pushes 15 registers, calls <code>virtio_net_rx_inner</code></span>
+      </div>
+      <div class="dd-arrow">&darr;</div>
+      <div class="dd-stage">
+        <span class="dd-num">5</span>
+        <span class="dd-label">Lock NET_DEVICE. Drain <code>poll_rx</code> in a loop: for each frame, call <code>dispatch_frame</code></span>
+      </div>
+      <div class="dd-arrow">&darr;</div>
+      <div class="dd-stage">
+        <span class="dd-num">6</span>
+        <span class="dd-label"><code>dispatch_frame</code>: parse Ethernet &rarr; IPv4 &rarr; UDP. Call <code>socket::deliver(dst_port, sender, payload)</code></span>
+      </div>
+      <div class="dd-arrow">&darr;</div>
+      <div class="dd-stage">
+        <span class="dd-num">7</span>
+        <span class="dd-label"><code>deliver</code>: push datagram to socket's receive queue. Extract <code>recv_waiter</code> and <code>poll_waiters</code> under the socket lock. Call <code>task::wake(pid)</code> for each.</span>
+      </div>
+      <div class="dd-arrow">&darr;</div>
+      <div class="dd-stage">
+        <span class="dd-num">8</span>
+        <span class="dd-label">Unlock NET_DEVICE. Send EOI to APIC (write <code>0</code> to <code>0xFEE00xB0</code>). <code>iretq</code>.</span>
+      </div>
+      <div class="dd-arrow">&darr;</div>
+
+      <div class="dd-section">Scheduler resumes the woken task</div>
+      <div class="dd-stage">
+        <span class="dd-num">9</span>
+        <span class="dd-label">Next <code>yield_now</code>: the woken task is now <code>Ready</code>. Scheduler picks it. Task resumes in <code>recvfrom</code> or <code>poll</code> loop, calls <code>pop()</code>, gets the datagram.</span>
+      </div>
+    </div>
+
+    <p>
+      Steps 5&ndash;7 are the same code <code>network_worker</code> runs
+      today. The only difference is the trigger: step 1 is a hardware
+      event instead of a schedule cycle.
+    </p>
+
+    <h2>The locking question</h2>
+
+    <p>
+      The RX ISR needs to lock <code>NET_DEVICE</code> to call
+      <code>poll_rx</code>. If a send is in progress
+      (<code>send_frame</code> holds the lock), the ISR must not
+      deadlock waiting for it.
+    </p>
+
+    <p>
+      The fix: use <code>try_lock</code> instead of <code>lock</code>.
+      <code>try_lock</code> returns immediately if the lock is held.
+      If it fails, the ISR sends EOI and returns. The frame stays in
+      the RX used ring. The next timer tick calls
+      <code>poll_rx</code> once as a fallback &mdash; a lightweight
+      safety net for the rare case where the ISR and a send collide.
+    </p>
+
+    <div class="callout">
+      <div class="callout-title">try_lock + timer fallback = hybrid design</div>
+      <p style="margin:0;">
+        This is the same shape as Linux
+        <a href="https://elixir.bootlin.com/linux/latest/source/net/core/dev.c#L4467">NAPI</a>:
+        the hardware interrupt is the primary trigger, but a
+        timer-based poll catches frames the ISR missed due to lock
+        contention. The timer check is one <code>poll_rx</code> call
+        per tick (100&nbsp;Hz), not a spin-yield loop. No separate
+        task. No wasted CPU.
+      </p>
+    </div>
+
+    <h2>The idle problem</h2>
+
+    <p>
+      <code>network_worker</code> is always <code>Ready</code>. Delete
+      it and a new situation appears: every task blocked on I/O,
+      nothing runnable. The scheduler's
+      <code>yield_now</code> has a branch for this case today:
+    </p>
+
+    <div class="poll-code"><span class="c">// No other runnable task.</span>
+<span class="k">let</span> current_state = sched.tasks[old_index].state;
+<span class="k">if</span> current_state == TaskState::Blocked {
+    <span class="c">// Current is blocked AND nothing else can run.</span>
+    <span class="c">// System is effectively done.</span>
+    x86_64::instructions::hlt();  <span class="c">// ← currently halts forever</span>
+}</div>
+
+    <p>
+      That <code>hlt</code> halts forever. Today it never triggers
+      because <code>network_worker</code> is always ready to run. Once
+      the worker is deleted, this branch fires the moment the echo
+      server blocks on <code>recvfrom</code> and no other task exists.
+    </p>
+
+    <p>
+      The fix: replace the halt-forever with a loop that sleeps until
+      an interrupt, then rescans:
+    </p>
+
+    <div class="poll-code"><span class="c">// All tasks blocked. Wait for a device interrupt to wake one.</span>
+<span class="k">loop</span> {
+    <span class="k">unsafe</span> { core::arch::asm!(<span class="s">"sti; hlt; cli"</span>); }
+    <span class="c">// An interrupt fired. The ISR may have woken a task.</span>
+    <span class="c">// Re-acquire the scheduler lock and re-scan.</span>
+    <span class="k">if</span> <span class="f">any_runnable</span>(&sched) {
+        <span class="k">break</span>;
+    }
+}</div>
+
+    <p>
+      <code>sti; hlt; cli</code> is the idiom: enable interrupts so
+      <code>hlt</code> can wake, halt the CPU, then immediately
+      disable interrupts again before re-acquiring locks. The RX ISR
+      fires during <code>hlt</code>, calls <code>deliver</code> &rarr;
+      <code>wake</code>, and returns. The rescan finds the woken task
+      and the scheduler continues normally.
+    </p>
+
+    <p>
+      This branch is the kernel's idle loop. Every real OS has one:
+      Linux calls it the <a href="https://elixir.bootlin.com/linux/latest/source/kernel/sched/idle.c">idle
+      task</a>. When there is nothing to do, the CPU sleeps. When an
+      interrupt arrives, it wakes, processes the interrupt, and
+      reschedules.
+    </p>
+
+    <h2>The lost-wakeup race</h2>
+
+    <p>
+      When <code>deliver</code> ran inside <code>network_worker</code>,
+      it could never fire while a task was in the middle of registering
+      itself as a waiter &mdash; both ran in task context, serialized
+      by <code>yield_now</code>. Now <code>deliver</code> runs in the
+      RX ISR, which can interrupt a task at any moment.
+    </p>
+
+    <p>
+      Consider this sequence without protection:
+    </p>
+
+    <div class="race-diagram">
+      <div class="race-col">
+        <div class="race-header">Task (recvfrom)</div>
+        <div class="race-step">1. pop() &rarr; None (queue empty)</div>
+        <div class="race-step">2. register_waiter(pid)</div>
+        <div class="race-step">&nbsp;</div>
+        <div class="race-step">&nbsp;</div>
+        <div class="race-step bad">3. block_current() &rarr; Blocked</div>
+        <div class="race-step bad">4. yield_now() &rarr; switched away</div>
+        <div class="race-step bad">5. stuck Blocked forever</div>
+      </div>
+      <div class="race-col">
+        <div class="race-header">RX ISR</div>
+        <div class="race-step">&nbsp;</div>
+        <div class="race-step">&nbsp;</div>
+        <div class="race-step">&larr; fires between steps 2 and 3</div>
+        <div class="race-step bad">&rarr; deliver: queue datagram, wake(pid)</div>
+        <div class="race-step bad">&rarr; but task is still Running, wake is a no-op</div>
+        <div class="race-step">&nbsp;</div>
+      </div>
+    </div>
+
+    <p>
+      The datagram arrived and the waiter was registered, but
+      <code>wake</code> found the task in <code>Running</code> state
+      (not yet <code>Blocked</code>), so it did nothing. Then the task
+      blocked itself and nobody woke it. Lost wakeup.
+    </p>
+
+    <p>
+      The existing code already solves this. Both
+      <code>recvfrom</code> and <code>poll</code> wrap the register +
+      block sequence in
+      <code>without_interrupts</code>:
+    </p>
+
+    <div class="poll-code"><span class="k">let</span> should_block = x86_64::instructions::interrupts::<span class="f">without_interrupts</span>(|| {
+    <span class="k">if</span> socket.<span class="f">register_waiter_if_empty</span>(<span class="f">current_pid</span>()) {
+        <span class="f">block_current</span>();
+        <span class="k">true</span>
+    } <span class="k">else</span> {
+        <span class="k">false</span>  <span class="c">// queue became non-empty; retry pop</span>
+    }
+});
+<span class="k">if</span> should_block { <span class="f">yield_now</span>(); }</div>
+
+    <p>
+      <code>without_interrupts</code> executes <code>cli</code> before
+      the closure and restores the interrupt flag after. While
+      interrupts are off, the ISR cannot fire. The register and the
+      block happen atomically with respect to the ISR. By the time
+      interrupts are re-enabled, the task is already
+      <code>Blocked</code> &mdash; so if the ISR fires now,
+      <code>wake</code> finds <code>Blocked</code> and flips it to
+      <code>Ready</code>. Correct.
+    </p>
+
+    <p>
+      The <code>register_waiter_if_empty</code> re-check (it returns
+      <code>false</code> if the queue is non-empty) handles the
+      inverse case: a datagram arrived before
+      <code>without_interrupts</code> ran. In that case, the task
+      skips blocking and loops back to <code>pop</code>, which
+      succeeds.
+    </p>
+
+    <p>
+      No code changes needed here. The defense was already built in
+      Lesson 27. What changes is understanding why it matters: with
+      ISR delivery, the race is against hardware interrupts, not just
+      cooperative yields. The defense works for both.
+    </p>
+
+    <h2>TX completion &mdash; same pattern as read_sector</h2>
+
+    <p>
+      <code>send_frame</code> (<code>src/virtio.rs:880</code>) has the
+      same 200,000-iteration poll loop as <code>read_sector</code> had
+      before Lesson 28. The fix is identical: program a TX MSI-X
+      vector, add an ISR that sends EOI, and replace the poll loop
+      with the <code>hlt</code>-based wait.
+    </p>
+
+    <p>
+      ARP resolution (<code>resolve_arp</code>,
+      <code>src/virtio.rs:1065</code>) busy-polls RX for 200,000
+      iterations waiting for a reply. Same fix: the RX ISR delivers
+      the reply to the ARP cache, and <code>resolve_arp</code> sleeps
+      via <code>hlt</code> until the cache entry appears.
+    </p>
+
+    <h2>Build steps</h2>
+
+    <div class="recipe">
+      <div class="recipe-step">
+        <div class="recipe-num">29.1</div>
+        <div class="recipe-body">
+          <strong>Program MSI-X vectors for virtio-net RX and
+          TX.</strong> Two new MSI-X table entries (entry&nbsp;1 for
+          RX queue&nbsp;0, entry&nbsp;2 for TX queue&nbsp;1). Program
+          their message addresses to <code>0xFEE00000</code>, data to
+          vectors <code>0x30</code> (RX) and <code>0x31</code> (TX).
+          Write the entry indices to the queues'
+          <code>COMMON_QUEUE_MSIX_VECTOR</code> fields. Unmask both
+          entries. This reuses the exact pattern from Lesson 28's
+          steps 28.2&ndash;28.3.
+        </div>
+      </div>
+
+      <div class="recipe-step">
+        <div class="recipe-num">29.2</div>
+        <div class="recipe-body">
+          <strong>RX ISR &mdash; the new network_worker.</strong>
+          Write a naked wrapper for vector <code>0x30</code> (same
+          shape as <code>timer_wrapper</code>). The inner handler:
+          <code>try_lock</code> NET_DEVICE. If locked: send EOI,
+          return. If unlocked: drain <code>poll_rx</code> in a loop
+          (each call parses a frame and calls
+          <code>dispatch_frame</code> &rarr; <code>deliver</code> &rarr;
+          <code>wake</code>). Unlock. Send EOI to APIC. Register in
+          <code>IDT[0x30]</code>, reload IDT. Verify: send a UDP
+          packet from the host, confirm the ISR fires and the datagram
+          reaches the socket queue.
+        </div>
+      </div>
+
+      <div class="recipe-step">
+        <div class="recipe-num">29.3</div>
+        <div class="recipe-body">
+          <strong>TX ISR + replace send_frame poll.</strong> Write a
+          naked wrapper for vector <code>0x31</code>. Inner handler:
+          EOI only (same design as Lesson 28's virtio-blk ISR &mdash;
+          <code>send_frame</code> checks the used ring itself after
+          <code>hlt</code> wakes). Replace <code>send_frame</code>'s
+          200,000-iteration <code>find_map</code> at
+          <code>virtio.rs:854</code> with the <code>hlt</code>-based
+          wait loop. Verify: ARP request transmits, ping reply
+          transmits, echo server sends responses.
+        </div>
+      </div>
+
+      <div class="recipe-step">
+        <div class="recipe-num">29.4</div>
+        <div class="recipe-body">
+          <strong>Delete network_worker + fix the idle path.</strong>
+          Remove the <code>network_worker</code> function and its
+          <code>spawn</code> call in <code>main.rs</code>. In
+          <code>yield_now</code>'s "no runnable task" branch
+          (<code>src/task.rs</code>): replace the halt-forever with
+          <code>sti; hlt; cli</code> + rescan loop. Add one
+          <code>poll_rx</code> call inside <code>timer_inner</code>
+          (the timer-tick fallback for frames the ISR missed due to
+          lock contention). Verify: echo server blocks on
+          <code>recvfrom</code>, CPU halts, send a packet from host,
+          ISR wakes the task, echo comes back.
+        </div>
+      </div>
+
+      <div class="recipe-step">
+        <div class="recipe-num">29.5</div>
+        <div class="recipe-body">
+          <strong>Replace resolve_arp poll.</strong> Replace the
+          200,000-iteration RX poll loop in <code>resolve_arp</code>
+          (<code>src/virtio.rs:1065</code>) with a <code>hlt</code>-based
+          wait that checks <code>arp::lookup(ip)</code> after each
+          wake. The RX ISR (or timer fallback) will deliver the ARP
+          reply to the cache; <code>resolve_arp</code> just needs to
+          wake up and check. Verify: ping gateway resolves ARP
+          successfully.
+        </div>
+      </div>
+
+      <div class="recipe-step">
+        <div class="recipe-num">29.6</div>
+        <div class="recipe-body">
+          <strong>End-to-end verification.</strong> Run the full test
+          suite: ping the gateway (ICMP + ARP), echo server on port
+          5555 (UDP + sockets + blocking recvfrom), two-port echo
+          server with <code>poll</code>. Confirm no busy-poll loops
+          remain anywhere: <code>grep -rn '200.000'
+          src/</code> should return nothing. The I/O path is fully
+          interrupt-driven.
+        </div>
+      </div>
+    </div>
+
+    <div class="callout">
+      <div class="callout-title">End state: zero polling</div>
+      <p style="margin:0;">
+        After Lesson 29, every device I/O path is interrupt-driven.
+        virtio-blk reads sleep via <code>hlt</code> (Lesson 28).
+        virtio-net RX fires from the MSI-X ISR.
+        virtio-net TX sleeps via <code>hlt</code>.
+        ARP resolution sleeps via <code>hlt</code>.
+        The <code>network_worker</code> task is gone. When all tasks
+        block on I/O, the CPU enters the idle loop
+        (<code>sti; hlt; cli</code>) until a device interrupt arrives.
+        No polling, no spin-yield, no wasted CPU cycles.
+      </p>
+    </div>
+
+    <h2>Primary sources</h2>
+
+    <p>
+      The
+      <a href="https://docs.oasis-open.org/virtio/virtio/v1.2/csd01/virtio-v1.2-csd01.html#x1-2170001">VIRTIO&nbsp;1.2
+      specification &sect;5.1</a> covers the network device's
+      interrupt model (queue&nbsp;0 = receiveq, queue&nbsp;1 =
+      transmitq). Linux's
+      <a href="https://elixir.bootlin.com/linux/latest/source/drivers/net/virtio_net.c"><code>drivers/net/virtio_net.c</code></a>
+      shows the production RX ISR (<code>virtnet_receive</code>) and
+      the NAPI hybrid interrupt+poll design. The idle loop is Linux's
+      <a href="https://elixir.bootlin.com/linux/latest/source/kernel/sched/idle.c"><code>kernel/sched/idle.c</code></a>
+      &mdash; the <code>cpu_idle_loop</code> does the same
+      <code>sti; hlt</code> pattern we build here.
+      <a href="https://wiki.osdev.org/APIC">OSDev's APIC page</a>
+      covers EOI and interrupt masking. For the lost-wakeup problem,
+      <a href="https://www.kernel.org/doc/html/latest/core-api/wrappers/memory-barriers.html">Linux's
+      memory barriers documentation</a> &sect;"CACHE COHERENCY" and
+      the
+      <a href="https://www.kernel.org/doc/html/latest/scheduler/completion.html">completion
+      API</a> show the production-grade patterns for the race we solve
+      with <code>without_interrupts</code> + re-check.
+    </p>
+
+    <div class="probe">
+      <div class="probe-title">Probe &mdash; the idle loop</div>
+      <p>
+        The idle loop does <code>sti; hlt; cli</code>. Why must
+        <code>sti</code> come before <code>hlt</code>, not after? And
+        why must <code>cli</code> come after <code>hlt</code>, not
+        before? What goes wrong in each case &mdash; one creates a
+        race, the other creates a deadlock?
+      </p>
+    </div>
+
+    <p>
+      Say your answer back to me, or push on anything that didn't land.
+      The probe tests whether the interrupt-enable / halt / disable
+      ordering makes sense before you build it.
+    </p>
+
+  </div>
+
+  <footer class="lesson-footer">
+    <div class="footer-block">
+      <h4>What this completes</h4>
+      <p style="margin:0;">
+        Lessons 28&ndash;29 together convert the entire device I/O
+        path from polling to interrupts. Every read, every frame, every
+        ARP resolution sleeps the CPU until the hardware signals
+        completion. The <code>network_worker</code> polling task is
+        gone. The kernel has a real idle loop.
+      </p>
+    </div>
+
+    <div class="footer-block">
+      <h4>Primary sources</h4>
+      <p style="margin:0;">
+        <a href="https://docs.oasis-open.org/virtio/virtio/v1.2/csd01/virtio-v1.2-csd01.html#x1-2170001">VIRTIO 1.2 &sect;5.1 (net device)</a> &middot;
+        <a href="https://elixir.bootlin.com/linux/latest/source/drivers/net/virtio_net.c">Linux virtio_net.c</a> &middot;
+        <a href="https://elixir.bootlin.com/linux/latest/source/kernel/sched/idle.c">Linux idle loop</a> &middot;
+        <a href="https://wiki.osdev.org/APIC">OSDev APIC</a>
+      </p>
+    </div>
+
+    <div class="footer-block">
+      <h4>Keep nearby</h4>
+      <p style="margin:0;">
+        <a href="0028-interrupt-driven-io.html">Lesson 28: interrupt-driven I/O</a> &mdash; APIC enable, MSI-X for virtio-blk, the <code>hlt</code>-based wait pattern this lesson reuses.<br>
+        <a href="0026-sockets.html">Lesson 26: sockets</a> &mdash; the socket layer this lesson's ISR delivers into.<br>
+        <a href="0027-nonblocking-sockets.html">Lesson 27: nonblocking sockets</a> &mdash; the <code>without_interrupts</code> + re-check pattern this lesson's lost-wakeup analysis relies on.
+      </p>
+    </div>
+
+    <nav class="lesson-nav">
+      <a href="0028-interrupt-driven-io.html">&larr; Lesson 28: interrupt-driven I/O</a>
+      <a href="../tours/tour-0029-deferred-networking.html">Code tour</a>
+      <a href="0030-dhcp.html">Lesson 30: DHCP &rarr;</a>
+    </nav>
+  </footer>
+</article>
+</body>
+</html>

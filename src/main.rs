@@ -6,31 +6,33 @@
 // in `no_std` crates. Requires our `#[global_allocator]` to be wired up.
 extern crate alloc;
 
-mod vga_buffer;
-mod serial;
-mod gdt;
-mod interrupts;
-mod pic;
-mod pit;
-mod frame_allocator;
-mod memory;
 mod allocator;
-mod task;
-mod process;
-mod user;
-mod syscall;
-mod fs;
-mod net;
-mod pci;
-mod virtio;
-mod ext2;
+mod apic;
 mod elf;
 mod exec;
+mod ext2;
+mod frame_allocator;
+mod fs;
+mod gdt;
+mod interrupts;
+mod irq_mutex;
+mod memory;
+mod net;
+mod pci;
+mod pic;
+mod pit;
+mod process;
 mod qemu_exit;
+mod serial;
+mod syscall;
+mod task;
 mod test_runner;
+mod user;
+mod vga_buffer;
+mod virtio;
 
-use bootloader::BootInfo;
 use alloc::vec::Vec;
+use bootloader::BootInfo;
 use core::alloc::Layout;
 use core::panic::PanicInfo;
 use core::sync::atomic::{AtomicU64, Ordering};
@@ -73,7 +75,11 @@ fn panic(info: &PanicInfo) -> ! {
 /// The default behavior loops forever silently — we'd rather see why.
 #[alloc_error_handler]
 fn alloc_error(layout: Layout) -> ! {
-    panic!("allocation failed: size={}, align={}", layout.size(), layout.align());
+    panic!(
+        "allocation failed: size={}, align={}",
+        layout.size(),
+        layout.align()
+    );
 }
 
 /// The kernel entry point. The bootloader jumps here after switching
@@ -95,7 +101,9 @@ pub extern "C" fn _start(boot_info: &'static BootInfo) -> ! {
         );
     }
     let cr4: u64;
-    unsafe { core::arch::asm!("mov {}, cr4", out(reg) cr4); }
+    unsafe {
+        core::arch::asm!("mov {}, cr4", out(reg) cr4);
+    }
     println!("[boot] CR4 after SSE enable = 0x{:x}", cr4);
     println!("[boot] gdt...");
     gdt::init();
@@ -128,6 +136,9 @@ pub extern "C" fn _start(boot_info: &'static BootInfo) -> ! {
     println!("[boot] memory mapper...");
     memory::init(boot_info);
 
+    println!("[boot] local apic...");
+    apic::init();
+
     // Slice 4.4.a test: create a fresh AddressSpace (kernel-only entries
     // 256-511), deep-clone the current AS into it (adds user-half walking
     // for low-half kernel mappings like VGA and heap), switch to it, print
@@ -141,14 +152,14 @@ pub extern "C" fn _start(boot_info: &'static BootInfo) -> ! {
         println!(
             "[test]   hello from new AS! (CR3 was 0x{:x}, now 0x{:x})",
             original_cr3.0.start_address().as_u64(),
-            x86_64::registers::control::Cr3::read().0.start_address().as_u64(),
+            x86_64::registers::control::Cr3::read()
+                .0
+                .start_address()
+                .as_u64(),
         );
         // Switch back to the original so the rest of boot uses the kernel AS.
         unsafe {
-            x86_64::registers::control::Cr3::write(
-                original_cr3.0,
-                original_cr3.1,
-            );
+            x86_64::registers::control::Cr3::write(original_cr3.0, original_cr3.1);
         }
         println!("[test]   switched back to original CR3");
     }
@@ -194,7 +205,10 @@ pub extern "C" fn _start(boot_info: &'static BootInfo) -> ! {
     let b = frame_allocator::allocate();
     let c = frame_allocator::allocate();
     println!("[test]   allocated a={:?}, b={:?}, c={:?}", a, b, c);
-    println!("[test]   {} frames free after 3 allocations", frame_allocator::frames_free());
+    println!(
+        "[test]   {} frames free after 3 allocations",
+        frame_allocator::frames_free()
+    );
 
     if let Some(f) = b {
         frame_allocator::deallocate(f);
@@ -210,7 +224,10 @@ pub extern "C" fn _start(boot_info: &'static BootInfo) -> ! {
     let e = frame_allocator::allocate();
     println!("[test]   allocated e={:?} (should equal previous a)", e);
 
-    println!("[test]   {} frames free after test", frame_allocator::frames_free());
+    println!(
+        "[test]   {} frames free after test",
+        frame_allocator::frames_free()
+    );
 
     println!("[test] dirent encode/decode");
     {
@@ -225,7 +242,10 @@ pub extern "C" fn _start(boot_info: &'static BootInfo) -> ! {
         let empty_ino = lookup_in_dir(&[], "anything");
 
         println!("[test]   lookup foo.txt -> {:?} (expect Some(17))", foo_ino);
-        println!("[test]   lookup hello   -> {:?} (expect Some(42))", hello_ino);
+        println!(
+            "[test]   lookup hello   -> {:?} (expect Some(42))",
+            hello_ino
+        );
         println!("[test]   lookup missing -> {:?} (expect None)", missing_ino);
         println!("[test]   lookup in empty -> {:?} (expect None)", empty_ino);
 
@@ -242,6 +262,11 @@ pub extern "C" fn _start(boot_info: &'static BootInfo) -> ! {
     // Lesson 14 replaced resolve_path to use MOUNTED_FS (ext2 on-demand),
     // so these tests now run as part of the Lesson 14 mount verification
     // (after ext2 is mounted, later in boot).
+
+    // Disk reads below wait with HLT. Enable delivery after the IDT, PIC,
+    // APIC, and scheduler's main task have all been initialized.
+    println!("[boot] enabling interrupts");
+    x86_64::instructions::interrupts::enable();
 
     println!("[test] PCI config space access (5.2)");
     {
@@ -268,14 +293,14 @@ pub extern "C" fn _start(boot_info: &'static BootInfo) -> ! {
     println!("[test] find virtio-blk and decode BARs (5.4)");
     match pci::find_virtio_blk() {
         Some((bus, dev, func)) => {
-            println!(
-                "[pci] virtio-blk found at {:02x}:{:02x}.{}",
-                bus, dev, func
-            );
+            println!("[pci] virtio-blk found at {:02x}:{:02x}.{}", bus, dev, func);
             pci::print_bars(bus, dev, func);
 
             println!("[test] parse virtio capability list (6.1)");
-            println!("[virtio] parsing capability list of {:02x}:{:02x}.{}", bus, dev, func);
+            println!(
+                "[virtio] parsing capability list of {:02x}:{:02x}.{}",
+                bus, dev, func
+            );
             let caps = virtio::parse_virtio_capabilities(bus, dev, func);
             println!("[virtio]   found {} virtio caps", caps.len());
 
@@ -295,10 +320,7 @@ pub extern "C" fn _start(boot_info: &'static BootInfo) -> ! {
                 println!("[test] descriptor free list smoke test (7.3)");
                 {
                     let queue = virtio_dev.queue_mut();
-                    println!(
-                        "[virtio] free list size: {} (expect 64)",
-                        queue.num_free()
-                    );
+                    println!("[virtio] free list size: {} (expect 64)", queue.num_free());
                     let a = queue.alloc_descriptor().expect("alloc");
                     let b = queue.alloc_descriptor().expect("alloc");
                     println!("[virtio]   alloc = {}, {} (LIFO: 63, 62)", a, b);
@@ -311,7 +333,7 @@ pub extern "C" fn _start(boot_info: &'static BootInfo) -> ! {
 
                 println!("[test] virtio-blk request header struct (8.1)");
                 {
-                    use core::mem::{size_of, align_of};
+                    use core::mem::{align_of, size_of};
                     let sz = size_of::<virtio::VirtioBlkReq>();
                     let al = align_of::<virtio::VirtioBlkReq>();
                     println!("[virtio]   size={} bytes (expect 16), align={}", sz, al);
@@ -337,10 +359,7 @@ pub extern "C" fn _start(boot_info: &'static BootInfo) -> ! {
                 // starting at sector 2) and adjacent metadata. Earlier
                 // lessons checked they were zero — that was before the disk
                 // had a filesystem. Now they're populated by mkfs.ext2.
-                println!(
-                    "[virtio]   read_sector(1) returned {} bytes",
-                    block1.len()
-                );
+                println!("[virtio]   read_sector(1) returned {} bytes", block1.len());
                 println!(
                     "[virtio]   read_sector(2) returned {} bytes (superblock lives here)",
                     block2.len()
@@ -352,13 +371,25 @@ pub extern "C" fn _start(boot_info: &'static BootInfo) -> ! {
                 sb.print();
 
                 assert!(sb.is_ext2(), "ext2 magic not found — disk isn't ext2");
-                assert_eq!(sb.block_size, 1024, "expected 1024-byte blocks for small disk");
-                assert_eq!(sb.first_data_block, 1, "first_data_block should be 1 for 1024 B blocks");
+                assert_eq!(
+                    sb.block_size, 1024,
+                    "expected 1024-byte blocks for small disk"
+                );
+                assert_eq!(
+                    sb.first_data_block, 1,
+                    "first_data_block should be 1 for 1024 B blocks"
+                );
                 assert_eq!(sb.state, 1, "filesystem should be clean (state=1)");
-                assert!(sb.inodes_count > 0 && sb.inodes_count < 1000,
-                    "inodes_count {} looks wrong", sb.inodes_count);
-                assert!(sb.blocks_count > 0 && sb.blocks_count < 10000,
-                    "blocks_count {} looks wrong", sb.blocks_count);
+                assert!(
+                    sb.inodes_count > 0 && sb.inodes_count < 1000,
+                    "inodes_count {} looks wrong",
+                    sb.inodes_count
+                );
+                assert!(
+                    sb.blocks_count > 0 && sb.blocks_count < 10000,
+                    "blocks_count {} looks wrong",
+                    sb.blocks_count
+                );
 
                 println!("[ext2] *** superblock parsed — ext2 filesystem recognized ***");
 
@@ -373,36 +404,65 @@ pub extern "C" fn _start(boot_info: &'static BootInfo) -> ! {
                 let root_inode = ext2::read_inode(&mut virtio_dev, &sb, &bgd, root_ino);
                 root_inode.print(root_ino);
 
-                assert!(root_inode.is_dir(),
+                assert!(
+                    root_inode.is_dir(),
                     "inode 2 should be a directory, got mode 0x{:04X} ({})",
-                    root_inode.mode, root_inode.type_name());
+                    root_inode.mode,
+                    root_inode.type_name()
+                );
                 assert!(root_inode.size > 0, "root directory should be non-empty");
-                assert!(root_inode.block_pointers[0] != 0,
-                    "root directory needs at least one data block");
+                assert!(
+                    root_inode.block_pointers[0] != 0,
+                    "root directory needs at least one data block"
+                );
 
-                println!("[ext2] *** inode {} is the root directory — ready to walk (Lesson 13) ***",
-                    root_ino);
+                println!(
+                    "[ext2] *** inode {} is the root directory — ready to walk (Lesson 13) ***",
+                    root_ino
+                );
 
                 println!("[test] ext2 directory walk (13.1-13.5)");
                 let entries = ext2::walk_directory(&mut virtio_dev, &root_inode);
                 println!("[ext2] walk complete: {} live entries", entries.len());
 
                 // Verify we got exactly the entries mkfs + Lesson 14 + fixture builds created
-                assert_eq!(entries.len(), 11, "expected 11 entries (., .., lost+found, hello.txt, secret.txt, hello.elf, fork_smoke.elf, inherit_wait.elf, net_smoke.elf, icmp_ping.elf, udp_echo.elf)");
+                assert_eq!(
+                    entries.len(),
+                    12,
+                    "expected 12 root entries including all user fixtures"
+                );
 
                 // Find by name to verify each
                 let dot = entries.iter().find(|e| e.name == b".").expect("missing .");
-                let dotdot = entries.iter().find(|e| e.name == b"..").expect("missing ..");
-                let lf = entries.iter().find(|e| e.name == b"lost+found").expect("missing lost+found");
+                let dotdot = entries
+                    .iter()
+                    .find(|e| e.name == b"..")
+                    .expect("missing ..");
+                let lf = entries
+                    .iter()
+                    .find(|e| e.name == b"lost+found")
+                    .expect("missing lost+found");
 
-                assert_eq!(dot.inode, ext2::EXT2_ROOT_INO,
-                    ". should point at root inode (2)");
-                assert_eq!(dotdot.inode, ext2::EXT2_ROOT_INO,
-                    ".. should point at root inode (2) — root's parent is itself");
-                assert_eq!(lf.inode, 11,
-                    "lost+found should be inode 11 (first user inode after reserved 1-10)");
+                assert_eq!(
+                    dot.inode,
+                    ext2::EXT2_ROOT_INO,
+                    ". should point at root inode (2)"
+                );
+                assert_eq!(
+                    dotdot.inode,
+                    ext2::EXT2_ROOT_INO,
+                    ".. should point at root inode (2) — root's parent is itself"
+                );
+                assert_eq!(
+                    lf.inode, 11,
+                    "lost+found should be inode 11 (first user inode after reserved 1-10)"
+                );
                 assert_eq!(dot.file_type, ext2::EXT_FT_DIR, ". should be a directory");
-                assert_eq!(lf.file_type, ext2::EXT_FT_DIR, "lost+found should be a directory");
+                assert_eq!(
+                    lf.file_type,
+                    ext2::EXT_FT_DIR,
+                    "lost+found should be a directory"
+                );
 
                 // Test lookup_in_dir via the API
                 println!("[ext2] testing lookup_in_dir");
@@ -425,19 +485,28 @@ pub extern "C" fn _start(boot_info: &'static BootInfo) -> ! {
                 // Verify: resolve /hello.txt and read its contents
                 let hello = fs::resolve_path("/hello.txt")
                     .expect("resolve_path(/hello.txt) should succeed");
-                assert_eq!(hello.kind, fs::InodeKind::File,
-                    "hello.txt should be a regular file");
+                assert_eq!(
+                    hello.kind,
+                    fs::InodeKind::File,
+                    "hello.txt should be a regular file"
+                );
                 let data = hello.data.lock();
                 let data_str = core::str::from_utf8(&data).unwrap_or("<non-utf8>");
-                println!("[ext2] resolve_path(\"/hello.txt\") → ino={}, {} bytes: {:?}",
-                    hello.ino, data.len(), data_str);
-                assert!(data.starts_with(b"hello from disk"),
-                    "hello.txt contents mismatch: {:?}", data_str);
+                println!(
+                    "[ext2] resolve_path(\"/hello.txt\") → ino={}, {} bytes: {:?}",
+                    hello.ino,
+                    data.len(),
+                    data_str
+                );
+                assert!(
+                    data.starts_with(b"hello from disk"),
+                    "hello.txt contents mismatch: {:?}",
+                    data_str
+                );
                 drop(data);
 
                 // Root directory
-                let root = fs::resolve_path("/")
-                    .expect("resolve_path(/) should succeed");
+                let root = fs::resolve_path("/").expect("resolve_path(/) should succeed");
                 assert_eq!(root.kind, fs::InodeKind::Dir);
 
                 // Missing path
@@ -446,10 +515,12 @@ pub extern "C" fn _start(boot_info: &'static BootInfo) -> ! {
                 println!("[ext2] resolve_path(\"/does-not-exist\") → None ✓");
 
                 // Cache hit: second resolve of /hello.txt returns same Arc
-                let hello2 = fs::resolve_path("/hello.txt")
-                    .expect("second resolve should also succeed");
-                assert!(alloc::sync::Arc::ptr_eq(&hello, &hello2),
-                    "second resolve should hit cache (same Arc)");
+                let hello2 =
+                    fs::resolve_path("/hello.txt").expect("second resolve should also succeed");
+                assert!(
+                    alloc::sync::Arc::ptr_eq(&hello, &hello2),
+                    "second resolve should hit cache (same Arc)"
+                );
                 println!("[ext2] second resolve_path(\"/hello.txt\") → cache hit ✓");
 
                 println!("[ext2] *** ext2 mounted via trait — VFS is filesystem-agnostic ***");
@@ -458,8 +529,11 @@ pub extern "C" fn _start(boot_info: &'static BootInfo) -> ! {
                 {
                     let elf_inode = fs::resolve_path("/hello.elf")
                         .expect("resolve_path(\"/hello.elf\") should succeed");
-                    assert_eq!(elf_inode.kind, fs::InodeKind::File,
-                        "hello.elf should be a regular file");
+                    assert_eq!(
+                        elf_inode.kind,
+                        fs::InodeKind::File,
+                        "hello.elf should be a regular file"
+                    );
                     let bytes = elf_inode.data.lock();
                     println!("[elf] /hello.elf: {} bytes", bytes.len());
 
@@ -467,20 +541,28 @@ pub extern "C" fn _start(boot_info: &'static BootInfo) -> ! {
                         .expect("ELF header parse failed — magic mismatch or short read");
                     header.print();
 
-                    assert!(header.is_x86_64_exec(),
+                    assert!(
+                        header.is_x86_64_exec(),
                         "not a 64-bit little-endian ET_EXEC x86-64 ELF \
                          (class={}, data={}, e_type={}, machine=0x{:X})",
-                        header.class, header.data, header.e_type, header.machine);
-                    assert_eq!(header.phentsize, 56,
-                        "ELF64 program headers must be 56 bytes, got {}", header.phentsize);
+                        header.class,
+                        header.data,
+                        header.e_type,
+                        header.machine
+                    );
+                    assert_eq!(
+                        header.phentsize, 56,
+                        "ELF64 program headers must be 56 bytes, got {}",
+                        header.phentsize
+                    );
                     assert!(header.phnum > 0, "expected at least one program header");
 
                     // Walk the PHT. Each entry is at e_phoff + i * e_phentsize.
                     println!("[elf] program headers ({} entries):", header.phnum);
                     let mut loadable = 0u16;
                     for i in 0..header.phnum {
-                        let off = header.phoff as usize
-                            + (i as usize) * (header.phentsize as usize);
+                        let off =
+                            header.phoff as usize + (i as usize) * (header.phentsize as usize);
                         let ph = elf::ProgramHeader::parse(&bytes[off..])
                             .expect("program header parse failed — short read");
 
@@ -496,24 +578,35 @@ pub extern "C" fn _start(boot_info: &'static BootInfo) -> ! {
                         }
                     }
 
-                    println!("[elf] {} loadable segment(s) — Lesson 16 will map these", loadable);
+                    println!(
+                        "[elf] {} loadable segment(s) — Lesson 16 will map these",
+                        loadable
+                    );
                     assert!(loadable >= 1, "expected at least one PT_LOAD segment");
 
                     // Sanity: entry point should fall inside a loadable + executable segment.
                     let entry_in_r_x = (0..header.phnum)
                         .map(|i| {
-                            let off = header.phoff as usize
-                                + (i as usize) * (header.phentsize as usize);
+                            let off =
+                                header.phoff as usize + (i as usize) * (header.phentsize as usize);
                             elf::ProgramHeader::parse(&bytes[off..]).unwrap()
                         })
-                        .any(|ph| ph.is_load()
-                            && ph.p_flags & elf::PF_X != 0
-                            && header.entry >= ph.p_vaddr
-                            && header.entry < ph.p_vaddr + ph.p_memsz);
-                    assert!(entry_in_r_x,
-                        "e_entry (0x{:X}) not inside any r-x PT_LOAD segment", header.entry);
+                        .any(|ph| {
+                            ph.is_load()
+                                && ph.p_flags & elf::PF_X != 0
+                                && header.entry >= ph.p_vaddr
+                                && header.entry < ph.p_vaddr + ph.p_memsz
+                        });
+                    assert!(
+                        entry_in_r_x,
+                        "e_entry (0x{:X}) not inside any r-x PT_LOAD segment",
+                        header.entry
+                    );
 
-                    println!("[elf] entry 0x{:X} ✓ inside an r-x PT_LOAD segment", header.entry);
+                    println!(
+                        "[elf] entry 0x{:X} ✓ inside an r-x PT_LOAD segment",
+                        header.entry
+                    );
                     println!("[elf] *** ELF header parsed — ready for exec() (Lesson 16) ***");
                 }
             } else {
@@ -580,8 +673,7 @@ pub extern "C" fn _start(boot_info: &'static BootInfo) -> ! {
             );
         }
         {
-            let request =
-                net::arp::ArpPacket::request(net.mac(), net::OUR_IP, net::GATEWAY_IP);
+            let request = net::arp::ArpPacket::request(net.mac(), net::OUR_IP, net::GATEWAY_IP);
             let bytes = request.to_bytes();
             assert_eq!(bytes[6], 0x00, "ARP request opcode high byte");
             assert_eq!(bytes[7], 0x01, "ARP request opcode low byte");
@@ -620,8 +712,7 @@ pub extern "C" fn _start(boot_info: &'static BootInfo) -> ! {
             .resolve_arp(net::GATEWAY_IP)
             .expect("Lesson 22 expected a cache hit for slirp");
         assert_eq!(
-            cached_gateway_mac,
-            gateway_mac,
+            cached_gateway_mac, gateway_mac,
             "ARP cache should return gateway MAC"
         );
         assert_eq!(
@@ -654,8 +745,8 @@ pub extern "C" fn _start(boot_info: &'static BootInfo) -> ! {
             packet[0..net::ipv4::IPV4_HEADER_LEN].copy_from_slice(&header);
             packet[net::ipv4::IPV4_HEADER_LEN..].copy_from_slice(&payload);
 
-            let parsed = net::ipv4::Ipv4Header::parse(&packet)
-                .expect("built IPv4 header should parse");
+            let parsed =
+                net::ipv4::Ipv4Header::parse(&packet).expect("built IPv4 header should parse");
             assert_eq!(parsed.protocol, net::ipv4::PROTOCOL_UDP);
             assert_eq!(parsed.src_ip, net::OUR_IP);
             assert_eq!(parsed.dst_ip, net::GATEWAY_IP);
@@ -723,12 +814,9 @@ pub extern "C" fn _start(boot_info: &'static BootInfo) -> ! {
                 PAYLOAD,
             )
             .expect("UDP test buffer has the exact datagram size");
-            let parsed = net::udp::UdpDatagram::parse(
-                &bytes[..message_len],
-                [10, 0, 2, 2],
-                net::OUR_IP,
-            )
-            .expect("freshly built UDP datagram must parse");
+            let parsed =
+                net::udp::UdpDatagram::parse(&bytes[..message_len], [10, 0, 2, 2], net::OUR_IP)
+                    .expect("freshly built UDP datagram must parse");
             assert_eq!(parsed.header.src_port, 53000);
             assert_eq!(parsed.header.dst_port, 5555);
             assert_eq!(parsed.payload, PAYLOAD);
@@ -756,12 +844,14 @@ pub extern "C" fn _start(boot_info: &'static BootInfo) -> ! {
         }
         println!("[net] *** first Ethernet frame received and RX buffer recycled ***");
         virtio::install_net_device(net);
+        #[cfg(any(feature = "test-udp", feature = "test-nonblocking"))]
+        {
+            let net_pid = task::spawn("net-rx", virtio::network_task);
+            virtio::register_net_task(net_pid);
+        }
     } else {
         println!("[virtio-net] device not present; skipping init");
     }
-
-    println!("[boot] enabling interrupts");
-    x86_64::instructions::interrupts::enable();
 
     // M3 slice 3.6.c: set up the syscall mechanism (MSRs + entry point).
     // After this, user code can execute the `syscall` instruction to
@@ -780,17 +870,48 @@ pub extern "C" fn _start(boot_info: &'static BootInfo) -> ! {
     // The program runs in ring 3 from a binary that came from disk.
     //
     // Under test fixtures, exec the selected user program from disk.
-    #[cfg(feature = "test-udp")]
+    #[cfg(feature = "test-nonblocking")]
+    let user_elf_path: &str = "/nonblocking_echo.elf";
+    #[cfg(all(not(feature = "test-nonblocking"), feature = "test-udp"))]
     let user_elf_path: &str = "/udp_echo.elf";
-    #[cfg(all(not(feature = "test-udp"), feature = "test-icmp"))]
+    #[cfg(all(
+        not(feature = "test-nonblocking"),
+        not(feature = "test-udp"),
+        feature = "test-icmp"
+    ))]
     let user_elf_path: &str = "/icmp_ping.elf";
-    #[cfg(all(not(feature = "test-udp"), not(feature = "test-icmp"), feature = "test-net"))]
+    #[cfg(all(
+        not(feature = "test-nonblocking"),
+        not(feature = "test-udp"),
+        not(feature = "test-icmp"),
+        feature = "test-net"
+    ))]
     let user_elf_path: &str = "/net_smoke.elf";
-    #[cfg(all(not(feature = "test-udp"), not(feature = "test-icmp"), not(feature = "test-net"), feature = "test-inherit"))]
+    #[cfg(all(
+        not(feature = "test-nonblocking"),
+        not(feature = "test-udp"),
+        not(feature = "test-icmp"),
+        not(feature = "test-net"),
+        feature = "test-inherit"
+    ))]
     let user_elf_path: &str = "/inherit_wait.elf";
-    #[cfg(all(not(feature = "test-udp"), not(feature = "test-icmp"), not(feature = "test-net"), not(feature = "test-inherit"), feature = "test-fork"))]
+    #[cfg(all(
+        not(feature = "test-nonblocking"),
+        not(feature = "test-udp"),
+        not(feature = "test-icmp"),
+        not(feature = "test-net"),
+        not(feature = "test-inherit"),
+        feature = "test-fork"
+    ))]
     let user_elf_path: &str = "/fork_smoke.elf";
-    #[cfg(all(not(feature = "test-udp"), not(feature = "test-icmp"), not(feature = "test-net"), not(feature = "test-inherit"), not(feature = "test-fork")))]
+    #[cfg(all(
+        not(feature = "test-nonblocking"),
+        not(feature = "test-udp"),
+        not(feature = "test-icmp"),
+        not(feature = "test-net"),
+        not(feature = "test-inherit"),
+        not(feature = "test-fork")
+    ))]
     let user_elf_path: &str = "/hello.elf";
 
     println!("[test] exec {} (16.1-16.4) — the mission", user_elf_path);
@@ -825,7 +946,10 @@ pub extern "C" fn _start(boot_info: &'static BootInfo) -> ! {
             x86_64::registers::control::Cr3Flags::empty(),
         );
     }
-    println!("[exec] CR3 := new AS; jumping to user mode at rip=0x{:X}", entry);
+    println!(
+        "[exec] CR3 := new AS; jumping to user mode at rip=0x{:X}",
+        entry
+    );
     println!("[exec] *** mission running: disk → ext2 → VFS → ELF → ring 3 ***");
 
     // Disable interrupts during the iretq setup. The RFLAGS value

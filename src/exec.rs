@@ -91,7 +91,10 @@ pub fn exec_elf(path: &str) -> Result<ExecContext, &'static str> {
 
     // 5. User stack.
     let stack_top = setup_user_stack(&aspace)?;
-    println!("[exec]   user stack at 0x{:X} ({} pages)", stack_top, STACK_PAGES);
+    println!(
+        "[exec]   user stack at 0x{:X} ({} pages)",
+        stack_top, STACK_PAGES
+    );
 
     Ok(ExecContext {
         entry: header.entry,
@@ -133,19 +136,24 @@ fn map_segment(
 
     println!(
         "[exec]   PT_LOAD: vaddr=0x{:X} memsz={} filesz={} flags={} ({} pages)",
-        ph.p_vaddr, ph.p_memsz, ph.p_filesz, ph.perms_str(), num_pages
+        ph.p_vaddr,
+        ph.p_memsz,
+        ph.p_filesz,
+        ph.perms_str(),
+        num_pages
     );
 
     for i in 0..num_pages {
         let vaddr = page_start + i * PAGE;
-        let frame_idx = frame_allocator::allocate()
-            .ok_or("out of frames during exec")?;
+        let frame_idx = frame_allocator::allocate().ok_or("out of frames during exec")?;
         let phys = PhysAddr::new(frame_idx * PAGE);
 
         // SAFETY: the virtual page is currently unmapped in the new AS
         // (it's fresh), and the frame is freshly allocated.
         unsafe {
-            aspace.map_to(VirtAddr::new(vaddr), phys, flags).map_err(|_| "map_to failed")?;
+            aspace
+                .map_to(VirtAddr::new(vaddr), phys, flags)
+                .map_err(|_| "map_to failed")?;
         }
 
         // Zero first — handles .bss tail automatically.
@@ -177,19 +185,19 @@ fn map_segment(
 /// Map `STACK_PAGES` rw- user frames ending at `STACK_TOP`.
 /// Returns the stack-top virtual address (where `rsp` should point).
 fn setup_user_stack(aspace: &AddressSpace) -> Result<u64, &'static str> {
-    let flags = PageTableFlags::PRESENT
-        | PageTableFlags::WRITABLE
-        | PageTableFlags::USER_ACCESSIBLE;
+    let flags =
+        PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE;
 
     for i in 0..STACK_PAGES {
         // i=0 maps the bottom page, i=N-1 maps the top page.
         let vaddr = STACK_TOP - (STACK_PAGES - i) * PAGE;
-        let frame_idx = frame_allocator::allocate()
-            .ok_or("out of frames for stack")?;
+        let frame_idx = frame_allocator::allocate().ok_or("out of frames for stack")?;
         let phys = PhysAddr::new(frame_idx * PAGE);
         // SAFETY: fresh virtual range, fresh frame.
         unsafe {
-            aspace.map_to(VirtAddr::new(vaddr), phys, flags).map_err(|_| "stack map_to failed")?;
+            aspace
+                .map_to(VirtAddr::new(vaddr), phys, flags)
+                .map_err(|_| "stack map_to failed")?;
         }
         memory::zero_frame(phys);
     }

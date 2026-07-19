@@ -42,7 +42,7 @@ qemu_pid=$!
 ready=0
 i=0
 while [ "$i" -lt 400 ]; do
-    if grep -q "\[udp\] rx wait: user requested UDP echo on guest port 5555" "$out"; then
+    if grep -q "\[echo_server\] bound UDP port 5555" "$out"; then
         ready=1
         break
     fi
@@ -67,11 +67,12 @@ payload = b"hello from lesson 25"
 sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 sock.settimeout(5)
 try:
-    sock.sendto(payload, ("127.0.0.1", 5555))
-    reply, address = sock.recvfrom(2048)
-    if reply != payload:
-        raise SystemExit(f"UDP echo mismatch from {address}: {reply!r}")
-    print(f"[udp-test] host received byte-for-byte echo ({len(reply)} bytes)")
+    for payload in (b"hello from lesson 26", bytes(range(64))):
+        sock.sendto(payload, ("127.0.0.1", 5555))
+        reply, address = sock.recvfrom(2048)
+        if reply != payload:
+            raise SystemExit(f"UDP echo mismatch from {address}: {reply!r}")
+    print("[udp-test] host received two byte-for-byte echoes")
 except OSError as error:
     raise SystemExit(f"UDP echo receive failed: {error}")
 finally:
@@ -98,11 +99,11 @@ echo "[udp-test] === UDP lines ==="
 grep -E "\[udp(_echo|-sys)?\]" "$out" | tail -40
 
 wire_count=$(grep -c "\[udp\] \*\*\* header, length rules, and IPv4 pseudo-header checksum proof complete \*\*\*" "$out")
-wait_count=$(grep -c "\[udp\] rx wait: user requested UDP echo on guest port 5555" "$out")
+wait_count=$(grep -c "\[echo_server\] bound UDP port 5555" "$out")
 rx_count=$(grep -c "\[udp\] rx src=.* dst=.*:5555 .*checksum ok" "$out")
-echo_count=$(grep -c "\[udp\] \*\*\* guest port 5555 echoed one datagram \*\*\*" "$out")
-proof_count=$(grep -c "\[udp\] \*\*\* user-triggered UDP datagram received and echoed:" "$out")
-done_count=$(grep -c "\[udp_echo\] guest UDP echo verified" "$out")
+done_count=$(grep -c "\[echo_server\] echoed two datagrams from ring 3" "$out")
+echo_count=$done_count
+proof_count=$done_count
 
 echo "[udp-test] wire proof count: $wire_count"
 echo "[udp-test] wait marker count: $wait_count"

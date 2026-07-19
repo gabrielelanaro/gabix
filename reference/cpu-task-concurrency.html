@@ -1,0 +1,486 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CPU Concurrency — Swimlane Traces</title>
+  <link rel="stylesheet" href="../assets/lesson.css">
+  <style>
+    /* Swimlane layout */
+    .swimlane {
+      display: grid;
+      grid-template-columns: 5rem repeat(4, 1fr);
+      gap: 0;
+      margin: 2rem 0;
+      font-family: var(--font-mono);
+      font-size: 0.78rem;
+      line-height: 1.4;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    .sl-corner { background: var(--surface-soft); }
+    .sl-lane-header {
+      padding: 0.6rem 0.5rem;
+      font-family: var(--font-sans);
+      font-weight: 600;
+      font-size: 0.72rem;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--text-dim);
+      text-align: center;
+      background: var(--surface-soft);
+      border-bottom: 2px solid var(--border-bright);
+    }
+    .sl-time {
+      padding: 0.5rem;
+      font-family: var(--font-sans);
+      font-size: 0.72rem;
+      color: var(--text-faint);
+      text-align: right;
+      border-right: 1px solid var(--border);
+      border-bottom: 1px solid var(--border);
+      background: var(--surface-soft);
+    }
+    .sl-cell {
+      padding: 0.45rem 0.5rem;
+      border-right: 1px solid var(--border);
+      border-bottom: 1px solid var(--border);
+      min-height: 2.5rem;
+      display: flex;
+      align-items: center;
+    }
+    .sl-cell:last-child { border-right: none; }
+
+    /* State colors */
+    .st-run-user {
+      background: #dcfce7;
+      color: #14532d;
+    }
+    .st-run-kernel {
+      background: #fef3c7;
+      color: #78350f;
+    }
+    .st-blocked {
+      background: #fef3c7;
+      color: #92400e;
+    }
+    .st-ready {
+      background: #dbeafe;
+      color: #1e3a5f;
+    }
+    .st-cpu-halt {
+      background: #e7e5e4;
+      color: #78716c;
+      background-image: repeating-linear-gradient(45deg, transparent, transparent 4px, rgba(0,0,0,.04) 4px, rgba(0,0,0,.04) 8px);
+    }
+    .st-isr {
+      background: #fee2e2;
+      color: #991b1b;
+    }
+    .st-device {
+      background: #f3e8ff;
+      color: #6b21a8;
+    }
+    .st-idle {
+      color: var(--text-faint);
+      background: var(--surface);
+    }
+
+    .sl-cell strong {
+      display: block;
+      margin-bottom: 0.15rem;
+      font-size: 0.8rem;
+    }
+    .sl-cell em {
+      font-style: normal;
+      opacity: 0.7;
+      font-size: 0.72rem;
+    }
+
+    /* Annotations */
+    .trace-annot {
+      margin: 0.4rem 0 1.5rem 5.5rem;
+      padding: 0.5rem 0.8rem;
+      border-left: 3px solid var(--accent);
+      font-size: 0.85rem;
+      line-height: 1.55;
+      color: var(--text-dim);
+    }
+    .trace-annot strong { color: var(--text); }
+    .trace-annot code { font-size: 0.82em; }
+
+    /* Legend */
+    .legend {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.6rem;
+      margin: 1.5rem 0;
+      font-family: var(--font-sans);
+      font-size: 0.78rem;
+    }
+    .legend-item { display: flex; align-items: center; gap: 0.35rem; }
+    .legend-swatch {
+      display: inline-block;
+      width: 1.2rem;
+      height: 1rem;
+      border-radius: 3px;
+      border: 1px solid var(--border);
+    }
+
+    .key-insight {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-left: 4px solid var(--accent);
+      border-radius: 0 8px 8px 0;
+      padding: 1.5rem 1.75rem;
+      margin: 2rem 0;
+    }
+    .key-insight h3 {
+      margin: 0 0 0.75rem;
+      font-family: var(--font-sans);
+      font-size: 1rem;
+    }
+    .key-insight dl { margin: 0; }
+    .key-insight dt {
+      font-family: var(--font-mono);
+      font-weight: 600;
+      font-size: 0.85rem;
+      color: var(--accent);
+      margin-top: 0.75rem;
+    }
+    .key-insight dt:first-child { margin-top: 0; }
+    .key-insight dd { margin: 0.25rem 0 0; color: var(--text-dim); font-size: 0.9rem; }
+
+    @media (max-width: 700px) {
+      .swimlane { font-size: 0.7rem; }
+      .trace-annot { margin-left: 0; }
+    }
+  </style>
+</head>
+<body>
+<article class="lesson">
+  <header class="lesson-header">
+    <div class="lesson-eyebrow">Reference &middot; Concurrency model</div>
+    <h1 class="lesson-title">CPU Concurrency: How Tasks Sleep and the CPU Idles</h1>
+    <p class="lesson-subtitle">A concrete swimlane trace of the echo server receiving one UDP packet &mdash; showing exactly when the process sleeps, when the CPU sleeps, and what wakes each one.</p>
+  </header>
+
+  <div class="content">
+
+    <p class="lead">
+      Four entities interact: the <strong>CPU core</strong> (the
+      hardware), <strong>Task&nbsp;A</strong> (the echo server user
+      process), the <strong>timer</strong> (PIT, firing every 10&nbsp;ms),
+      and the <strong>virtio-net device</strong> (the network card).
+      Each has its own notion of "sleeping" and "waking." This trace
+      shows how they relate.
+    </p>
+
+    <h2>The key distinction</h2>
+
+    <div class="key-insight">
+      <h3>Process sleep &ne; CPU sleep</h3>
+      <dl>
+        <dt>Process sleep (Blocked state)</dt>
+        <dd>The task's state field is set to <code>Blocked</code> inside the scheduler's task table. The task struct stays in memory. The scheduler skips it when picking the next task. The task consumes zero CPU &mdash; it simply never gets picked.</dd>
+        <dt>CPU sleep (<code>hlt</code> instruction)</dt>
+        <dd>The physical CPU core stops executing instructions and enters a low-power halt state. It stays halted until a hardware interrupt arrives (timer, device, NMI). The CPU doesn't know about tasks &mdash; it just stops and waits for a signal.</dd>
+        <dt>Task switch (<code>yield_now</code>)</dt>
+        <dd>The scheduler saves the current task's registers, picks the next <code>Ready</code> task, loads its registers, and returns. The CPU never stops &mdash; it just switches from executing one stack to another.</dd>
+        <dt>Interrupt (ISR)</dt>
+        <dd>A hardware signal causes the CPU to stop whatever it's doing (including <code>hlt</code>), push a frame, and jump to a handler in the IDT. After <code>iretq</code>, the CPU resumes wherever it was &mdash; including inside <code>hlt</code>, which then finishes.</dd>
+      </dl>
+    </div>
+
+    <p>
+      A process can sleep while the CPU runs a different process
+      (multiplexing). A process can sleep and the CPU also sleeps
+      (idle loop). Both happen in the trace below.
+    </p>
+
+    <h2>The scenario</h2>
+
+    <p>
+      The echo server (the only user task) calls
+      <code>recvfrom</code>. The socket queue is empty, so it blocks.
+      No other task exists. The CPU enters the idle loop and sleeps.
+      10&nbsp;ms later the timer fires, the scheduler rescans, finds
+      nothing, and sleeps again. At 17&nbsp;ms the host sends a UDP
+      packet. The device fires an interrupt. The ISR delivers the
+      datagram, wakes the task, and returns. The scheduler resumes
+      the echo server, which processes the packet and sends a reply.
+      Then it blocks again.
+    </p>
+
+    <div class="legend">
+      <div class="legend-item"><span class="legend-swatch st-run-user"></span> running user code</div>
+      <div class="legend-item"><span class="legend-swatch st-run-kernel"></span> running kernel code</div>
+      <div class="legend-item"><span class="legend-swatch st-blocked"></span> blocked (task)</div>
+      <div class="legend-item"><span class="legend-swatch st-ready"></span> ready (task)</div>
+      <div class="legend-item"><span class="legend-swatch st-cpu-halt"></span> CPU halted (sleeping)</div>
+      <div class="legend-item"><span class="legend-swatch st-isr"></span> interrupt handler (ISR)</div>
+      <div class="legend-item"><span class="legend-swatch st-device"></span> device event</div>
+      <div class="legend-item"><span class="legend-swatch st-idle"></span> idle</div>
+    </div>
+
+    <h2>The trace</h2>
+
+    <div class="swimlane">
+      <!-- Header row -->
+      <div class="sl-corner sl-lane-header"></div>
+      <div class="sl-lane-header">CPU Core</div>
+      <div class="sl-lane-header">Echo Server<br><small>Task A</small></div>
+      <div class="sl-lane-header">Timer (PIT)</div>
+      <div class="sl-lane-header">virtio-net</div>
+
+      <!-- Step 1 -->
+      <div class="sl-time">T=0</div>
+      <div class="sl-cell st-run-kernel"><div><strong>sys_recvfrom</strong><em>executing kernel handler</em></div></div>
+      <div class="sl-cell st-run-user"><div><strong>recvfrom()</strong><em>called the syscall</em></div></div>
+      <div class="sl-cell st-idle"><em>—</em></div>
+      <div class="sl-cell st-idle"><em>—</em></div>
+    </div>
+    <div class="trace-annot">
+      <strong>1.</strong> Task A calls <code>recvfrom(fd, buf, len)</code>.
+      The kernel handler <code>sys_recvfrom</code> runs on the CPU.
+      It calls <code>socket.pop()</code> &mdash; the receive queue is empty.
+      No data to return yet.
+    </div>
+
+    <div class="swimlane">
+      <div class="sl-time">T=0<br>+&epsilon;</div>
+      <div class="sl-cell st-run-kernel"><div><strong>block_current</strong><em>yield_now &rarr; no Ready task</em></div></div>
+      <div class="sl-cell st-blocked"><div><strong>Blocked</strong><em>state set, not running</em></div></div>
+      <div class="sl-cell st-idle"><em>—</em></div>
+      <div class="sl-cell st-idle"><em>—</em></div>
+    </div>
+    <div class="trace-annot">
+      <strong>2.</strong> Inside <code>without_interrupts</code>: the kernel
+      registers Task&nbsp;A as a waiter on the socket, sets its state to
+      <code>Blocked</code>, and calls <code>yield_now()</code>. The scheduler
+      scans for the next <code>Ready</code> task &mdash; there is none.
+      Task&nbsp;A is the only task and it's now <code>Blocked</code>.
+    </div>
+
+    <div class="swimlane">
+      <div class="sl-time">T=0<br>+&epsilon;</div>
+      <div class="sl-cell st-cpu-halt"><div><strong>hlt</strong><em>CPU halted, zero power</em></div></div>
+      <div class="sl-cell st-blocked"><div><strong>Blocked</strong><em>still blocked</em></div></div>
+      <div class="sl-cell st-idle"><em>—</em></div>
+      <div class="sl-cell st-idle"><em>—</em></div>
+    </div>
+    <div class="trace-annot">
+      <strong>3.</strong> The scheduler enters the idle loop:
+      <code>sti; hlt</code>. The <strong>CPU physically stops</strong>.
+      No instructions execute. The CPU draws near-zero power. It will
+      stay halted until a hardware interrupt arrives. Task&nbsp;A's
+      struct sits in memory with <code>state = Blocked</code>. Nothing
+      is happening. The system is asleep.
+    </div>
+
+    <div class="swimlane">
+      <div class="sl-time">T=10<br>ms</div>
+      <div class="sl-cell st-isr"><div><strong>timer ISR</strong><em>tick++, yield, hlt</em></div></div>
+      <div class="sl-cell st-blocked"><div><strong>Blocked</strong><em>timer doesn't wake I/O waiters</em></div></div>
+      <div class="sl-cell st-device"><div><strong>fires</strong><em>100&nbsp;Hz tick</em></div></div>
+      <div class="sl-cell st-idle"><em>—</em></div>
+    </div>
+    <div class="trace-annot">
+      <strong>4.</strong> The timer fires (100&nbsp;Hz = every 10&nbsp;ms).
+      The CPU wakes from <code>hlt</code>. The timer ISR runs:
+      increments the tick counter, sends EOI to the PIC, calls
+      <code>yield_now()</code>. The scheduler rescans &mdash; Task&nbsp;A
+      is still <code>Blocked</code> (the timer doesn't wake I/O waiters).
+      No runnable task. <code>sti; hlt</code> &mdash; the CPU sleeps
+      again. <strong>This is the multiplexing heartbeat.</strong>
+      Every 10&nbsp;ms the timer wakes the CPU, the scheduler checks
+      whether anything changed, and if not, goes back to sleep.
+    </div>
+
+    <div class="swimlane">
+      <div class="sl-time">T=17<br>ms</div>
+      <div class="sl-cell st-isr"><div><strong>RX ISR</strong><em>deliver &rarr; wake</em></div></div>
+      <div class="sl-cell st-blocked"><div><strong>Blocked &rarr; Ready</strong><em>woken by deliver</em></div></div>
+      <div class="sl-cell st-idle"><em>—</em></div>
+      <div class="sl-cell st-device"><div><strong>packet!</strong><em>frame &rarr; MSI-X</em></div></div>
+    </div>
+    <div class="trace-annot">
+      <strong>5.</strong> The host sends a UDP packet. virtio-net
+      writes the frame into a pre-posted RX buffer, advances the used
+      ring, and performs an MSI-X write to the APIC at
+      <code>0xFEE00000</code>. The APIC raises vector
+      <code>0x22</code>. The CPU wakes from <code>hlt</code> and
+      jumps to the RX ISR. The ISR locks NET_DEVICE, calls
+      <code>poll_rx</code>, parses the frame (Ethernet &rarr; IPv4
+      &rarr; UDP), and calls <code>socket::deliver(port 5555,
+      ...)</code>. <code>deliver</code> pushes the datagram to the
+      socket's queue and calls <code>task::wake(pid)</code> &mdash;
+      Task&nbsp;A flips from <code>Blocked</code> to
+      <code>Ready</code>. The ISR sends EOI to the APIC and returns
+      via <code>iretq</code>.
+    </div>
+
+    <div class="swimlane">
+      <div class="sl-time">T=17<br>ms<br>+&epsilon;</div>
+      <div class="sl-cell st-run-kernel"><div><strong>yield_now</strong><em>reschedules Task A</em></div></div>
+      <div class="sl-cell st-ready"><div><strong>Ready &rarr; Running</strong><em>scheduler picks it</em></div></div>
+      <div class="sl-cell st-idle"><em>—</em></div>
+      <div class="sl-cell st-idle"><em>—</em></div>
+    </div>
+    <div class="trace-annot">
+      <strong>6.</strong> After <code>iretq</code>, the CPU resumes
+      in the idle loop (where <code>hlt</code> was). The idle loop
+      does <code>cli</code>, rescans the task table, and finds
+      Task&nbsp;A is now <code>Ready</code>. It breaks out of the idle
+      loop and calls <code>yield_now()</code>, which switches context
+      to Task&nbsp;A. <strong>The task switch happens here</strong>
+      &mdash; the scheduler loads Task&nbsp;A's saved registers and
+      stack pointer and returns into its <code>recvfrom</code> loop.
+    </div>
+
+    <div class="swimlane">
+      <div class="sl-time">T=17<br>ms<br>+&epsilon;</div>
+      <div class="sl-cell st-run-user"><div><strong>user code</strong><em>pop &rarr; datagram!</em></div></div>
+      <div class="sl-cell st-run-user"><div><strong>recvfrom returns</strong><em>processes datagram</em></div></div>
+      <div class="sl-cell st-idle"><em>—</em></div>
+      <div class="sl-cell st-idle"><em>—</em></div>
+    </div>
+    <div class="trace-annot">
+      <strong>7.</strong> Task&nbsp;A resumes at the top of the
+      <code>recvfrom</code> loop. It calls <code>socket.pop()</code>
+      &mdash; this time the queue has the datagram. The kernel copies
+      the bytes to the user buffer and <code>recvfrom</code> returns
+      to user space. Task&nbsp;A is now <strong>running user code</strong>
+      again.
+    </div>
+
+    <div class="swimlane">
+      <div class="sl-time">T=17<br>ms<br>+&epsilon;</div>
+      <div class="sl-cell st-run-kernel"><div><strong>sys_sendto</strong><em>send_frame &rarr; hlt</em></div></div>
+      <div class="sl-cell st-run-kernel"><div><strong>sendto()</strong><em>echo back</em></div></div>
+      <div class="sl-cell st-idle"><em>—</em></div>
+      <div class="sl-cell st-device"><div><strong>TX</strong><em>sending frame</em></div></div>
+    </div>
+    <div class="trace-annot">
+      <strong>8.</strong> Task&nbsp;A calls <code>sendto()</code> to
+      echo the datagram back. The kernel builds the Ethernet/IP/UDP
+      headers, submits to the TX virtqueue, kicks the device, and
+      calls <code>hlt</code> to wait for TX completion. The device
+      transmits the frame.
+    </div>
+
+    <div class="swimlane">
+      <div class="sl-time">T=17<br>ms<br>+&epsilon;</div>
+      <div class="sl-cell st-isr"><div><strong>TX ISR</strong><em>EOI only</em></div></div>
+      <div class="sl-cell st-run-kernel"><div><strong>send_frame</strong><em>poll &rarr; done, return</em></div></div>
+      <div class="sl-cell st-idle"><em>—</em></div>
+      <div class="sl-cell st-device"><div><strong>TX done</strong><em>MSI-X</em></div></div>
+    </div>
+    <div class="trace-annot">
+      <strong>9.</strong> The device finishes transmitting and fires
+      the TX MSI-X vector. The CPU wakes from <code>hlt</code>. The
+      TX ISR sends EOI and returns. <code>send_frame</code> checks
+      the used ring, finds the completion, frees the descriptors, and
+      returns to user space.
+    </div>
+
+    <div class="swimlane">
+      <div class="sl-time">T=17<br>ms<br>+&epsilon;</div>
+      <div class="sl-cell st-cpu-halt"><div><strong>hlt</strong><em>idle again</em></div></div>
+      <div class="sl-cell st-blocked"><div><strong>Blocked</strong><em>back to sleep</em></div></div>
+      <div class="sl-cell st-idle"><em>—</em></div>
+      <div class="sl-cell st-idle"><em>—</em></div>
+    </div>
+    <div class="trace-annot">
+      <strong>10.</strong> Task&nbsp;A loops back to
+      <code>recvfrom</code>, finds the queue empty again, blocks, and
+      yields. No runnable task. The CPU enters the idle loop and
+      sleeps. The system is back to the state at step&nbsp;3, waiting
+      for the next packet.
+    </div>
+
+    <h2>What makes multiplexing work</h2>
+
+    <p>
+      In this trace there was only one task. With two tasks, the
+      picture changes at step&nbsp;3. When Task&nbsp;A blocks and
+      yields, instead of entering the idle loop, the scheduler finds
+      Task&nbsp;B is <code>Ready</code> and switches to it:
+    </p>
+
+    <div class="swimlane">
+      <div class="sl-corner sl-lane-header"></div>
+      <div class="sl-lane-header">CPU Core</div>
+      <div class="sl-lane-header">Task A</div>
+      <div class="sl-lane-header">Task B</div>
+      <div class="sl-lane-header">Timer</div>
+
+      <div class="sl-time">T=0</div>
+      <div class="sl-cell st-run-kernel"><div><strong>block A</strong><em>yield_now</em></div></div>
+      <div class="sl-cell st-blocked"><div><strong>Blocked</strong><em>waiting for packet</em></div></div>
+      <div class="sl-cell st-ready"><div><strong>Ready</strong><em>&uarr; picked by scheduler</em></div></div>
+      <div class="sl-cell st-idle"><em>—</em></div>
+    </div>
+    <div class="trace-annot">
+      <strong>Task A blocks.</strong> But Task B exists. The scheduler
+      switches to it instead of entering the idle loop.
+    </div>
+
+    <div class="swimlane">
+      <div class="sl-time">T=0<br>&rarr;T=17</div>
+      <div class="sl-cell st-run-user"><div><strong>running B</strong><em>user code executes</em></div></div>
+      <div class="sl-cell st-blocked"><div><strong>Blocked</strong><em>sleeping</em></div></div>
+      <div class="sl-cell st-run-user"><div><strong>Running</strong><em>does work for 17&nbsp;ms</em></div></div>
+      <div class="sl-cell st-device"><div><em>fires every 10&nbsp;ms</em><strong>yields B &rarr; B &rarr; B</strong></div></div>
+    </div>
+    <div class="trace-annot">
+      <strong>CPU runs Task B.</strong> The timer fires every 10&nbsp;ms
+      and the ISR calls <code>yield_now()</code>, but Task&nbsp;A is still
+      <code>Blocked</code>, so the scheduler picks Task&nbsp;B again.
+      Task&nbsp;B gets the full CPU. The timer is still firing &mdash;
+      it's the heartbeat that gives the scheduler a chance to re-check
+      whether Task&nbsp;A has been woken. When the packet arrives at
+      T=17&nbsp;ms, the RX ISR wakes Task&nbsp;A, and the next timer tick
+      (or the idle-loop rescan) switches to it.
+    </div>
+
+    <p>
+      With two tasks, the CPU never sleeps &mdash; Task&nbsp;B keeps it
+      busy. The idle loop only runs when <strong>every</strong> task
+      is blocked. That's the difference between "CPU running another
+      task" and "CPU sleeping." The scheduler handles both.
+    </p>
+
+    <div class="key-insight">
+      <h3>Summary: the four mechanisms</h3>
+      <dl>
+        <dt>Task sleeps &rarr; CPU runs another task</dt>
+        <dd>Task A is <code>Blocked</code>. Task B is <code>Ready</code>. Scheduler switches to B. CPU keeps running. This is <strong>multiplexing</strong>.</dd>
+        <dt>All tasks sleep &rarr; CPU sleeps</dt>
+        <dd>Every task is <code>Blocked</code>. Scheduler enters idle loop. <code>hlt</code>. CPU physically halts. This is the <strong>idle path</strong>.</dd>
+        <dt>Hardware interrupt wakes the CPU</dt>
+        <dd>Timer fires (every 10&nbsp;ms) or device fires (packet arrived). CPU wakes from <code>hlt</code>. ISR runs. If the ISR woke a task, the scheduler resumes it.</dd>
+        <dt>Timer is the multiplexing heartbeat</dt>
+        <dd>Without the timer, a sleeping CPU would never wake to check whether tasks are ready. The timer fires at 100&nbsp;Hz, giving the scheduler 100 chances per second to switch tasks.</dd>
+      </dl>
+    </div>
+
+  </div>
+
+  <footer class="lesson-footer">
+    <div class="footer-block">
+      <h4>Used by</h4>
+      <p style="margin:0;">
+        <a href="0028-interrupt-driven-io.html">Lesson 28: interrupt-driven I/O</a> &mdash; the <code>hlt</code>-based wait loop and idle-path discussion.<br>
+        <a href="0029-interrupt-driven-networking.html">Lesson 29: interrupt-driven networking</a> &mdash; the idle loop and ISR-triggered wakeup.
+      </p>
+    </div>
+    <nav class="lesson-nav">
+      <a href="0029-interrupt-driven-networking.html">&larr; Lesson 29</a>
+      <a href="0028-interrupt-driven-io.html">Lesson 28 &rarr;</a>
+    </nav>
+  </footer>
+</article>
+</body>
+</html>

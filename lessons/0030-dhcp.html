@@ -1,0 +1,261 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Lesson 30 — DHCP</title>
+  <link rel="stylesheet" href="../assets/lesson.css">
+  <link rel="stylesheet" href="../assets/byte-layout.css">
+  <link rel="stylesheet" href="../assets/sequence-diagram.css">
+  <link rel="stylesheet" href="../assets/lease-office.css">
+  <style>
+    .paradox { display:grid; grid-template-columns:1fr 1fr; gap:.9rem; margin:1.5rem 0; }
+    .paradox-card { padding:1rem 1.15rem; border:1px solid var(--border); border-radius:8px; background:var(--surface); }
+    .paradox-card h4 { margin:0 0 .5rem; font-family:var(--font-sans); font-size:.78rem; letter-spacing:.08em; text-transform:uppercase; color:var(--text-dim); }
+    .paradox-card.escape { border-left:4px solid var(--accent); }
+    .paradox-card.escape h4 { color:var(--accent); }
+    .paradox-card p { margin:.4rem 0; font-size:.92rem; }
+    .problem-cycle { font-family:var(--font-mono); font-size:.76rem; line-height:1.8; color:var(--text-dim); }
+    .problem-cycle b { color:#b91c1c; font-weight:600; }
+
+    .lease-line { display:flex; height:2.6rem; border-radius:6px; overflow:hidden; margin:1.5rem 0 0; font-family:var(--font-sans); }
+    .lease-seg { flex-grow:var(--w); flex-basis:0; display:flex; flex-direction:column; justify-content:center; align-items:center; color:#fff; font-size:.72rem; font-weight:700; line-height:1.25; }
+    .lease-seg span { font-weight:400; font-size:.62rem; opacity:.85; font-family:var(--font-mono); }
+    .lease-seg.bound  { background:#15803d; }
+    .lease-seg.renew  { background:var(--accent); }
+    .lease-seg.rebind { background:#b91c1c; }
+    .lease-marks { position:relative; height:3.6rem; margin-bottom:.5rem; font-family:var(--font-sans); font-size:.72rem; color:var(--text-dim); }
+    .lease-marks span { position:absolute; top:.4rem; transform:translateX(-50%); text-align:center; line-height:1.35; max-width:11rem; }
+    .lease-marks span::before { content:''; display:block; width:1px; height:.5rem; background:var(--border-bright); margin:0 auto .15rem; }
+    .lease-marks span.end { transform:translateX(-100%); text-align:right; }
+    .lease-marks span.end::before { margin-right:0; }
+
+    .quiz { padding:1rem 1.1rem; margin:1.5rem 0; border:1px solid var(--border); border-radius:8px; background:var(--surface-soft); }
+    .quiz-options { display:flex; flex-wrap:wrap; gap:.5rem; }
+    .quiz button { padding:.5rem .7rem; border:1px solid var(--border-bright); border-radius:5px; color:var(--text); background:var(--surface); font:600 .8rem var(--font-mono); cursor:pointer; }
+    .quiz-result { min-height:1.5em; margin:.7rem 0 0; font-family:var(--font-sans); font-size:.85rem; }
+
+    .game-rules { margin:0 0 1rem; padding-left:1.2rem; font-size:.95rem; }
+    .game-rules li { margin:.35rem 0; }
+    .game-credit { font-family:var(--font-sans); font-size:.75rem; color:var(--text-faint); text-align:center; margin:.4rem 0 0; }
+    @media(max-width:640px){ .paradox{grid-template-columns:1fr} }
+  </style>
+</head>
+<body>
+<article class="lesson">
+  <header class="lesson-header">
+    <div class="lesson-eyebrow">Lesson 30 · Phase 2 · after the objective</div>
+    <h1 class="lesson-title">DHCP</h1>
+    <p class="lesson-subtitle">Replace the hardcoded <code>10.0.2.15</code> with a four-packet conversation that obtains an address lease.</p>
+    <div class="lesson-meta">
+      <span><strong>User program</strong> <code>/dhcp.elf</code></span>
+      <span><strong>Endpoint</strong> <code>0.0.0.0:68 → 255.255.255.255:67</code></span>
+      <span><strong>Primary source</strong> RFC 2131</span>
+    </div>
+  </header>
+
+  <div class="content">
+    <p class="lead">Every packet mini-os has sent since Lesson 22 used a hardcoded source address. A real machine boots with no IP address, no subnet mask, no gateway address, and no DNS server addresses. DHCP (Dynamic Host Configuration Protocol) obtains these values through a UDP conversation. This lesson replaces the hardcoded address with the DHCP exchange. QEMU's built-in server assigns <code>10.0.2.15</code>, so the leased value equals the constant it replaces.</p>
+
+    <h2>The problem: sending IP packets requires an IP address</h2>
+    <p>IP packets require source and destination addresses. Sending a packet requires a source address. Receiving a packet requires the destination address to match one of the host's addresses. Requesting an address from a server requires knowing the server's address. A newly booted machine has none of these values.</p>
+
+    <div class="paradox">
+      <div class="paradox-card">
+        <h4>the circular dependency</h4>
+        <div class="problem-cycle">send an IP packet <b>→ needs a source address</b><br>receive the reply <b>→ needs a destination address</b><br>request an address from a server <b>→ needs the server's address</b></div>
+      </div>
+      <div class="paradox-card escape">
+        <h4>the solution: reserved addresses</h4>
+        <p>Use <code>0.0.0.0</code> as the source address. This value means the host has no assigned address.</p>
+        <p>Use <code>255.255.255.255</code> as the destination address. This value means deliver to all hosts on the local link layer.</p>
+        <p>On Ethernet, the broadcast IP address maps to the Ethernet broadcast address <code>ff:ff:ff:ff:ff:ff</code> by definition. No ARP lookup is needed.</p>
+      </div>
+    </div>
+    <p>Two reserved addresses break the circular dependency. Using broadcast means every host on the link receives the frame. The client sends two broadcast messages (DISCOVER and REQUEST), then uses unicast for the remainder of the lease.</p>
+    <span class="margin-note"><strong>Lesson 22 comparison.</strong> ARP sent a broadcast to learn one MAC address. DHCP sends broadcasts to obtain network configuration parameters.</span>
+
+    <h2>The exchange, message by message</h2>
+    <div class="seq-diagram">
+      <div class="seq-actors" style="--lanes:2">
+        <div class="seq-actor"><strong>client</strong><span class="seq-ep">0.0.0.0:68 · has no address</span></div>
+        <div class="seq-actor"><strong>dhcp server</strong><span class="seq-ep">10.0.2.2:67 · owns address pool</span></div>
+      </div>
+      <div class="seq-body">
+        <div class="seq-lane" style="--x:25%"></div>
+        <div class="seq-lane" style="--x:75%"></div>
+        <div class="seq-msg" style="--x1:25%; --x2:75%">
+          <span class="seq-tag"><span class="seq-num">1</span> DISCOVER</span>
+          <div class="seq-line arr-r bc"></div>
+          <span class="seq-detail">broadcast · xid fresh · chaddr = our virtio MAC</span>
+        </div>
+        <div class="seq-msg" style="--x1:25%; --x2:75%">
+          <span class="seq-tag"><span class="seq-num">2</span> OFFER</span>
+          <div class="seq-line arr-l bc"></div>
+          <span class="seq-detail">yiaddr = 10.0.2.15 · xid echoed back<br>options: lease time, mask, router, DNS</span>
+        </div>
+        <div class="seq-msg" style="--x1:25%; --x2:75%">
+          <span class="seq-tag"><span class="seq-num">3</span> REQUEST</span>
+          <div class="seq-line arr-r bc"></div>
+          <span class="seq-detail">broadcast · opt 50 names the address, opt 54 names the server</span>
+        </div>
+        <div class="seq-msg" style="--x1:25%; --x2:75%">
+          <span class="seq-tag"><span class="seq-num">4</span> ACK</span>
+          <div class="seq-line arr-l bc"></div>
+          <span class="seq-detail">binding confirmed · lease timer starts<br>client writes configuration to network stack</span>
+        </div>
+      </div>
+      <p class="seq-diagram-note">All messages use broadcast because the client has no assigned IP address. The BROADCAST flag (<code>0x8000</code> in <code>flags</code>) requests broadcast replies.</p>
+    </div>
+    <p><strong>1 · DISCOVER.</strong> The client sends a broadcast UDP datagram containing its MAC address in the <code>chaddr</code> field and a randomly generated transaction identifier in the <code>xid</code> field. Any server that receives the datagram may respond.</p>
+    <p><strong>2 · OFFER.</strong> A server sends a reply containing an IP address in the <code>yiaddr</code> field and lease parameters in options. The server copies the <code>xid</code> field unchanged. The client matches replies to its request by comparing the <code>xid</code> value, the same method used to match ICMP ping replies by identifier (Lesson 24).</p>
+    <p><strong>3 · REQUEST.</strong> The client selects one offer and sends a broadcast message containing option 50 (requested IP address) and option 54 (server identifier). All servers that sent an offer receive this broadcast. Servers whose offers were not selected free the addresses they had reserved (<a href="https://www.rfc-editor.org/rfc/rfc2131#section-3.1">RFC 2131 §3.1</a>).</p>
+    <p><strong>4 · ACK.</strong> The selected server sends a confirmation containing the lease parameters. The client records the lease, starts the T1 and T2 timers, and applies the IP address, subnet mask, gateway, and DNS server addresses to its network stack.</p>
+
+    <div class="callout"><div class="callout-title">Why four messages</div><p style="margin:0;">DISCOVER and OFFER locate servers and reserve an address. REQUEST and ACK commit to one lease. Splitting the exchange allows multiple servers to share one link without assigning the same address to multiple clients. If the selected server has already assigned the address to another client, it sends DHCPNAK and the client restarts at DISCOVER.</p></div>
+
+    <div class="quiz" data-answer="reclaim">
+      <p><strong>Retrieval check.</strong> RFC 2131 specifies that the client broadcasts DHCPREQUEST instead of unicasting it to the selected server. What does the broadcast accomplish?</p>
+      <div class="quiz-options"><button data-choice="reclaim">unselected servers free their reserved addresses</button><button data-choice="reserve">selected server reserves the address</button><button data-choice="route">relay agents learn the route</button><button data-choice="hide">the client hides its selection</button></div>
+      <p class="quiz-result" aria-live="polite"></p>
+    </div>
+
+    <h2>The packet format</h2>
+    <p>DHCP uses the packet layout defined by BOOTP (Bootstrap Protocol, <a href="https://www.rfc-editor.org/rfc/rfc951">RFC 951</a>) in 1985. The first 236 bytes contain the BOOTP header. Most fields supported diskless boot stations: <code>sname</code> and <code>file</code> specified a server address and boot image filename; <code>hops</code> and <code>giaddr</code> routed packets through relay agents. A DHCP client sets these fields to zero. The DHCP conversation uses a few header fields and the options area following the magic cookie.</p>
+
+    <div class="byte-layout">
+      <div class="byte-layout-header"><span class="byte-layout-name">DHCP message</span><span class="byte-layout-size">236 fixed bytes + options</span></div>
+      <div class="byte-bar">
+        <div class="byte-field type-u8" style="--bytes:4" data-tip="op · htype · hlen · hops — 1 byte each"><span class="byte-field-name">op · htype · hlen · hops</span><span class="byte-field-meta">u8 ×4</span><span class="byte-field-range">0–3</span><span class="byte-field-mini">OH</span></div>
+        <div class="byte-field type-u32" style="--bytes:4" data-tip="transaction id — client generates, server echoes"><span class="byte-field-name">xid</span><span class="byte-field-meta">u32</span><span class="byte-field-range">4–7</span><span class="byte-field-mini">XID</span></div>
+        <div class="byte-field type-u16" style="--bytes:4" data-tip="secs elapsed · flags (BROADCAST bit 0x8000)"><span class="byte-field-name">secs · flags</span><span class="byte-field-meta">u16 ×2</span><span class="byte-field-range">8–11</span><span class="byte-field-mini">SF</span></div>
+        <div class="byte-field type-u32" style="--bytes:16" data-tip="ciaddr · yiaddr · siaddr · giaddr — 4 bytes each"><span class="byte-field-name">ciaddr · yiaddr · siaddr · giaddr</span><span class="byte-field-meta">addr ×4</span><span class="byte-field-range">12–27</span><span class="byte-field-mini">ADDR</span></div>
+        <div class="byte-field type-array" style="--bytes:16" data-tip="client hardware address — our MAC in the first 6 bytes"><span class="byte-field-name">chaddr</span><span class="byte-field-meta">16 B</span><span class="byte-field-range">28–43</span><span class="byte-field-mini">CH</span></div>
+        <div class="byte-field type-pad" style="--bytes:64" data-tip="server host name — legacy, zeroed"><span class="byte-field-name">sname</span><span class="byte-field-meta">64 B</span><span class="byte-field-range">44–107</span><span class="byte-field-mini">SN</span></div>
+        <div class="byte-field type-pad" style="--bytes:128" data-tip="boot file name — legacy, zeroed"><span class="byte-field-name">file</span><span class="byte-field-meta">128 B</span><span class="byte-field-range">108–235</span><span class="byte-field-mini">FL</span></div>
+        <div class="byte-field type-struct" style="--bytes:4" data-tip="magic cookie 0x63825363 — “options follow”"><span class="byte-field-name">cookie</span><span class="byte-field-meta">u32</span><span class="byte-field-range">236–239</span><span class="byte-field-mini">CK</span></div>
+        <div class="byte-field type-array" style="--bytes:24" data-tip="TLV options — the configuration parameters"><span class="byte-field-name">options</span><span class="byte-field-meta">var</span><span class="byte-field-range">240…</span><span class="byte-field-mini">OPT</span></div>
+      </div>
+      <div class="byte-layout-note">Bar is proportional: the two gray legacy blocks are 192 of the 236 fixed bytes. DHCP uses the early header fields and the options tail.</div>
+    </div>
+
+    <div class="field-reference"><dl>
+      <dt>op <span class="type-tag type-u8">u8</span></dt><dd><code>1</code> = request (client → server), <code>2</code> = reply. htype <code>1</code> + hlen <code>6</code> indicate Ethernet hardware address; hops remains <code>0</code>.</dd>
+      <dt>xid <span class="type-tag type-u32">u32</span></dt><dd>Transaction identifier. The client generates this value in DISCOVER, includes it in REQUEST, and accepts only replies that echo the same value.</dd>
+      <dt>flags <span class="type-tag type-u16">u16</span></dt><dd>Bit <code>0x8000</code> is the BROADCAST flag: request the server to send the reply as a layer-2 broadcast because the client cannot receive IP unicast yet. All other bits are zero.</dd>
+      <dt>chaddr <span class="type-tag type-array">16 B</span></dt><dd>Client hardware address. The virtio network card MAC address occupies the first 6 bytes. The server uses this address to address replies and to identify the lease.</dd>
+      <dt>yiaddr <span class="type-tag type-u32">addr</span></dt><dd>“Your IP address” — the address the server offers. The server sets this field in OFFER and ACK; the client sets this field to zero.</dd>
+      <dt>magic cookie <span class="type-tag type-struct">u32</span></dt><dd><code>0x63825363</code> (<a href="https://www.rfc-editor.org/rfc/rfc2132#section-3">RFC 2132 §3</a>). This value marks the start of the options area. A parser verifies this value before parsing any option.</dd>
+    </dl></div>
+
+    <p>The options area uses TLV (type-length-value) encoding: one byte of option code, one byte of length, that many bytes of value, repeated until code <code>255</code> (end). The option codes used in this lesson, from <a href="https://www.rfc-editor.org/rfc/rfc2132">RFC 2132</a>:</p>
+    <div class="layer-stack">
+      <div class="layer-row current"><span class="layer-name">53 · message type</span><span class="layer-desc">1 DISCOVER · 2 OFFER · 3 REQUEST · 5 ACK · 6 NAK — required in every message</span></div>
+      <div class="layer-row"><span class="layer-name">50 · requested IP</span><span class="layer-desc">client → server: the address the client accepts</span></div>
+      <div class="layer-row"><span class="layer-name">54 · server identifier</span><span class="layer-desc">OFFER: server IP address · REQUEST: selected server IP address</span></div>
+      <div class="layer-row"><span class="layer-name">51 · lease time</span><span class="layer-desc">server → client: lease duration in seconds</span></div>
+      <div class="layer-row"><span class="layer-name">58 / 59 · T1 / T2</span><span class="layer-desc">optional values for the renewal and rebinding timers</span></div>
+      <div class="layer-row"><span class="layer-name">1 / 3 / 6</span><span class="layer-desc">subnet mask, router, DNS — remaining configuration parameters</span></div>
+    </div>
+
+    <h2>Lease lifecycle</h2>
+    <p>The address in an ACK is a lease that expires after a duration. Option 51 specifies the lease duration in seconds. Two timers determine when the client sends renewal requests (<a href="https://www.rfc-editor.org/rfc/rfc2131#section-4.4.5">RFC 2131 §4.4.5</a>):</p>
+    <div class="lease-line">
+      <div class="lease-seg bound" style="--w:50">BOUND<span>0 → T1</span></div>
+      <div class="lease-seg renew" style="--w:37.5">RENEWING<span>T1 → T2</span></div>
+      <div class="lease-seg rebind" style="--w:12.5">REBINDING<span>T2 → end</span></div>
+    </div>
+    <div class="lease-marks">
+      <span style="left:50%">T1 = 0.5 × lease<br>client unicasts REQUEST to the granting server</span>
+      <span style="left:87.5%">T2 = 0.875 × lease<br>client broadcasts REQUEST to any server</span>
+      <span class="end" style="left:100%">expiry<br>address returns to server pool</span>
+    </div>
+    <p>When T1 expires, the client unicasts a REQUEST to the server that granted the lease. If the server responds with ACK, the lease timer resets. If T2 expires before renewal succeeds, the client broadcasts a REQUEST to any server. If the lease expires, the client returns to INIT and restarts at DISCOVER. Servers can override the default T1 and T2 values with options 58 and 59. Slirp's lease duration exceeds any test run, so mini-os will not perform renewal in practice. The timers still matter for understanding real network traffic: a laptop that reboots while its lease is valid can continue using the address.</p>
+
+    <h2>The lab server assigns 10.0.2.15</h2>
+    <p>QEMU's user-mode networking stack (slirp) runs a DHCP server at <code>10.0.2.2</code> and assigns addresses starting from <code>10.0.2.15</code> (<a href="https://www.qemu.org/docs/master/system/devices/net.html">QEMU network emulation docs</a>). mini-os is the only guest on the virtual link, so the server assigns <code>10.0.2.15</code> — the same value that the kernel has hardcoded since Lesson 22.</p>
+    <p>The test procedure: boot without the hardcoded address, execute the DHCP conversation, and verify the leased address equals the previous constant. Then re-run the Lesson 24 ping test and the Lesson 25 UDP test using the acquired address. Network behavior should be identical with the hardcoded address removed.</p>
+
+    <h2>What to build in mini-os</h2>
+    <p>The DHCP client is a user-mode program. UDP sockets transmit and receive the packets. The kernel requires three modifications and one new system call.</p>
+    <div class="recipe">
+      <div class="recipe-step"><div class="recipe-num">30.1</div><div class="recipe-body"><strong>Transmit and receive while unconfigured.</strong> Transmit: allow <code>0.0.0.0</code> as a source address; map destination <code>255.255.255.255</code> to Ethernet broadcast <code>ff:ff:ff:ff:ff:ff</code> without ARP. Receive: while the host has no assigned IP address, accept broadcast frames containing UDP datagrams for port 68.</div></div>
+      <div class="recipe-step"><div class="recipe-num">30.2</div><div class="recipe-body"><strong>DHCP packet module.</strong> Construct DISCOVER and REQUEST packets. Parse OFFER and ACK replies. Verify the magic cookie value and echoed <code>xid</code>. Parse TLV options for codes 53, 51, 54, 1, 3, 6.</div></div>
+      <div class="recipe-step"><div class="recipe-num">30.3</div><div class="recipe-body"><strong>Execute <code>/dhcp.elf</code> from user mode.</strong> Call <code>socket()</code>, <code>bind()</code> to port 68, send DISCOVER. Call <code>recvfrom()</code> which blocks until Lesson 29's interrupt-driven RX delivers the OFFER. Send REQUEST, receive ACK. Call the new <code>net_configure(addr, mask, gateway, dns, lease_secs)</code> system call to write the runtime network configuration into the kernel.</div></div>
+      <div class="recipe-step"><div class="recipe-num">30.4</div><div class="recipe-body"><strong>Remove hardcoded address.</strong> The kernel boots with empty network configuration. Init executes <code>dhcp.elf</code> before any other network program. The test suite runs against the leased address.</div></div>
+    </div>
+    <div class="callout"><div class="callout-title">Dependencies</div><p style="margin:0;">All prerequisites exist: blocking sockets (Lesson 26), readiness (Lesson 27), and interrupt-driven RX that wakes the blocked <code>recvfrom()</code> call (Lesson 29). The new code is the DHCP packet format and the configuration system call.</p></div>
+
+    <h2>Minigame — run the Lease Office</h2>
+    <p>Implement the server side. You are the server at <code>10.0.2.2</code> with three addresses in the pool. Clients send messages; send the correct reply before each patience bar reaches zero.</p>
+    <ul class="game-rules">
+      <li>Send <strong>OFFER</strong> in response to <strong>DISCOVER</strong> — the server reserves the address for a few seconds while the client decides.</li>
+      <li>Send <strong>ACK</strong> in response to <strong>REQUEST</strong> for the address you offered that client — the server records the lease and starts the lease timer.</li>
+      <li>Send <strong>NAK</strong> in response to <strong>REQUEST</strong> for any other address — the client restarts at DISCOVER.</li>
+      <li>Send no response to <strong>DISCOVER</strong> when the pool is empty — a lease expiry frees an address.</li>
+    </ul>
+
+    <section class="lease-office" data-lease-office aria-label="DHCP lease office minigame">
+      <div class="lo-topbar">
+        <div class="lo-title">The Lease Office <span>port 67 · server 10.0.2.2</span></div>
+        <div class="lo-score">
+          <span class="lo-chip" data-lo-leases>leases 0</span>
+          <span class="lo-chip" data-lo-strikes>strikes 0</span>
+          <button class="lo-restart" type="button" data-lo-restart>restart</button>
+        </div>
+      </div>
+      <div class="lo-grid">
+        <div class="lo-col">
+          <h3>address pool</h3>
+          <div class="lo-pool" data-lo-pool></div>
+        </div>
+        <div class="lo-col">
+          <h3>waiting room <small>click a client, then choose a reply below</small></h3>
+          <div class="lo-room" data-lo-room><p class="lo-empty">no clients yet — the office opens in a second…</p></div>
+        </div>
+        <div class="lo-col">
+          <h3>reply preview</h3>
+          <div class="lo-preview" data-lo-preview>select a client to inspect its message</div>
+          <h3>wire log</h3>
+          <ol class="lo-log" data-lo-log aria-live="polite"></ol>
+        </div>
+      </div>
+      <div class="lo-actions">
+        <button type="button" data-lo-act="offer">OFFER</button>
+        <button type="button" data-lo-act="ack">ACK</button>
+        <button type="button" data-lo-act="nak">NAK</button>
+        <span class="lo-hint" data-lo-hint>DISCOVER → OFFER · your REQUEST → ACK · alien REQUEST → NAK</span>
+      </div>
+      <div class="lo-end" data-lo-end hidden>
+        <h3>Office closed</h3>
+        <p data-lo-verdict></p>
+        <button type="button" data-lo-restart>run it again</button>
+      </div>
+    </section>
+    <p class="game-credit">Leases and offers expire in game time — 40 s and 12 s — so the pool state changes while you watch. eda and fox behave differently.</p>
+
+    <div class="probe"><div class="probe-title">Probe — reboot during lease</div><p>mini-os reboots while a lease is active. The ext2 disk stores the previous address <code>10.0.2.15</code>. On the next boot the client skips DISCOVER and OFFER and broadcasts a DHCPREQUEST specifying that address. Which two replies can arrive, and what does the client do with each?</p></div>
+    <p>Answer the probe when ready, or ask about any field, timer, or system call boundary before implementation. The build starts at step 30.1.</p>
+  </div>
+
+  <footer class="lesson-footer">
+    <div class="footer-block"><h4>Primary sources</h4><p style="margin:0;"><a href="https://www.rfc-editor.org/rfc/rfc2131">RFC 2131</a> — the exchange (§3.1), broadcast addressing (§4.1), the client state machine (§4.4), and the T1/T2 timers (§4.4.5). <a href="https://www.rfc-editor.org/rfc/rfc2132">RFC 2132</a> — option codes and the magic cookie. <a href="https://www.rfc-editor.org/rfc/rfc951">RFC 951</a> — BOOTP, the inherited packet format. <a href="https://www.qemu.org/docs/master/system/devices/net.html">QEMU network emulation docs</a> — slirp's DHCP server at 10.0.2.2, assignments from 10.0.2.15. Linux counterpart: <a href="https://elixir.bootlin.com/linux/latest/source/net/ipv4/ipconfig.c"><code>net/ipv4/ipconfig.c</code>, the kernel's DHCP client.</p></div>
+    <div class="footer-block"><h4>Keep nearby</h4><p style="margin:0;"><a href="../reference/dhcp.html">DHCP quick reference</a> · <a href="../reference/sockets.html">Socket quick reference</a> · <a href="0029-interrupt-driven-networking.html">Lesson 29: interrupt-driven networking</a> · <a href="roadmap-networking.html">Networking roadmap</a></p></div>
+    <nav class="lesson-nav" aria-label="Lesson navigation"><a href="0029-interrupt-driven-networking.html">← Lesson 29: interrupt-driven networking</a><a href="roadmap-networking.html">Networking roadmap →</a></nav>
+  </footer>
+</article>
+<script src="../assets/lease-office.js"></script>
+<script>
+  document.querySelectorAll('.quiz').forEach(function (quiz) {
+    quiz.querySelectorAll('[data-choice]').forEach(function (button) {
+      button.addEventListener('click', function () {
+        const right = button.dataset.choice === quiz.dataset.answer;
+        quiz.querySelector('.quiz-result').textContent = right
+          ? 'Correct. The broadcast REQUEST informs all servers which offer was selected. Servers whose offers were not selected free the reserved addresses.'
+          : 'Try again. Consider what the servers learn when they receive the broadcast REQUEST.';
+      });
+    });
+  });
+</script>
+</body>
+</html>

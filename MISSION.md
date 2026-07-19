@@ -76,6 +76,14 @@ Same shape as Lessons 5–14 but for the network: discover device, init driver, 
 - **Estimated:** 8 lessons.
 - **Linux sources:** `drivers/net/virtio_net.c`, `net/ethernet/eth.c`, `net/ipv4/{arp,ip_input,icmp,udp}.c`, `net/socket.c`
 
+### Phase 2b — Interrupt-driven I/O (kill the poller)
+All device I/O currently polls: virtio-blk busy-waits 200k iterations per `read_sector`, virtio-net has a cooperative polling worker that spin-yields forever, ARP resolution busy-polls. This phase replaces polling with hardware interrupts via MSI-X + Local APIC.
+- [ ] L28 — Local APIC enable, MSI-X vector for virtio-blk, IDT ISR, replace `read_sector` poll loop with `hlt`-based wait
+- [ ] L29 — virtio-net RX/TX MSI-X vectors, ISR-driven frame processing, delete `network_worker` task, blocking `recvfrom` and `poll` wakeups triggered by ISR, lost-wakeup race against hardware interrupts
+- **Why now:** the polling was tolerable for development. With sockets and `poll` working, the inefficiency is the main remaining quality gap in the I/O path.
+- **Estimated:** 2 lessons.
+- **Linux sources:** `drivers/virtio/virtio_pci_common.c` (MSI-X setup), `arch/x86/kernel/apic/`, `kernel/irq/`
+
 ### Phase 3 — Page cache
 Internal cleanup that makes everything faster and unblocks mmap.
 - [ ] Frame-backed inode data (currently heap-backed via `Vec<u8>`)

@@ -10,9 +10,9 @@
 //! we need (the first ~60 bytes); the rest of the 1024-byte struct
 //! is metadata for journaling, quotas, etc. that we don't touch.
 
+use crate::fs::{Filesystem, InodeKind};
 use crate::println;
 use crate::virtio::VirtioBlk;
-use crate::fs::{Filesystem, InodeKind};
 use alloc::string::String;
 use alloc::vec::Vec;
 use spin::Mutex;
@@ -103,29 +103,27 @@ impl Superblock {
         );
 
         // Helper: read a little-endian u32 at byte offset.
-        let u32_at = |off: usize| -> u32 {
-            u32::from_le_bytes(bytes[off..off + 4].try_into().unwrap())
-        };
+        let u32_at =
+            |off: usize| -> u32 { u32::from_le_bytes(bytes[off..off + 4].try_into().unwrap()) };
         // Helper: read a little-endian u16 at byte offset.
-        let u16_at = |off: usize| -> u16 {
-            u16::from_le_bytes(bytes[off..off + 2].try_into().unwrap())
-        };
+        let u16_at =
+            |off: usize| -> u16 { u16::from_le_bytes(bytes[off..off + 2].try_into().unwrap()) };
 
         let s_log_block_size = u32_at(24);
         let block_size = EXT2_MIN_BLOCK_SIZE << s_log_block_size;
 
         Self {
-            inodes_count:       u32_at(0),
-            blocks_count:       u32_at(4),
-            r_blocks_count:     u32_at(8),
-            free_blocks_count:  u32_at(12),
-            free_inodes_count:  u32_at(16),
-            first_data_block:   u32_at(20),
+            inodes_count: u32_at(0),
+            blocks_count: u32_at(4),
+            r_blocks_count: u32_at(8),
+            free_blocks_count: u32_at(12),
+            free_inodes_count: u32_at(16),
+            first_data_block: u32_at(20),
             block_size,
-            magic:              u16_at(56),
-            state:              u16_at(58),
-            inodes_per_group:   u32_at(40),
-            inode_size:         u16_at(88),
+            magic: u16_at(56),
+            state: u16_at(58),
+            inodes_per_group: u32_at(40),
+            inode_size: u16_at(88),
         }
     }
 
@@ -140,7 +138,11 @@ impl Superblock {
         println!(
             "[ext2]   magic         = 0x{:04X}  {}",
             self.magic,
-            if self.is_ext2() { "✓ ext2" } else { "✗ NOT ext2" }
+            if self.is_ext2() {
+                "✓ ext2"
+            } else {
+                "✗ NOT ext2"
+            }
         );
         println!("[ext2]   inodes_count  = {}", self.inodes_count);
         println!("[ext2]   blocks_count  = {}", self.blocks_count);
@@ -148,9 +150,15 @@ impl Superblock {
         println!("[ext2]   free_blocks   = {}", self.free_blocks_count);
         println!("[ext2]   first_data    = {}", self.first_data_block);
         println!("[ext2]   block_size    = {} bytes", self.block_size);
-        println!("[ext2]   state         = {} ({})",
+        println!(
+            "[ext2]   state         = {} ({})",
             self.state,
-            if self.state == 1 { "clean" } else { "needs check" });
+            if self.state == 1 {
+                "clean"
+            } else {
+                "needs check"
+            }
+        );
         println!("[ext2]   inodes/group  = {}", self.inodes_per_group);
         println!("[ext2]   inode_size    = {} bytes", self.inode_size);
     }
@@ -189,20 +197,18 @@ impl BlockGroupDescriptor {
     pub fn parse(bytes: &[u8]) -> Self {
         assert!(bytes.len() >= 32, "BGD needs 32 bytes, got {}", bytes.len());
 
-        let u32_at = |off: usize| -> u32 {
-            u32::from_le_bytes(bytes[off..off + 4].try_into().unwrap())
-        };
-        let u16_at = |off: usize| -> u16 {
-            u16::from_le_bytes(bytes[off..off + 2].try_into().unwrap())
-        };
+        let u32_at =
+            |off: usize| -> u32 { u32::from_le_bytes(bytes[off..off + 4].try_into().unwrap()) };
+        let u16_at =
+            |off: usize| -> u16 { u16::from_le_bytes(bytes[off..off + 2].try_into().unwrap()) };
 
         Self {
-            block_bitmap:       u32_at(0),
-            inode_bitmap:       u32_at(4),
-            inode_table:        u32_at(8),
-            free_blocks_count:  u16_at(12),
-            free_inodes_count:  u16_at(14),
-            used_dirs_count:    u16_at(16),
+            block_bitmap: u32_at(0),
+            inode_bitmap: u32_at(4),
+            inode_table: u32_at(8),
+            free_blocks_count: u16_at(12),
+            free_inodes_count: u16_at(14),
+            used_dirs_count: u16_at(16),
         }
     }
 
@@ -210,7 +216,10 @@ impl BlockGroupDescriptor {
         println!("[ext2] parsed block group descriptor {}:", group_index);
         println!("[ext2]   block_bitmap  = {}", self.block_bitmap);
         println!("[ext2]   inode_bitmap  = {}", self.inode_bitmap);
-        println!("[ext2]   inode_table   = {}    ← load-bearing", self.inode_table);
+        println!(
+            "[ext2]   inode_table   = {}    ← load-bearing",
+            self.inode_table
+        );
         println!("[ext2]   free_blocks   = {}", self.free_blocks_count);
         println!("[ext2]   free_inodes   = {}", self.free_inodes_count);
         println!("[ext2]   used_dirs     = {}", self.used_dirs_count);
@@ -222,13 +231,13 @@ impl BlockGroupDescriptor {
 // ============================================================
 
 /// i_mode top-4-bit file-type masks.
-pub const S_IFMT:   u16 = 0xF000;
-pub const S_IFREG:  u16 = 0x8000; // regular file
-pub const S_IFDIR:  u16 = 0x4000; // directory
-pub const S_IFLNK:  u16 = 0xA000; // symbolic link
-pub const S_IFBLK:  u16 = 0x6000; // block device
-pub const S_IFCHR:  u16 = 0x2000; // character device
-pub const S_IFIFO:  u16 = 0x1000; // FIFO
+pub const S_IFMT: u16 = 0xF000;
+pub const S_IFREG: u16 = 0x8000; // regular file
+pub const S_IFDIR: u16 = 0x4000; // directory
+pub const S_IFLNK: u16 = 0xA000; // symbolic link
+pub const S_IFBLK: u16 = 0x6000; // block device
+pub const S_IFCHR: u16 = 0x2000; // character device
+pub const S_IFIFO: u16 = 0x1000; // FIFO
 pub const S_IFSOCK: u16 = 0xC000; // socket
 
 /// The parsed on-disk inode. We model the 10 fields a teaching kernel
@@ -266,14 +275,16 @@ impl Inode {
     /// We model the standard 128-byte struct even when s_inode_size is
     /// larger (256+); bytes 128+ are extended attributes we don't touch.
     pub fn parse(bytes: &[u8]) -> Self {
-        assert!(bytes.len() >= 128, "inode needs 128 bytes, got {}", bytes.len());
+        assert!(
+            bytes.len() >= 128,
+            "inode needs 128 bytes, got {}",
+            bytes.len()
+        );
 
-        let u32_at = |off: usize| -> u32 {
-            u32::from_le_bytes(bytes[off..off + 4].try_into().unwrap())
-        };
-        let u16_at = |off: usize| -> u16 {
-            u16::from_le_bytes(bytes[off..off + 2].try_into().unwrap())
-        };
+        let u32_at =
+            |off: usize| -> u32 { u32::from_le_bytes(bytes[off..off + 4].try_into().unwrap()) };
+        let u16_at =
+            |off: usize| -> u16 { u16::from_le_bytes(bytes[off..off + 2].try_into().unwrap()) };
 
         let mut block_pointers = [0u32; 15];
         for i in 0..15 {
@@ -281,16 +292,16 @@ impl Inode {
         }
 
         Self {
-            mode:         u16_at(0),
-            uid:          u16_at(2),
-            size:         u32_at(4),
-            atime:        u32_at(8),
-            ctime:        u32_at(12),
-            mtime:        u32_at(16),
-            dtime:        u32_at(20),
-            gid:          u16_at(24),
-            links_count:  u16_at(26),
-            blocks:       u32_at(28),
+            mode: u16_at(0),
+            uid: u16_at(2),
+            size: u32_at(4),
+            atime: u32_at(8),
+            ctime: u32_at(12),
+            mtime: u32_at(16),
+            dtime: u32_at(20),
+            gid: u16_at(24),
+            links_count: u16_at(26),
+            blocks: u32_at(28),
             block_pointers,
         }
     }
@@ -300,21 +311,27 @@ impl Inode {
         self.mode & S_IFMT
     }
 
-    pub fn is_dir(&self) -> bool { self.file_type() == S_IFDIR }
-    pub fn is_reg(&self) -> bool { self.file_type() == S_IFREG }
-    pub fn is_lnk(&self) -> bool { self.file_type() == S_IFLNK }
+    pub fn is_dir(&self) -> bool {
+        self.file_type() == S_IFDIR
+    }
+    pub fn is_reg(&self) -> bool {
+        self.file_type() == S_IFREG
+    }
+    pub fn is_lnk(&self) -> bool {
+        self.file_type() == S_IFLNK
+    }
 
     /// Human-readable file type label.
     pub fn type_name(&self) -> &'static str {
         match self.file_type() {
-            S_IFREG  => "regular file",
-            S_IFDIR  => "directory",
-            S_IFLNK  => "symlink",
-            S_IFBLK  => "block device",
-            S_IFCHR  => "char device",
-            S_IFIFO  => "fifo",
+            S_IFREG => "regular file",
+            S_IFDIR => "directory",
+            S_IFLNK => "symlink",
+            S_IFBLK => "block device",
+            S_IFCHR => "char device",
+            S_IFIFO => "fifo",
             S_IFSOCK => "socket",
-            _        => "unknown",
+            _ => "unknown",
         }
     }
 
@@ -322,17 +339,29 @@ impl Inode {
         println!("[ext2] parsed inode {}:", inode_num);
         println!(
             "[ext2]   mode          = 0x{:04X}  ({}, perms 0o{:o})",
-            self.mode, self.type_name(), self.mode & 0o7777
+            self.mode,
+            self.type_name(),
+            self.mode & 0o7777
         );
         println!("[ext2]   uid:gid       = {}:{}", self.uid, self.gid);
         println!("[ext2]   size          = {} bytes", self.size);
-        println!("[ext2]   blocks        = {} sectors ({} ext2 blocks)",
-            self.blocks, self.blocks / 2);
+        println!(
+            "[ext2]   blocks        = {} sectors ({} ext2 blocks)",
+            self.blocks,
+            self.blocks / 2
+        );
         println!("[ext2]   links_count   = {}", self.links_count);
-        let direct: Vec<u32> = self.block_pointers.iter().take(12)
-            .filter(|&&b| b != 0).copied().collect();
-        println!("[ext2]   block_ptrs    = direct {:?}, indirect={}, double={}, triple={}",
-            direct, self.block_pointers[12], self.block_pointers[13], self.block_pointers[14]);
+        let direct: Vec<u32> = self
+            .block_pointers
+            .iter()
+            .take(12)
+            .filter(|&&b| b != 0)
+            .copied()
+            .collect();
+        println!(
+            "[ext2]   block_ptrs    = direct {:?}, indirect={}, double={}, triple={}",
+            direct, self.block_pointers[12], self.block_pointers[13], self.block_pointers[14]
+        );
     }
 }
 
@@ -354,8 +383,8 @@ pub fn read_inode(
     assert!(inode_num >= 1, "inode numbers are 1-indexed");
 
     let local_idx = (inode_num - 1) % sb.inodes_per_group;
-    let inode_byte = bgd.inode_table as u64 * sb.block_size as u64
-        + local_idx as u64 * sb.inode_size as u64;
+    let inode_byte =
+        bgd.inode_table as u64 * sb.block_size as u64 + local_idx as u64 * sb.inode_size as u64;
 
     println!(
         "[ext2] reading inode {} (group 0, index {}, byte {})",
@@ -397,14 +426,14 @@ pub fn read_block(dev: &mut VirtioBlk, block_n: u32) -> [u8; 1024] {
 
 /// ext2 file-type bits stored in the dirent's `file_type` byte.
 /// Same encoding as i_mode's top 4 bits, just shifted right by 12.
-pub const EXT_FT_UNKNOWN:  u8 = 0;
+pub const EXT_FT_UNKNOWN: u8 = 0;
 pub const EXT_FT_REG_FILE: u8 = 1;
-pub const EXT_FT_DIR:      u8 = 2;
-pub const EXT_FT_CHRDEV:   u8 = 3;
-pub const EXT_FT_BLKDEV:   u8 = 4;
-pub const EXT_FT_FIFO:     u8 = 5;
-pub const EXT_FT_SOCK:     u8 = 6;
-pub const EXT_FT_SYMLINK:  u8 = 7;
+pub const EXT_FT_DIR: u8 = 2;
+pub const EXT_FT_CHRDEV: u8 = 3;
+pub const EXT_FT_BLKDEV: u8 = 4;
+pub const EXT_FT_FIFO: u8 = 5;
+pub const EXT_FT_SOCK: u8 = 6;
+pub const EXT_FT_SYMLINK: u8 = 7;
 
 /// A parsed directory entry. The name is owned (heap-allocated Vec)
 /// so callers don't have to deal with byte slices + length tracking.
@@ -429,13 +458,13 @@ impl Dirent {
     pub fn type_name(&self) -> &'static str {
         match self.file_type {
             EXT_FT_REG_FILE => "file",
-            EXT_FT_DIR      => "dir",
-            EXT_FT_CHRDEV   => "char-dev",
-            EXT_FT_BLKDEV   => "block-dev",
-            EXT_FT_FIFO     => "fifo",
-            EXT_FT_SOCK     => "sock",
-            EXT_FT_SYMLINK  => "symlink",
-            _               => "unknown",
+            EXT_FT_DIR => "dir",
+            EXT_FT_CHRDEV => "char-dev",
+            EXT_FT_BLKDEV => "block-dev",
+            EXT_FT_FIFO => "fifo",
+            EXT_FT_SOCK => "sock",
+            EXT_FT_SYMLINK => "symlink",
+            _ => "unknown",
         }
     }
 
@@ -451,12 +480,10 @@ impl Dirent {
     /// The returned Dirent is always populated (even for dead entries)
     /// so the walker can decide what to do with them.
     pub fn parse_at(bytes: &[u8], offset: usize) -> (Dirent, usize) {
-        let u32_at = |off: usize| -> u32 {
-            u32::from_le_bytes(bytes[off..off + 4].try_into().unwrap())
-        };
-        let u16_at = |off: usize| -> u16 {
-            u16::from_le_bytes(bytes[off..off + 2].try_into().unwrap())
-        };
+        let u32_at =
+            |off: usize| -> u32 { u32::from_le_bytes(bytes[off..off + 4].try_into().unwrap()) };
+        let u16_at =
+            |off: usize| -> u16 { u16::from_le_bytes(bytes[off..off + 2].try_into().unwrap()) };
         let u8_at = |off: usize| -> u8 { bytes[off] };
 
         let inode = u32_at(offset);
@@ -476,7 +503,16 @@ impl Dirent {
         };
 
         let next_offset = offset + rec_len as usize;
-        (Dirent { inode, rec_len, name_len, file_type, name }, next_offset)
+        (
+            Dirent {
+                inode,
+                rec_len,
+                name_len,
+                file_type,
+                name,
+            },
+            next_offset,
+        )
     }
 }
 
@@ -508,7 +544,9 @@ pub fn walk_directory(dev: &mut VirtioBlk, dir_inode: &Inode) -> Vec<Dirent> {
                 let name_str = core::str::from_utf8(&entry.name).unwrap_or("<non-utf8>");
                 println!(
                     "[ext2]     entry: inode={:<5} type={} name=\"{}\"",
-                    entry.inode, entry.type_name(), name_str
+                    entry.inode,
+                    entry.type_name(),
+                    name_str
                 );
                 entries.push(entry);
             }
@@ -577,11 +615,17 @@ impl Ext2 {
     /// return a mounted filesystem ready for reads.
     pub fn new(mut dev: VirtioBlk) -> Self {
         let sb = read_superblock(&mut dev);
-        assert!(sb.is_ext2(), "Ext2::new: disk isn't ext2 (magic=0x{:04X})", sb.magic);
+        assert!(
+            sb.is_ext2(),
+            "Ext2::new: disk isn't ext2 (magic=0x{:04X})",
+            sb.magic
+        );
 
         let bgd0 = read_block_group_descriptor(&mut dev, &sb, 0);
-        println!("[ext2] Ext2::new: magic=0x{:04X}, block_size={}, bgd0.inode_table={}",
-            sb.magic, sb.block_size, bgd0.inode_table);
+        println!(
+            "[ext2] Ext2::new: magic=0x{:04X}, block_size={}, bgd0.inode_table={}",
+            sb.magic, sb.block_size, bgd0.inode_table
+        );
 
         Self {
             dev: Mutex::new(dev),
@@ -591,10 +635,14 @@ impl Ext2 {
     }
 
     /// Borrow the parsed superblock (read-only).
-    pub fn superblock(&self) -> &Superblock { &self.sb }
+    pub fn superblock(&self) -> &Superblock {
+        &self.sb
+    }
 
     /// Borrow block group 0's descriptor.
-    pub fn bgd0(&self) -> &BlockGroupDescriptor { &self.bgd0 }
+    pub fn bgd0(&self) -> &BlockGroupDescriptor {
+        &self.bgd0
+    }
 
     /// Lock the device and run `f` with mutable access. Internal helper.
     fn with_dev<R>(&self, f: impl FnOnce(&mut VirtioBlk) -> R) -> R {
@@ -670,13 +718,20 @@ impl Filesystem for Ext2 {
     fn read_file(&self, ino: u64) -> Option<Vec<u8>> {
         println!("[ext2] read_file({})", ino);
         let inode = self.read_inode(ino as u32);
-        println!("[ext2] read_file: inode mode=0x{:04X} is_reg={}", inode.mode, inode.is_reg());
+        println!(
+            "[ext2] read_file: inode mode=0x{:04X} is_reg={}",
+            inode.mode,
+            inode.is_reg()
+        );
         if !inode.is_reg() {
             return None;
         }
         let data = self.read_file_data(&inode);
-        println!("[ext2] read_file: got {} bytes, first 4: {:?}",
-            data.len(), &data.get(..4).unwrap_or(b"<short>"));
+        println!(
+            "[ext2] read_file: got {} bytes, first 4: {:?}",
+            data.len(),
+            &data.get(..4).unwrap_or(b"<short>")
+        );
         Some(data)
     }
 }

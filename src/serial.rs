@@ -5,9 +5,9 @@
 //! We mirror all `println!` output to serial so we can capture it to a
 //! file — the VGA screen scrolls, but a file does not.
 
+use crate::irq_mutex::IrqMutex;
 use core::fmt;
 use lazy_static::lazy_static;
-use spin::Mutex;
 use x86_64::instructions::port::Port;
 
 /// I/O port base for COM1 (the first serial port, historically the
@@ -46,5 +46,5 @@ impl fmt::Write for SerialPort {
 lazy_static! {
     /// Global handle to COM1. Locked because `_print` writes through it
     /// from any context including interrupt handlers.
-    pub static ref SERIAL1: Mutex<SerialPort> = Mutex::new(SerialPort::new());
+    pub static ref SERIAL1: IrqMutex<SerialPort> = IrqMutex::new(SerialPort::new());
 }

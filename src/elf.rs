@@ -93,35 +93,32 @@ impl ElfHeader {
         // Local helpers — same pattern as ext2.rs. We've already
         // checked len() >= 64, and all offsets below stay in range,
         // so unwrap() never fires in practice.
-        let u16_at = |off: usize| -> u16 {
-            u16::from_le_bytes(bytes[off..off + 2].try_into().unwrap())
-        };
-        let u32_at = |off: usize| -> u32 {
-            u32::from_le_bytes(bytes[off..off + 4].try_into().unwrap())
-        };
-        let u64_at = |off: usize| -> u64 {
-            u64::from_le_bytes(bytes[off..off + 8].try_into().unwrap())
-        };
+        let u16_at =
+            |off: usize| -> u16 { u16::from_le_bytes(bytes[off..off + 2].try_into().unwrap()) };
+        let u32_at =
+            |off: usize| -> u32 { u32::from_le_bytes(bytes[off..off + 4].try_into().unwrap()) };
+        let u64_at =
+            |off: usize| -> u64 { u64::from_le_bytes(bytes[off..off + 8].try_into().unwrap()) };
 
         Some(Self {
             // e_ident sub-bytes
-            class:   bytes[4],
-            data:    bytes[5],
+            class: bytes[4],
+            data: bytes[5],
             version: bytes[6],
-            osabi:   bytes[7],
+            osabi: bytes[7],
             // Main header
-            e_type:     u16_at(0x10),
-            machine:    u16_at(0x12),
-            entry:      u64_at(0x18),
-            phoff:      u64_at(0x20),
-            shoff:      u64_at(0x28),
-            flags:      u32_at(0x30),
-            ehsize:     u16_at(0x34),
-            phentsize:  u16_at(0x36),
-            phnum:      u16_at(0x38),
-            shentsize:  u16_at(0x3A),
-            shnum:      u16_at(0x3C),
-            shstrndx:   u16_at(0x3E),
+            e_type: u16_at(0x10),
+            machine: u16_at(0x12),
+            entry: u64_at(0x18),
+            phoff: u64_at(0x20),
+            shoff: u64_at(0x28),
+            flags: u32_at(0x30),
+            ehsize: u16_at(0x34),
+            phentsize: u16_at(0x36),
+            phnum: u16_at(0x38),
+            shentsize: u16_at(0x3A),
+            shnum: u16_at(0x3C),
+            shstrndx: u16_at(0x3E),
         })
     }
 
@@ -140,21 +137,39 @@ impl ElfHeader {
     /// Pretty-print the parsed fields for boot-time verification.
     pub fn print(&self) {
         println!("[elf] parsed ELF header:");
-        println!("[elf]   class        = {} ({}-bit)",
-            self.class, if self.class == ELFCLASS64 { 64 } else { 32 });
-        println!("[elf]   data         = {} ({})",
-            self.data, if self.data == ELFDATA2LSB { "little-endian" } else { "big-endian" });
+        println!(
+            "[elf]   class        = {} ({}-bit)",
+            self.class,
+            if self.class == ELFCLASS64 { 64 } else { 32 }
+        );
+        println!(
+            "[elf]   data         = {} ({})",
+            self.data,
+            if self.data == ELFDATA2LSB {
+                "little-endian"
+            } else {
+                "big-endian"
+            }
+        );
         println!("[elf]   osabi        = {}", self.osabi);
-        println!("[elf]   e_type       = {} ({})",
+        println!(
+            "[elf]   e_type       = {} ({})",
             self.e_type,
             match self.e_type {
                 ET_EXEC => "ET_EXEC",
-                ET_DYN  => "ET_DYN",
-                _       => "?",
-            });
-        println!("[elf]   machine      = 0x{:X} ({})",
+                ET_DYN => "ET_DYN",
+                _ => "?",
+            }
+        );
+        println!(
+            "[elf]   machine      = 0x{:X} ({})",
             self.machine,
-            if self.machine == EM_X86_64 { "x86-64" } else { "?" });
+            if self.machine == EM_X86_64 {
+                "x86-64"
+            } else {
+                "?"
+            }
+        );
         println!("[elf]   entry        = 0x{:X}", self.entry);
         println!("[elf]   phoff        = {}", self.phoff);
         println!("[elf]   phentsize    = {}", self.phentsize);
@@ -170,11 +185,11 @@ impl ElfHeader {
 /// `p_type` values we recognize. Only PT_LOAD causes the loader to
 /// copy bytes into memory; the others are hints the kernel reads and
 /// discards. The values are part of the ELF spec, not Linux-specific.
-pub const PT_LOAD:    u32 = 1;  // Loadable segment — copy into memory.
-pub const PT_DYNAMIC: u32 = 2;  // Dynamic linking info (for ld.so).
-pub const PT_INTERP:  u32 = 3;  // Path to the dynamic linker.
-pub const PT_NOTE:    u32 = 4;  // Metadata (build-id, ABI properties).
-pub const PT_PHDR:    u32 = 6;  // The PHT itself, as a segment.
+pub const PT_LOAD: u32 = 1; // Loadable segment — copy into memory.
+pub const PT_DYNAMIC: u32 = 2; // Dynamic linking info (for ld.so).
+pub const PT_INTERP: u32 = 3; // Path to the dynamic linker.
+pub const PT_NOTE: u32 = 4; // Metadata (build-id, ABI properties).
+pub const PT_PHDR: u32 = 6; // The PHT itself, as a segment.
 /// PT_GNU_STACK — marker for "should the stack be executable?". The
 /// weird number is `0x6474e551` — a magic in the OS-specific range.
 pub const PT_GNU_STACK: u32 = 0x6474E551;
@@ -223,27 +238,27 @@ impl ProgramHeader {
             return None;
         }
 
-        let u32_at = |off: usize| -> u32 {
-            u32::from_le_bytes(bytes[off..off + 4].try_into().unwrap())
-        };
-        let u64_at = |off: usize| -> u64 {
-            u64::from_le_bytes(bytes[off..off + 8].try_into().unwrap())
-        };
+        let u32_at =
+            |off: usize| -> u32 { u32::from_le_bytes(bytes[off..off + 4].try_into().unwrap()) };
+        let u64_at =
+            |off: usize| -> u64 { u64::from_le_bytes(bytes[off..off + 8].try_into().unwrap()) };
 
         Some(Self {
-            p_type:   u32_at(0x00),
-            p_flags:  u32_at(0x04),
+            p_type: u32_at(0x00),
+            p_flags: u32_at(0x04),
             p_offset: u64_at(0x08),
-            p_vaddr:  u64_at(0x10),
-            p_paddr:  u64_at(0x18),
+            p_vaddr: u64_at(0x10),
+            p_paddr: u64_at(0x18),
             p_filesz: u64_at(0x20),
-            p_memsz:  u64_at(0x28),
-            p_align:  u64_at(0x30),
+            p_memsz: u64_at(0x28),
+            p_align: u64_at(0x30),
         })
     }
 
     /// True if this entry is a loadable segment.
-    pub fn is_load(&self) -> bool { self.p_type == PT_LOAD }
+    pub fn is_load(&self) -> bool {
+        self.p_type == PT_LOAD
+    }
 
     /// Human-readable permission string ("r-x", "rw-", etc.) for
     /// printing. Three letters, mirrors `ls -l` syntax.
@@ -253,26 +268,26 @@ impl ProgramHeader {
         let x = self.p_flags & PF_X != 0;
         match (r, w, x) {
             (false, false, false) => "---",
-            (false, false, true)  => "--x",
-            (false, true,  false) => "-w-",
-            (false, true,  true)  => "-wx",
-            (true,  false, false) => "r--",
-            (true,  false, true)  => "r-x",
-            (true,  true,  false) => "rw-",
-            (true,  true,  true)  => "rwx",
+            (false, false, true) => "--x",
+            (false, true, false) => "-w-",
+            (false, true, true) => "-wx",
+            (true, false, false) => "r--",
+            (true, false, true) => "r-x",
+            (true, true, false) => "rw-",
+            (true, true, true) => "rwx",
         }
     }
 
     /// Short label for `p_type` for printing.
     pub fn type_str(&self) -> &'static str {
         match self.p_type {
-            PT_LOAD       => "LOAD",
-            PT_DYNAMIC    => "DYN ",
-            PT_INTERP     => "INTRP",
-            PT_NOTE       => "NOTE",
-            PT_PHDR       => "PHDR",
-            PT_GNU_STACK  => "GSTK",
-            _             => "OTHER",
+            PT_LOAD => "LOAD",
+            PT_DYNAMIC => "DYN ",
+            PT_INTERP => "INTRP",
+            PT_NOTE => "NOTE",
+            PT_PHDR => "PHDR",
+            PT_GNU_STACK => "GSTK",
+            _ => "OTHER",
         }
     }
 }

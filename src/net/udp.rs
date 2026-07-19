@@ -40,10 +40,11 @@ impl<'a> UdpDatagram<'a> {
             checksum: u16::from_be_bytes([bytes[6], bytes[7]]),
         };
 
-        if header.checksum != 0
-            && ipv4_checksum(src_ip, dst_ip, &bytes[..length as usize]) != 0
-        {
-            return None;
+        if header.checksum != 0 {
+            let checksum = ipv4_checksum(src_ip, dst_ip, &bytes[..length as usize]);
+            if checksum != 0 {
+                return None;
+            }
         }
 
         Some(Self {

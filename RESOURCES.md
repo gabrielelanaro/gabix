@@ -36,6 +36,15 @@
 - [RFC 1122 — Requirements for Internet Hosts, section 4.1.4](https://www.rfc-editor.org/rfc/rfc1122#section-4.1.4)
   UDP/application interface requirements. Use for: information that must cross the transport/application boundary and request/response source-address behavior.
 
+- [RFC 2131 — Dynamic Host Configuration Protocol](https://www.rfc-editor.org/rfc/rfc2131)
+  DHCP. Use for: the DISCOVER/OFFER/REQUEST/ACK exchange (§3.1), broadcast addressing and the BROADCAST flag (§4.1), the client state machine (§4.4), and the T1/T2 lease timers (§4.4.5).
+
+- [RFC 2132 — DHCP Options and BOOTP Vendor Extensions](https://www.rfc-editor.org/rfc/rfc2132)
+  The TLV options area. Use for: option codes 53/50/54/51/58/59/1/3/6/255 and the `0x63825363` magic cookie (§3).
+
+- [RFC 951 — Bootstrap Protocol](https://www.rfc-editor.org/rfc/rfc951)
+  BOOTP. Use for: the 236-byte fixed header DHCP inherits — which fields are legacy (`sname`, `file`) and which still carry the conversation (`xid`, `chaddr`, `yiaddr`).
+
 ### Primary sources (Linux kernel)
 
 - [Linux source: drivers/net/virtio_net.c](https://elixir.bootlin.com/linux/latest/source/drivers/net/virtio_net.c)
@@ -55,6 +64,9 @@
 
 - [Linux source: net/socket.c](https://elixir.bootlin.com/linux/latest/source/net/socket.c)
   The syscall layer: `sys_socket`, `sys_bind`, `sys_sendto`, `sys_recvfrom` — how sockets become file descriptors.
+
+- [Linux source: net/ipv4/ipconfig.c](https://elixir.bootlin.com/linux/latest/source/net/ipv4/ipconfig.c)
+  The kernel's own DHCP/BOOTP client, used for diskless (NFS root) boot. The production counterpart to Lesson 30's user-space client.
 
 ### QEMU environment
 

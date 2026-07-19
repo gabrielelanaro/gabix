@@ -16,6 +16,7 @@
 
 use crate::frame_allocator;
 use crate::fs::FdTable;
+use crate::irq_mutex::IrqMutex;
 use crate::memory;
 use crate::println;
 use crate::process::{Pid, Process, PROCESS_TABLE};
@@ -23,7 +24,6 @@ use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::arch::naked_asm;
 use lazy_static::lazy_static;
-use spin::Mutex;
 use x86_64::structures::paging::PageTableFlags;
 use x86_64::{PhysAddr, VirtAddr};
 
@@ -116,8 +116,8 @@ impl Task {
         let mut frames_allocated = 0;
         let mut virt = stack_bottom;
         while virt < stack_top {
-            let frame_number = frame_allocator::allocate()
-                .expect("out of frames while allocating task stack");
+            let frame_number =
+                frame_allocator::allocate().expect("out of frames while allocating task stack");
             let phys = PhysAddr::new(frame_number * 4096);
             // SAFETY: virtual range is freshly picked (unmapped), frame is fresh.
             unsafe {
@@ -137,29 +137,33 @@ impl Task {
         // switch() right before the `ret` instruction.
         //
         // Layout (from high address down):
-        //   stack_top -  8: entry_fn address   ← popped by `ret` into RIP
-        //   stack_top - 16: 0 (saved RBX)      ← popped by `pop rbx`
-        //   stack_top - 24: 0 (saved RBP)      ← popped by `pop rbp`
-        //   stack_top - 32: 0 (saved R12)      ← popped by `pop r12`
-        //   stack_top - 40: 0 (saved R13)      ← popped by `pop r13`
-        //   stack_top - 48: 0 (saved R14)      ← popped by `pop r14`
-        //   stack_top - 56: 0 (saved R15)      ← popped by `pop r15` ← RSP starts here
+        //   stack_top - 16: entry_fn address   ← popped by `ret` into RIP
+        //   stack_top - 24: 0 (saved RBX)      ← popped by `pop rbx`
+        //   stack_top - 32: 0 (saved RBP)      ← popped by `pop rbp`
+        //   stack_top - 40: 0 (saved R12)      ← popped by `pop r12`
+        //   stack_top - 48: 0 (saved R13)      ← popped by `pop r13`
+        //   stack_top - 56: 0 (saved R14)      ← popped by `pop r14`
+        //   stack_top - 64: 0 (saved R15)      ← popped by `pop r15` ← RSP starts here
+        //
+        // The extra 8-byte gap leaves the trampoline with RSP % 16 == 8
+        // after `ret`, which is the System V AMD64 function-entry contract.
         //
         // write_volatile so the compiler doesn't elide these writes (it
         // can't see that the context-switch routine will later read them).
-        let init_rsp = stack_top - 56;
+        let init_rsp = stack_top - 64;
         let base_ptr = init_rsp as *mut u64;
         unsafe {
-            core::ptr::write_volatile(base_ptr.add(0), 0);               // saved R15
-            core::ptr::write_volatile(base_ptr.add(1), 0);               // saved R14
-            core::ptr::write_volatile(base_ptr.add(2), 0);               // saved R13
-            core::ptr::write_volatile(base_ptr.add(3), 0);               // saved R12
-            core::ptr::write_volatile(base_ptr.add(4), 0);               // saved RBP
-            core::ptr::write_volatile(base_ptr.add(5), 0);               // saved RBX
-            // Note: switch's `ret` lands in `trampoline`, not the user's
-            // entry_fn directly. The trampoline enables interrupts then
-            // looks up entry_fn from this task's struct.
-            core::ptr::write_volatile(base_ptr.add(6), trampoline as *const () as u64); // RIP -> trampoline
+            core::ptr::write_volatile(base_ptr.add(0), 0); // saved R15
+            core::ptr::write_volatile(base_ptr.add(1), 0); // saved R14
+            core::ptr::write_volatile(base_ptr.add(2), 0); // saved R13
+            core::ptr::write_volatile(base_ptr.add(3), 0); // saved R12
+            core::ptr::write_volatile(base_ptr.add(4), 0); // saved RBP
+            core::ptr::write_volatile(base_ptr.add(5), 0); // saved RBX
+                                                           // Note: switch's `ret` lands in `trampoline`, not the user's
+                                                           // entry_fn directly. The trampoline enables interrupts then
+                                                           // looks up entry_fn from this task's struct.
+            core::ptr::write_volatile(base_ptr.add(6), trampoline as *const () as u64);
+            // RIP -> trampoline
         }
 
         println!(
@@ -269,12 +273,12 @@ unsafe extern "C" fn trampoline() {
 #[unsafe(naked)]
 unsafe extern "C" fn fork_trampoline() {
     naked_asm!(
-        "mov rcx, [rsp - 64]",          // user RIP for sysretq
-        "mov r11, [rsp - 72]",          // user RFLAGS for sysretq
-        "mov rax, [rsp - 80]",          // user RSP (use rax as scratch)
-        "mov rsp, rax",                 // switch to user stack
-        "xor rax, rax",                 // RAX = 0 (child's distinguishing fork return)
-        "cli",                          // (defensive) ensure IF=0 for sysretq
+        "mov rcx, [rsp - 64]", // user RIP for sysretq
+        "mov r11, [rsp - 72]", // user RFLAGS for sysretq
+        "mov rax, [rsp - 80]", // user RSP (use rax as scratch)
+        "mov rsp, rax",        // switch to user stack
+        "xor rax, rax",        // RAX = 0 (child's distinguishing fork return)
+        "cli",                 // (defensive) ensure IF=0 for sysretq
         "sysretq",
     );
 }
@@ -378,7 +382,7 @@ impl Scheduler {
 }
 
 lazy_static! {
-    static ref SCHEDULER: Mutex<Scheduler> = Mutex::new(Scheduler::new());
+    static ref SCHEDULER: IrqMutex<Scheduler> = IrqMutex::new(Scheduler::new());
 }
 
 /// Register the currently-running code as the "main" task and add it to
@@ -437,14 +441,23 @@ pub fn spawn(name: &str, entry_fn: unsafe extern "C" fn()) -> Pid {
         table.allocate(proc)
     });
 
-    let mut sched = SCHEDULER.lock();
-    sched.tasks.push(Box::new(Task::new(pid, entry_fn)));
-    println!(
-        "[sched] spawned \"{}\" (pid={}), {} tasks total",
-        name,
-        pid,
-        sched.tasks.len()
-    );
+    // The push + print must run with interrupts disabled. A plain lock
+    // here lets the timer fire while SCHEDULER is held, and the timer's
+    // `yield_now` then spins on the same lock forever — a deadlock that
+    // stayed hidden while spawns only happened to land between ticks.
+    // Every other SCHEDULER accessor already follows this rule (see
+    // `current_pid`).
+    let task = Box::new(Task::new(pid, entry_fn));
+    x86_64::instructions::interrupts::without_interrupts(|| {
+        let mut sched = SCHEDULER.lock();
+        sched.tasks.push(task);
+        println!(
+            "[sched] spawned \"{}\" (pid={}), {} tasks total",
+            name,
+            pid,
+            sched.tasks.len()
+        );
+    });
     pid
 }
 
@@ -471,10 +484,7 @@ pub fn spawn(name: &str, entry_fn: unsafe extern "C" fn()) -> Pid {
 /// at the moment deep_clone runs. So we allocate+map the kernel stack
 /// FIRST, then create the AS + deep_clone (which inherits the new
 /// mappings), then build the Task struct using that AS.
-pub fn spawn_fork_child(
-    parent_pid: Pid,
-    saved_callee_saves: SavedCalleeSaves,
-) -> Pid {
+pub fn spawn_fork_child(parent_pid: Pid, saved_callee_saves: SavedCalleeSaves) -> Pid {
     // Disable interrupts for the duration. While we hold SCHEDULER or
     // PROCESS_TABLE, the timer must not fire — its handler would try to
     // lock them and deadlock. (Caller is sys_fork, which runs with
@@ -531,8 +541,8 @@ pub fn spawn_fork_child(
     let mut frames_allocated = 0;
     let mut virt = stack_bottom;
     while virt < stack_top {
-        let frame_number = frame_allocator::allocate()
-            .expect("out of frames while allocating fork-child stack");
+        let frame_number =
+            frame_allocator::allocate().expect("out of frames while allocating fork-child stack");
         let phys = PhysAddr::new(frame_number * 4096);
         // SAFETY: virtual range is freshly picked, frame is fresh.
         unsafe {
@@ -558,8 +568,7 @@ pub fn spawn_fork_child(
     // syscall::init). Each fork child takes the next slot.
     let child_entry_stack_bottom =
         crate::syscall::SYSCALL_STACK_BOTTOM + (id + 1) * crate::syscall::SYSCALL_STACK_SIZE;
-    let child_entry_stack_top =
-        child_entry_stack_bottom + crate::syscall::SYSCALL_STACK_SIZE;
+    let child_entry_stack_top = child_entry_stack_bottom + crate::syscall::SYSCALL_STACK_SIZE;
     {
         let mut virt = child_entry_stack_bottom;
         while virt < child_entry_stack_top {
@@ -737,6 +746,48 @@ pub fn current_pid() -> Pid {
     })
 }
 
+pub fn block_current() {
+    x86_64::instructions::interrupts::without_interrupts(|| {
+        let mut sched = SCHEDULER.lock();
+        let current = sched.current;
+        sched.tasks[current].state = TaskState::Blocked;
+    });
+}
+
+/// Run `register` with the current PID and mark the task Blocked when it
+/// returns true, under one interrupt-disabled scheduler critical section.
+/// Wait paths use this to make "publish waiter + sleep" atomic without
+/// reacquiring the scheduler lock through `current_pid()` and
+/// `block_current()` separately.
+pub fn block_current_if(register: impl FnOnce(Pid) -> bool) -> bool {
+    x86_64::instructions::interrupts::without_interrupts(|| {
+        let mut sched = SCHEDULER.lock();
+        let current = sched.current;
+        let pid = sched.tasks[current].pid;
+        if register(pid) {
+            sched.tasks[current].state = TaskState::Blocked;
+            true
+        } else {
+            false
+        }
+    })
+}
+
+pub fn wake(pid: Pid) {
+    x86_64::instructions::interrupts::without_interrupts(|| {
+        if let Some(task) = SCHEDULER
+            .lock()
+            .tasks
+            .iter_mut()
+            .find(|task| task.pid == pid)
+        {
+            if task.state == TaskState::Blocked {
+                task.state = TaskState::Ready;
+            }
+        }
+    });
+}
+
 /// Run `f` on the currently-running task's FD (File Descriptor) table.
 ///
 /// Locks SCHEDULER for the duration of `f`, finds the running task, passes
@@ -853,8 +904,23 @@ pub fn yield_now() {
                         || current_state == TaskState::Blocked
                         || current_state == TaskState::Dead
                     {
-                        // Current is un-runnable AND nothing else can run.
-                        // System is effectively done.
+                        let any_blocked = sched
+                            .tasks
+                            .iter()
+                            .any(|task| task.state == TaskState::Blocked);
+                        if any_blocked {
+                            // Tasks are sleeping on events a device
+                            // interrupt can deliver (a socket datagram, a
+                            // disk completion). Sleep the CPU until the
+                            // next interrupt, then let the caller rescan.
+                            // STI;HLT is atomic: a pending interrupt is
+                            // taken before the halt, so no wakeup is lost.
+                            drop(sched);
+                            x86_64::instructions::interrupts::enable_and_hlt();
+                            return;
+                        }
+                        // Every task is finished for good — nothing can
+                        // wake them. System is effectively done.
                         println!(
                             "[sched] no runnable tasks (current state={:?}) — done",
                             current_state
@@ -866,9 +932,7 @@ pub fn yield_now() {
                             // The kernel reached a clean shutdown state
                             // (every task exited or blocked permanently),
                             // so the test passes.
-                            crate::qemu_exit::exit_qemu(
-                                crate::qemu_exit::EXIT_SUCCESS,
-                            );
+                            crate::qemu_exit::exit_qemu(crate::qemu_exit::EXIT_SUCCESS);
                         }
                         #[cfg(not(feature = "test-mode"))]
                         {
@@ -936,13 +1000,18 @@ pub fn yield_now() {
         // one currently in CR3. Skipping the write when ASes match saves
         // a TLB flush — important when switching between kernel threads
         // (which all share the kernel AS).
-        let current_as_frame = x86_64::registers::control::Cr3::read().0.start_address().as_u64();
+        let current_as_frame = x86_64::registers::control::Cr3::read()
+            .0
+            .start_address()
+            .as_u64();
         if current_as_frame != new_as_frame {
             // SAFETY: new_as_frame came from a valid AddressSpace that
             // owns a properly initialized PML4. Writing CR3 to it is safe.
             unsafe {
                 x86_64::registers::control::Cr3::write(
-                    x86_64::structures::paging::PhysFrame::containing_address(x86_64::PhysAddr::new(new_as_frame)),
+                    x86_64::structures::paging::PhysFrame::containing_address(
+                        x86_64::PhysAddr::new(new_as_frame),
+                    ),
                     x86_64::registers::control::Cr3Flags::empty(),
                 );
             }
@@ -951,7 +1020,9 @@ pub fn yield_now() {
         // SAFETY: pointers are valid (Box'd tasks), new context has
         // either valid saved state or faked initial state, interrupts
         // are disabled so no concurrent access.
-        unsafe { switch(old_ptr, new_ptr); }
+        unsafe {
+            switch(old_ptr, new_ptr);
+        }
     }
 
     // We're back (either we switched away and have now been switched
@@ -1006,24 +1077,17 @@ pub fn mark_current_zombie(exit_code: i64) {
     // just exited, so it has a Zombie to reap.
     if let Some(parent) = parent_pid {
         let mut sched = SCHEDULER.lock();
-        let parent_task = sched
-            .tasks
-            .iter_mut()
-            .find(|t| t.pid == parent);
+        let parent_task = sched.tasks.iter_mut().find(|t| t.pid == parent);
         if let Some(task) = parent_task {
             if task.state == TaskState::Blocked {
                 task.state = TaskState::Ready;
-                println!(
-                    "[sched] task pid={} woken (child exited)",
-                    task.pid
-                );
+                println!("[sched] task pid={} woken (child exited)", task.pid);
             }
         }
     }
     // Note: don't re-enable here. yield_now (called next by sys_exit)
     // will handle the interrupt state via its own was_enabled check.
 }
-
 
 /// Result of one atomic wait attempt.
 pub enum WaitResult {
@@ -1139,10 +1203,7 @@ pub fn wait_for_zombie_child(parent_pid: Pid, target: WaitTarget) -> WaitResult 
                 .find(|task| task.pid == parent_pid)
                 .expect("wait_for_zombie_child: parent task not found");
             parent.state = TaskState::Blocked;
-            println!(
-                "[sched] task pid={} marked Blocked",
-                parent.pid
-            );
+            println!("[sched] task pid={} marked Blocked", parent.pid);
             WaitResult::WouldBlock
         }
     })

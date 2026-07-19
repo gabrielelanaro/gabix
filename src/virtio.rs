@@ -15,26 +15,27 @@
 
 extern crate alloc;
 
-use crate::println;
-use crate::pci;
 use crate::net;
-use crate::net::arp::{self, ArpPacket, ARP_PACKET_LEN, OPER_REPLY, OPER_REQUEST};
-use crate::net::ethernet::{
-    EthernetHeader,
-    ETHERNET_HEADER_LEN,
-    ETHERTYPE_ARP,
-    ETHERTYPE_IPV4,
-};
+use crate::net::arp::{self, ArpPacket, ARP_PACKET_LEN, OPER_REQUEST};
+use crate::net::ethernet::{EthernetHeader, ETHERNET_HEADER_LEN, ETHERTYPE_ARP, ETHERTYPE_IPV4};
 use crate::net::ipv4::{Ipv4Header, IPV4_HEADER_LEN};
 use crate::net::udp::{self, UdpDatagram, UdpHeader, UDP_HEADER_LEN};
+use crate::pci;
+use crate::println;
 use core::ptr::{read_volatile, write_volatile};
-use core::sync::atomic::{AtomicU16, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU16, AtomicU64, Ordering};
+
+static FIRST_DISK_COMPLETION_REPORTED: AtomicBool = AtomicBool::new(false);
+static FIRST_NET_WAKEUP_REPORTED: AtomicBool = AtomicBool::new(false);
+static FIRST_NET_TX_COMPLETION_REPORTED: AtomicBool = AtomicBool::new(false);
 
 /// Offset of the capabilities pointer in PCI config space.
 const CAPABILITIES_POINTER_OFFSET: u8 = 0x34;
 
 /// Capability ID for "vendor specific" — virtio uses this type.
 const CAP_VENDOR_SPECIFIC: u8 = 0x09;
+const CAP_MSIX: u8 = 0x11;
+const MSIX_ENABLE: u16 = 1 << 15;
 
 /// virtio vendor-specific capability sub-types (the `cfg_type` field).
 const VIRTIO_CAP_COMMON: u8 = 1;
@@ -107,6 +108,43 @@ pub struct VirtioCap {
     pub offset: u32,
     pub length: u32,
     pub notify_off_multiplier: u32,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct MsixCap {
+    table_virt: u64,
+    entries: u16,
+}
+
+fn parse_msix_capability(bus: u8, device: u8, func: u8) -> Option<MsixCap> {
+    let mut offset =
+        (pci::config_read(bus, device, func, CAPABILITIES_POINTER_OFFSET) & 0xff) as u8;
+    while offset != 0 {
+        let header = pci::config_read(bus, device, func, offset);
+        let next = ((header >> 8) & 0xff) as u8;
+        if (header & 0xff) as u8 == CAP_MSIX {
+            let control = (header >> 16) as u16;
+            let entries = (control & 0x7ff) + 1;
+            let table = pci::config_read(bus, device, func, offset + 4);
+            let bir = (table & 7) as u8;
+            let table_phys = pci::bar_base(bus, device, func, bir) + (table & !7) as u64;
+            let table_virt = crate::memory::map_mmio(table_phys, entries as u64 * 16);
+            // Message Control shares its dword with cap ID/next. Preserve them.
+            let enabled_control = (control | MSIX_ENABLE) & !(1 << 14);
+            let enabled_header = (header & 0x0000_ffff) | ((enabled_control as u32) << 16);
+            pci::config_write(bus, device, func, offset, enabled_header);
+            println!(
+                "[virtio] MSI-X table: {} entries at phys 0x{:x}",
+                entries, table_phys
+            );
+            return Some(MsixCap {
+                table_virt,
+                entries,
+            });
+        }
+        offset = next;
+    }
+    None
 }
 
 /// Human-readable label for a virtio capability sub-type.
@@ -228,6 +266,7 @@ pub struct VirtioBlk {
     /// The virtqueue, owned by the device after `setup_queue` runs.
     /// `read_sector` and future I/O methods unwrap this.
     queue: Option<VirtQueue>,
+    msix: MsixCap,
 }
 
 impl VirtioBlk {
@@ -240,6 +279,7 @@ impl VirtioBlk {
     pub fn probe() -> Option<Self> {
         let (bus, device, func) = pci::find_virtio_blk()?;
         let caps = parse_virtio_capabilities(bus, device, func);
+        let msix = parse_msix_capability(bus, device, func)?;
 
         // Find the common config capability
         let common_cap = caps.iter().find(|c| c.cfg_type == VIRTIO_CAP_COMMON)?;
@@ -275,6 +315,7 @@ impl VirtioBlk {
             notify_virt,
             notify_off_multiplier: notify_cap.notify_off_multiplier,
             queue: None,
+            msix,
         })
     }
 
@@ -288,14 +329,36 @@ impl VirtioBlk {
     pub fn setup_queue(&mut self, queue_size: u16) {
         let queue = VirtQueue::new(queue_size);
         self.configure_queue_at(0, &queue, "virtio-blk request");
+        self.configure_queue_interrupt();
         self.queue = Some(queue);
+    }
+
+    fn configure_queue_interrupt(&self) {
+        assert!(self.msix.entries > 0);
+        let entry = self.msix.table_virt;
+        unsafe {
+            write_volatile(entry as *mut u32, crate::apic::MSI_ADDRESS);
+            write_volatile((entry + 4) as *mut u32, 0);
+            write_volatile(
+                (entry + 8) as *mut u32,
+                crate::interrupts::VIRTIO_BLK_VECTOR as u32,
+            );
+            write_volatile((entry + 12) as *mut u32, 0);
+        }
+        self.write_common_u16(COMMON_QUEUE_SELECT, 0);
+        self.write_common_u16(COMMON_QUEUE_MSIX_VECTOR, 0);
+        let assigned = self.read_common_u16(COMMON_QUEUE_MSIX_VECTOR);
+        assert_eq!(assigned, 0, "virtio-blk rejected MSI-X vector 0");
+        println!("[virtio] MSI-X queue 0 -> table 0 -> vector 0x21");
     }
 
     /// Borrow the virtqueue mutably. Panics if `setup_queue` hasn't run.
     /// Public so test code in main.rs can still poke the queue directly
     /// when verifying lower-level primitives.
     pub fn queue_mut(&mut self) -> &mut VirtQueue {
-        self.queue.as_mut().expect("queue not set up — call setup_queue first")
+        self.queue
+            .as_mut()
+            .expect("queue not set up — call setup_queue first")
     }
 
     /// Step 9.2: read one 512-byte sector from the disk. Synchronous —
@@ -318,19 +381,33 @@ impl VirtioBlk {
         let req = VirtioBlkReq::new_read(sector);
         buffers.write_header(&req);
 
-        let (head, mid, tail) = self.queue.as_mut().expect("queue not set up")
-            .build_read_chain(
-                buffers.header_phys,
-                buffers.data_phys,
-                buffers.status_phys,
-            );
+        let (head, mid, tail) = self
+            .queue
+            .as_mut()
+            .expect("queue not set up")
+            .build_read_chain(buffers.header_phys, buffers.data_phys, buffers.status_phys);
 
         self.queue.as_mut().unwrap().submit_chain(head);
         self.kick();
 
-        let completion = (0..200_000u32)
-            .find_map(|_| self.queue.as_mut().unwrap().poll_completion())
-            .expect("read_sector: no completion arrived");
+        let completion = loop {
+            // Prevent an interrupt from landing after the ring check and
+            // before HLT. A pending MSI-X (or timer tick) is delivered by
+            // the atomic STI; HLT sequence in enable_and_hlt().
+            x86_64::instructions::interrupts::disable();
+            if let Some(completion) = self.queue.as_mut().unwrap().poll_completion() {
+                x86_64::instructions::interrupts::enable();
+                if crate::interrupts::VIRTIO_BLK_INTERRUPTS.load(Ordering::Acquire) > 0
+                    && FIRST_DISK_COMPLETION_REPORTED
+                        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                        .is_ok()
+                {
+                    println!("[virtio] first disk completion delivered by MSI-X");
+                }
+                break completion;
+            }
+            x86_64::instructions::interrupts::enable_and_hlt();
+        };
 
         let status = buffers.read_status();
         assert_eq!(
@@ -365,10 +442,7 @@ impl VirtioBlk {
         // SAFETY: see `read_common_u8`. Writes to device registers have
         // side effects; volatile prevents optimization.
         unsafe {
-            write_volatile(
-                (self.common_virt + offset as u64) as *mut u8,
-                value,
-            );
+            write_volatile((self.common_virt + offset as u64) as *mut u8, value);
         }
     }
 
@@ -382,10 +456,7 @@ impl VirtioBlk {
     /// Write 32 bits to the common config region at `offset`.
     fn write_common_u32(&self, offset: u8, value: u32) {
         unsafe {
-            write_volatile(
-                (self.common_virt + offset as u64) as *mut u32,
-                value,
-            );
+            write_volatile((self.common_virt + offset as u64) as *mut u32, value);
         }
     }
 
@@ -397,10 +468,7 @@ impl VirtioBlk {
     /// Write 16 bits to the common config region at `offset`.
     fn write_common_u16(&self, offset: u8, value: u16) {
         unsafe {
-            write_volatile(
-                (self.common_virt + offset as u64) as *mut u16,
-                value,
-            );
+            write_volatile((self.common_virt + offset as u64) as *mut u16, value);
         }
     }
 
@@ -409,10 +477,7 @@ impl VirtioBlk {
     /// the virtqueue regions.
     fn write_common_u64(&self, offset: u8, value: u64) {
         unsafe {
-            write_volatile(
-                (self.common_virt + offset as u64) as *mut u64,
-                value,
-            );
+            write_volatile((self.common_virt + offset as u64) as *mut u64, value);
         }
     }
 
@@ -447,7 +512,10 @@ impl VirtioBlk {
         // Reset
         self.write_status(0);
         let after_reset = self.read_status();
-        println!("[virtio]   device_status after reset:  0x{:02X}", after_reset);
+        println!(
+            "[virtio]   device_status after reset:  0x{:02X}",
+            after_reset
+        );
         assert_eq!(
             after_reset, 0,
             "device didn't reset cleanly — hardware may need a moment"
@@ -508,10 +576,7 @@ impl VirtioBlk {
             0
         };
 
-        println!(
-            "[virtio]   driver features low:  0x{:08X}",
-            supported_low
-        );
+        println!("[virtio]   driver features low:  0x{:08X}", supported_low);
         println!(
             "[virtio]   driver features high: 0x{:08X}{}",
             supported_high,
@@ -560,10 +625,7 @@ impl VirtioBlk {
             STATUS_ACKNOWLEDGE | STATUS_DRIVER | STATUS_FEATURES_OK | STATUS_DRIVER_OK,
         );
         let status = self.read_status();
-        println!(
-            "[virtio]   device_status after DRIVER_OK: 0x{:02X}",
-            status
-        );
+        println!("[virtio]   device_status after DRIVER_OK: 0x{:02X}", status);
 
         assert!(
             status & STATUS_FAILED == 0,
@@ -805,6 +867,91 @@ pub fn with_net_device<R>(f: impl FnOnce(&mut NetDevice) -> R) -> Option<R> {
     NET_DEVICE.lock().as_mut().map(f)
 }
 
+/// Non-spinning variant of [`with_net_device`]: returns `None` if the
+/// device is currently owned by another task (a sender mid-transmit).
+///
+/// The network task uses this because it runs its drain with interrupts
+/// disabled (so the empty-check and the block are atomic). A spinning
+/// lock there would be fatal: the timer couldn't preempt the spin, the
+/// task holding the device would never get the CPU back, and the system
+/// would deadlock. Every lock acquisition that *can* spin must happen
+/// with interrupts enabled so the timer can always break the cycle.
+pub fn try_with_net_device<R>(f: impl FnOnce(&mut NetDevice) -> R) -> Option<R> {
+    NET_DEVICE
+        .try_lock()
+        .and_then(|mut guard| guard.as_mut().map(f))
+}
+
+/// PID of the deferred network task, registered at spawn time. The RX
+/// interrupt reads this to know which task to wake. `u64::MAX` means "no
+/// network task exists" — early boot, or test modes where a syscall
+/// drains the RX ring itself. The ISR handles that by skipping the wake.
+static NET_TASK_PID: AtomicU64 = AtomicU64::new(u64::MAX);
+
+pub fn register_net_task(pid: crate::process::Pid) {
+    NET_TASK_PID.store(pid.0, Ordering::Release);
+}
+
+pub fn net_task_pid() -> Option<crate::process::Pid> {
+    let raw = NET_TASK_PID.load(Ordering::Acquire);
+    if raw == u64::MAX {
+        None
+    } else {
+        Some(crate::process::Pid(raw))
+    }
+}
+
+/// Deferred network task — Lesson 29's replacement for `network_worker`.
+///
+/// The old worker looped forever: poll the RX ring, yield, repeat. It
+/// burned a schedule slice on every pass even when no frames existed.
+/// It drains the RX ring until empty, marks itself Blocked, and sleeps.
+/// The RX interrupt can wake it directly; the timer also wakes it as a
+/// bounded-latency backstop while virtio-net MSI-X remains unreliable in
+/// the current QEMU machine configuration.
+///
+/// Two rules keep this race-free:
+///
+/// 1. The drain and the block run with interrupts disabled, so the RX
+///    ISR can't fire in between. A frame arriving mid-drain is seen by
+///    the drain loop. A frame arriving after the drain pends its MSI in
+///    the APIC; the interrupt fires as soon as interrupts re-enable, and
+///    `wake` finds the task already Blocked. No lost wakeup.
+///
+/// 2. The device lock is taken with `try_lock`, never the spinning
+///    `lock`. A spinning wait with interrupts disabled would deadlock:
+///    the timer couldn't preempt, and whoever holds the device (a task
+///    mid-`sendto`) would never run again. On contention the task stays
+///    awake and retries next schedule — sends are short, so the retry
+///    lands almost immediately.
+///
+/// This is Linux's NAPI shape: the hardirq handler (our ISR) only
+/// schedules the poll; the poll (this task) runs in a context where
+/// printing, locking, and transmitting are all safe.
+pub unsafe extern "C" fn network_task() {
+    println!("[net] deferred RX task started");
+    loop {
+        x86_64::instructions::interrupts::without_interrupts(|| {
+            if try_with_net_device(|device| while device.poll_rx().is_some() {}).is_some() {
+                crate::task::block_current();
+            }
+        });
+        report_first_net_wakeup();
+        crate::task::yield_now();
+    }
+}
+
+/// One-time serial report when the deferred task observes a genuine RX MSI.
+fn report_first_net_wakeup() {
+    if crate::interrupts::VIRTIO_NET_RX_INTERRUPTS.load(Ordering::Acquire) > 0
+        && FIRST_NET_WAKEUP_REPORTED
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+    {
+        println!("[net] first RX wakeup delivered by MSI-X interrupt");
+    }
+}
+
 impl NetDevice {
     pub fn from_virtio_net(inner: VirtioNet) -> Self {
         Self { inner }
@@ -815,6 +962,10 @@ impl NetDevice {
     }
 
     pub fn send_frame(&mut self, eth_frame: &[u8]) {
+        // QEMU's virtio-net backend expects the full 64-byte minimum on
+        // TX even though physical NICs normally append the 4-byte FCS.
+        // The extra zero bytes remain Ethernet padding outside IPv4.
+        const ETHERNET_MIN_TX_BUFFER: usize = 64;
         assert!(
             eth_frame.len() >= ETHERNET_HEADER_LEN,
             "send_frame needs at least an Ethernet header"
@@ -825,6 +976,9 @@ impl NetDevice {
             eth_frame.len()
         );
 
+        // Zero padding sits after the protocol payload and is excluded
+        // from IPv4/UDP length fields.
+        let tx_len = core::cmp::max(eth_frame.len(), ETHERNET_MIN_TX_BUFFER);
         let buffers = NetTxBuffers::new(eth_frame);
         let (head, tail) = {
             let tx_queue = self
@@ -836,7 +990,7 @@ impl NetDevice {
                 buffers.header_phys,
                 VIRTIO_NET_HDR_LEN as u32,
                 buffers.frame_phys,
-                eth_frame.len() as u32,
+                tx_len as u32,
             );
             tx_queue.submit_chain(head);
             (head, tail)
@@ -844,19 +998,26 @@ impl NetDevice {
 
         self.inner.kick_queue(1);
 
-        let completion = (0..200_000u32)
-            .find_map(|_| {
-                self.inner
-                    .tx_queue
-                    .as_mut()
-                    .expect("virtio-net TX queue not configured")
-                    .poll_completion()
-            })
-            .expect("virtio-net TX completion did not arrive");
+        let interrupts_were_enabled = x86_64::instructions::interrupts::are_enabled();
+        let completion = loop {
+            x86_64::instructions::interrupts::disable();
+            if let Some(completion) = self
+                .inner
+                .tx_queue
+                .as_mut()
+                .expect("virtio-net TX queue not configured")
+                .poll_completion()
+            {
+                break completion;
+            }
+            x86_64::instructions::interrupts::enable_and_hlt();
+        };
+        if interrupts_were_enabled {
+            x86_64::instructions::interrupts::enable();
+        }
 
         assert_eq!(
-            completion.0,
-            head as u32,
+            completion.0, head as u32,
             "virtio-net TX completed unexpected descriptor"
         );
 
@@ -868,7 +1029,7 @@ impl NetDevice {
             "[net] TX frame completion head={} len={} (descriptor bytes={})",
             completion.0,
             completion.1,
-            VIRTIO_NET_HDR_LEN + eth_frame.len()
+            VIRTIO_NET_HDR_LEN + tx_len
         );
     }
 
@@ -928,8 +1089,7 @@ impl NetDevice {
         } else {
             println!(
                 "[net] RX dropped short virtio-net buffer desc={} len={}",
-                desc_idx,
-                rx_len
+                desc_idx, rx_len
             );
             None
         };
@@ -950,11 +1110,10 @@ impl NetDevice {
 
         if let Some(packet) = self.handle_ipv4_frame(frame) {
             if packet.header.protocol == net::ipv4::PROTOCOL_UDP {
-                let Some(datagram) = UdpDatagram::parse(
-                    packet.payload(),
-                    packet.header.src_ip,
-                    packet.header.dst_ip,
-                ) else {
+                let udp_bytes = packet.payload();
+                let Some(datagram) =
+                    UdpDatagram::parse(udp_bytes, packet.header.src_ip, packet.header.dst_ip)
+                else {
                     println!("[udp] dropped malformed datagram");
                     return NetRxEvent::Other;
                 };
@@ -975,8 +1134,7 @@ impl NetDevice {
                     datagram.payload.len()
                 );
 
-                let mut payload =
-                    [0u8; ETHERNET_MTU - IPV4_HEADER_LEN - UDP_HEADER_LEN];
+                let mut payload = [0u8; ETHERNET_MTU - IPV4_HEADER_LEN - UDP_HEADER_LEN];
                 payload[..datagram.payload.len()].copy_from_slice(datagram.payload);
                 let udp_packet = UdpPacket {
                     ip_header: packet.header,
@@ -984,7 +1142,14 @@ impl NetDevice {
                     payload,
                     payload_len: datagram.payload.len(),
                 };
-                self.handle_udp_packet(&udp_packet);
+                crate::net::socket::deliver(
+                    udp_packet.header.dst_port,
+                    crate::net::socket::Endpoint {
+                        ip: udp_packet.ip_header.src_ip,
+                        port: udp_packet.header.src_port,
+                    },
+                    udp_packet.payload(),
+                );
                 return NetRxEvent::Udp(udp_packet);
             }
 
@@ -994,65 +1159,48 @@ impl NetDevice {
         NetRxEvent::Other
     }
 
+    /// Resolve `ip` to a MAC address, sleeping until the reply arrives.
+    ///
+    /// Used where no network task exists (boot, before `network_task` is
+    /// spawned), so this function drains the RX ring itself after every
+    /// wakeup. The RX MSI-X interrupt — or the 100 Hz timer as a
+    /// backstop — ends each `hlt`. Syscall-driven TX paths use
+    /// [`resolve_arp_blocking`] instead, which never holds the device
+    /// lock while sleeping.
     pub fn resolve_arp(&mut self, ip: [u8; 4]) -> Option<[u8; 6]> {
         if let Some(mac) = arp::lookup(ip) {
             println!(
                 "[arp] cache hit: {}.{}.{}.{} is at {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
-                ip[0],
-                ip[1],
-                ip[2],
-                ip[3],
-                mac[0],
-                mac[1],
-                mac[2],
-                mac[3],
-                mac[4],
-                mac[5]
+                ip[0], ip[1], ip[2], ip[3], mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]
             );
             return Some(mac);
         }
 
         println!(
             "[arp] cache miss: asking for {}.{}.{}.{}",
-            ip[0],
-            ip[1],
-            ip[2],
-            ip[3]
+            ip[0], ip[1], ip[2], ip[3]
         );
         self.send_arp_request(ip);
 
-        for _ in 0..200_000u32 {
-            if let Some(event) = self.poll_rx() {
-                if let NetRxEvent::Arp(packet) = event {
-                    if packet.oper == OPER_REPLY && packet.spa == ip {
-                        println!("[net] first RX payload prefix:");
-                        if let Some(mac) = arp::lookup(ip) {
-                            println!(
-                                "[arp] {}.{}.{}.{} is at {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
-                                ip[0],
-                                ip[1],
-                                ip[2],
-                                ip[3],
-                                mac[0],
-                                mac[1],
-                                mac[2],
-                                mac[3],
-                                mac[4],
-                                mac[5]
-                            );
-                            return Some(mac);
-                        }
-                    }
-                }
+        for _ in 0..500u32 {
+            x86_64::instructions::interrupts::disable();
+            // Dispatch whatever arrived, then re-check the cache. The
+            // reply we need may already sit in the RX used ring.
+            let _ = self.poll_rx();
+            if let Some(mac) = arp::lookup(ip) {
+                x86_64::instructions::interrupts::enable();
+                println!(
+                    "[arp] {}.{}.{}.{} is at {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+                    ip[0], ip[1], ip[2], ip[3], mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]
+                );
+                return Some(mac);
             }
+            x86_64::instructions::interrupts::enable_and_hlt();
         }
 
         println!(
             "[arp] resolve timed out for {}.{}.{}.{}",
-            ip[0],
-            ip[1],
-            ip[2],
-            ip[3]
+            ip[0], ip[1], ip[2], ip[3]
         );
         None
     }
@@ -1071,7 +1219,20 @@ impl NetDevice {
         );
 
         let next_hop_ip = next_hop_for(dst_ip);
-        let next_hop_mac = self.resolve_arp(next_hop_ip)?;
+        // ARP is resolved before this function is called, either at boot
+        // (gateway entry) or by `resolve_arp_blocking` on the syscall
+        // path. Sleeping here would deadlock: the network task needs this
+        // same device lock to deliver the ARP reply we're waiting for.
+        // On a miss, send an ARP request to prime the cache and drop the
+        // packet — the caller's retry or the next packet gets through.
+        let Some(next_hop_mac) = arp::lookup(next_hop_ip) else {
+            println!(
+                "[arp] no cache entry for next hop {}.{}.{}.{} — priming and dropping packet",
+                next_hop_ip[0], next_hop_ip[1], next_hop_ip[2], next_hop_ip[3]
+            );
+            self.send_arp_request(next_hop_ip);
+            return None;
+        };
         let ip_header = Ipv4Header::build(protocol, net::OUR_IP, dst_ip, payload.len());
 
         let ethernet_header = EthernetHeader {
@@ -1132,14 +1293,12 @@ impl NetDevice {
             dst_port,
             payload,
         )?;
-        self.send_ipv4_packet(
-            net::ipv4::PROTOCOL_UDP,
-            dst_ip,
-            &datagram[..datagram_len],
-        )
+        self.send_ipv4_packet(net::ipv4::PROTOCOL_UDP, dst_ip, &datagram[..datagram_len])
     }
 
-    fn send_arp_request(&mut self, target_ip: [u8; 4]) {
+    /// Send one ARP request for `target_ip`. Public so the blocking
+    /// resolver can prime the cache without owning the device.
+    pub fn send_arp_request(&mut self, target_ip: [u8; 4]) {
         let packet = ArpPacket::request(self.mac(), net::OUR_IP, target_ip);
         self.send_arp_packet([0xff; 6], packet);
     }
@@ -1221,10 +1380,7 @@ impl NetDevice {
         if header.dst_ip != net::OUR_IP {
             println!(
                 "[ip] dropped frame for {}.{}.{}.{}",
-                header.dst_ip[0],
-                header.dst_ip[1],
-                header.dst_ip[2],
-                header.dst_ip[3]
+                header.dst_ip[0], header.dst_ip[1], header.dst_ip[2], header.dst_ip[3]
             );
             return None;
         }
@@ -1261,7 +1417,11 @@ impl NetDevice {
                     .expect("maximum IPv4 payload fits in an Ethernet frame");
 
                     if self
-                        .send_ipv4_packet(net::ipv4::PROTOCOL_ICMP, header.src_ip, &reply[..reply_len])
+                        .send_ipv4_packet(
+                            net::ipv4::PROTOCOL_ICMP,
+                            header.src_ip,
+                            &reply[..reply_len],
+                        )
                         .is_some()
                     {
                         println!(
@@ -1327,14 +1487,55 @@ impl NetDevice {
 }
 
 fn next_hop_for(dst_ip: [u8; 4]) -> [u8; 4] {
-    if dst_ip[0] == net::OUR_IP[0]
-        && dst_ip[1] == net::OUR_IP[1]
-        && dst_ip[2] == net::OUR_IP[2]
-    {
+    if dst_ip[0] == net::OUR_IP[0] && dst_ip[1] == net::OUR_IP[1] && dst_ip[2] == net::OUR_IP[2] {
         dst_ip
     } else {
         net::GATEWAY_IP
     }
+}
+
+/// Resolve the next hop for `dst_ip`, sleeping until the ARP reply
+/// arrives. For syscall TX paths (`sendto`): the device lock is held
+/// only for the request transmit, never while sleeping, so the network
+/// task can deliver the reply into the ARP cache.
+pub fn resolve_next_hop(dst_ip: [u8; 4]) -> Option<[u8; 6]> {
+    resolve_arp_blocking(next_hop_for(dst_ip))
+}
+
+/// Blocking ARP resolve that never holds the NET_DEVICE lock while
+/// sleeping. Sends one request, then `hlt`-sleeps until the network task
+/// (woken by the RX interrupt) delivers the reply into the cache. The
+/// 100 Hz timer is the backstop that re-checks the cache at least every
+/// 10 ms even if an interrupt is somehow missed.
+fn resolve_arp_blocking(ip: [u8; 4]) -> Option<[u8; 6]> {
+    if let Some(mac) = arp::lookup(ip) {
+        return Some(mac);
+    }
+
+    println!(
+        "[arp] syscall path miss: asking for {}.{}.{}.{}",
+        ip[0], ip[1], ip[2], ip[3]
+    );
+    let _ = with_net_device(|device| device.send_arp_request(ip));
+
+    for _ in 0..500u32 {
+        x86_64::instructions::interrupts::disable();
+        if let Some(mac) = arp::lookup(ip) {
+            x86_64::instructions::interrupts::enable();
+            println!(
+                "[arp] {}.{}.{}.{} is at {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+                ip[0], ip[1], ip[2], ip[3], mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]
+            );
+            return Some(mac);
+        }
+        x86_64::instructions::interrupts::enable_and_hlt();
+    }
+
+    println!(
+        "[arp] syscall path resolve timed out for {}.{}.{}.{}",
+        ip[0], ip[1], ip[2], ip[3]
+    );
+    None
 }
 
 /// DMA buffers for one virtio-net TX frame.
@@ -1351,10 +1552,10 @@ impl NetTxBuffers {
             eth_frame.len()
         );
 
-        let header_frame = crate::frame_allocator::allocate()
-            .expect("out of frames for virtio-net TX header");
-        let frame_frame = crate::frame_allocator::allocate()
-            .expect("out of frames for virtio-net TX frame");
+        let header_frame =
+            crate::frame_allocator::allocate().expect("out of frames for virtio-net TX header");
+        let frame_frame =
+            crate::frame_allocator::allocate().expect("out of frames for virtio-net TX frame");
         let offset = crate::memory::phys_offset();
         let header_phys = header_frame * 4096;
         let frame_phys = frame_frame * 4096;
@@ -1391,6 +1592,7 @@ pub struct VirtioNet {
     rx_queue: Option<VirtQueue>,
     tx_queue: Option<VirtQueue>,
     rx_buffers: alloc::vec::Vec<RxBuffer>,
+    msix: MsixCap,
 }
 
 impl VirtioNet {
@@ -1399,6 +1601,7 @@ impl VirtioNet {
     pub fn probe() -> Option<Self> {
         let dev = pci::find_virtio_device(pci::VIRTIO_NET_NON_TRANSITIONAL)?;
         let caps = parse_virtio_capabilities(dev.bus, dev.device, dev.func);
+        let msix = parse_msix_capability(dev.bus, dev.device, dev.func)?;
 
         let common_cap = caps.iter().find(|c| c.cfg_type == VIRTIO_CAP_COMMON)?;
         let common_bar_base = pci::bar_base(dev.bus, dev.device, dev.func, common_cap.bar);
@@ -1432,10 +1635,7 @@ impl VirtioNet {
             crate::memory::map_mmio(device_config_phys, device_config_cap.length as u64);
         println!(
             "[virtio-net] device config: BAR{}+0x{:X} = phys 0x{:X} = virt 0x{:X}",
-            device_config_cap.bar,
-            device_config_cap.offset,
-            device_config_phys,
-            device_config_virt
+            device_config_cap.bar, device_config_cap.offset, device_config_phys, device_config_virt
         );
 
         Some(Self {
@@ -1450,6 +1650,7 @@ impl VirtioNet {
             rx_queue: None,
             tx_queue: None,
             rx_buffers: alloc::vec::Vec::new(),
+            msix,
         })
     }
 
@@ -1459,10 +1660,7 @@ impl VirtioNet {
 
     fn write_common_u8(&self, offset: u8, value: u8) {
         unsafe {
-            write_volatile(
-                (self.common_virt + offset as u64) as *mut u8,
-                value,
-            );
+            write_volatile((self.common_virt + offset as u64) as *mut u8, value);
         }
     }
 
@@ -1472,10 +1670,7 @@ impl VirtioNet {
 
     fn write_common_u16(&self, offset: u8, value: u16) {
         unsafe {
-            write_volatile(
-                (self.common_virt + offset as u64) as *mut u16,
-                value,
-            );
+            write_volatile((self.common_virt + offset as u64) as *mut u16, value);
         }
     }
 
@@ -1485,19 +1680,13 @@ impl VirtioNet {
 
     fn write_common_u32(&self, offset: u8, value: u32) {
         unsafe {
-            write_volatile(
-                (self.common_virt + offset as u64) as *mut u32,
-                value,
-            );
+            write_volatile((self.common_virt + offset as u64) as *mut u32, value);
         }
     }
 
     fn write_common_u64(&self, offset: u8, value: u64) {
         unsafe {
-            write_volatile(
-                (self.common_virt + offset as u64) as *mut u64,
-                value,
-            );
+            write_volatile((self.common_virt + offset as u64) as *mut u64, value);
         }
     }
 
@@ -1518,12 +1707,18 @@ impl VirtioNet {
 
         self.write_status(0);
         let after_reset = self.read_status();
-        println!("[virtio-net] device_status after reset:  0x{:02X}", after_reset);
+        println!(
+            "[virtio-net] device_status after reset:  0x{:02X}",
+            after_reset
+        );
         assert_eq!(after_reset, 0, "virtio-net did not reset cleanly");
 
         self.write_status(STATUS_ACKNOWLEDGE);
         let after_ack = self.read_status();
-        println!("[virtio-net] device_status after ACK:    0x{:02X}", after_ack);
+        println!(
+            "[virtio-net] device_status after ACK:    0x{:02X}",
+            after_ack
+        );
 
         self.write_status(STATUS_ACKNOWLEDGE | STATUS_DRIVER);
         let after_driver = self.read_status();
@@ -1591,9 +1786,7 @@ impl VirtioNet {
     pub fn read_mac(&mut self) -> [u8; 6] {
         let mut mac = [0u8; 6];
         for (i, byte) in mac.iter_mut().enumerate() {
-            *byte = unsafe {
-                read_volatile((self.device_config_virt + i as u64) as *const u8)
-            };
+            *byte = unsafe { read_volatile((self.device_config_virt + i as u64) as *const u8) };
         }
         self.mac = mac;
         println!(
@@ -1611,13 +1804,54 @@ impl VirtioNet {
         let tx_queue = VirtQueue::new(queue_size);
         self.configure_queue_at(1, &tx_queue, "TX");
         self.tx_queue = Some(tx_queue);
+
+        self.configure_queue_interrupts();
+    }
+
+    /// Point each queue at its own MSI-X table entry: RX queue 0 fires
+    /// vector 0x30, TX queue 1 fires vector 0x31. MSI-X tables belong to
+    /// individual PCI functions, so virtio-net starts at its own entry 0;
+    /// virtio-blk's entry 0 lives in a different device's table.
+    fn configure_queue_interrupts(&self) {
+        assert!(
+            self.msix.entries >= 2,
+            "virtio-net MSI-X table has {} entries, need at least 2 (RX + TX)",
+            self.msix.entries
+        );
+        for (entry_index, vector) in [
+            (0u64, crate::interrupts::VIRTIO_NET_RX_VECTOR),
+            (1u64, crate::interrupts::VIRTIO_NET_TX_VECTOR),
+        ] {
+            let entry = self.msix.table_virt + entry_index * 16;
+            unsafe {
+                write_volatile(entry as *mut u32, crate::apic::MSI_ADDRESS);
+                write_volatile((entry + 4) as *mut u32, 0);
+                write_volatile((entry + 8) as *mut u32, vector as u32);
+                write_volatile((entry + 12) as *mut u32, 0);
+            }
+        }
+
+        self.write_common_u16(COMMON_QUEUE_SELECT, 0);
+        self.write_common_u16(COMMON_QUEUE_MSIX_VECTOR, 0);
+        let rx_assigned = self.read_common_u16(COMMON_QUEUE_MSIX_VECTOR);
+        assert_eq!(rx_assigned, 0, "virtio-net RX queue rejected MSI-X entry 0");
+        println!(
+            "[virtio-net] MSI-X queue 0 (RX) -> table 0 -> vector 0x{:02x}",
+            crate::interrupts::VIRTIO_NET_RX_VECTOR
+        );
+
+        self.write_common_u16(COMMON_QUEUE_SELECT, 1);
+        self.write_common_u16(COMMON_QUEUE_MSIX_VECTOR, 1);
+        let tx_assigned = self.read_common_u16(COMMON_QUEUE_MSIX_VECTOR);
+        assert_eq!(tx_assigned, 1, "virtio-net TX queue rejected MSI-X entry 1");
+        println!(
+            "[virtio-net] MSI-X queue 1 (TX) -> table 1 -> vector 0x{:02x}",
+            crate::interrupts::VIRTIO_NET_TX_VECTOR
+        );
     }
 
     fn configure_queue_at(&self, queue_index: u16, queue: &VirtQueue, label: &str) {
-        println!(
-            "[virtio-net] configuring queue {} ({})",
-            queue_index, label
-        );
+        println!("[virtio-net] configuring queue {} ({})", queue_index, label);
 
         self.write_common_u16(COMMON_QUEUE_SELECT, queue_index);
         let device_max = self.read_common_u16(COMMON_QUEUE_SIZE);
@@ -1666,8 +1900,8 @@ impl VirtioNet {
         );
 
         for _ in 0..VIRTIO_NET_RX_BUFFER_COUNT {
-            let frame = crate::frame_allocator::allocate()
-                .expect("out of frames for virtio-net RX buffer");
+            let frame =
+                crate::frame_allocator::allocate().expect("out of frames for virtio-net RX buffer");
             let phys = frame * 4096;
             let virt = phys + crate::memory::phys_offset();
 
@@ -1675,9 +1909,7 @@ impl VirtioNet {
                 core::ptr::write_bytes(virt as *mut u8, 0, 4096);
             }
 
-            let desc_idx = rx_queue
-                .alloc_descriptor()
-                .expect("no free RX descriptors");
+            let desc_idx = rx_queue.alloc_descriptor().expect("no free RX descriptors");
             rx_queue.write_descriptor(
                 desc_idx,
                 phys,
@@ -1700,11 +1932,7 @@ impl VirtioNet {
         if let Some(first) = self.rx_buffers.first() {
             println!(
                 "[virtio-net] first RX buffer: desc={} frame={} phys=0x{:X} virt=0x{:X} len={}",
-                first.desc_idx,
-                first.frame,
-                first.phys,
-                first.virt,
-                first.len
+                first.desc_idx, first.frame, first.phys, first.virt, first.len
             );
         }
         println!(
@@ -1765,10 +1993,7 @@ impl VirtioNet {
             let (avail_idx, used_idx, last_used_idx) = rx_queue.debug_state();
             println!(
                 "[net] RX buffer desc={} recycled (avail_idx={}, used_idx={}, last_used_idx={})",
-                desc_idx,
-                avail_idx,
-                used_idx,
-                last_used_idx
+                desc_idx, avail_idx, used_idx, last_used_idx
             );
         }
 
@@ -1813,8 +2038,8 @@ struct VirtqDesc {
 // ============================================================
 
 /// virtio-blk operation types — the `type` field of `VirtioBlkReq`.
-pub const VIRTIO_BLK_T_IN: u32 = 0;    // read
-pub const VIRTIO_BLK_T_OUT: u32 = 1;   // write
+pub const VIRTIO_BLK_T_IN: u32 = 0; // read
+pub const VIRTIO_BLK_T_OUT: u32 = 1; // write
 pub const VIRTIO_BLK_T_FLUSH: u32 = 4; // flush cache
 
 /// virtio-blk status byte values — written by the device on completion.
@@ -1882,12 +2107,12 @@ impl BlkBuffers {
     /// them, and return the bundle. Caller writes the request header
     /// into `header_virt` before submitting.
     pub fn new() -> Self {
-        let header_frame = crate::frame_allocator::allocate()
-            .expect("out of frames for blk request header");
-        let data_frame = crate::frame_allocator::allocate()
-            .expect("out of frames for blk data buffer");
-        let status_frame = crate::frame_allocator::allocate()
-            .expect("out of frames for blk status byte");
+        let header_frame =
+            crate::frame_allocator::allocate().expect("out of frames for blk request header");
+        let data_frame =
+            crate::frame_allocator::allocate().expect("out of frames for blk data buffer");
+        let status_frame =
+            crate::frame_allocator::allocate().expect("out of frames for blk status byte");
 
         let offset = crate::memory::phys_offset();
         let header_phys = header_frame * 4096;
@@ -2011,21 +2236,26 @@ impl VirtQueue {
     pub fn new(queue_size: u16) -> Self {
         let q = queue_size as usize;
         let desc_bytes = q * VIRTQ_DESC_SIZE;
-        let avail_bytes = 6 + q * 2;  // flags + idx + ring + used_event
-        let used_bytes = 6 + q * 8;   // flags + idx + ring entries + avail_event
+        let avail_bytes = 6 + q * 2; // flags + idx + ring + used_event
+        let used_bytes = 6 + q * 8; // flags + idx + ring entries + avail_event
 
         // Assert our single-frame-per-region assumption. Larger queues
         // would need multi-frame allocations; we don't need that yet.
-        assert!(desc_bytes <= 4096, "descriptor table doesn't fit in one frame");
-        assert!(avail_bytes <= 4096, "available ring doesn't fit in one frame");
+        assert!(
+            desc_bytes <= 4096,
+            "descriptor table doesn't fit in one frame"
+        );
+        assert!(
+            avail_bytes <= 4096,
+            "available ring doesn't fit in one frame"
+        );
         assert!(used_bytes <= 4096, "used ring doesn't fit in one frame");
 
-        let desc_frame = crate::frame_allocator::allocate()
-            .expect("out of frames for descriptor table");
-        let avail_frame = crate::frame_allocator::allocate()
-            .expect("out of frames for available ring");
-        let used_frame = crate::frame_allocator::allocate()
-            .expect("out of frames for used ring");
+        let desc_frame =
+            crate::frame_allocator::allocate().expect("out of frames for descriptor table");
+        let avail_frame =
+            crate::frame_allocator::allocate().expect("out of frames for available ring");
+        let used_frame = crate::frame_allocator::allocate().expect("out of frames for used ring");
 
         let offset = crate::memory::phys_offset();
         let desc_phys = desc_frame * 4096;
@@ -2120,10 +2350,8 @@ impl VirtQueue {
     /// Diagnostic: snapshot of (avail_idx, used_idx, last_used_idx) for
     /// debugging queue state. Useful when a request seems to vanish.
     pub fn debug_state(&self) -> (u16, u16, u16) {
-        let avail_idx_atomic: *const AtomicU16 =
-            (self.avail_virt + 2) as *const AtomicU16;
-        let used_idx_atomic: *const AtomicU16 =
-            (self.used_virt + 2) as *const AtomicU16;
+        let avail_idx_atomic: *const AtomicU16 = (self.avail_virt + 2) as *const AtomicU16;
+        let used_idx_atomic: *const AtomicU16 = (self.used_virt + 2) as *const AtomicU16;
         let avail = unsafe { (*avail_idx_atomic).load(Ordering::Acquire) };
         let used = unsafe { (*used_idx_atomic).load(Ordering::Acquire) };
         (avail, used, self.last_used_idx)
@@ -2134,14 +2362,7 @@ impl VirtQueue {
     ///
     /// SAFETY-conscious: writes via volatile so the compiler can't
     /// reorder or coalesce with device reads.
-    pub fn write_descriptor(
-        &self,
-        idx: u16,
-        addr: u64,
-        len: u32,
-        flags: u16,
-        next: u16,
-    ) {
+    pub fn write_descriptor(&self, idx: u16, addr: u64, len: u32, flags: u16, next: u16) {
         let entry_virt = self.desc_virt + (idx as u64) * VIRTQ_DESC_SIZE as u64;
         // SAFETY: `idx` is in range (caller contract), `entry_virt`
         // points at one descriptor inside the descriptor-table frame,
@@ -2178,13 +2399,7 @@ impl VirtQueue {
         let mid = self.alloc_descriptor().expect("no free descriptors");
         let tail = self.alloc_descriptor().expect("no free descriptors");
 
-        self.write_descriptor(
-            head,
-            header_phys,
-            16,
-            VIRTQ_DESC_F_NEXT,
-            mid,
-        );
+        self.write_descriptor(head, header_phys, 16, VIRTQ_DESC_F_NEXT, mid);
         self.write_descriptor(
             mid,
             data_phys,
@@ -2192,13 +2407,7 @@ impl VirtQueue {
             VIRTQ_DESC_F_NEXT | VIRTQ_DESC_F_WRITE,
             tail,
         );
-        self.write_descriptor(
-            tail,
-            status_phys,
-            1,
-            VIRTQ_DESC_F_WRITE,
-            0,
-        );
+        self.write_descriptor(tail, status_phys, 1, VIRTQ_DESC_F_WRITE, 0);
 
         // println!(
         //     "[virtio]   desc[head={}] addr=0x{:X} len=16  flags=0x{:02X} (F_NEXT)         next={}",
@@ -2231,20 +2440,8 @@ impl VirtQueue {
         let head = self.alloc_descriptor().expect("no free TX descriptors");
         let tail = self.alloc_descriptor().expect("no free TX descriptors");
 
-        self.write_descriptor(
-            head,
-            header_phys,
-            header_len,
-            VIRTQ_DESC_F_NEXT,
-            tail,
-        );
-        self.write_descriptor(
-            tail,
-            frame_phys,
-            frame_len,
-            0,
-            0,
-        );
+        self.write_descriptor(head, header_phys, header_len, VIRTQ_DESC_F_NEXT, tail);
+        self.write_descriptor(tail, frame_phys, frame_len, 0, 0);
 
         (head, tail)
     }
@@ -2267,8 +2464,7 @@ impl VirtQueue {
         // Pointer to avail->idx (offset 2 from the region base).
         // SAFETY: avail_virt is the kernel-side address of a freshly
         // allocated frame; +2 lands on the idx field inside it.
-        let idx_atomic: *const AtomicU16 =
-            (self.avail_virt + 2) as *const AtomicU16;
+        let idx_atomic: *const AtomicU16 = (self.avail_virt + 2) as *const AtomicU16;
 
         // Read current idx. Relaxed is fine here — no other publication
         // depends on this read.
@@ -2317,8 +2513,7 @@ impl VirtQueue {
         let q = self.queue_size as u64;
 
         // Pointer to used->idx (offset 2 from region base).
-        let idx_atomic: *const AtomicU16 =
-            (self.used_virt + 2) as *const AtomicU16;
+        let idx_atomic: *const AtomicU16 = (self.used_virt + 2) as *const AtomicU16;
 
         // Acquire load pairs with the device's Release store.
         let current = unsafe { (*idx_atomic).load(Ordering::Acquire) };

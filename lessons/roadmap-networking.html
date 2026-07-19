@@ -198,8 +198,8 @@
     <p class="lesson-subtitle">Eight lessons that build a network stack the same way the disk path was built: discover the device, initialize the transport, move raw bytes, then climb the protocol layers one at a time. Two hello-worlds along the way: a ping reply from the gateway, and a user-space echo server the host can talk to.</p>
     <div class="lesson-meta">
       <span><strong>Start</strong> Lesson 19</span>
-      <span><strong>End</strong> Lesson 26</span>
-      <span><strong>Status</strong> 0 of 8 done</span>
+      <span><strong>Objective</strong> Lesson 26</span>
+      <span><strong>Extension</strong> Lesson 27</span>
     </div>
   </header>
 
@@ -266,6 +266,7 @@
     <span class="lm-next">L24</span>  ICMP — ping the gateway                         <span style="color: #15803d; font-weight: 600">— keystone 1 ✓</span>
     <span class="lm-next">L25</span>  UDP — datagrams in, datagrams out
     <span class="lm-next">L26</span>  Sockets — user-space echo server                <span style="color: #15803d; font-weight: 600">— objective</span>
+    <span class="lm-next">L27</span>  Nonblocking sockets + readiness                 <span style="color: var(--accent); font-weight: 600">— extension</span>
   </div>
 
   <!-- ============================================================
@@ -553,7 +554,7 @@
     <div class="roadmap-lesson-head">
       <span class="roadmap-lesson-num">L26</span>
       <h2 class="roadmap-lesson-title">Sockets — The User-Space Echo Server (Objective)</h2>
-      <span class="roadmap-lesson-status">Current · concept</span>
+      <span class="roadmap-lesson-status">Complete · verified</span>
     </div>
     <p class="roadmap-lesson-body">
       The syscall surface. A socket is a file descriptor whose backing
@@ -587,14 +588,25 @@
       routes them, the scheduler wakes the blocked process, and a ring-3
       binary loaded from your ext2 disk answers the host.
       <strong>Lesson:</strong> <a href="0026-sockets.html">Open Lesson 26</a>.
+      <strong>Tour:</strong> <a href="../tours/tour-0026-sockets.html">Follow the implementation</a>.
     </p>
+  </section>
+
+  <section class="roadmap-lesson upcoming">
+    <div class="roadmap-lesson-head">
+      <span class="roadmap-lesson-num">L27</span>
+      <h2 class="roadmap-lesson-title">Nonblocking Sockets and Readiness</h2>
+      <span class="roadmap-lesson-status">Concept · implementation pending</span>
+    </div>
+    <p class="roadmap-lesson-body">Extend the blocking socket model with nonblocking <code>recvfrom</code>, <code>EAGAIN</code>, and a small readiness-driven event loop. Readiness follows each FD to its socket queue and lets one task serve many sockets without sleeping on an idle one. Device polling or interrupts remain beneath this user-space readiness layer.</p>
+    <p class="roadmap-linux-ref"><strong>Lesson:</strong> <a href="0027-nonblocking-sockets.html">Open Lesson 27</a>. <strong>Reference:</strong> <a href="../reference/nonblocking-sockets.html">Nonblocking socket quick reference</a>.</p>
   </section>
 
   <h2>After the objective</h2>
 
   <ul>
     <li><strong>TCP.</strong> The deferred arc: three-way handshake, sequence/acknowledgment numbers, the state machine, retransmission. ~4–5 lessons on top of the same IPv4 layer. <a href="https://www.rfc-editor.org/rfc/rfc9293">RFC 9293</a> is the modern consolidated spec.</li>
-    <li><strong>DHCP client.</strong> Replace the hardcoded <code>10.0.2.15</code> with real address acquisition. ~1 lesson, pure UDP application code.</li>
+    <li><strong>DHCP client.</strong> Replace the hardcoded <code>10.0.2.15</code> with real address acquisition. ~1 lesson, pure UDP application code. <a href="0030-dhcp.html">Lesson 30 concept page ready</a>.</li>
     <li><strong>DNS resolver.</strong> Query <code>10.0.2.3</code>, parse the response. ~1 lesson, also pure UDP.</li>
     <li><strong>Interrupt-driven RX.</strong> Replace polling with the virtio ISR (Interrupt Status Register) → MSI-X or legacy interrupt → wake the stack. Pairs well with Phase 1 signal work.</li>
     <li><strong>tap networking.</strong> Swap slirp for a tap device to let the host ping the guest and run tcpdump on real frames. Host-side setup, no kernel changes.</li>

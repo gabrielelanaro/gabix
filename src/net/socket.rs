@@ -1,8 +1,8 @@
 use alloc::collections::{BTreeMap, VecDeque};
 use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
-use spin::Mutex;
 
+use crate::irq_mutex::IrqMutex;
 use crate::process::Pid;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -25,17 +25,18 @@ struct State {
 }
 
 pub struct UdpSocket {
-    state: Mutex<State>,
+    state: IrqMutex<State>,
 }
 
 lazy_static::lazy_static! {
-    static ref PORTS: Mutex<BTreeMap<u16, Weak<UdpSocket>>> = Mutex::new(BTreeMap::new());
+    static ref PORTS: IrqMutex<BTreeMap<u16, Weak<UdpSocket>>> =
+        IrqMutex::new(BTreeMap::new());
 }
 
 impl UdpSocket {
     pub fn new(nonblocking: bool) -> Arc<Self> {
         Arc::new(Self {
-            state: Mutex::new(State {
+            state: IrqMutex::new(State {
                 port: None,
                 queue: VecDeque::new(),
                 recv_waiter: None,
@@ -99,7 +100,10 @@ impl UdpSocket {
     }
 
     pub fn remove_poll_waiter(&self, pid: Pid) {
-        self.state.lock().poll_waiters.retain(|waiter| *waiter != pid);
+        self.state
+            .lock()
+            .poll_waiters
+            .retain(|waiter| *waiter != pid);
     }
 }
 

@@ -226,8 +226,7 @@ pub fn find_virtio_blk() -> Option<(u8, u8, u8)> {
                 continue;
             }
             let device_id = (vendor_word >> 16) as u16;
-            if device_id == VIRTIO_BLK_TRANSITIONAL
-            {
+            if device_id == VIRTIO_BLK_TRANSITIONAL {
                 return Some((0, device, func));
             }
         }

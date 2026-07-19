@@ -2,9 +2,9 @@
 
 extern crate alloc;
 
+use crate::irq_mutex::IrqMutex;
 use alloc::collections::BTreeMap;
 use lazy_static::lazy_static;
-use spin::Mutex;
 
 pub const ARP_PACKET_LEN: usize = 28;
 pub const HTYPE_ETHERNET: u16 = 1;
@@ -106,8 +106,7 @@ impl ArpPacket {
 }
 
 lazy_static! {
-    static ref ARP_CACHE: Mutex<BTreeMap<[u8; 4], [u8; 6]>> =
-        Mutex::new(BTreeMap::new());
+    static ref ARP_CACHE: IrqMutex<BTreeMap<[u8; 4], [u8; 6]>> = IrqMutex::new(BTreeMap::new());
 }
 
 pub fn lookup(ip: [u8; 4]) -> Option<[u8; 6]> {

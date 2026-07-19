@@ -19,7 +19,10 @@ DISK_IMG=disk.img
 SIZE_MB=1
 
 # Find mkfs.ext2 and debugfs — keg-only on macOS (brew install e2fsprogs).
-E2SPROGS_SBIN=$(brew --prefix e2fsprogs 2>/dev/null)/sbin
+E2SPROGS_SBIN=""
+if command -v brew >/dev/null 2>&1; then
+    E2SPROGS_SBIN="$(brew --prefix e2fsprogs 2>/dev/null)/sbin"
+fi
 MKFS_EXT2=$(command -v mkfs.ext2 || \
             command -v mke2fs || \
             command -v "$E2SPROGS_SBIN/mkfs.ext2" || \
@@ -72,7 +75,8 @@ tests/fixtures/fork_smoke.rs:/fork_smoke.elf
 tests/fixtures/inherit_wait.rs:/inherit_wait.elf
 tests/fixtures/net_smoke.rs:/net_smoke.elf
 tests/fixtures/icmp_ping.rs:/icmp_ping.elf
-tests/fixtures/udp_echo.rs:/udp_echo.elf"
+tests/fixtures/udp_echo.rs:/udp_echo.elf
+tests/fixtures/nonblocking_echo.rs:/nonblocking_echo.elf"
 
 for entry in $FIXTURES; do
     src=${entry%%:*}

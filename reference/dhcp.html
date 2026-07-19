@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Reference — DHCP</title><link rel="stylesheet" href="../assets/lesson.css"><link rel="stylesheet" href="../assets/byte-layout.css"></head>
+<body><article class="lesson"><header class="lesson-header"><div class="lesson-eyebrow">Reference · Phase 2 networking</div><h1 class="lesson-title">DHCP Quick Reference</h1><p class="lesson-subtitle">The DORA exchange, the inherited BOOTP layout, the options that matter, and the lease timers.</p></header>
+<div class="content">
+  <h2>The exchange</h2>
+  <div class="layer-stack">
+    <div class="layer-row"><span class="layer-name">1 · DISCOVER</span><span class="layer-desc">client → broadcast <code>255.255.255.255:67</code> from <code>0.0.0.0:68</code>. Fresh <code>xid</code>, <code>chaddr</code> = client MAC, BROADCAST flag set.</span></div>
+    <div class="layer-row"><span class="layer-name">2 · OFFER</span><span class="layer-desc">server → client. <code>yiaddr</code> = offered address, <code>xid</code> echoed. Options 53=2, 54 server id, 51 lease, 1 mask, 3 router, 6 DNS.</span></div>
+    <div class="layer-row"><span class="layer-name">3 · REQUEST</span><span class="layer-desc">client → broadcast (public acceptance). Option 50 = requested IP, 54 = chosen server. Unpicked servers reclaim their offers.</span></div>
+    <div class="layer-row"><span class="layer-name">4 · ACK</span><span class="layer-desc">server → client. Binding committed; parameters restated; lease clock starts. On failure: DHCPNAK → client restarts at DISCOVER.</span></div>
+  </div>
+
+  <h2>Packet layout</h2>
+  <div class="byte-layout"><div class="byte-layout-header"><span class="byte-layout-name">DHCP message</span><span class="byte-layout-size">236 fixed bytes + options</span></div><div class="byte-bar"><div class="byte-field type-u8" style="--bytes:4" data-tip="op · htype · hlen · hops"><span class="byte-field-name">op · htype · hlen · hops</span><span class="byte-field-meta">u8 ×4</span><span class="byte-field-range">0–3</span><span class="byte-field-mini">OH</span></div><div class="byte-field type-u32" style="--bytes:4" data-tip="transaction id"><span class="byte-field-name">xid</span><span class="byte-field-meta">u32</span><span class="byte-field-range">4–7</span><span class="byte-field-mini">XID</span></div><div class="byte-field type-u16" style="--bytes:4" data-tip="secs · flags (B=0x8000)"><span class="byte-field-name">secs · flags</span><span class="byte-field-meta">u16 ×2</span><span class="byte-field-range">8–11</span><span class="byte-field-mini">SF</span></div><div class="byte-field type-u32" style="--bytes:16" data-tip="ciaddr · yiaddr · siaddr · giaddr"><span class="byte-field-name">ciaddr · yiaddr · siaddr · giaddr</span><span class="byte-field-meta">addr ×4</span><span class="byte-field-range">12–27</span><span class="byte-field-mini">ADDR</span></div><div class="byte-field type-array" style="--bytes:16" data-tip="client hardware address"><span class="byte-field-name">chaddr</span><span class="byte-field-meta">16 B</span><span class="byte-field-range">28–43</span><span class="byte-field-mini">CH</span></div><div class="byte-field type-pad" style="--bytes:64" data-tip="legacy, zeroed"><span class="byte-field-name">sname</span><span class="byte-field-meta">64 B</span><span class="byte-field-range">44–107</span><span class="byte-field-mini">SN</span></div><div class="byte-field type-pad" style="--bytes:128" data-tip="legacy, zeroed"><span class="byte-field-name">file</span><span class="byte-field-meta">128 B</span><span class="byte-field-range">108–235</span><span class="byte-field-mini">FL</span></div><div class="byte-field type-struct" style="--bytes:4" data-tip="0x63825363"><span class="byte-field-name">cookie</span><span class="byte-field-meta">u32</span><span class="byte-field-range">236–239</span><span class="byte-field-mini">CK</span></div><div class="byte-field type-array" style="--bytes:24" data-tip="TLV options"><span class="byte-field-name">options</span><span class="byte-field-meta">var</span><span class="byte-field-range">240…</span><span class="byte-field-mini">OPT</span></div></div><div class="byte-layout-note">BOOTP (RFC 951) header + magic cookie <code>0x63825363</code> + TLV options. All integer fields big-endian. UDP server port 67, client port 68.</div></div>
+
+  <h2>Options (RFC 2132)</h2>
+  <dl>
+    <dt>53 · message type</dt><dd>1 DISCOVER · 2 OFFER · 3 REQUEST · 4 DECLINE · 5 ACK · 6 NAK · 7 RELEASE · 8 INFORM</dd>
+    <dt>50 · requested IP</dt><dd>Client names the address it is accepting (REQUEST).</dd>
+    <dt>54 · server identifier</dt><dd>OFFER: who offers. REQUEST: who was picked.</dd>
+    <dt>51 · lease time</dt><dd>Seconds the address stays valid.</dd>
+    <dt>58 / 59 · T1 / T2</dt><dd>Renewal / rebinding timer overrides. Defaults: 0.5 × and 0.875 × lease.</dd>
+    <dt>1 / 3 / 6</dt><dd>Subnet mask, router, DNS server.</dd>
+    <dt>0 / 255</dt><dd>Pad / end of options.</dd>
+  </dl>
+
+  <h2>Lease timers (RFC 2131 §4.4.5)</h2>
+  <div class="layer-stack">
+    <div class="layer-row"><span class="layer-name">BOUND → T1</span><span class="layer-desc">0.5 × lease. At T1: unicast REQUEST to the granting server (RENEWING).</span></div>
+    <div class="layer-row"><span class="layer-name">T1 → T2</span><span class="layer-desc">0.875 × lease. At T2: broadcast REQUEST to any server (REBINDING).</span></div>
+    <div class="layer-row"><span class="layer-name">expiry</span><span class="layer-desc">Address lost; client returns to INIT and starts at DISCOVER.</span></div>
+  </div>
+
+  <h2>Client states</h2>
+  <p><code>INIT → SELECTING → REQUESTING → BOUND → RENEWING → REBINDING</code>, plus <code>INIT-REBOOT</code> for the remembered-address shortcut: broadcast a REQUEST for the old address; ACK confirms it, NAK sends the client back to INIT.</p>
+
+  <h2>QEMU slirp lab values</h2>
+  <dl>
+    <dt>DHCP server</dt><dd><code>10.0.2.2</code> (built into slirp, same address as the gateway)</dd>
+    <dt>Assigned address</dt><dd>from <code>10.0.2.15</code> up — mini-os is the only guest, so the lease is <code>10.0.2.15</code></dd>
+    <dt>Gateway / DNS</dt><dd><code>10.0.2.2</code> / <code>10.0.2.3</code></dd>
+    <dt>Test hook</dt><dd>leased address must equal the deleted <code>OUR_IP</code> constant; Lesson 24/25 tests re-run against it</dd>
+  </dl>
+</div><footer class="lesson-footer"><div class="footer-block"><h4>Sources</h4><p style="margin:0"><a href="https://www.rfc-editor.org/rfc/rfc2131">RFC 2131</a> · <a href="https://www.rfc-editor.org/rfc/rfc2132">RFC 2132</a> · <a href="https://www.rfc-editor.org/rfc/rfc951">RFC 951</a> · <a href="https://www.qemu.org/docs/master/system/devices/net.html">QEMU network emulation</a></p></div><nav class="lesson-nav"><a href="../lessons/0030-dhcp.html">← Lesson 30</a><a href="../lessons/roadmap-networking.html">Roadmap →</a></nav></footer></article></body></html>

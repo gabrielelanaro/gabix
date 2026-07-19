@@ -7,10 +7,10 @@
 //! Layout: 25 rows × 80 columns × 2 bytes/cell = 4000 bytes. Each cell is
 //! one ASCII byte followed by one color attribute byte.
 
+use crate::irq_mutex::IrqMutex;
 use core::fmt;
 use core::ptr;
 use lazy_static::lazy_static;
-use spin::Mutex;
 
 const BUFFER_HEIGHT: usize = 25;
 const BUFFER_WIDTH: usize = 80;
@@ -159,7 +159,7 @@ impl fmt::Write for Writer {
 lazy_static! {
     /// Global writer, guarded by a spinlock. Any code in the kernel can
     /// `WRITER.lock()` to print atomically.
-    pub static ref WRITER: Mutex<Writer> = Mutex::new(Writer {
+    pub static ref WRITER: IrqMutex<Writer> = IrqMutex::new(Writer {
         column_position: 0,
         color_code: ColorCode::new(Color::Yellow, Color::Black),
         buffer: unsafe { &mut *(0xb8000 as *mut Buffer) },

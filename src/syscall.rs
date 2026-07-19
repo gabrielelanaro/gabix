@@ -19,8 +19,9 @@ use crate::println;
 use crate::serial;
 use crate::virtio;
 use alloc::sync::Arc;
+use alloc::vec::Vec;
 use core::arch::naked_asm;
-use core::sync::atomic::AtomicU64;
+use core::sync::atomic::{AtomicU64, Ordering};
 use x86_64::structures::paging::PageTableFlags;
 use x86_64::{PhysAddr, VirtAddr};
 
@@ -47,11 +48,16 @@ const SYS_READ: u64 = 0;
 const SYS_WRITE: u64 = 1;
 const SYS_OPEN: u64 = 2;
 const SYS_CLOSE: u64 = 3;
+const SYS_POLL: u64 = 7;
 const SYS_GETPID: u64 = 39;
 const SYS_FORK: u64 = 57;
 const SYS_EXECVE: u64 = 59;
 const SYS_EXIT: u64 = 60;
 const SYS_WAIT4: u64 = 61;
+const SYS_SOCKET: u64 = 41;
+const SYS_SENDTO: u64 = 44;
+const SYS_RECVFROM: u64 = 45;
+const SYS_BIND: u64 = 49;
 const SYS_NET_TX_TEST: u64 = 900;
 const SYS_NET_RX_WAIT: u64 = 901;
 const SYS_NET_ICMP_PING: u64 = 902;
@@ -260,6 +266,10 @@ unsafe fn wrmsr(msr: u32, value: u64) {
 #[unsafe(naked)]
 unsafe extern "C" fn syscall_entry() {
     naked_asm!(
+        // Preserve Linux syscall arguments 4-6 before using their registers.
+        "mov [{arg4_save}], r10",
+        "mov [{arg5_save}], r8",
+        "mov [{arg6_save}], r9",
         // Step 1: Switch to kernel stack. Use r10 as scratch (caller-saved,
         // we don't care about its entry value).
         "mov r10, rsp",                    // save user RSP in r10
@@ -366,26 +376,260 @@ unsafe extern "C" fn syscall_entry() {
         user_r13_save = sym USER_R13_SAVE,
         user_r14_save = sym USER_R14_SAVE,
         user_r15_save = sym USER_R15_SAVE,
+        arg4_save = sym SYSCALL_ARG4,
+        arg5_save = sym SYSCALL_ARG5,
+        arg6_save = sym SYSCALL_ARG6,
     );
 }
 
+static SYSCALL_ARG4: AtomicU64 = AtomicU64::new(0);
+static SYSCALL_ARG5: AtomicU64 = AtomicU64::new(0);
+static SYSCALL_ARG6: AtomicU64 = AtomicU64::new(0);
+
 extern "C" fn syscall_handler(num: u64, arg1: u64, arg2: u64, arg3: u64) -> u64 {
-    println!("[syscall] num={} args=({}, {}, {}) pid={}", num, arg1, arg2, arg3, crate::task::current_pid());
+    let arg4 = SYSCALL_ARG4.load(Ordering::Relaxed);
+    let arg5 = SYSCALL_ARG5.load(Ordering::Relaxed);
+    let arg6 = SYSCALL_ARG6.load(Ordering::Relaxed);
+    println!(
+        "[syscall] num={} args=({}, {}, {}) pid={}",
+        num,
+        arg1,
+        arg2,
+        arg3,
+        crate::task::current_pid()
+    );
     match num {
         SYS_READ => sys_read(arg1, arg2, arg3),
         SYS_WRITE => sys_write(arg1, arg2, arg3),
         SYS_OPEN => sys_open(arg1),
         SYS_CLOSE => sys_close(arg1),
+        SYS_POLL => sys_poll(arg1, arg2, arg3),
         SYS_GETPID => sys_getpid(),
         SYS_FORK => sys_fork(),
         SYS_EXECVE => sys_exec(arg1),
         SYS_EXIT => sys_exit(arg1),
         SYS_WAIT4 => sys_wait(arg1, arg2),
+        SYS_SOCKET => sys_socket(arg1, arg2, arg3),
+        SYS_BIND => sys_bind(arg1, arg2, arg3),
+        SYS_SENDTO => sys_sendto(arg1, arg2, arg3, arg4, arg5, arg6),
+        SYS_RECVFROM => sys_recvfrom(arg1, arg2, arg3, arg4, arg5, arg6),
         SYS_NET_TX_TEST => sys_net_tx_test(),
         SYS_NET_RX_WAIT => sys_net_rx_wait(),
         SYS_NET_ICMP_PING => sys_net_icmp_ping(),
         SYS_NET_UDP_WAIT => sys_net_udp_wait(),
         _ => u64::MAX,
+    }
+}
+
+const AF_INET: u64 = 2;
+const SOCK_DGRAM: u64 = 2;
+const SOCK_NONBLOCK: u64 = 0x800;
+const EAGAIN: u64 = (-11i64) as u64;
+const POLLIN: i16 = 0x0001;
+const POLLNVAL: i16 = 0x0020;
+
+#[repr(C)]
+struct PollFd {
+    fd: i32,
+    events: i16,
+    revents: i16,
+}
+
+fn read_sockaddr(ptr: u64, len: u64) -> Option<net::socket::Endpoint> {
+    if len < 16 || !is_user_range(ptr, 16) {
+        return None;
+    }
+    let bytes = unsafe { core::slice::from_raw_parts(ptr as *const u8, 16) };
+    if u16::from_ne_bytes([bytes[0], bytes[1]]) != AF_INET as u16 {
+        return None;
+    }
+    Some(net::socket::Endpoint {
+        port: u16::from_be_bytes([bytes[2], bytes[3]]),
+        ip: [bytes[4], bytes[5], bytes[6], bytes[7]],
+    })
+}
+
+fn write_sockaddr(ptr: u64, len_ptr: u64, endpoint: net::socket::Endpoint) -> bool {
+    if ptr == 0 && len_ptr == 0 {
+        return true;
+    }
+    if !is_user_range(len_ptr, 4) {
+        return false;
+    }
+    let capacity = unsafe { *(len_ptr as *const u32) } as u64;
+    if capacity < 16 || !is_user_range(ptr, 16) {
+        return false;
+    }
+    let out = unsafe { core::slice::from_raw_parts_mut(ptr as *mut u8, 16) };
+    out.fill(0);
+    out[0..2].copy_from_slice(&(AF_INET as u16).to_ne_bytes());
+    out[2..4].copy_from_slice(&endpoint.port.to_be_bytes());
+    out[4..8].copy_from_slice(&endpoint.ip);
+    unsafe {
+        *(len_ptr as *mut u32) = 16;
+    }
+    true
+}
+
+fn sys_socket(domain: u64, kind: u64, protocol: u64) -> u64 {
+    let base_kind = kind & !SOCK_NONBLOCK;
+    if domain != AF_INET || base_kind != SOCK_DGRAM || (protocol != 0 && protocol != 17) {
+        return u64::MAX;
+    }
+    let socket = net::socket::UdpSocket::new(kind & SOCK_NONBLOCK != 0);
+    crate::task::with_current_fd_table(|fdt| fdt.open_socket(socket))
+}
+
+fn sys_bind(fd: u64, addr: u64, addr_len: u64) -> u64 {
+    let Some(endpoint) = read_sockaddr(addr, addr_len) else {
+        return u64::MAX;
+    };
+    if endpoint.ip != [0, 0, 0, 0] && endpoint.ip != net::OUR_IP {
+        return u64::MAX;
+    }
+    let Some(socket) = crate::task::with_current_fd_table(|fdt| fdt.get_socket(fd)) else {
+        return u64::MAX;
+    };
+    if socket.bind(endpoint.port).is_ok() {
+        0
+    } else {
+        u64::MAX
+    }
+}
+
+fn sys_sendto(fd: u64, buf: u64, len: u64, _flags: u64, addr: u64, addr_len: u64) -> u64 {
+    if !is_user_range(buf, len) {
+        return u64::MAX;
+    }
+    let Some(dst) = read_sockaddr(addr, addr_len) else {
+        return u64::MAX;
+    };
+    let Some(socket) = crate::task::with_current_fd_table(|fdt| fdt.get_socket(fd)) else {
+        return u64::MAX;
+    };
+    let Some(src_port) = socket.local_port() else {
+        return u64::MAX;
+    };
+    let payload = unsafe { core::slice::from_raw_parts(buf as *const u8, len as usize) };
+    // Resolve the next hop BEFORE taking the device lock. A cold ARP
+    // cache means sleeping until the reply arrives, and the network task
+    // needs that same lock to deliver the reply.
+    if virtio::resolve_next_hop(dst.ip).is_none() {
+        return u64::MAX;
+    }
+    let result = match virtio::with_net_device(|device| {
+        device.send_udp(dst.ip, dst.port, src_port, payload)
+    }) {
+        Some(Some(())) => len,
+        _ => u64::MAX,
+    };
+    result
+}
+
+fn sys_recvfrom(fd: u64, buf: u64, len: u64, _flags: u64, addr: u64, addr_len: u64) -> u64 {
+    if !is_user_range(buf, len) {
+        return u64::MAX;
+    }
+    let Some(socket) = crate::task::with_current_fd_table(|fdt| fdt.get_socket(fd)) else {
+        return u64::MAX;
+    };
+    loop {
+        if let Some(datagram) = socket.pop() {
+            let count = core::cmp::min(len as usize, datagram.payload.len());
+            unsafe {
+                core::ptr::copy_nonoverlapping(datagram.payload.as_ptr(), buf as *mut u8, count);
+            }
+            if !write_sockaddr(addr, addr_len, datagram.sender) {
+                return u64::MAX;
+            }
+            return count as u64;
+        }
+        if socket.is_nonblocking() {
+            return EAGAIN;
+        }
+        // Keep interrupts disabled from waiter publication through the
+        // context switch. Re-enabling between "Blocked" and `yield_now`
+        // lets a timer preempt this syscall on its entry stack before the
+        // deliberate switch has saved that context.
+        x86_64::instructions::interrupts::disable();
+        let should_block =
+            crate::task::block_current_if(|pid| socket.register_waiter_if_empty(pid));
+        if should_block {
+            crate::task::yield_now();
+        } else {
+            x86_64::instructions::interrupts::enable();
+        }
+    }
+}
+
+/// Lesson 27 poll subset: UDP descriptors, POLLIN, and timeout 0 or -1.
+fn sys_poll(fds_ptr: u64, nfds: u64, timeout: u64) -> u64 {
+    const MAX_POLL_FDS: u64 = 64;
+    if nfds > MAX_POLL_FDS || (timeout != 0 && timeout != u64::MAX) {
+        return u64::MAX;
+    }
+    let bytes = match nfds.checked_mul(core::mem::size_of::<PollFd>() as u64) {
+        Some(bytes) => bytes,
+        None => return u64::MAX,
+    };
+    if !is_user_range(fds_ptr, bytes) {
+        return u64::MAX;
+    }
+
+    let pollfds = unsafe { core::slice::from_raw_parts_mut(fds_ptr as *mut PollFd, nfds as usize) };
+    let sockets: Vec<Option<Arc<net::socket::UdpSocket>>> = pollfds
+        .iter()
+        .map(|entry| {
+            if entry.fd < 0 {
+                None
+            } else {
+                crate::task::with_current_fd_table(|table| table.get_socket(entry.fd as u64))
+            }
+        })
+        .collect();
+    let pid = crate::task::current_pid();
+
+    loop {
+        let should_block = x86_64::instructions::interrupts::without_interrupts(|| {
+            for socket in sockets.iter().flatten() {
+                socket.remove_poll_waiter(pid);
+            }
+
+            let mut ready = 0u64;
+            for (entry, socket) in pollfds.iter_mut().zip(sockets.iter()) {
+                entry.revents = 0;
+                if entry.fd < 0 {
+                    continue;
+                }
+                match socket {
+                    None => entry.revents = POLLNVAL,
+                    Some(socket) if entry.events & POLLIN != 0 && socket.is_readable() => {
+                        entry.revents = POLLIN;
+                    }
+                    Some(_) => {}
+                }
+                if entry.revents != 0 {
+                    ready += 1;
+                }
+            }
+            if ready != 0 || timeout == 0 {
+                return Some(ready);
+            }
+
+            for (entry, socket) in pollfds.iter().zip(sockets.iter()) {
+                if entry.events & POLLIN != 0 {
+                    if let Some(socket) = socket {
+                        socket.register_poll_waiter_if_empty(pid);
+                    }
+                }
+            }
+            crate::task::block_current();
+            None
+        });
+        if let Some(ready) = should_block {
+            return ready;
+        }
+        crate::task::yield_now();
     }
 }
 
@@ -599,7 +843,11 @@ fn sys_write(fd: u64, buffer_ptr: u64, length: u64) -> u64 {
     *cursor += length;
     println!(
         "[syscall] sys_write fd={} -> file, {} bytes (inode now {} bytes, cursor {}->{})",
-        fd, length, data.len(), cursor_pos, *cursor
+        fd,
+        length,
+        data.len(),
+        cursor_pos,
+        *cursor
     );
 
     length
@@ -613,8 +861,16 @@ fn sys_write(fd: u64, buffer_ptr: u64, length: u64) -> u64 {
 /// refcount hits zero — for our hardcoded inode, it never does.
 fn sys_close(fd: u64) -> u64 {
     let ok = crate::task::with_current_fd_table(|fdt| fdt.close(fd));
-    println!("[syscall] sys_close fd={} -> {}", fd, if ok { "ok" } else { "bad" });
-    if ok { 0 } else { u64::MAX }
+    println!(
+        "[syscall] sys_close fd={} -> {}",
+        fd,
+        if ok { "ok" } else { "bad" }
+    );
+    if ok {
+        0
+    } else {
+        u64::MAX
+    }
 }
 
 /// SYS_OPEN: open a file by absolute path, return a file descriptor (FD).
@@ -632,10 +888,7 @@ fn sys_open(name_ptr: u64) -> u64 {
     let path = match read_user_path(name_ptr) {
         Some(p) => p,
         None => {
-            println!(
-                "[syscall] sys_open: bad path pointer 0x{:x}",
-                name_ptr
-            );
+            println!("[syscall] sys_open: bad path pointer 0x{:x}", name_ptr);
             return u64::MAX;
         }
     };
@@ -682,6 +935,12 @@ fn sys_getpid() -> u64 {
 fn sys_exit(exit_code: u64) -> u64 {
     println!("[syscall] sys_exit({})", exit_code);
     crate::task::mark_current_zombie(exit_code as i64);
+    #[cfg(any(feature = "test-udp", feature = "test-nonblocking"))]
+    crate::qemu_exit::exit_qemu(if exit_code == 0 {
+        crate::qemu_exit::EXIT_SUCCESS
+    } else {
+        crate::qemu_exit::EXIT_FAILURE
+    });
     crate::task::yield_now();
     panic!("sys_exit: zombie task was rescheduled (this should never happen)");
 }
@@ -727,7 +986,10 @@ fn sys_wait(target_pid_raw: u64, exit_status_ptr: u64) -> u64 {
 
     loop {
         match crate::task::wait_for_zombie_child(parent_pid, target) {
-            WaitResult::Reaped { child_pid, exit_status } => {
+            WaitResult::Reaped {
+                child_pid,
+                exit_status,
+            } => {
                 println!(
                     "[syscall] sys_wait4 -> child pid={} (exit={})",
                     child_pid, exit_status
@@ -795,7 +1057,16 @@ fn sys_net_rx_wait() -> u64 {
     println!("[ip] rx wait: user requested UDP receive on host 127.0.0.1:5555");
 
     match virtio::with_net_device(|device| loop {
-        if let Some(virtio::NetRxEvent::Udp(packet)) = device.poll_rx() {
+        // No network task exists in this test mode, so this loop drains
+        // the RX ring itself and hlt-sleeps between polls.
+        x86_64::instructions::interrupts::disable();
+        let event = device.poll_rx();
+        if event.is_none() {
+            x86_64::instructions::interrupts::enable_and_hlt();
+            continue;
+        }
+        x86_64::instructions::interrupts::enable();
+        if let Some(virtio::NetRxEvent::Udp(packet)) = event {
             let header = packet.ip_header;
             if header.dst_ip == net::OUR_IP {
                 println!(
@@ -839,7 +1110,15 @@ fn sys_net_udp_wait() -> u64 {
     );
 
     match virtio::with_net_device(|device| loop {
-        if let Some(virtio::NetRxEvent::Udp(packet)) = device.poll_rx() {
+        // Same shape as sys_net_rx_wait: self-draining poll, hlt between.
+        x86_64::instructions::interrupts::disable();
+        let event = device.poll_rx();
+        if event.is_none() {
+            x86_64::instructions::interrupts::enable_and_hlt();
+            continue;
+        }
+        x86_64::instructions::interrupts::enable();
+        if let Some(virtio::NetRxEvent::Udp(packet)) = event {
             if packet.header.dst_port == net::udp::ECHO_PORT {
                 println!(
                     "[udp] *** user-triggered UDP datagram received and echoed: src_port={} payload_len={} ***",
@@ -921,10 +1200,16 @@ fn ping_gateway_once(
         &request[..request_len],
     )?;
 
-    for _ in 0..200_000u32 {
+    for _ in 0..500u32 {
+        // hlt between polls: the RX interrupt (or timer tick) wakes us.
+        // This path runs in modes with no network task, so it drains the
+        // RX ring itself after every wake.
+        x86_64::instructions::interrupts::disable();
         let Some(virtio::NetRxEvent::Ipv4(packet)) = device.poll_rx() else {
+            x86_64::instructions::interrupts::enable_and_hlt();
             continue;
         };
+        x86_64::instructions::interrupts::enable();
 
         if packet.header.protocol != net::ipv4::PROTOCOL_ICMP
             || packet.header.src_ip != net::GATEWAY_IP
@@ -943,10 +1228,7 @@ fn ping_gateway_once(
 
         println!(
             "[icmp] ignored reply type={} code={} id=0x{:04x} seq={}",
-            reply.message_type,
-            reply.code,
-            reply.identifier,
-            reply.sequence
+            reply.message_type, reply.code, reply.identifier, reply.sequence
         );
     }
 
@@ -1052,7 +1334,9 @@ fn sys_fork() -> u64 {
 /// On failure (unknown program): panic. We don't have a syscall error
 /// convention yet; can be refined later.
 fn sys_exec(program_name_ptr: u64) -> u64 {
-    use crate::user::{PROGRAMS, USER_CODE_ADDR, USER_RFLAGS_INIT, USER_STACK_BOTTOM, USER_STACK_TOP};
+    use crate::user::{
+        PROGRAMS, USER_CODE_ADDR, USER_RFLAGS_INIT, USER_STACK_BOTTOM, USER_STACK_TOP,
+    };
     use x86_64::structures::paging::PageTableFlags;
 
     println!("[syscall] sys_exec (name_ptr=0x{:x})", program_name_ptr);
@@ -1070,17 +1354,15 @@ fn sys_exec(program_name_ptr: u64) -> u64 {
     for i in 0..32 {
         // SAFETY: user pointer from syscall arg. We trust it points to a
         // readable byte in user memory.
-        let byte = unsafe {
-            core::ptr::read_volatile((program_name_ptr + i as u64) as *const u8)
-        };
+        let byte = unsafe { core::ptr::read_volatile((program_name_ptr + i as u64) as *const u8) };
         if byte == 0 {
             break;
         }
         name_buf[i] = byte;
         name_len = i + 1;
     }
-    let name = core::str::from_utf8(&name_buf[..name_len])
-        .expect("sys_exec: program name not utf-8");
+    let name =
+        core::str::from_utf8(&name_buf[..name_len]).expect("sys_exec: program name not utf-8");
     println!("[exec] looking up program {:?}", name);
 
     // Step 2: Look up program in PROGRAMS registry.
@@ -1118,8 +1400,7 @@ fn sys_exec(program_name_ptr: u64) -> u64 {
     }
 
     // Step 4: Allocate fresh user code page, copy program bytes in.
-    let code_frame = frame_allocator::allocate()
-        .expect("sys_exec: out of frames for code page");
+    let code_frame = frame_allocator::allocate().expect("sys_exec: out of frames for code page");
     let code_phys = PhysAddr::new(code_frame * 4096);
     crate::memory::write_to_frame(code_phys, program_bytes);
     // SAFETY: virtual address USER_CODE_ADDR was just unmapped above.
@@ -1138,8 +1419,7 @@ fn sys_exec(program_name_ptr: u64) -> u64 {
     // Step 5: Allocate fresh user stack pages (16 pages = 64 KB).
     let mut stack_virt = USER_STACK_BOTTOM;
     while stack_virt < USER_STACK_TOP {
-        let frame = frame_allocator::allocate()
-            .expect("sys_exec: out of frames for stack page");
+        let frame = frame_allocator::allocate().expect("sys_exec: out of frames for stack page");
         let phys = PhysAddr::new(frame * 4096);
         // SAFETY: each page in [USER_STACK_BOTTOM, USER_STACK_TOP) was just
         // unmapped above.

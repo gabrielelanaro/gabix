@@ -10,7 +10,43 @@
 //!
 //! See docs/heap.html for the design of bump vs. linked-list allocators.
 
+use core::alloc::{GlobalAlloc, Layout};
 use linked_list_allocator::LockedHeap;
+use x86_64::instructions::interrupts;
+
+pub struct IrqLockedHeap {
+    inner: LockedHeap,
+}
+
+impl IrqLockedHeap {
+    pub const fn empty() -> Self {
+        Self {
+            inner: LockedHeap::empty(),
+        }
+    }
+
+    /// Initialize the heap after its virtual pages have been mapped.
+    ///
+    /// # Safety
+    ///
+    /// The heap range must be mapped, writable, and exclusively owned by
+    /// this allocator.
+    pub unsafe fn init(&self, heap_bottom: *mut u8, heap_size: usize) {
+        interrupts::without_interrupts(|| unsafe {
+            self.inner.lock().init(heap_bottom, heap_size)
+        });
+    }
+}
+
+unsafe impl GlobalAlloc for IrqLockedHeap {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        interrupts::without_interrupts(|| unsafe { self.inner.alloc(layout) })
+    }
+
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        interrupts::without_interrupts(|| unsafe { self.inner.dealloc(ptr, layout) });
+    }
+}
 
 /// The kernel's global allocator. Marking this `#[global_allocator]` means
 /// every `Box::new`, `vec!`, `String::from`, etc. in the kernel routes
@@ -19,4 +55,4 @@ use linked_list_allocator::LockedHeap;
 /// Starts empty (no heap region). `memory::init_heap` calls
 /// `ALLOCATOR.lock().init(start, size)` once the heap pages are mapped.
 #[global_allocator]
-pub static ALLOCATOR: LockedHeap = LockedHeap::empty();
+pub static ALLOCATOR: IrqLockedHeap = IrqLockedHeap::empty();

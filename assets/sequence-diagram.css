@@ -1,0 +1,170 @@
+/* ============================================================
+   sequence-diagram.css — protocol exchange swimlanes
+   Two (or more) actors, vertical lifelines, labeled arrows
+   flowing downward in time order.
+
+   Usage (2 lanes, positioned at 25% and 75%):
+
+     <div class="seq-diagram">
+       <div class="seq-actors" style="--lanes:2">
+         <div class="seq-actor"><strong>client</strong><span class="seq-ep">0.0.0.0:68</span></div>
+         <div class="seq-actor"><strong>server</strong><span class="seq-ep">10.0.2.2:67</span></div>
+       </div>
+       <div class="seq-body">
+         <div class="seq-lane" style="--x:25%"></div>
+         <div class="seq-lane" style="--x:75%"></div>
+
+         <div class="seq-msg" style="--x1:25%; --x2:75%">
+           <span class="seq-tag"><span class="seq-num">1</span> DISCOVER</span>
+           <div class="seq-line arr-r bc"></div>
+           <span class="seq-detail">broadcast · xid=0x1049</span>
+         </div>
+         ... more messages ...
+       </div>
+     </div>
+
+   --x1 / --x2 set the line's horizontal span (match the lane
+   positions). .arr-r puts the arrowhead on the right end,
+   .arr-l on the left. .bc renders the line dashed for
+   broadcast traffic.
+
+   First used by Lesson 27 (DHCP DORA exchange). Kept generic
+   for the TCP arc (handshake, teardown) and any future
+   request/response protocol lesson.
+   ============================================================ */
+
+.seq-diagram {
+  margin: 1.5rem 0;
+  padding: 1.1rem 1.25rem 0.9rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow-x: auto;
+}
+
+.seq-actors {
+  display: grid;
+  grid-template-columns: repeat(var(--lanes, 2), 1fr);
+  gap: 0.5rem;
+  min-width: 480px;
+}
+
+.seq-actor {
+  justify-self: center;
+  text-align: center;
+  padding: 0.4rem 0.9rem;
+  border: 1px solid var(--border-bright);
+  border-radius: 6px;
+  background: var(--surface-soft);
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  line-height: 1.35;
+}
+
+.seq-actor strong {
+  display: block;
+  font-family: var(--font-sans);
+  font-size: 0.85rem;
+  color: var(--text);
+}
+
+.seq-actor .seq-ep { color: var(--accent); }
+
+.seq-body {
+  position: relative;
+  margin-top: 0.75rem;
+  min-width: 480px;
+}
+
+.seq-lane {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: var(--x);
+  width: 0;
+  border-left: 1px dashed var(--border-bright);
+}
+
+.seq-msg {
+  position: relative;
+  height: 4.4rem;
+}
+
+.seq-line {
+  position: absolute;
+  top: 50%;
+  left: var(--x1);
+  width: calc(var(--x2) - var(--x1));
+  border-top: 2px solid var(--accent);
+}
+
+.seq-line.bc { border-top-style: dashed; }
+
+.seq-line.arr-r::after,
+.seq-line.arr-l::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  border-top: 5px solid transparent;
+  border-bottom: 5px solid transparent;
+}
+
+.seq-line.arr-r::after {
+  right: -1px;
+  border-left: 8px solid var(--accent);
+}
+
+.seq-line.arr-l::after {
+  left: -1px;
+  border-right: 8px solid var(--accent);
+}
+
+.seq-tag {
+  position: absolute;
+  bottom: calc(50% + 0.45rem);
+  left: var(--x1);
+  width: calc(var(--x2) - var(--x1));
+  text-align: center;
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--text);
+  white-space: nowrap;
+}
+
+.seq-num {
+  display: inline-block;
+  width: 1.25em;
+  height: 1.25em;
+  line-height: 1.25em;
+  border-radius: 50%;
+  background: var(--accent);
+  color: #fff;
+  font-size: 0.68rem;
+  font-weight: 700;
+  text-align: center;
+  margin-right: 0.3em;
+  vertical-align: 0.08em;
+}
+
+.seq-detail {
+  position: absolute;
+  top: calc(50% + 0.45rem);
+  left: var(--x1);
+  width: calc(var(--x2) - var(--x1));
+  text-align: center;
+  font-family: var(--font-sans);
+  font-size: 0.72rem;
+  color: var(--text-dim);
+  line-height: 1.35;
+}
+
+.seq-diagram-note {
+  margin: 0.4rem 0 0;
+  font-family: var(--font-sans);
+  font-size: 0.75rem;
+  color: var(--text-faint);
+  font-style: italic;
+  text-align: center;
+}
