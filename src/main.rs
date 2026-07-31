@@ -428,8 +428,8 @@ pub extern "C" fn _start(boot_info: &'static BootInfo) -> ! {
                 // Verify we got exactly the entries mkfs + Lesson 14 + fixture builds created
                 assert_eq!(
                     entries.len(),
-                    14,
-                    "expected 14 root entries including all user fixtures"
+                    15,
+                    "expected 15 root entries including all user fixtures"
                 );
 
                 // Find by name to verify each
@@ -844,7 +844,12 @@ pub extern "C" fn _start(boot_info: &'static BootInfo) -> ! {
         }
         println!("[net] *** first Ethernet frame received and RX buffer recycled ***");
         virtio::install_net_device(net);
-        #[cfg(any(feature = "test-udp", feature = "test-nonblocking", feature = "test-dhcp", feature = "test-tcp"))]
+        #[cfg(any(
+            feature = "test-udp",
+            feature = "test-nonblocking",
+            feature = "test-dhcp",
+            feature = "test-tcp"
+        ))]
         {
             let net_pid = task::spawn("net-rx", virtio::network_task);
             virtio::register_net_task(net_pid);
@@ -859,8 +864,13 @@ pub extern "C" fn _start(boot_info: &'static BootInfo) -> ! {
     syscall::init();
 
     #[cfg(feature = "test-tcp")]
-    net::configure(net::NetworkConfig { address: [10,0,2,15], subnet_mask: [255,255,255,0],
-        gateway: [10,0,2,2], dns: [10,0,2,3], lease_seconds: 86400 });
+    net::configure(net::NetworkConfig {
+        address: [10, 0, 2, 15],
+        subnet_mask: [255, 255, 255, 0],
+        gateway: [10, 0, 2, 2],
+        dns: [10, 0, 2, 3],
+        lease_seconds: 86400,
+    });
 
     // ========================================================
     // Lesson 16: exec /hello.elf, with feature-selected fixture programs for tests
@@ -874,13 +884,24 @@ pub extern "C" fn _start(boot_info: &'static BootInfo) -> ! {
     // The program runs in ring 3 from a binary that came from disk.
     //
     // Under test fixtures, exec the selected user program from disk.
-    #[cfg(feature = "test-tcp")]
+    #[cfg(feature = "test-tcp-echo")]
+    let user_elf_path: &str = "/tcp_echo.elf";
+    #[cfg(all(feature = "test-tcp", not(feature = "test-tcp-echo")))]
     let user_elf_path: &str = "/tcp_handshake.elf";
     #[cfg(all(not(feature = "test-tcp"), feature = "test-dhcp"))]
     let user_elf_path: &str = "/dhcp.elf";
-    #[cfg(all(not(feature = "test-tcp"), not(feature = "test-dhcp"), feature = "test-nonblocking"))]
+    #[cfg(all(
+        not(feature = "test-tcp"),
+        not(feature = "test-dhcp"),
+        feature = "test-nonblocking"
+    ))]
     let user_elf_path: &str = "/nonblocking_echo.elf";
-    #[cfg(all(not(feature = "test-tcp"), not(feature = "test-dhcp"), not(feature = "test-nonblocking"), feature = "test-udp"))]
+    #[cfg(all(
+        not(feature = "test-tcp"),
+        not(feature = "test-dhcp"),
+        not(feature = "test-nonblocking"),
+        feature = "test-udp"
+    ))]
     let user_elf_path: &str = "/udp_echo.elf";
     #[cfg(all(
         not(feature = "test-nonblocking"),

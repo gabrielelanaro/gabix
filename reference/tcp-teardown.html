@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>TCP passive open and teardown reference</title><link rel="stylesheet" href="../assets/lesson.css"><link rel="stylesheet" href="../assets/sequence-diagram.css"></head>
+<body><article class="lesson"><header class="lesson-header"><div class="lesson-eyebrow">Quick reference · TCP</div><h1 class="lesson-title">Passive open and teardown</h1><p class="lesson-subtitle">The server-side state and sequence rules implemented in Lesson 33.</p></header><div class="content">
+<h2>Passive open</h2><pre><code>server                                      client
+LISTEN       ← SYN seq=x
+SYN_RCVD     SYN,ACK seq=y ack=x+1       →
+ESTABLISHED ← ACK seq=x+1 ack=y+1
+</code></pre>
+<p>The listener remains in <code>LISTEN</code>. The kernel creates a connection object keyed by local address, remote address, local port, and remote port. <code>accept()</code> returns a descriptor for that object after the final ACK arrives.</p>
+<h2>Passive close</h2><pre><code>server                                      client
+ESTABLISHED ← FIN,ACK seq=x
+CLOSE_WAIT   ACK ack=x+1                 →
+LAST_ACK     FIN,ACK seq=y               →
+CLOSED      ← ACK ack=y+1
+</code></pre>
+<p>FIN consumes one sequence number. A read returns zero after the receive queue is empty and FIN has arrived. Closing a connection in <code>CLOSE_WAIT</code> sends the server FIN and waits for the final ACK in this implementation.</p>
+<h2>Descriptor operations</h2><table><thead><tr><th>Call</th><th>Effect</th></tr></thead><tbody><tr><td><code>socket(AF_INET, SOCK_STREAM, 0)</code></td><td>Creates an unbound TCP socket.</td></tr><tr><td><code>bind(fd, 8080)</code></td><td>Stores the local port.</td></tr><tr><td><code>listen(fd, 4)</code></td><td>Registers a listener and its completed-connection queue.</td></tr><tr><td><code>accept(fd)</code></td><td>Blocks until the final handshake ACK, then returns a connection descriptor.</td></tr><tr><td><code>read</code>/<code>write</code></td><td>Remove received bytes or transmit stream bytes.</td></tr><tr><td><code>close</code></td><td>Transmits FIN and completes the passive-close exchange.</td></tr></tbody></table>
+<p>Primary source: <a href="https://www.rfc-editor.org/rfc/rfc9293">RFC 9293 sections 3.5 and 3.10</a>. Ask the agent about any state or sequence update that is unclear.</p>
+</div><footer class="lesson-footer"><nav class="lesson-nav"><a href="../lessons/0033-tcp-teardown-echo.html">← Lesson 33</a><a href="../tours/tour-0033-tcp-teardown-echo.html">Code tour →</a></nav></footer></article></body></html>

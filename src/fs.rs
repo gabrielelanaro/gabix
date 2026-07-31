@@ -301,6 +301,7 @@ pub struct FdTable {
 pub enum OpenObject {
     File(Arc<File>),
     Socket(Arc<crate::net::socket::UdpSocket>),
+    TcpSocket(Arc<crate::net::tcp::TcpSocket>),
 }
 
 impl FdTable {
@@ -335,6 +336,10 @@ impl FdTable {
         self.open_object(OpenObject::Socket(socket))
     }
 
+    pub fn open_tcp_socket(&mut self, socket: Arc<crate::net::tcp::TcpSocket>) -> u64 {
+        self.open_object(OpenObject::TcpSocket(socket))
+    }
+
     fn open_object(&mut self, object: OpenObject) -> u64 {
         // Scan for the first None slot.
         for (i, slot) in self.table.iter_mut().enumerate() {
@@ -354,14 +359,21 @@ impl FdTable {
     pub fn get(&self, fd: u64) -> Option<Arc<File>> {
         match self.table.get(fd as usize)?.as_ref()? {
             OpenObject::File(file) => Some(file.clone()),
-            OpenObject::Socket(_) => None,
+            OpenObject::Socket(_) | OpenObject::TcpSocket(_) => None,
         }
     }
 
     pub fn get_socket(&self, fd: u64) -> Option<Arc<crate::net::socket::UdpSocket>> {
         match self.table.get(fd as usize)?.as_ref()? {
             OpenObject::Socket(socket) => Some(socket.clone()),
-            OpenObject::File(_) => None,
+            OpenObject::File(_) | OpenObject::TcpSocket(_) => None,
+        }
+    }
+
+    pub fn get_tcp_socket(&self, fd: u64) -> Option<Arc<crate::net::tcp::TcpSocket>> {
+        match self.table.get(fd as usize)?.as_ref()? {
+            OpenObject::TcpSocket(socket) => Some(socket.clone()),
+            OpenObject::File(_) | OpenObject::Socket(_) => None,
         }
     }
 

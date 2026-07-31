@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>TCP Reliable Stream — Quick Reference</title>
+  <link rel="stylesheet" href="../assets/lesson.css">
+</head>
+<body>
+<article class="lesson">
+  <header class="lesson-header">
+    <div class="lesson-eyebrow">Quick reference · TCP</div>
+    <h1 class="lesson-title">Reliable send stream</h1>
+  </header>
+  <div class="content">
+    <h2>Send positions</h2>
+<pre><code>in_flight = send_next - send_unacked
+usable_window = min(peer_window, 4 * MSS) - in_flight</code></pre>
+    <p><code>send_unacked</code> is the oldest unacknowledged byte. <code>send_next</code> is the sequence number assigned to the next byte transmitted. MSS means Maximum Segment Size.</p>
+
+    <h2>Retained entry</h2>
+<pre><code>{ sequence, flags, owned payload, sent_at tick, retransmitted }</code></pre>
+    <p>Keep an entry until a cumulative acknowledgment number reaches its ending sequence. SYN and FIN add one to the ending sequence.</p>
+
+    <h2>RFC 6298 estimator</h2>
+<pre><code>first sample:
+  SRTT   = sample
+  RTTVAR = sample / 2
+
+later samples:
+  RTTVAR = 3/4 * RTTVAR + 1/4 * |old_SRTT - sample|
+  SRTT   = 7/8 * SRTT   + 1/8 * sample
+
+RTO = SRTT + max(clock_granularity, 4 * RTTVAR)</code></pre>
+    <p>mini-os uses 10 ms ticks, a 1-second minimum RTO, and a 60-second maximum. A timeout doubles the current RTO.</p>
+
+    <h2>Karn's algorithm</h2>
+    <p>Discard a timing sample when its ACK covers a retransmitted segment. The ACK may correspond to the original transmission or the retransmission, so the elapsed time has no unique start point.</p>
+
+    <h2>Implementation links</h2>
+    <p><a href="../src/net/tcp.rs"><code>src/net/tcp.rs</code></a> · <a href="../tours/tour-0032-tcp-reliable-stream.html">code tour</a> · <a href="https://www.rfc-editor.org/rfc/rfc6298">RFC 6298</a> · <a href="https://www.rfc-editor.org/rfc/rfc9293">RFC 9293</a></p>
+  </div>
+</article>
+</body>
+</html>

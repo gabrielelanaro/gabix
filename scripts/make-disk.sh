@@ -81,6 +81,8 @@ FIXTURES="$FIXTURES
 tests/fixtures/dhcp.rs:/dhcp.elf"
 FIXTURES="$FIXTURES
 tests/fixtures/tcp_handshake.rs:/tcp_handshake.elf"
+FIXTURES="$FIXTURES
+tests/fixtures/tcp_echo.rs:/tcp_echo.elf"
 
 for entry in $FIXTURES; do
     src=${entry%%:*}

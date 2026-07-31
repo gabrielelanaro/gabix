@@ -44,5 +44,8 @@ pub fn gateway_ip() -> Option<[u8; 4]> {
 }
 
 pub fn accepts_destination(address: [u8; 4]) -> bool {
-    address == [255; 4] || config().map(|value| value.address == address).unwrap_or(false)
+    address == [255; 4]
+        || config()
+            .map(|value| value.address == address)
+            .unwrap_or(false)
 }

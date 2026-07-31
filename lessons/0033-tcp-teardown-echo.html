@@ -236,7 +236,7 @@
     <div class="footer-block">
       <h4>What this completes</h4>
       <p style="margin:0;">
-        Lesson 33 closes the TCP arc. mini-os now opens connections (Lesson 31), exchanges byte streams reliably under loss (Lesson 32), and closes them cleanly through the four-segment FIN exchange with the full state machine and TIME_WAIT. The server side gains <code>listen</code> and <code>accept</code>, multi-connection demux, and a working TCP echo server reachable from the host.
+        Lesson 33 closes the planned TCP arc. mini-os opens active connections (Lesson 31), retransmits stream bytes under loss (Lesson 32), accepts inbound connections, echoes their bytes, and completes the passive-close path through <code>CLOSE_WAIT</code>, <code>LAST_ACK</code>, and <code>CLOSED</code>. The connection table routes server traffic by four-tuple. TIME_WAIT expiry, FIN retransmission, and fork-per-connection service remain later extensions.
       </p>
     </div>
 
@@ -253,7 +253,9 @@
         <a href="0031-tcp-handshake.html">Lesson 31: TCP handshake</a>: the connection this lesson ends.<br>
         <a href="0032-tcp-reliable-stream.html">Lesson 32: reliable stream</a>: the data flow that closes when FIN is sent.<br>
         <a href="0026-sockets.html">Lesson 26: UDP sockets</a>: the per-process FD table and socket-object pattern that TCP sockets reuse.<br>
-        <a href="0018-inherit-exit-reap.html">Lesson 18: fork/wait</a>: the process machinery the echo server's per-connection <code>fork()</code> requires.
+        <a href="0018-inherit-exit-reap.html">Lesson 18: fork/wait</a>: the process machinery the echo server's per-connection <code>fork()</code> requires.<br>
+        <a href="../tours/tour-0033-tcp-teardown-echo.html">Lesson 33 code tour</a>: the Rust implementation and QEMU proof.<br>
+        <a href="../reference/tcp-teardown.html">TCP teardown quick reference</a>: passive-open and passive-close state sequences.
       </p>
     </div>
 

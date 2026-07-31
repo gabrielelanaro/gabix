@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Code Tour 33 — TCP Teardown and Echo</title>
+  <link rel="stylesheet" href="../assets/lesson.css">
+  <script src="../assets/code-highlight.js" defer></script>
+</head>
+<body><article class="lesson">
+  <header class="lesson-header">
+    <div class="lesson-eyebrow">Code tour · Lesson 33</div>
+    <h1 class="lesson-title">TCP passive open, echo, and teardown</h1>
+    <p class="lesson-subtitle">Route an inbound SYN to a listener, return an accepted stream descriptor, and close both byte directions with FIN.</p>
+    <div class="lesson-meta"><span><strong>Core</strong> <code>src/net/tcp.rs</code></span><span><strong>Syscalls</strong> <code>src/syscall.rs</code></span><span><strong>Proof</strong> <code>tests/test_tcp_echo.sh</code></span></div>
+  </header>
+  <div class="content">
+    <p class="lead">A host program cannot connect to mini-os until the kernel can associate an inbound SYN with a listening port. Lesson 33 adds TCP socket descriptors, listener and connection tables, blocking <code>accept</code> and <code>read</code>, stream writes, and the passive side of the FIN exchange. A ring-3 server on port 8080 proves the path through QEMU's TCP forwarding.</p>
+
+    <section class="step"><h2><span class="tag">33.1</span>A TCP descriptor identifies one socket object</h2>
+      <p><code>FdTable</code> stores <code>Arc&lt;TcpSocket&gt;</code> beside regular files and UDP sockets. Forked processes can share the same socket object because the table's shallow clone copies the <code>Arc</code>.</p>
+      <div class="snippet-meta"><span class="snippet-file">src/fs.rs</span><span class="snippet-what">— descriptor object variants</span></div>
+<pre data-lang="rust"><code>pub enum OpenObject {
+    File(Arc&lt;File&gt;),
+    Socket(Arc&lt;UdpSocket&gt;),
+    TcpSocket(Arc&lt;TcpSocket&gt;),
+}</code></pre>
+    </section>
+
+    <section class="step"><h2><span class="tag">33.2</span>The listener and connection tables route inbound segments</h2>
+      <p><code>LISTENERS</code> maps a destination port to its socket. <code>CONNECTIONS</code> maps the four endpoint fields to a connection. An inbound SYN creates a connection in <code>SYN_RCVD</code> and sends SYN-ACK. The final ACK changes that connection to <code>ESTABLISHED</code>, appends it to the listener's completed queue, and wakes the task blocked in <code>accept</code>.</p>
+      <div class="snippet-meta"><span class="snippet-file">src/net/tcp.rs</span><span class="snippet-what">— receive demultiplexing keys</span></div>
+<pre data-lang="rust"><code>static ref LISTENERS: IrqMutex&lt;BTreeMap&lt;u16, Weak&lt;TcpSocket&gt;&gt;&gt;;
+static ref CONNECTIONS:
+    IrqMutex&lt;BTreeMap&lt;ConnectionKey, Arc&lt;TcpSocket&gt;&gt;&gt;;</code></pre>
+    </section>
+
+    <section class="step"><h2><span class="tag">33.3</span>Blocking calls publish a waiter before yielding</h2>
+      <p><code>accept</code> removes the next completed connection and assigns it a descriptor. An empty queue stores the current process identifier before the scheduler switches tasks. The final handshake ACK calls <code>wake</code> for that identifier.</p>
+      <div class="snippet-meta"><span class="snippet-file">src/syscall.rs</span><span class="snippet-what">— blocking accept loop</span></div>
+<pre data-lang="rust"><code>loop {
+    if let Some(connection) = listener.pop_accepted() {
+        return with_current_fd_table(
+            |table| table.open_tcp_socket(connection));
+    }
+    block_current_if(|pid| listener.register_accept_waiter(pid));
+    yield_now();
+}</code></pre>
+      <p>The TCP read path applies the same sequence to its receive queue. It returns zero after FIN arrives and all queued bytes have been copied to user memory.</p>
+    </section>
+
+    <section class="step"><h2><span class="tag">33.4</span>FIN closes one byte direction</h2>
+      <p>An inbound FIN increments <code>recv_next</code> by one, marks end-of-file, sends an ACK, and changes an established server connection to <code>CLOSE_WAIT</code>. The application can still write bytes in this state. Closing the descriptor builds FIN-ACK at <code>send_next</code>, increments <code>send_next</code>, and enters <code>LAST_ACK</code>. The peer's ACK changes the state to <code>CLOSED</code>.</p>
+      <div class="snippet-meta"><span class="snippet-file">src/net/tcp.rs</span><span class="snippet-what">— passive close state changes</span></div>
+<pre data-lang="rust"><code>Established + receive FIN  → CloseWait
+CloseWait   + close()      → LastAck
+LastAck     + receive ACK  → Closed</code></pre>
+    </section>
+
+    <section class="step"><h2><span class="tag">33.5</span>The host-forwarded test crosses every layer</h2>
+      <p>The fixture binds port 8080, listens, accepts one connection, reads a byte slice, writes the same slice, reads end-of-file, and closes. The host Python client connects to <code>127.0.0.1:8080</code>. QEMU forwards that connection to <code>10.0.2.15:8080</code>.</p>
+      <div class="snippet-meta"><span class="snippet-file">tests/test_tcp_echo.sh</span><span class="snippet-what">— QEMU serial proof</span></div>
+<pre><code>[tcp] state CLOSED -&gt; LISTEN port=8080 backlog=4
+[tcp] SYN received on port 8080; state LISTEN -&gt; SYN_RCVD
+[tcp] final ACK received; state SYN_RCVD -&gt; ESTABLISHED
+[tcp-echo] echoed payload
+[tcp] FIN received; state Established -&gt; CloseWait
+[tcp] state CloseWait -&gt; LastAck
+[tcp] ACK received; state LastAck -&gt; Closed
+[tcp-echo-test] PASS</code></pre>
+    </section>
+
+    <h2 id="limits">Current boundary</h2>
+    <p>The server table can represent several four-tuples, and one ring-3 process serves one connection in the proof. The active-open Lesson 31 client still uses its earlier single global control block. TIME_WAIT expiry, retransmitted FIN handling, half-open backlog accounting, concurrent fork-per-connection service, and accepted peer-address output remain future work.</p>
+    <div class="probe"><div class="probe-title">Retrieval prompt</div><p>The host sends 14 payload bytes and FIN in separate segments. Which two values does the server add to <code>recv_next</code>, and why are their units the same?</p></div>
+  </div>
+  <footer class="lesson-footer"><nav class="lesson-nav"><a href="../lessons/0033-tcp-teardown-echo.html">&larr; Lesson 33</a><a href="../reference/tcp-teardown.html">Teardown reference &rarr;</a></nav></footer>
+</article></body></html>

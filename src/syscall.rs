@@ -66,6 +66,8 @@ const SYS_NET_CONFIGURE: u64 = 904;
 const SYS_NET_TCP_CONNECT: u64 = 905;
 const SYS_NET_TCP_SEND: u64 = 906;
 const SYS_NET_TCP_RECV: u64 = 907;
+const SYS_LISTEN: u64 = 908;
+const SYS_ACCEPT: u64 = 909;
 const ICMP_PING_PAYLOAD_CAPACITY: usize = 64;
 
 /// Virtual address where the dedicated syscall stack begins.
@@ -425,25 +427,64 @@ extern "C" fn syscall_handler(num: u64, arg1: u64, arg2: u64, arg3: u64) -> u64 
         SYS_NET_TCP_CONNECT => sys_net_tcp_connect(),
         SYS_NET_TCP_SEND => sys_net_tcp_send(arg1, arg2),
         SYS_NET_TCP_RECV => sys_net_tcp_recv(),
+        SYS_LISTEN => sys_listen(arg1, arg2),
+        SYS_ACCEPT => sys_accept(arg1),
         _ => u64::MAX,
     }
 }
 
 fn transmit_tcp(outbound: net::tcp::Outbound) -> bool {
-    if virtio::resolve_next_hop(outbound.dst_ip).is_none() { return false; }
-    matches!(virtio::with_net_device(|device| device.send_ipv4_packet(
-        net::ipv4::PROTOCOL_TCP, outbound.dst_ip, &outbound.bytes)), Some(Some(())))
+    #[cfg(feature = "test-tcp-reliable")]
+    {
+        static DROPPED_FIRST_DATA: core::sync::atomic::AtomicBool =
+            core::sync::atomic::AtomicBool::new(false);
+        if outbound.flags & net::tcp::FLAG_PSH != 0
+            && DROPPED_FIRST_DATA
+                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+        {
+            println!(
+                "[tcp-test] injected loss seq={} before virtio TX",
+                outbound.sequence
+            );
+            return true;
+        }
+    }
+    if virtio::resolve_next_hop(outbound.dst_ip).is_none() {
+        return false;
+    }
+    matches!(
+        virtio::with_net_device(|device| device.send_ipv4_packet(
+            net::ipv4::PROTOCOL_TCP,
+            outbound.dst_ip,
+            &outbound.bytes
+        )),
+        Some(Some(()))
+    )
 }
 
 fn sys_net_tcp_connect() -> u64 {
     let local_ip = net::source_ip();
-    if local_ip == [0; 4] { return u64::MAX; }
+    if local_ip == [0; 4] {
+        return u64::MAX;
+    }
     let isn = (crate::interrupts::TICKS.load(Ordering::Relaxed) as u32)
-        .wrapping_mul(1103515245).wrapping_add(0x31c0_ffee);
-    let Some(syn) = net::tcp::active_open(net::tcp::Endpoints {
-        local_ip, remote_ip: [10, 0, 2, 3], local_port: 49152, remote_port: 53,
-    }, isn) else { return u64::MAX };
-    if !transmit_tcp(syn) { return u64::MAX; }
+        .wrapping_mul(1103515245)
+        .wrapping_add(0x31c0_ffee);
+    let Some(syn) = net::tcp::active_open(
+        net::tcp::Endpoints {
+            local_ip,
+            remote_ip: [10, 0, 2, 3],
+            local_port: 49152,
+            remote_port: 53,
+        },
+        isn,
+    ) else {
+        return u64::MAX;
+    };
+    if !transmit_tcp(syn) {
+        return u64::MAX;
+    }
     while net::tcp::state() != net::tcp::TcpState::Established {
         crate::task::block_current_if(|pid| net::tcp::register_connect_waiter(pid));
         crate::task::yield_now();
@@ -452,23 +493,33 @@ fn sys_net_tcp_connect() -> u64 {
 }
 
 fn sys_net_tcp_send(buf: u64, len: u64) -> u64 {
-    if len == 0 || len > 512 || !is_user_range(buf, len) { return u64::MAX; }
-    let payload = unsafe { core::slice::from_raw_parts(buf as *const u8, len as usize) };
-    match net::tcp::send_data(payload) {
-        Some(out) => if transmit_tcp(out) { len } else { u64::MAX },
-        None => u64::MAX,
+    if len == 0 || len > 512 || !is_user_range(buf, len) {
+        return u64::MAX;
     }
+    let payload = unsafe { core::slice::from_raw_parts(buf as *const u8, len as usize) };
+    let Some((accepted, segments)) = net::tcp::send_data(payload) else {
+        return u64::MAX;
+    };
+    for segment in segments {
+        if !transmit_tcp(segment) {
+            return u64::MAX;
+        }
+    }
+    accepted as u64
 }
 
 fn sys_net_tcp_recv() -> u64 {
     loop {
-        if let Some(byte) = net::tcp::pop_byte() { return byte as u64; }
+        if let Some(byte) = net::tcp::pop_byte() {
+            return byte as u64;
+        }
         crate::task::block_current_if(|pid| net::tcp::register_recv_waiter(pid));
         crate::task::yield_now();
     }
 }
 
 const AF_INET: u64 = 2;
+const SOCK_STREAM: u64 = 1;
 const SOCK_DGRAM: u64 = 2;
 const SOCK_NONBLOCK: u64 = 0x800;
 const EAGAIN: u64 = (-11i64) as u64;
@@ -520,11 +571,20 @@ fn write_sockaddr(ptr: u64, len_ptr: u64, endpoint: net::socket::Endpoint) -> bo
 
 fn sys_socket(domain: u64, kind: u64, protocol: u64) -> u64 {
     let base_kind = kind & !SOCK_NONBLOCK;
-    if domain != AF_INET || base_kind != SOCK_DGRAM || (protocol != 0 && protocol != 17) {
+    if domain != AF_INET {
         return u64::MAX;
     }
-    let socket = net::socket::UdpSocket::new(kind & SOCK_NONBLOCK != 0);
-    crate::task::with_current_fd_table(|fdt| fdt.open_socket(socket))
+    match base_kind {
+        SOCK_DGRAM if protocol == 0 || protocol == 17 => {
+            let socket = net::socket::UdpSocket::new(kind & SOCK_NONBLOCK != 0);
+            crate::task::with_current_fd_table(|fdt| fdt.open_socket(socket))
+        }
+        SOCK_STREAM if protocol == 0 || protocol == 6 => {
+            let socket = net::tcp::TcpSocket::new();
+            crate::task::with_current_fd_table(|fdt| fdt.open_tcp_socket(socket))
+        }
+        _ => u64::MAX,
+    }
 }
 
 fn sys_bind(fd: u64, addr: u64, addr_len: u64) -> u64 {
@@ -534,13 +594,46 @@ fn sys_bind(fd: u64, addr: u64, addr_len: u64) -> u64 {
     if endpoint.ip != [0, 0, 0, 0] && endpoint.ip != net::source_ip() {
         return u64::MAX;
     }
-    let Some(socket) = crate::task::with_current_fd_table(|fdt| fdt.get_socket(fd)) else {
-        return u64::MAX;
-    };
-    if socket.bind(endpoint.port).is_ok() {
+    let bound = crate::task::with_current_fd_table(|fdt| {
+        if let Some(socket) = fdt.get_socket(fd) {
+            return socket.bind(endpoint.port).is_ok();
+        }
+        if let Some(socket) = fdt.get_tcp_socket(fd) {
+            return socket.bind(endpoint.port).is_ok();
+        }
+        false
+    });
+    if bound {
         0
     } else {
         u64::MAX
+    }
+}
+
+fn sys_listen(fd: u64, backlog: u64) -> u64 {
+    let Some(socket) = crate::task::with_current_fd_table(|fdt| fdt.get_tcp_socket(fd)) else {
+        return u64::MAX;
+    };
+    if socket.listen(backlog.min(128) as usize).is_ok() {
+        0
+    } else {
+        u64::MAX
+    }
+}
+
+fn sys_accept(fd: u64) -> u64 {
+    let Some(listener) = crate::task::with_current_fd_table(|fdt| fdt.get_tcp_socket(fd)) else {
+        return u64::MAX;
+    };
+    loop {
+        if let Some(connection) = listener.pop_accepted() {
+            let accepted_fd =
+                crate::task::with_current_fd_table(|fdt| fdt.open_tcp_socket(connection));
+            println!("[tcp] accept fd={} -> connection fd={}", fd, accepted_fd);
+            return accepted_fd;
+        }
+        crate::task::block_current_if(|pid| listener.register_accept_waiter(pid));
+        crate::task::yield_now();
     }
 }
 
@@ -593,7 +686,10 @@ fn sys_net_configure(config_ptr: u64, operation: u64) -> u64 {
     let config = unsafe { &mut *(config_ptr as *mut UserNetworkConfig) };
     match operation {
         0 => match virtio::with_net_device(|device| device.mac()) {
-            Some(mac) => { config.mac = mac; 0 }
+            Some(mac) => {
+                config.mac = mac;
+                0
+            }
             None => u64::MAX,
         },
         1 if config.address != [0; 4] && config.subnet_mask != [0; 4] => {
@@ -819,6 +915,18 @@ fn sys_read(fd: u64, buffer_ptr: u64, length: u64) -> u64 {
         return u64::MAX; // EFAULT — caller tried to read/write kernel memory
     }
 
+    if let Some(socket) = crate::task::with_current_fd_table(|fdt| fdt.get_tcp_socket(fd)) {
+        let output =
+            unsafe { core::slice::from_raw_parts_mut(buffer_ptr as *mut u8, length as usize) };
+        loop {
+            if let Some(count) = socket.read(output) {
+                return count as u64;
+            }
+            crate::task::block_current_if(|pid| socket.register_recv_waiter(pid));
+            crate::task::yield_now();
+        }
+    }
+
     // Pull the File out of the FdTable. The closure form clones the Arc
     // out — we hold our own Arc<File> and the FdTable lock can release
     // immediately, before we touch the inode's data.
@@ -895,6 +1003,20 @@ fn sys_write(fd: u64, buffer_ptr: u64, length: u64) -> u64 {
         return length;
     }
 
+    if let Some(socket) = crate::task::with_current_fd_table(|fdt| fdt.get_tcp_socket(fd)) {
+        let payload =
+            unsafe { core::slice::from_raw_parts(buffer_ptr as *const u8, length as usize) };
+        let Some(segments) = socket.send(payload) else {
+            return u64::MAX;
+        };
+        for segment in segments {
+            if !transmit_tcp(segment) {
+                return u64::MAX;
+            }
+        }
+        return length;
+    }
+
     // Regular file write: look up the File, extend its inode data, advance cursor.
     let file = match crate::task::with_current_fd_table(|fdt| fdt.get(fd)) {
         Some(f) => f,
@@ -949,6 +1071,17 @@ fn sys_write(fd: u64, buffer_ptr: u64, length: u64) -> u64 {
 /// inode, if this was the last reference) gets dropped when the Arc's
 /// refcount hits zero — for our hardcoded inode, it never does.
 fn sys_close(fd: u64) -> u64 {
+    if let Some(socket) = crate::task::with_current_fd_table(|fdt| fdt.get_tcp_socket(fd)) {
+        if let Some(fin) = socket.close_segment() {
+            if !transmit_tcp(fin) {
+                return u64::MAX;
+            }
+            while !socket.is_closed() {
+                crate::task::block_current_if(|pid| socket.register_close_waiter(pid));
+                crate::task::yield_now();
+            }
+        }
+    }
     let ok = crate::task::with_current_fd_table(|fdt| fdt.close(fd));
     println!(
         "[syscall] sys_close fd={} -> {}",
@@ -1024,7 +1157,12 @@ fn sys_getpid() -> u64 {
 fn sys_exit(exit_code: u64) -> u64 {
     println!("[syscall] sys_exit({})", exit_code);
     crate::task::mark_current_zombie(exit_code as i64);
-    #[cfg(any(feature = "test-udp", feature = "test-nonblocking", feature = "test-dhcp", feature = "test-tcp"))]
+    #[cfg(any(
+        feature = "test-udp",
+        feature = "test-nonblocking",
+        feature = "test-dhcp",
+        feature = "test-tcp"
+    ))]
     crate::qemu_exit::exit_qemu(if exit_code == 0 {
         crate::qemu_exit::EXIT_SUCCESS
     } else {

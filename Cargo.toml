@@ -48,3 +48,9 @@ test-dhcp = []
 
 # Lesson 31: active TCP handshake and byte-position proof against slirp DNS.
 test-tcp = []
+
+# Lesson 32: segment a TCP stream and recover one injected loss by timeout.
+test-tcp-reliable = ["test-tcp"]
+
+# Lesson 33: passive open, ring-3 TCP echo, and FIN teardown over hostfwd.
+test-tcp-echo = ["test-tcp"]

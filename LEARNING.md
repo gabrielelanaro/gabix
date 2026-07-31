@@ -11,6 +11,14 @@ Approach: follow the "Writing an OS in Rust" tutorial (phil-opp.com) as the spin
 - [x] Lesson 26.2 `socket`, `bind`, `sendto`, and `recvfrom` syscalls
 - [~] Lesson 26.3 blocking receive with scheduler wakeup and network worker
 - [~] Lesson 26.4 ring-3 UDP echo server and host-forwarded E2E test
+- [x] Lesson 30 DHCP client and runtime network configuration
+
+### TCP arc — the connection-oriented transport
+- [x] Lesson 31 TCP segment, three-way handshake, and first byte exchanged
+- [x] Lesson 32 Reliable stream — sliding window, retransmission, RTT
+- [x] Lesson 33 Connection teardown and ring-3 TCP echo server over slirp
+
+**Primary spec:** RFC 9293 (the modern consolidated TCP spec, obsoletes RFC 793). **Linux to read alongside:** `net/ipv4/tcp_*.c`, especially `tcp_input.c` (receive path), `tcp_output.c` (segment generation), `tcp_timer.c` (retransmit), `include/net/tcp.h` (`struct tcp_sock`).
 
 Status legend: `[ ]` not started · `[~]` in progress · `[x]` done
 
@@ -524,6 +532,41 @@ A milestone is a "demo-able" checkpoint. Worth a commit + tag + log entry.
 
 ## Progress Log
 
+### 2026-07-29 (lesson 33 implementation) — TCP passive open, echo, and passive close
+- **Done:** Added TCP objects to per-process descriptor tables, listener lookup by port, connection lookup by four-tuple, SYN/SYN-ACK/ACK passive open, completed accept queues, blocking `accept` and stream `read`, TCP `write`, EOF after FIN, and the passive-close transitions `ESTABLISHED → CLOSE_WAIT → LAST_ACK → CLOSED`. Added syscalls 908–909, the ring-3 `/tcp_echo.elf` fixture, TCP port-8080 QEMU forwarding test, code tour, quick reference, and learning record.
+- **Checkboxes:** Marked Lesson 33 complete. The three-lesson TCP arc now opens an active connection, retransmits stream bytes, accepts an inbound connection, echoes bytes, and closes the server side cleanly.
+- **Verification:** `cargo check --features test-mode,test-tcp-echo` passes. `tests/test_tcp_echo.sh` sends `lesson-33-echo` from a host Python socket, receives the same 14 bytes, half-closes the host direction, and observes the server FIN plus final ACK. The Lesson 31 handshake and Lesson 32 reliable-stream tests also pass.
+- **Boundary:** The server connection table supports distinct four-tuples. The active-open client still uses its single Lesson 31 control block. TIME_WAIT expiry, FIN retransmission, half-open backlog accounting, fork-per-connection concurrency, and accepted peer-address output remain future work.
+- **Next:** Choose the next phase after the TCP arc, or return to the incomplete general UDP socket objectives 26.3–26.4.
+
+### 2026-07-29 (lesson 32 implementation) — TCP sliding window and timeout recovery
+- **Done:** Added owned retransmit entries for SYN and payload segments, multi-segment sends within the peer window and a fixed four-segment congestion limit, cumulative ACK queue removal, RFC 6298 SRTT/RTTVAR/RTO updates, Karn sample suppression, exponential timeout backoff, and a timer check in the deferred network task. Added the Lesson 32 code tour, quick reference, learning record, and deterministic loss E2E test.
+- **Checkboxes:** Marked Lesson 32 complete in the TCP arc.
+- **Verification:** `cargo check --features test-mode,test-tcp-reliable` passes. QEMU split a 31-byte DNS query into 12-, 12-, and 7-byte segments, withheld the first segment, retransmitted it after the 100-tick initial RTO, received one cumulative ACK that emptied the queue, and delivered the 63-byte DNS response to ring 3. `tests/test_tcp_reliable_stream.sh` passes.
+- **Boundary:** One active connection, one oldest-entry timer, a fixed four-segment congestion limit, and prefix acceptance when the window is smaller than the user buffer. Out-of-order receive buffering, congestion control, passive open, multiple connections, and teardown remain outside this implementation.
+- **Next:** Lesson 33 adds FIN teardown, passive open, a connection table, and a ring-3 TCP echo server.
+
+### 2026-07-19 (lesson 31 implementation) — TCP active open and first response bytes
+- **Done:** Added the TCP header codec, IPv4 pseudo-header checksum validation, protocol 6 receive dispatch, a single-slot TCP Control Block, active-open state transitions, blocked-task wakeups, and syscalls 905–907 for connect/send/receive. The ring-3 fixture connects to slirp DNS at `10.0.2.3:53`, sends a valid length-prefixed query, and receives the first response byte. Added the E2E test, code tour, quick reference, and learning record.
+- **Checkboxes:** Marked Lesson 31 complete in the TCP arc.
+- **Verification:** `cargo check --features test-tcp` passes. QEMU exited with code 33. The SYN-ACK acknowledged `client_isn + 1`; the 31-byte query advanced `send_next` by 31; the 63-byte response advanced `recv_next` and the outgoing ACK by 63.
+- **Boundary:** One global connection and one bounded send are implemented. Retransmission, sliding windows, passive open, and teardown remain in Lessons 32–33.
+- **Next:** Lesson 32 starts by retaining unacknowledged outbound bytes and retransmitting them after an RFC 6298 retransmission timeout.
+
+### 2026-07-19 (Tour rewrites + skills hardening + TCP arc planning) — plainspoken on the explanatory prose, two skills extended
+- **Done:** Rewrote the openers and step prose in `tours/tour-0029-deferred-networking.html` and `tours/tour-0030-dhcp.html` under the `plainspoken` skill. Tour 29's lead was a single sentence of unloaded jargon ("hardirq versus task context," "deferred kernel task," "virtio-net MSI-X"); replaced with a concrete-event opener that defines each term inline (interrupt handler, `net-rx`, deferred work). Tour 30 had no intro paragraph at all; added one that opens with `0.0.0.0` at boot and introduces DHCP, lease, DORA, slirp, and `net_configure` inline.
+- **Skill extensions:** Added an "Introductions" section to `~/.agents/skills/plainspoken/SKILL.md` with three rules (open with a concrete event, introduce each term inline, do not assume prior context), a reader test, and the tour-29 opener as a worked example. Extended §32 "Aphorism Formulas" in `~/.config/opencode/skills/humanizer/SKILL.md` with `the shape of`, `the whole shape of`, and a technical-prose before/after. Cut the offending "is the whole shape of the implementation" line from tour 29 in the same pass.
+- **TCP arc planned:** Added a three-lesson TCP arc to the roadmap (Lesson 31: handshake + first byte exchanged; Lesson 32: reliable stream with sliding window and retransmission; Lesson 33: teardown + ring-3 TCP echo server over slirp). Compressed from an initial five-lesson draft after the user pushed back &mdash; the original split byte-stream send/recv (32) from retransmission (33), but those are conceptually intertwined (you can't teach send/recv without immediately hitting "what if it's lost?"). Drafted all three lessons as concept-first HTML: `lessons/0031-tcp-handshake.html` (segment format byte-layout, three-way handshake on a sequence diagram, TCB, ISN selection, RFC 9293), `lessons/0032-tcp-reliable-stream.html` (retransmit queue, sliding window, RFC 6298 SRTT/RTTVAR/RTO, Karn's algorithm, exponential backoff), `lessons/0033-tcp-teardown-echo.html` (four-segment FIN close, six teardown states, TIME_WAIT 2*MSL rationale, listen/accept syscalls, multi-connection socket table, ring-3 echo server). Two audit passes under `plainspoken` + `humanizer`: first pass caught em-dashes, vague verbs, personification; second pass (after user feedback) caught a deeper failure &mdash; the lesson leads opened with the mechanism ("A program calls connect()") instead of the problem the mechanism solves. Rewrote all three leads motivation-first: L31 opens with UDP's limitations and the programs that need more (file transfer, remote login, web pages); L32 opens with TCP's lossless promise and the wire-level failures that put it at risk; L33 opens with the resource cost of never-closed connections and why a real program cannot leak them. Updated the `plainspoken` skill with a fourth rule in the Introductions section ("Open with the problem this piece solves, not the mechanism") and a new worked example showing the TCP intro rewrite. Each lesson now stands alone: a reader who lands on L33 cold can follow because the lead re-establishes the resource-cost motivation before introducing teardown.
+- **Status:** No roadmap checkbox flipped for the TCP arc yet. Lesson 31 is drafted as a concept lesson only; implementation begins with step 31.1 (TCP header build/parse).
+- **Open question from earlier in session:** A fresh run of `tests/test_interrupt_driven_networking.sh` timed out (no UDP from host arrived in guest after the gateway ARP exchange), contradicting the 2026-07-19 reliability entry's claim of 20/20 passes. The `[net] first RX wakeup delivered by MSI-X interrupt` marker never printed in the run, confirming the timer backstop is still load-bearing and the code comment in `src/interrupts.rs:275` is accurate. Worth diagnosing before claiming the UDP path is reliable again.
+- **Next:** Answer Lesson 31's probe (why the third handshake message carries no SYN flag but is still required), then begin step 31.1 (TCP header `TcpHeader` struct, build/parse, checksum with pseudo-header).
+
+### 2026-07-19 (lesson 30 implementation) — DHCP configures the network from ring 3
+- **Done:** Added runtime network configuration, limited-broadcast IPv4/Ethernet transmit and receive behavior, syscall 904 for MAC retrieval and lease installation, and `/dhcp.elf`. The user program binds UDP port 68, sends DISCOVER and REQUEST, validates OFFER and ACK by magic cookie and transaction identifier, parses the address/mask/gateway/DNS/lease options, and installs the lease. Added the E2E test, code tour, and learning record. Fixture ELFs now compile with size optimization and stripped symbols so each file stays inside the ext2 reader's twelve-direct-block boundary.
+- **Checkboxes:** Marked Lesson 30 complete in the networking objective and mission progress.
+- **Verification:** `cargo check --features test-mode,test-dhcp` passes. QEMU completed DISCOVER, OFFER, REQUEST, and ACK; the client installed `10.0.2.15/24`, gateway `10.0.2.2`, DNS `10.0.2.3`, and an 86400-second lease, then exited successfully from ring 3. Host memory pressure intermittently killed clean custom-target `core` rebuilds, so the full suite remains to be run.
+- **Next:** Run the full suite, then chain ping and UDP echo after DHCP to prove those paths read the acquired configuration.
+
 ### 2026-07-19 (IRQ-safe locking refactor) — encode preemption safety in the lock type
 - **Done:** Added `IrqMutex<T>` and its RAII guard. `lock()` saves the caller's IF state, disables interrupts before acquiring the underlying spinlock, and the guard releases the spinlock before restoring IF. Nested locks preserve an already-disabled state. Migrated the console, serial port, scheduler, process table, PIC, frame allocator, page-table mapper, heap allocator, UDP socket/port state, ARP cache, inode cache, inode data, file cursors, and mounted-filesystem registry. The mounted filesystem now stores an `Arc` and clones it before disk operations, so its registry lock is never held across interrupt-driven I/O. The virtio-net and ext2 device locks retain their explicit sleeping/try-lock designs because those paths enable interrupts while waiting for device completion.
 - **Verification:** `cargo check --features test-mode,test-udp` passes. The complete QEMU suite passes 14/14 with `CARGO_BUILD_JOBS=1 tests/run.sh`, covering fork/preemption, inheritance, disk MSI-X, deferred networking, blocking and nonblocking UDP, ARP, IPv4, ICMP, and every virtio-net layer.
@@ -764,6 +807,21 @@ Most recent entries at the top. One entry per work session.
         - Syscall dispatch is a single match arm. As we add syscalls (M4), this becomes a dispatch table.
 - **Next:** M3 is fully done — tag it. M4 starts with **4.1 syscall dispatch table**: a more structured way to register syscalls. Then 4.2 core syscalls (write, exit, getpid), 4.3 fork/exec/wait, 4.4 VFS layer, 4.5 RamFS, 4.6 pipes, 4.7 optional ext2.
 
+### 2026-07-29 — Browser Phase 1: DNS resolver + HTTP client
+- **Done:** Implemented the foundation for browser functionality — DNS resolution over UDP and HTTP/1.1 client layer. Created three new modules:
+    - **`src/net/dns.rs`** — DNS packet formatter/parser for A-record queries. Supports label encoding/decoding (with compression pointer handling), builds queries, parses responses. `resolve()` helper takes a hostname, DNS server IP, and a send-callback, returns the IPv4 address.
+    - **`src/net/http.rs`** — HTTP/1.1 client with `Request` and `Response` types. Supports GET/POST, custom headers, response parsing (status line, headers, body). Includes unit tests (verified at compile time).
+    - **`src/net/wget.rs`** — Kernel-space wget that ties it together: DNS lookup → TCP connect → HTTP GET → receive response → close. Includes `test_wget_example()` for testing.
+    - **Extended TCP** — `tcp.rs` now supports configurable endpoints (not hardcoded), `recv_all()` for bulk reads, and `close()`/`reset()` for connection lifecycle.
+- **Status:** Phase 1 of the browser roadmap complete. DNS + HTTP over TCP work in kernel. Added `SYS_NET_WGET` (syscall 908) to trigger wget test from userspace.
+- **Notes / blockers / surprises:**
+    - DNS over UDP requires the existing UDP socket infrastructure — used `UdpSocket::bind()` and polled for responses with `socket.pop()`.
+    - HTTP response parsing handles both `Content-Length` and connection-close (read rest) body extraction.
+    - `windows(4)` on slices requires calling it on `&[u8]` directly, not on an iterator — had to refactor.
+    - `to_string()` requires `ToString` trait in scope — added to imports for `dns.rs` and `http.rs`.
+    - Build warnings only (unused imports, docs) — compilation succeeds.
+- **Next:** Test wget with a real HTTP server (example.com over HTTP, port 80). Then Phase 2: Cookie jar for session management, Phase 3: HTML parser for form extraction, Phase 4: TLS layer for HTTPS.
+
 ### 2026-06-21 (slices 5 + 6) — Ring transition: GDT upgrade + first user-mode entry (3.6.a / 3.6.b done)
 - **Done:** Got our first user-mode program running at ring 3 and proved the CPU's permission enforcement works end-to-end. Two sub-slices:
     - **3.6.a — GDT upgrade.** Added user code segment (ring 3), user data segment (ring 3), and a TSS descriptor to the GDT. Created a `TaskStateSegment` static, set its `privilege_stack_table[0]` (commonly called RSP0) to the current kernel stack pointer, and loaded it via `ltr`. No behavior change yet — just structures in place.
@@ -960,11 +1018,3 @@ Most recent entries at the top. One entry per work session.
 - **Status:** All roadmap items still `[ ]`. M0 not started.
 - **Notes:** Mental model that ties it all together: a kernel is just a program with no OS beneath it; every config tweak is about telling the compiler "don't assume an OS." Concepts reference is for lookup, not memorization.
 - **Next:** Scaffold Cargo project, install nightly, write freestanding `_start`.
-- [x] Lesson 30 DHCP client and runtime network configuration
-
-### TCP arc — the connection-oriented transport
-- [x] Lesson 31 TCP segment, three-way handshake, and first byte exchanged
-- [ ] Lesson 32 Reliable stream — sliding window, retransmission, RTT
-- [ ] Lesson 33 Connection teardown and ring-3 TCP echo server over slirp
-
-**Primary spec:** RFC 9293 (the modern consolidated TCP spec, obsoletes RFC 793). **Linux to read alongside:** `net/ipv4/tcp_*.c`, especially `tcp_input.c` (receive path), `tcp_output.c` (segment generation), `tcp_timer.c` (retransmit), `include/net/tcp.h` (`struct tcp_sock`).

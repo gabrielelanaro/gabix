@@ -6,6 +6,7 @@
   <title>Lesson 32 — Reliable Stream</title>
   <link rel="stylesheet" href="../assets/lesson.css">
   <link rel="stylesheet" href="../assets/sequence-diagram.css">
+  <link rel="stylesheet" href="../assets/retransmit-desk.css">
   <style>
     .window-bar {
       font-family: var(--font-mono);
@@ -35,6 +36,9 @@
     .term-list { padding-left: 1.2rem; line-height: 1.7; }
     .term-list li { margin: 0.4rem 0; }
     .term-list code { color: var(--accent); }
+    .game-rules { margin:0 0 1rem; padding-left:1.2rem; font-size:.95rem; }
+    .game-rules li { margin:.35rem 0; }
+    .game-credit { font-family:var(--font-sans); font-size:.75rem; color:var(--text-faint); text-align:center; margin:.4rem 0 0; }
   </style>
 </head>
 <body>
@@ -70,7 +74,7 @@
 
     <h2>The sliding window</h2>
 
-    <p>The sender tracks two positions on its outbound byte stream: <code>send_unacked</code>, the oldest byte still in flight, and <code>send_next</code>, the next byte to send. The bytes between them are <strong>in flight</strong>: transmitted, copy held, awaiting ACK.</p>
+    <p>The sender tracks two positions on its outbound byte stream: <code>send_unacked</code>, the oldest byte still in flight, and <code>send_next</code>, the next byte to send. The bytes between them are <strong>in flight</strong>: transmitted, retained in memory, and awaiting an acknowledgment (ACK).</p>
 
     <div class="window-bar">  send_unacked               send_next
        v                          v
@@ -84,7 +88,7 @@ stream  |======= in flight ======|=== can send ===|------------
 
     <ul class="term-list">
       <li><code>advertised_window</code> comes from the <code>window</code> field in the most recent segment the receiver sent. It is the receiver's remaining buffer space. The receiver can shrink it to zero ("stop sending") when its application is slow to read.</li>
-      <li><code>congestion_window</code> is the sender's own estimate of how much the network can absorb before packet loss kicks in. mini-os uses a fixed value of four segments. A real TCP implements slow start and congestion avoidance (RFC 5681), which grows and shrinks this value based on observed loss. mini-os skips that to keep the lesson focused.</li>
+      <li><code>congestion_window</code> limits how much data the sender puts into the network. mini-os fixes this limit at four segments. A complete TCP implementation applies RFC 5681 slow start and congestion avoidance to adjust the limit after acknowledgments and loss.</li>
     </ul>
 
     <p>When an ACK arrives and <code>send_unacked</code> advances, the window slides forward: bytes that were past the right edge become eligible for sending.</p>
@@ -162,7 +166,7 @@ RTO     = SRTT + max(G, K * RTTVAR)     where K = 4</div>
       <div class="recipe-step">
         <div class="recipe-num">32.1</div>
         <div class="recipe-body">
-          <strong>Retransmit queue.</strong> Add <code>retransmit_queue: Vec&lt;TcpSegment&gt;</code> to the TCB. Every transmitted segment that carries data or SYN or FIN is pushed onto the queue with its <code>sent_at</code> timestamp. When an ACK arrives, drop every entry whose highest sequence is below <code>ack_number</code>.
+          <strong>Retransmit queue.</strong> Add <code>retransmit_queue: Vec&lt;RetransmitEntry&gt;</code> to the Transmission Control Block (TCB). Each entry stores the sequence number, flags, payload bytes, send tick, and retransmission marker. When an ACK arrives, remove every entry whose ending sequence is at or below the acknowledgment number.
         </div>
       </div>
 
@@ -197,7 +201,7 @@ RTO     = SRTT + max(G, K * RTTVAR)     where K = 4</div>
       <div class="recipe-step">
         <div class="recipe-num">32.6</div>
         <div class="recipe-body">
-          <strong>End-to-end proof.</strong> Extend the Lesson 31 fixture to exchange 1 KB with the slirp DNS server at <code>10.0.2.3:53</code>: open, send a DNS-over-TCP query, read the response. Serial output must show: each segment transmitted with its sequence number, the ACK stream advancing <code>send_unacked</code>, the retransmit queue draining, the SRTT and RTO values updating. Optionally inject artificial loss (drop every Nth TX frame in a test build) and observe the retransmit fire and recover.
+          <strong>End-to-end proof.</strong> Build with a 12-byte test Maximum Segment Size (MSS), so one 31-byte Domain Name System (DNS) query becomes three segments. Withhold the first data segment before virtio transmission and transmit the next two. The serial log must show the retransmission timeout (RTO) expire, the first segment transmit again, one cumulative ACK drain the queue, Karn's algorithm reject the ambiguous round-trip-time sample, and the DNS response reach ring 3.
         </div>
       </div>
     </div>
@@ -208,6 +212,70 @@ RTO     = SRTT + max(G, K * RTTVAR)     where K = 4</div>
         Slow start, congestion avoidance, fast retransmit, fast recovery (RFC 5681, RFC 5682). SACK (RFC 2018). Window scaling (RFC 7323). Timestamp options for RTTM. These all live in real TCP and are not built here. The Lesson 32 sender uses a fixed congestion window and recovers from loss only by timeout, not by duplicate-ACK counting. That is enough to deliver bytes reliably on a slirp link; a real network would warrant the rest.
       </p>
     </div>
+
+    <h2>Minigame — run the Retransmit Desk</h2>
+    <p>Operate the sender this lesson builds. The application hands you a 96-byte file for <code>10.0.2.3:53</code>. It leaves in 12-byte segments — the test MSS of step 32.6 — over a link with a 1000 ms round-trip time that drops one segment without telling either side. Your held copies, the window edge, and the RTO bar are how you find out.</p>
+    <ul class="game-rules">
+      <li><strong>SEND</strong> the next segment while in-flight bytes fit inside <code>send_window = min(advertised, congestion)</code>. Sending at the window edge is a protocol violation.</li>
+      <li>Every segment sent stays in the <strong>retransmit queue</strong> until an ACK covers it. ACKs are cumulative: one ACK can release several entries and slide the window forward.</li>
+      <li><strong>RETRANSMIT</strong> the oldest held segment after its RTO expires. Early retransmits spend bandwidth on healthy links and turn the segment's ACK ambiguous; late ones stall the stream. Each retransmit doubles the RTO; the next clean sample cancels the backoff.</li>
+      <li>An ACK that covers a retransmitted segment carries ambiguous timing. Take the byte progress, <strong>skip the RTT sample</strong> (Karn's algorithm).</li>
+    </ul>
+
+    <section class="retransmit-desk" data-retransmit-desk aria-label="TCP retransmit desk minigame">
+      <div class="rd-topbar">
+        <div class="rd-title">The Retransmit Desk <span>10.0.2.15:4413 → 10.0.2.3:53 · RTT ≈ 1000 ms · MSS 12</span></div>
+        <div class="rd-score">
+          <span class="rd-chip" data-rd-delivered>delivered 0/96</span>
+          <span class="rd-chip" data-rd-strikes>strikes 0</span>
+          <span class="rd-chip" data-rd-wasted>wasted 0 B</span>
+          <span class="rd-chip" data-rd-samples>samples 0</span>
+          <button class="rd-restart" type="button" data-rd-restart>restart</button>
+        </div>
+      </div>
+      <div class="rd-grid">
+        <div class="rd-col">
+          <h3>sender · your TCB</h3>
+          <div class="rd-streamwrap">
+            <div class="rd-stream" data-rd-stream></div>
+            <span class="rd-line rd-line-ua" data-rd-ua></span>
+            <span class="rd-line rd-line-nx" data-rd-nx></span>
+            <span class="rd-line rd-line-edge" data-rd-edge></span>
+          </div>
+          <div class="rd-legend" data-rd-legend></div>
+          <div class="rd-winread" data-rd-winread></div>
+          <h3>retransmit queue <small>held copies until ACK</small></h3>
+          <div class="rd-queue" data-rd-queue></div>
+          <h3>rfc 6298 estimator</h3>
+          <div class="rd-rtt" data-rd-rtt></div>
+        </div>
+        <div class="rd-col">
+          <h3>the wire <small>drops are silent — watch the timer</small></h3>
+          <div class="rd-wire" data-rd-wire>
+            <span class="rd-end rd-end-l">sender</span>
+            <span class="rd-end rd-end-r">receiver</span>
+          </div>
+          <div class="rd-card" data-rd-card hidden></div>
+        </div>
+        <div class="rd-col">
+          <h3>receiver · slirp <small>buffers out-of-order, ACKs cumulative</small></h3>
+          <div class="rd-recv" data-rd-recv></div>
+          <h3>wire log</h3>
+          <ol class="rd-log" data-rd-log aria-live="polite"></ol>
+        </div>
+      </div>
+      <div class="rd-actions">
+        <button type="button" data-rd-act="send">SEND NEXT SEGMENT</button>
+        <button type="button" data-rd-act="rexmit">RETRANSMIT OLDEST</button>
+        <span class="rd-hint" data-rd-hint>SEND fills the window · RETRANSMIT only when the RTO bar flashes</span>
+      </div>
+      <div class="rd-end" data-rd-end hidden>
+        <h3>File delivered</h3>
+        <p data-rd-verdict></p>
+        <button type="button" data-rd-restart>run it again</button>
+      </div>
+    </section>
+    <p class="game-credit">The desk runs the lesson's rules: the 12-byte test MSS from step 32.6, a fixed four-segment congestion window, one timer on the oldest queue entry, and recovery by timeout alone. Every stall you wait out is the price of skipping fast retransmit — RFC 5682 would cut the wait; mini-os omits it on purpose.</p>
 
     <div class="probe">
       <div class="probe-title">Probe — duplicate segments and the byte stream</div>
@@ -224,7 +292,7 @@ RTO     = SRTT + max(G, K * RTTVAR)     where K = 4</div>
     <div class="footer-block">
       <h4>What this completes</h4>
       <p style="margin:0;">
-        Lesson 32 makes the TCP sender reliable. The TCB holds a retransmit queue, an RTT estimate, and an RTO. The sender transmits multiple segments in flight within the sliding window and retransmits any segment whose ACK does not arrive within the RTO. Combined with Lesson 31's handshake, mini-os can now open a connection and exchange arbitrary amounts of data with correctness under loss.
+        Lesson 32 gives the TCP sender retained outbound bytes, an RTT estimate, and an RTO. The sender transmits several segments within the peer window and the fixed four-segment congestion limit. It retransmits the oldest segment when its ACK does not arrive before the RTO. The syscall accepts the portion that fits in the current window; connection teardown and a general socket API remain in Lesson 33.
       </p>
     </div>
 
@@ -250,5 +318,6 @@ RTO     = SRTT + max(G, K * RTTVAR)     where K = 4</div>
     </nav>
   </footer>
 </article>
+<script src="../assets/retransmit-desk.js"></script>
 </body>
 </html>

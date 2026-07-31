@@ -933,7 +933,20 @@ pub unsafe extern "C" fn network_task() {
     println!("[net] deferred RX task started");
     loop {
         x86_64::instructions::interrupts::without_interrupts(|| {
-            if try_with_net_device(|device| while device.poll_rx().is_some() {}).is_some() {
+            if try_with_net_device(|device| {
+                while device.poll_rx().is_some() {}
+                if let Some(outbound) = crate::net::tcp::poll_retransmit(
+                    crate::interrupts::TICKS.load(Ordering::Relaxed),
+                ) {
+                    let _ = device.send_ipv4_packet(
+                        crate::net::ipv4::PROTOCOL_TCP,
+                        outbound.dst_ip,
+                        &outbound.bytes,
+                    );
+                }
+            })
+            .is_some()
+            {
                 crate::task::block_current();
             }
         });
@@ -1111,10 +1124,11 @@ impl NetDevice {
 
         if let Some(packet) = self.handle_ipv4_frame(frame) {
             if packet.header.protocol == net::ipv4::PROTOCOL_TCP {
-                if let Some(reply) = net::tcp::receive(
-                    packet.header.src_ip, packet.header.dst_ip, packet.payload())
+                if let Some(reply) =
+                    net::tcp::receive(packet.header.src_ip, packet.header.dst_ip, packet.payload())
                 {
-                    let _ = self.send_ipv4_packet(net::ipv4::PROTOCOL_TCP, reply.dst_ip, &reply.bytes);
+                    let _ =
+                        self.send_ipv4_packet(net::ipv4::PROTOCOL_TCP, reply.dst_ip, &reply.bytes);
                 }
                 return NetRxEvent::Tcp;
             }
@@ -1235,7 +1249,11 @@ impl NetDevice {
         // same device lock to deliver the ARP reply we're waiting for.
         // On a miss, send an ARP request to prime the cache and drop the
         // packet — the caller's retry or the next packet gets through.
-        let next_hop_mac = if broadcast { [0xff; 6] } else if let Some(mac) = arp::lookup(next_hop_ip) { mac } else {
+        let next_hop_mac = if broadcast {
+            [0xff; 6]
+        } else if let Some(mac) = arp::lookup(next_hop_ip) {
+            mac
+        } else {
             println!(
                 "[arp] no cache entry for next hop {}.{}.{}.{} — priming and dropping packet",
                 next_hop_ip[0], next_hop_ip[1], next_hop_ip[2], next_hop_ip[3]
@@ -1316,7 +1334,10 @@ impl NetDevice {
         self.send_arp_packet(request.sha, reply);
         println!(
             "[arp] replied: {}.{}.{}.{} is at {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
-            net::source_ip()[0], net::source_ip()[1], net::source_ip()[2], net::source_ip()[3],
+            net::source_ip()[0],
+            net::source_ip()[1],
+            net::source_ip()[2],
+            net::source_ip()[3],
             self.mac()[0],
             self.mac()[1],
             self.mac()[2],
@@ -1369,7 +1390,11 @@ impl NetDevice {
             packet.sha[5]
         );
 
-        if packet.oper == OPER_REQUEST && net::config().map(|c| packet.tpa == c.address).unwrap_or(false) {
+        if packet.oper == OPER_REQUEST
+            && net::config()
+                .map(|c| packet.tpa == c.address)
+                .unwrap_or(false)
+        {
             self.send_arp_reply(&packet);
         }
 
