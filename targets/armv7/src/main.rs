@@ -25,11 +25,10 @@ use core::alloc::Layout;
 use core::arch::asm;
 use core::arch::global_asm;
 use core::panic::PanicInfo;
-#[cfg(feature = "virt")]
 use gabix_kernel::device::FrameDevice;
+use gabix_kernel::net::dhcp::{DhcpClient, CLIENT_PORT, SERVER_PORT};
 #[cfg(feature = "virt")]
-use gabix_kernel::net::dhcp::{DhcpClient, ACK, CLIENT_PORT, OFFER, SERVER_PORT};
-#[cfg(feature = "virt")]
+use gabix_kernel::net::dhcp::{ACK, OFFER};
 use gabix_kernel::net::stack::{NetworkInterface, MAX_FRAME_LEN};
 use platform::{PLATFORM, UART_BASE};
 
@@ -219,12 +218,49 @@ extern "C" fn arm_kernel_entry() {
                 disk_user_entry = user::load_elf(&image);
             }
         }
+        raspi2b::timer::init();
         if let Some(mut usb) = raspi2b::usb::Dwc2::initialize() {
-            if usb.enumerate_root().is_some() {
+            if let Some(device) = usb.enumerate_root() {
                 write_line(&mut console, b"gabix raspi2b usb enumerated");
+                let network_device = if device.device_class == 9 {
+                    usb.enumerate_hub_child(device)
+                } else {
+                    Some(device)
+                };
+                if let Some(mut network) = network_device
+                    .and_then(|device| raspi2b::rndis::RndisEthernet::configure(usb, device))
+                {
+                    write_line(&mut console, b"gabix raspi2b usb network configured");
+                    let interface = NetworkInterface::new(network.mac_address(), [10, 0, 2, 15]);
+                    let dhcp = DhcpClient::new(network.mac_address(), 0x4741_4258);
+                    let mut dhcp_payload = [0u8; 300];
+                    if let Some(payload_len) = dhcp.write_discover(&mut dhcp_payload) {
+                        let mut discover = [0u8; MAX_FRAME_LEN];
+                        if let Some(length) = interface.write_udp_from(
+                            [0; 4],
+                            [0xff; 6],
+                            [255; 4],
+                            CLIENT_PORT,
+                            SERVER_PORT,
+                            &dhcp_payload[..payload_len],
+                            &mut discover,
+                        ) {
+                            network.transmit(&discover[..length]);
+                        }
+                    }
+                    let deadline = raspi2b::timer::ticks() + 50;
+                    while raspi2b::timer::ticks() < deadline {
+                        if let Some(frame) = network.receive() {
+                            let mut reply = [0u8; MAX_FRAME_LEN];
+                            if let Some(length) = interface.reply(frame.bytes(), &mut reply) {
+                                network.transmit(&reply[..length]);
+                            }
+                        }
+                        asm!("wfi");
+                    }
+                }
             }
         }
-        raspi2b::timer::init();
         while raspi2b::timer::ticks() < 2 {
             asm!("wfi");
         }

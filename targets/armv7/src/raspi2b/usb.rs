@@ -25,7 +25,9 @@ const PORT_WRITE_TO_CLEAR: u32 = PORT_ENABLE_CHANGE | PORT_ENABLE | PORT_CONNECT
 const CHANNEL_ENABLE: u32 = 1 << 31;
 const DEVICE_ADDRESS_SHIFT: u32 = 22;
 const ENDPOINT_TYPE_CONTROL: u32 = 0 << 18;
+const ENDPOINT_TYPE_BULK: u32 = 2 << 18;
 const ENDPOINT_DIRECTION_IN: u32 = 1 << 15;
+const ENDPOINT_NUMBER_SHIFT: u32 = 11;
 const INTERRUPT_TRANSFER_COMPLETE: u32 = 1 << 0;
 const INTERRUPT_CHANNEL_HALTED: u32 = 1 << 1;
 const INTERRUPT_STALL: u32 = 1 << 3;
@@ -47,6 +49,7 @@ static mut DATA: DmaBuffer = DmaBuffer([0; 256]);
 pub struct UsbDevice {
     pub address: u8,
     pub max_packet_size: u8,
+    pub device_class: u8,
     pub vendor_id: u16,
     pub product_id: u16,
 }
@@ -74,6 +77,48 @@ impl Dwc2 {
     }
 
     pub unsafe fn enumerate_root(&mut self) -> Option<UsbDevice> {
+        self.enumerate_device(1)
+    }
+
+    pub unsafe fn enumerate_hub_child(&mut self, hub: UsbDevice) -> Option<UsbDevice> {
+        if hub.device_class != 9 {
+            return None;
+        }
+        self.control_write_no_data(hub, 0, 9, 1, 0)?;
+        let mut descriptor = [0u8; 9];
+        self.control_read(hub, 0xa0, 6, 0x2900, 0, &mut descriptor)?;
+        let ports = descriptor[2];
+        if ports == 0 {
+            return None;
+        }
+        for port in 1..=ports {
+            self.control_write_no_data(hub, 0x23, 3, 8, port as u16)?;
+        }
+        delay_us(100_000);
+
+        for port in 1..=ports {
+            let mut status = [0u8; 4];
+            self.control_read(hub, 0xa3, 0, 0, port as u16, &mut status)?;
+            let port_status = u16::from_le_bytes([status[0], status[1]]);
+            if port_status & 1 == 0 {
+                continue;
+            }
+            self.control_write_no_data(hub, 0x23, 3, 4, port as u16)?;
+            delay_us(50_000);
+            self.control_read(hub, 0xa3, 0, 0, port as u16, &mut status)?;
+            let port_status = u16::from_le_bytes([status[0], status[1]]);
+            if port_status & 2 == 0 {
+                continue;
+            }
+            let _ = self.control_write_no_data(hub, 0x23, 1, 20, port as u16);
+            if let Some(device) = self.enumerate_device(2) {
+                return Some(device);
+            }
+        }
+        None
+    }
+
+    unsafe fn enumerate_device(&mut self, new_address: u8) -> Option<UsbDevice> {
         let mut first = [0u8; 8];
         let first_len = self.control_in(
             0,
@@ -89,12 +134,16 @@ impl Dwc2 {
             return None;
         }
 
-        self.control_no_data(0, max_packet_size, SetupPacket::new(0, 5, 1, 0, 0))?;
+        self.control_no_data(
+            0,
+            max_packet_size,
+            SetupPacket::new(0, 5, new_address as u16, 0, 0),
+        )?;
         delay_us(10_000);
 
         let mut descriptor = [0u8; 18];
         let length = self.control_in(
-            1,
+            new_address,
             max_packet_size,
             SetupPacket::new(0x80, 6, 0x0100, 0, descriptor.len() as u16),
             &mut descriptor,
@@ -103,11 +152,103 @@ impl Dwc2 {
             return None;
         }
         Some(UsbDevice {
-            address: 1,
+            address: new_address,
             max_packet_size,
+            device_class: descriptor[4],
             vendor_id: u16::from_le_bytes([descriptor[8], descriptor[9]]),
             product_id: u16::from_le_bytes([descriptor[10], descriptor[11]]),
         })
+    }
+
+    pub unsafe fn control_read(
+        &mut self,
+        device: UsbDevice,
+        request_type: u8,
+        request: u8,
+        value: u16,
+        index: u16,
+        out: &mut [u8],
+    ) -> Option<usize> {
+        self.control_in(
+            device.address,
+            device.max_packet_size,
+            SetupPacket::new(request_type, request, value, index, out.len() as u16),
+            out,
+        )
+    }
+
+    pub unsafe fn control_write_no_data(
+        &mut self,
+        device: UsbDevice,
+        request_type: u8,
+        request: u8,
+        value: u16,
+        index: u16,
+    ) -> Option<()> {
+        self.control_no_data(
+            device.address,
+            device.max_packet_size,
+            SetupPacket::new(request_type, request, value, index, 0),
+        )
+    }
+
+    pub unsafe fn control_write(
+        &mut self,
+        device: UsbDevice,
+        request_type: u8,
+        request: u8,
+        value: u16,
+        index: u16,
+        bytes: &[u8],
+    ) -> Option<()> {
+        self.control_out(
+            device.address,
+            device.max_packet_size,
+            SetupPacket::new(request_type, request, value, index, bytes.len() as u16),
+            bytes,
+        )
+    }
+
+    pub unsafe fn bulk_out(
+        &mut self,
+        device: UsbDevice,
+        endpoint: u8,
+        max_packet_size: u16,
+        data_pid: u32,
+        bytes: &[u8],
+    ) -> Option<usize> {
+        transfer(
+            device.address,
+            endpoint,
+            ENDPOINT_TYPE_BULK,
+            max_packet_size,
+            false,
+            data_pid,
+            bytes.as_ptr(),
+            bytes.len(),
+            false,
+        )
+    }
+
+    pub unsafe fn bulk_in(
+        &mut self,
+        device: UsbDevice,
+        endpoint: u8,
+        max_packet_size: u16,
+        data_pid: u32,
+        bytes: &mut [u8],
+    ) -> Option<usize> {
+        transfer(
+            device.address,
+            endpoint,
+            ENDPOINT_TYPE_BULK,
+            max_packet_size,
+            true,
+            data_pid,
+            bytes.as_mut_ptr(),
+            bytes.len(),
+            false,
+        )
     }
 
     unsafe fn control_in(
@@ -117,35 +258,47 @@ impl Dwc2 {
         setup: SetupPacket,
         out: &mut [u8],
     ) -> Option<usize> {
+        if out.len() > 256 {
+            return None;
+        }
         write_setup(setup);
         transfer(
             address,
-            max_packet_size,
+            0,
+            ENDPOINT_TYPE_CONTROL,
+            max_packet_size as u16,
             false,
             PID_SETUP,
             core::ptr::addr_of!(SETUP.0).cast::<u8>(),
             8,
+            true,
         )?;
 
         core::ptr::write_bytes(core::ptr::addr_of_mut!(DATA.0).cast::<u8>(), 0, 256);
         let received = transfer(
             address,
-            max_packet_size,
+            0,
+            ENDPOINT_TYPE_CONTROL,
+            max_packet_size as u16,
             true,
             PID_DATA1,
             core::ptr::addr_of!(DATA.0).cast::<u8>(),
             out.len(),
+            true,
         )?;
         for (offset, byte) in out.iter_mut().take(received).enumerate() {
             *byte = core::ptr::read_volatile(core::ptr::addr_of!(DATA.0).cast::<u8>().add(offset));
         }
         transfer(
             address,
-            max_packet_size,
+            0,
+            ENDPOINT_TYPE_CONTROL,
+            max_packet_size as u16,
             false,
             PID_DATA1,
             core::ptr::addr_of!(DATA.0).cast::<u8>(),
             0,
+            true,
         )?;
         Some(received)
     }
@@ -159,19 +312,78 @@ impl Dwc2 {
         write_setup(setup);
         transfer(
             address,
-            max_packet_size,
+            0,
+            ENDPOINT_TYPE_CONTROL,
+            max_packet_size as u16,
             false,
             PID_SETUP,
             core::ptr::addr_of!(SETUP.0).cast::<u8>(),
             8,
+            true,
         )?;
         transfer(
             address,
-            max_packet_size,
+            0,
+            ENDPOINT_TYPE_CONTROL,
+            max_packet_size as u16,
             true,
             PID_DATA1,
             core::ptr::addr_of!(DATA.0).cast::<u8>(),
             0,
+            true,
+        )?;
+        Some(())
+    }
+
+    unsafe fn control_out(
+        &mut self,
+        address: u8,
+        max_packet_size: u8,
+        setup: SetupPacket,
+        bytes: &[u8],
+    ) -> Option<()> {
+        if bytes.len() > 256 {
+            return None;
+        }
+        write_setup(setup);
+        transfer(
+            address,
+            0,
+            ENDPOINT_TYPE_CONTROL,
+            max_packet_size as u16,
+            false,
+            PID_SETUP,
+            core::ptr::addr_of!(SETUP.0).cast::<u8>(),
+            8,
+            true,
+        )?;
+        for (offset, byte) in bytes.iter().enumerate() {
+            core::ptr::write_volatile(
+                core::ptr::addr_of_mut!(DATA.0).cast::<u8>().add(offset),
+                *byte,
+            );
+        }
+        transfer(
+            address,
+            0,
+            ENDPOINT_TYPE_CONTROL,
+            max_packet_size as u16,
+            false,
+            PID_DATA1,
+            core::ptr::addr_of!(DATA.0).cast::<u8>(),
+            bytes.len(),
+            true,
+        )?;
+        transfer(
+            address,
+            0,
+            ENDPOINT_TYPE_CONTROL,
+            max_packet_size as u16,
+            true,
+            PID_DATA1,
+            core::ptr::addr_of!(DATA.0).cast::<u8>(),
+            0,
+            true,
         )?;
         Some(())
     }
@@ -219,11 +431,14 @@ unsafe fn write_setup(setup: SetupPacket) {
 
 unsafe fn transfer(
     address: u8,
-    max_packet_size: u8,
+    endpoint: u8,
+    endpoint_type: u32,
+    max_packet_size: u16,
     direction_in: bool,
     pid: u32,
     buffer: *const u8,
     length: usize,
+    retry_nak: bool,
 ) -> Option<usize> {
     let packet_size = max_packet_size as usize;
     let packet_count = if length == 0 {
@@ -255,8 +470,9 @@ unsafe fn transfer(
             CHANNEL_BASE + HCCHAR,
             CHANNEL_ENABLE
                 | (address as u32) << DEVICE_ADDRESS_SHIFT
-                | ENDPOINT_TYPE_CONTROL
+                | endpoint_type
                 | direction
+                | (endpoint as u32) << ENDPOINT_NUMBER_SHIFT
                 | max_packet_size as u32,
         );
         wait_until(|| {
@@ -269,7 +485,7 @@ unsafe fn transfer(
                 != 0
         })?;
         let interrupt = read32(CHANNEL_BASE + HCINT);
-        if interrupt & INTERRUPT_NAK != 0 {
+        if interrupt & INTERRUPT_NAK != 0 && retry_nak {
             continue;
         }
         if interrupt & (INTERRUPT_STALL | INTERRUPT_ERRORS) != 0
