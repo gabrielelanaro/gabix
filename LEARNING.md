@@ -13,6 +13,13 @@ Approach: follow the "Writing an OS in Rust" tutorial (phil-opp.com) as the spin
 - [~] Lesson 26.4 ring-3 UDP echo server and host-forwarded E2E test
 - [x] Lesson 30 DHCP client and runtime network configuration
 
+### Raspberry Pi 2B target
+- [x] Share ARMv7 boot, memory, timer, SD, ext2, and userspace code
+- [x] Verify DWC2 USB host, hub, RNDIS Ethernet, DHCP, and UDP in QEMU
+- [x] Build the physical kernel and partitioned SD-card image
+- [x] Initialize Raspberry Pi USB power, DWC2 DMA, and LAN9512 Ethernet
+- [ ] Verify UART, SD, USB, Ethernet, DHCP, ping, and UDP on a physical Pi 2B
+
 ### TCP arc — the connection-oriented transport
 - [x] Lesson 31 TCP segment, three-way handshake, and first byte exchanged
 - [x] Lesson 32 Reliable stream — sliding window, retransmission, RTT
@@ -531,6 +538,15 @@ A milestone is a "demo-able" checkpoint. Worth a commit + tag + log entry.
 ---
 
 ## Progress Log
+
+### 2026-08-01 — Raspberry Pi 2B QEMU port and physical image
+- **ARM platform:** Added shared ARMv7 boot, memory mapping, heap allocation, timer interrupts, user-mode entry, system calls, and kernel return after user exit. QEMU `virt` and `raspi2b` use position-independent board adapters around the shared kernel code.
+- **Storage:** Added Raspberry Pi SDHCI sector reads, MBR partition lookup, ext2 file reads, and `/init.elf` loading. The image builder creates a FAT16 firmware partition and an ext2 root partition.
+- **Networking:** Added DWC2 USB host transfers, hub-child enumeration, QEMU RNDIS Ethernet, Raspberry Pi USB power and DMA initialization, and a LAN9512 Ethernet driver. The ARM network interface acquires a DHCP lease, replies to ARP and ICMP, and echoes UDP port 5555.
+- **Delivery:** Added the `pi-hardware` build at address `0x8000`, a verified `target/gabix-pi2.img`, and `docs/raspberry-pi-2.md` with image-writing, Ethernet, serial, network-test, and diagnosis steps.
+- **Verification:** The external behavioral suite passes 48/48 across x86, ARM `virt`, and QEMU `raspi2b`. It covers the Raspberry Pi boot, memory, timer, block, partition, ext2, userspace, USB, DHCP, UDP, lifecycle, hardware-kernel, and SD-image boundaries.
+- **Status:** Added and completed the QEMU and image items under the Raspberry Pi 2B target. Physical UART, SD, USB, LAN9512, DHCP, ping, and UDP verification remains unchecked because it requires the board.
+- **Next:** Write the image to an SD card, connect the Pi 2B to the router by Ethernet, follow the serial and network checklist, and fix any physical DWC2 or LAN9512 timing differences found on the board.
 
 ### 2026-08-01 — Modular kernel layout and shared ARM/x86 entry
 - **Architecture:** Moved x86 boot, interrupt controllers, GDT, timer, paging, syscall entry, and context-switch assembly under `src/arch/x86_64/`. Added architecture facades for interrupt control and timer ticks used by shared kernel modules.
