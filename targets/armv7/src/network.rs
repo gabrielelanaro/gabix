@@ -58,6 +58,11 @@ impl DhcpSession {
         NetworkEvent::None
     }
 
+    #[cfg(any(feature = "pi-hardware", feature = "pi-lifecycle"))]
+    pub fn is_configured(&self) -> bool {
+        self.interface.address() != [0; 4]
+    }
+
     fn send_dhcp(&self, device: &mut impl FrameDevice, payload: &[u8]) {
         let mut frame = [0u8; MAX_FRAME_LEN];
         if let Some(length) = self.interface.write_udp_from(

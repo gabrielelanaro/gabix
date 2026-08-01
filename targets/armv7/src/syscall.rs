@@ -14,10 +14,23 @@ pub struct UserFrame {
 pub unsafe fn dispatch(frame: &mut UserFrame) {
     let result = match frame.registers[7] {
         SYS_WRITE => write(frame.registers[0], frame.registers[1], frame.registers[2]),
-        SYS_EXIT => exit_success(),
+        SYS_EXIT => exit(frame),
         _ => u32::MAX,
     };
     frame.registers[0] = result;
+}
+
+unsafe fn exit(_frame: &mut UserFrame) -> u32 {
+    #[cfg(any(feature = "pi-hardware", feature = "pi-lifecycle"))]
+    {
+        _frame.return_address = crate::arm_kernel_after_user as *const () as usize as u32;
+        asm!("msr spsr_cxsf, {status}", status = in(reg) 0x13u32);
+        0
+    }
+    #[cfg(not(any(feature = "pi-hardware", feature = "pi-lifecycle")))]
+    {
+        exit_success()
+    }
 }
 
 unsafe fn write(fd: u32, address: u32, len: u32) -> u32 {
@@ -34,21 +47,14 @@ unsafe fn write(fd: u32, address: u32, len: u32) -> u32 {
     len
 }
 
+#[cfg(not(any(feature = "pi-hardware", feature = "pi-lifecycle")))]
 unsafe fn exit_success() -> ! {
-    #[cfg(not(feature = "pi-hardware"))]
-    {
-        let block = [0x0002_0026u32, 0];
-        asm!(
-            "svc #0x123456",
-            in("r0") 0x20u32,
-            in("r1") block.as_ptr(),
-        );
-    }
-    #[cfg(feature = "pi-hardware")]
-    loop {
-        asm!("wfi");
-    }
-    #[cfg(not(feature = "pi-hardware"))]
+    let block = [0x0002_0026u32, 0];
+    asm!(
+        "svc #0x123456",
+        in("r0") 0x20u32,
+        in("r1") block.as_ptr(),
+    );
     loop {
         asm!("wfi");
     }

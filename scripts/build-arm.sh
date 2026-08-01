@@ -3,8 +3,9 @@
 set -eu
 
 if [ "$#" -ne 1 ] ||
-    { [ "$1" != "virt" ] && [ "$1" != "raspi2b" ] && [ "$1" != "raspi2b-hardware" ]; }; then
-    echo "usage: $0 <virt|raspi2b|raspi2b-hardware>" >&2
+    { [ "$1" != "virt" ] && [ "$1" != "raspi2b" ] &&
+        [ "$1" != "raspi2b-hardware" ] && [ "$1" != "raspi2b-lifecycle" ]; }; then
+    echo "usage: $0 <virt|raspi2b|raspi2b-hardware|raspi2b-lifecycle>" >&2
     exit 2
 fi
 
@@ -28,6 +29,11 @@ case "$platform" in
         kernel_base=0x00008000
         feature=pi-hardware
         image_name=kernel7.img
+        ;;
+    raspi2b-lifecycle)
+        kernel_base=0x00010000
+        feature=pi-lifecycle
+        image_name=kernel-raspi2b-lifecycle.img
         ;;
 esac
 rust_sysroot=$(rustc --print sysroot)

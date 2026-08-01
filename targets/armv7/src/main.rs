@@ -30,10 +30,15 @@ use gabix_kernel::device::FrameDevice;
 use network::{DhcpSession, NetworkEvent};
 use platform::{PLATFORM, UART_BASE};
 
-#[cfg(feature = "pi-hardware")]
+#[cfg(any(feature = "pi-hardware", feature = "pi-lifecycle"))]
 const SEMIHOSTING: u32 = 0;
-#[cfg(not(feature = "pi-hardware"))]
+#[cfg(not(any(feature = "pi-hardware", feature = "pi-lifecycle")))]
 const SEMIHOSTING: u32 = 1;
+
+#[cfg(any(feature = "pi-hardware", feature = "pi-lifecycle"))]
+static mut PI_NETWORK: Option<raspi2b::ethernet::UsbEthernet> = None;
+#[cfg(any(feature = "pi-hardware", feature = "pi-lifecycle"))]
+static mut PI_DHCP: Option<DhcpSession> = None;
 
 #[cfg(all(feature = "virt", feature = "raspi2b"))]
 compile_error!("select one ARM platform");
@@ -195,9 +200,9 @@ extern "C" fn arm_kernel_entry() {
                     let mut session = DhcpSession::new(network.mac_address(), 0x4741_4258);
                     session.send_discover(&mut network);
                     #[cfg(not(feature = "pi-hardware"))]
-                    let deadline = raspi2b::timer::ticks() + 50;
+                    let deadline = raspi2b::timer::ticks() + 200;
                     #[cfg(feature = "pi-hardware")]
-                    let deadline = raspi2b::timer::ticks() + 60_000;
+                    let deadline = raspi2b::timer::ticks() + 1_000;
                     while raspi2b::timer::ticks() < deadline {
                         if let Some(frame) = network.receive() {
                             if matches!(
@@ -208,6 +213,11 @@ extern "C" fn arm_kernel_entry() {
                             }
                         }
                         asm!("wfi");
+                    }
+                    #[cfg(any(feature = "pi-hardware", feature = "pi-lifecycle"))]
+                    {
+                        PI_NETWORK = Some(network);
+                        PI_DHCP = Some(session);
                     }
                 }
             }
@@ -220,6 +230,36 @@ extern "C" fn arm_kernel_entry() {
             memory::allow_user_section(entry);
             memory::allow_user_section(user::USER_STACK_TOP - 1);
             user::enter(entry, user::USER_STACK_TOP);
+        }
+    }
+}
+
+#[cfg(any(feature = "pi-hardware", feature = "pi-lifecycle"))]
+#[no_mangle]
+extern "C" fn arm_kernel_after_user() -> ! {
+    let mut console = Pl011::new(UART_BASE);
+    write_line(&mut console, b"gabix raspi2b userspace exited");
+    let mut next_discover = raspi2b::timer::ticks();
+    unsafe {
+        loop {
+            let network = &mut *core::ptr::addr_of_mut!(PI_NETWORK);
+            let session = &mut *core::ptr::addr_of_mut!(PI_DHCP);
+            if let (Some(network), Some(session)) = (network.as_mut(), session.as_mut()) {
+                let now = raspi2b::timer::ticks();
+                if !session.is_configured() && now >= next_discover {
+                    session.send_discover(network);
+                    next_discover = now + 500;
+                }
+                if let Some(frame) = network.receive() {
+                    if matches!(
+                        session.handle_frame(network, frame.bytes()),
+                        NetworkEvent::Configured
+                    ) {
+                        write_line(&mut console, b"gabix raspi2b dhcp configured");
+                    }
+                }
+            }
+            asm!("wfi");
         }
     }
 }

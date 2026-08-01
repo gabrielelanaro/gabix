@@ -12,6 +12,7 @@ default = []
 virt = []
 raspi2b = []
 pi-hardware = ["raspi2b"]
+pi-lifecycle = ["raspi2b"]
 
 [profile.dev]
 panic = "abort"
