@@ -5,6 +5,8 @@ const SECTION_COUNT: usize = 4096;
 const SECTION_SIZE: u32 = 1024 * 1024;
 const SECTION_DESCRIPTOR: u32 = 0b10;
 const PRIVILEGED_READ_WRITE: u32 = 0b01 << 10;
+const ACCESS_PERMISSION_MASK: u32 = 0b11 << 10;
+const USER_READ_WRITE: u32 = 0b11 << 10;
 
 #[repr(C, align(16384))]
 struct TranslationTable([u32; SECTION_COUNT]);
@@ -58,4 +60,16 @@ pub unsafe fn enable_identity_mapping() -> bool {
 
     core::ptr::write_volatile(core::ptr::addr_of_mut!(MMU_PROBE), 0x4741_4249);
     core::ptr::read_volatile(core::ptr::addr_of!(MMU_PROBE)) == 0x4741_4249
+}
+
+pub unsafe fn allow_user_section(address: u32) {
+    let index = (address / SECTION_SIZE) as usize;
+    let table = &mut *core::ptr::addr_of_mut!(BOOT_TABLE);
+    table.0[index] = (table.0[index] & !ACCESS_PERMISSION_MASK) | USER_READ_WRITE;
+
+    let zero = 0u32;
+    asm!("dsb");
+    asm!("mcr p15, 0, {value}, c8, c7, 0", value = in(reg) zero);
+    asm!("dsb");
+    asm!("isb");
 }

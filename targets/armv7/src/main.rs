@@ -14,6 +14,10 @@ mod platform;
 #[cfg(feature = "virt")]
 mod scheduler;
 #[cfg(feature = "virt")]
+mod syscall;
+#[cfg(feature = "virt")]
+mod user;
+#[cfg(feature = "virt")]
 mod virt;
 
 #[cfg(feature = "virt")]
@@ -42,6 +46,7 @@ global_asm!(
     irq_stack_top = const 0x47fe_0000,
     rust_entry = sym arm_kernel_entry,
     irq_entry = sym arm_irq_entry,
+    svc_entry = sym arm_svc_entry,
 );
 
 #[cfg(feature = "raspi2b")]
@@ -54,6 +59,7 @@ global_asm!(
     irq_stack_top = const 0x07ff_0000,
     rust_entry = sym arm_kernel_entry,
     irq_entry = sym arm_irq_entry,
+    svc_entry = sym arm_svc_entry,
 );
 
 #[no_mangle]
@@ -86,6 +92,12 @@ extern "C" fn arm_kernel_entry() {
             asm!("wfi");
         }
         write_line(&mut console, b"gabix arm virt timer advanced");
+
+        if let Some(entry) = user::loaded_entry() {
+            memory::allow_user_section(entry);
+            memory::allow_user_section(user::USER_STACK_TOP - 1);
+            user::enter(entry, user::USER_STACK_TOP);
+        }
     }
 }
 
@@ -103,6 +115,18 @@ extern "C" fn arm_irq_entry() {
         virt::timer::handle_interrupt();
     }
 }
+
+#[no_mangle]
+#[cfg(feature = "virt")]
+extern "C" fn arm_svc_entry(frame: *mut syscall::UserFrame) {
+    unsafe {
+        syscall::dispatch(&mut *frame);
+    }
+}
+
+#[no_mangle]
+#[cfg(feature = "raspi2b")]
+extern "C" fn arm_svc_entry(_: *mut u32) {}
 
 #[panic_handler]
 fn panic(_: &PanicInfo) -> ! {

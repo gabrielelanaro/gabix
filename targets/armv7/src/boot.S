@@ -65,12 +65,19 @@ _start:
 .Lvectors:
     b .Lpark
     b .Lpark
-    b .Lpark
+    b .Lsvc
     b .Lpark
     b .Lpark
     b .Lpark
     b .Lirq
     b .Lpark
+
+.Lsvc:
+    stmdb sp!, {{r0-r12, lr}}
+    mov r0, sp
+    bl {svc_entry}
+    ldmia sp!, {{r0-r12, lr}}
+    movs pc, lr
 
 .Lirq:
     sub lr, lr, #4
