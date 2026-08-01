@@ -28,6 +28,8 @@ use core::alloc::Layout;
 use core::arch::asm;
 use core::arch::global_asm;
 use core::panic::PanicInfo;
+#[cfg(feature = "virt")]
+use gabix_kernel::device::FrameDevice;
 use platform::{PLATFORM, UART_BASE};
 
 #[cfg(all(feature = "virt", feature = "raspi2b"))]
@@ -102,6 +104,14 @@ extern "C" fn arm_kernel_entry() {
             if let Some(image) = gabix_kernel::fs::ext2::read_file(&mut block, b"/init.elf") {
                 disk_user_entry = user::load_elf(&image);
             }
+        }
+        if let Some(mut network) = virt::network::VirtioNet::probe() {
+            let mut frame = [0u8; 29];
+            frame[..6].fill(0xff);
+            frame[6..12].copy_from_slice(&network.mac_address());
+            frame[12..14].copy_from_slice(&0x88b5u16.to_be_bytes());
+            frame[14..].copy_from_slice(b"gabix-arm-frame");
+            network.transmit(&frame);
         }
         virt::timer::init();
         while virt::timer::ticks() < 2 {
