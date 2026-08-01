@@ -33,10 +33,13 @@ const STATUS_DRIVER_OK: u32 = 4;
 const STATUS_FEATURES_OK: u32 = 8;
 
 const TX_QUEUE: u32 = 1;
+const RX_QUEUE: u32 = 0;
 const QUEUE_SIZE: usize = 8;
 const DESC_NEXT: u16 = 1;
+const DESC_WRITE: u16 = 2;
 const NET_HEADER_LEN: usize = 12;
 const MIN_FRAME_LEN: usize = 60;
+const RX_BUFFER_LEN: usize = 2048;
 
 #[derive(Clone, Copy)]
 #[repr(C)]
@@ -88,6 +91,9 @@ struct NetHeader([u8; NET_HEADER_LEN]);
 #[repr(C, align(64))]
 struct FrameBuffer([u8; MAX_ETHERNET_FRAME_LEN]);
 
+#[repr(C, align(4096))]
+struct ReceiveBuffer([u8; RX_BUFFER_LEN]);
+
 static mut DESCRIPTORS: DescriptorTable = DescriptorTable([EMPTY_DESCRIPTOR; QUEUE_SIZE]);
 static mut AVAILABLE: AvailableRing = AvailableRing {
     flags: 0,
@@ -103,11 +109,26 @@ static mut USED: UsedRing = UsedRing {
 };
 static mut HEADER: NetHeader = NetHeader([0; NET_HEADER_LEN]);
 static mut FRAME: FrameBuffer = FrameBuffer([0; MAX_ETHERNET_FRAME_LEN]);
+static mut RX_DESCRIPTORS: DescriptorTable = DescriptorTable([EMPTY_DESCRIPTOR; QUEUE_SIZE]);
+static mut RX_AVAILABLE: AvailableRing = AvailableRing {
+    flags: 0,
+    index: 0,
+    ring: [0; QUEUE_SIZE],
+    used_event: 0,
+};
+static mut RX_USED: UsedRing = UsedRing {
+    flags: 0,
+    index: 0,
+    ring: [EMPTY_USED; QUEUE_SIZE],
+    available_event: 0,
+};
+static mut RX_BUFFER: ReceiveBuffer = ReceiveBuffer([0; RX_BUFFER_LEN]);
 
 pub struct VirtioNet {
     base: usize,
     mac: [u8; 6],
-    last_used: u16,
+    tx_last_used: u16,
+    rx_last_used: u16,
 }
 
 impl VirtioNet {
@@ -121,7 +142,8 @@ impl VirtioNet {
                 let mut device = Self {
                     base,
                     mac: [0; 6],
-                    last_used: 0,
+                    tx_last_used: 0,
+                    rx_last_used: 0,
                 };
                 if device.initialize() {
                     return Some(device);
@@ -158,6 +180,46 @@ impl VirtioNet {
             *byte = core::ptr::read_volatile((self.base + DEVICE_CONFIG + index) as *const u8);
         }
 
+        write32(self.base + QUEUE_SEL, RX_QUEUE);
+        if read32(self.base + QUEUE_NUM_MAX) < QUEUE_SIZE as u32 {
+            return false;
+        }
+        write32(self.base + QUEUE_NUM, QUEUE_SIZE as u32);
+        core::ptr::write_bytes(core::ptr::addr_of_mut!(RX_DESCRIPTORS), 0, 1);
+        core::ptr::write_bytes(core::ptr::addr_of_mut!(RX_AVAILABLE), 0, 1);
+        core::ptr::write_bytes(core::ptr::addr_of_mut!(RX_USED), 0, 1);
+        core::ptr::write_bytes(
+            core::ptr::addr_of_mut!(RX_BUFFER.0).cast::<u8>(),
+            0,
+            RX_BUFFER_LEN,
+        );
+        let rx_descriptors = &mut *core::ptr::addr_of_mut!(RX_DESCRIPTORS);
+        core::ptr::write_volatile(
+            &mut rx_descriptors.0[0],
+            Descriptor {
+                address: core::ptr::addr_of!(RX_BUFFER) as u64,
+                len: RX_BUFFER_LEN as u32,
+                flags: DESC_WRITE,
+                next: 0,
+            },
+        );
+        let rx_available = &mut *core::ptr::addr_of_mut!(RX_AVAILABLE);
+        core::ptr::write_volatile(&mut rx_available.ring[0], 0);
+        core::ptr::write_volatile(&mut rx_available.index, 1);
+        write_address(
+            self.base + QUEUE_DESC_LOW,
+            core::ptr::addr_of!(RX_DESCRIPTORS) as u64,
+        );
+        write_address(
+            self.base + QUEUE_DRIVER_LOW,
+            core::ptr::addr_of!(RX_AVAILABLE) as u64,
+        );
+        write_address(
+            self.base + QUEUE_DEVICE_LOW,
+            core::ptr::addr_of!(RX_USED) as u64,
+        );
+        write32(self.base + QUEUE_READY, 1);
+
         write32(self.base + QUEUE_SEL, TX_QUEUE);
         if read32(self.base + QUEUE_NUM_MAX) < QUEUE_SIZE as u32 {
             return false;
@@ -180,6 +242,8 @@ impl VirtioNet {
         );
         write32(self.base + QUEUE_READY, 1);
         write32(self.base + STATUS, feature_status | STATUS_DRIVER_OK);
+        barrier();
+        write32(self.base + QUEUE_NOTIFY, RX_QUEUE);
         true
     }
 }
@@ -242,16 +306,55 @@ impl FrameDevice for VirtioNet {
             write32(self.base + QUEUE_NOTIFY, TX_QUEUE);
 
             let used = &*core::ptr::addr_of!(USED);
-            while core::ptr::read_volatile(&used.index) == self.last_used {
+            while core::ptr::read_volatile(&used.index) == self.tx_last_used {
                 core::hint::spin_loop();
             }
-            self.last_used = self.last_used.wrapping_add(1);
+            self.tx_last_used = self.tx_last_used.wrapping_add(1);
             barrier();
         }
     }
 
     fn receive(&mut self) -> Option<EthernetFrame> {
-        None
+        unsafe {
+            let used = &*core::ptr::addr_of!(RX_USED);
+            if core::ptr::read_volatile(&used.index) == self.rx_last_used {
+                return None;
+            }
+
+            let element =
+                core::ptr::read_volatile(&used.ring[self.rx_last_used as usize % QUEUE_SIZE]);
+            self.rx_last_used = self.rx_last_used.wrapping_add(1);
+            barrier();
+
+            let written = (element.len as usize).min(RX_BUFFER_LEN);
+            let frame = if element.id == 0 && written > NET_HEADER_LEN {
+                let length = (written - NET_HEADER_LEN).min(MAX_ETHERNET_FRAME_LEN);
+                let source = core::ptr::addr_of!(RX_BUFFER.0)
+                    .cast::<u8>()
+                    .add(NET_HEADER_LEN);
+                let mut bytes = [0u8; MAX_ETHERNET_FRAME_LEN];
+                for (offset, byte) in bytes.iter_mut().take(length).enumerate() {
+                    *byte = core::ptr::read_volatile(source.add(offset));
+                }
+                Some(EthernetFrame::from_bytes(&bytes[..length]))
+            } else {
+                None
+            };
+
+            core::ptr::write_bytes(
+                core::ptr::addr_of_mut!(RX_BUFFER.0).cast::<u8>(),
+                0,
+                RX_BUFFER_LEN,
+            );
+            let available = &mut *core::ptr::addr_of_mut!(RX_AVAILABLE);
+            let index = core::ptr::read_volatile(&available.index);
+            core::ptr::write_volatile(&mut available.ring[index as usize % QUEUE_SIZE], 0);
+            barrier();
+            core::ptr::write_volatile(&mut available.index, index.wrapping_add(1));
+            barrier();
+            write32(self.base + QUEUE_NOTIFY, RX_QUEUE);
+            frame
+        }
     }
 }
 

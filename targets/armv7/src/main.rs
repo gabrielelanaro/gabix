@@ -90,6 +90,7 @@ extern "C" fn arm_kernel_entry() {
         if scheduler::task_resumes() {
             write_line(&mut console, b"gabix arm virt task resumed");
         }
+        virt::timer::init();
         if let Some(mut block) = virt::block::VirtioBlock::probe() {
             if let Some(sector) = block.try_read_sector(1) {
                 if sector.starts_with(b"GABIXARM") {
@@ -112,8 +113,18 @@ extern "C" fn arm_kernel_entry() {
             frame[12..14].copy_from_slice(&0x88b5u16.to_be_bytes());
             frame[14..].copy_from_slice(b"gabix-arm-frame");
             network.transmit(&frame);
+            let deadline = virt::timer::ticks() + 10;
+            while virt::timer::ticks() < deadline {
+                if let Some(received) = network.receive() {
+                    let bytes = received.bytes();
+                    if bytes.len() >= 30 && bytes[14..].starts_with(b"gabix-host-frame") {
+                        write_line(&mut console, b"gabix arm virt frame received");
+                        break;
+                    }
+                }
+                asm!("wfi");
+            }
         }
-        virt::timer::init();
         while virt::timer::ticks() < 2 {
             asm!("wfi");
         }
