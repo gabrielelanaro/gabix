@@ -1,6 +1,8 @@
 #![no_std]
 #![no_main]
 
+mod memory;
+
 #[cfg(feature = "virt")]
 use core::arch::asm;
 use core::arch::global_asm;
@@ -180,6 +182,9 @@ extern "C" fn arm_kernel_entry() {
     #[cfg(feature = "virt")]
     unsafe {
         prove_frame_allocation(&mut console);
+        if memory::enable_identity_mapping() {
+            write_line(&mut console, b"gabix arm virt memory mapped");
+        }
         virt_timer::init();
         while virt_timer::ticks() < 2 {
             asm!("wfi");
