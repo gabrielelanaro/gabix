@@ -7,7 +7,8 @@
 
 use core::ops::{Deref, DerefMut};
 use spin::{Mutex, MutexGuard};
-use x86_64::instructions::interrupts;
+
+use crate::arch::interrupts;
 
 pub struct IrqMutex<T: ?Sized> {
     inner: Mutex<T>,

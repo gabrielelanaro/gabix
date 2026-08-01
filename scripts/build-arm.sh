@@ -22,7 +22,7 @@ if [ ! -x "$llvm_objcopy" ]; then
     exit 1
 fi
 
-RUSTFLAGS="-C link-arg=-T$linker_script" \
+RUSTFLAGS="-C relocation-model=pic -C link-arg=-T$linker_script" \
     cargo build \
         --manifest-path "$manifest" \
         --target armv7a-none-eabihf \

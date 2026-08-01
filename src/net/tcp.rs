@@ -7,7 +7,6 @@ use crate::process::Pid;
 use alloc::collections::{BTreeMap, VecDeque};
 use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
-use core::sync::atomic::Ordering;
 
 pub const PROTOCOL_TCP: u8 = 6;
 pub const TCP_HEADER_LEN: usize = 20;
@@ -461,7 +460,7 @@ impl RttEstimator {
 }
 
 fn now_ticks() -> usize {
-    crate::interrupts::TICKS.load(Ordering::Relaxed)
+    crate::arch::timer_ticks()
 }
 
 fn build_at(tcb: &TcpControlBlock, sequence: u32, flags: u8, payload: &[u8]) -> Option<Outbound> {

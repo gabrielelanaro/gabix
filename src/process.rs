@@ -266,7 +266,7 @@ lazy_static! {
 /// at it; this just establishes the slot so `init_main` can point the
 /// main `Task` at `Pid(0)`.
 pub fn init() {
-    x86_64::instructions::interrupts::without_interrupts(|| {
+    crate::arch::interrupts::without_interrupts(|| {
         let mut table = PROCESS_TABLE.lock();
         let boot = Process::new("main", None, AddressSpace::from_current(), FdTable::new());
         let pid = table.allocate(boot);

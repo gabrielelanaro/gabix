@@ -10,9 +10,10 @@
 //! we need (the first ~60 bytes); the rest of the 1024-byte struct
 //! is metadata for journaling, quotas, etc. that we don't touch.
 
+use crate::drivers::BlockDevice;
 use crate::fs::{Filesystem, InodeKind};
 use crate::println;
-use crate::virtio::VirtioBlk;
+use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::vec::Vec;
 use spin::Mutex;
@@ -38,7 +39,7 @@ const EXT2_MIN_BLOCK_SIZE: u32 = 1024;
 /// Future optimization: a `read_bytes(offset, len)` primitive that
 /// handles multi-sector reads internally. For Lesson 10, two calls
 /// plus a concat is fine.
-pub fn read_superblock(dev: &mut VirtioBlk) -> Superblock {
+pub fn read_superblock(dev: &mut dyn BlockDevice) -> Superblock {
     println!("[ext2] reading superblock (sectors 2 and 3)");
 
     let sector2 = dev.read_sector(2);
@@ -375,7 +376,7 @@ impl Inode {
 /// For inode 2 on our disk: group 0, local_idx 1, bg_inode_table = 5,
 /// block_size 1024, inode_size 256. Byte offset = 5*1024 + 1*256 = 5376.
 pub fn read_inode(
-    dev: &mut VirtioBlk,
+    dev: &mut dyn BlockDevice,
     sb: &Superblock,
     bgd: &BlockGroupDescriptor,
     inode_num: u32,
@@ -411,7 +412,7 @@ pub fn read_inode(
 /// Read one ext2 block (1024 bytes = 2 sectors). Used by superblock,
 /// inode, and now directory readers. Assumes 1024-byte blocks — our
 /// disk's only size. A block-size-aware version is a future refactor.
-pub fn read_block(dev: &mut VirtioBlk, block_n: u32) -> [u8; 1024] {
+pub fn read_block(dev: &mut dyn BlockDevice, block_n: u32) -> [u8; 1024] {
     let sector_a = dev.read_sector((block_n as u64) * 2);
     let sector_b = dev.read_sector((block_n as u64) * 2 + 1);
     let mut buf = [0u8; 1024];
@@ -527,7 +528,7 @@ impl Dirent {
 /// `inode != 0`. Doesn't follow indirect/double/triple pointers —
 /// that's only needed for directories larger than 12 KiB, which ours
 /// isn't.
-pub fn walk_directory(dev: &mut VirtioBlk, dir_inode: &Inode) -> Vec<Dirent> {
+pub fn walk_directory(dev: &mut dyn BlockDevice, dir_inode: &Inode) -> Vec<Dirent> {
     let mut entries = Vec::new();
 
     for (i, &block_n) in dir_inode.block_pointers.iter().enumerate().take(12) {
@@ -564,7 +565,7 @@ pub fn walk_directory(dev: &mut VirtioBlk, dir_inode: &Inode) -> Vec<Dirent> {
 /// Look up `name` in a directory's entries. Returns the matching
 /// inode number, or None if not found. This is the path-resolution
 /// primitive: "/foo" becomes walk root → lookup_in_dir("foo").
-pub fn lookup_in_dir(dev: &mut VirtioBlk, dir_inode: &Inode, name: &[u8]) -> Option<u32> {
+pub fn lookup_in_dir(dev: &mut dyn BlockDevice, dir_inode: &Inode, name: &[u8]) -> Option<u32> {
     let entries = walk_directory(dev, dir_inode);
     for entry in entries {
         if entry.name == name {
@@ -582,7 +583,7 @@ pub fn lookup_in_dir(dev: &mut VirtioBlk, dir_inode: &Inode, name: &[u8]) -> Opt
 /// (block_pointers[0..12]). For Lesson 14: doesn't follow
 /// indirect/double/triple — files we care about (ELF binaries) fit
 /// in 12 KiB.
-pub fn read_file_data(dev: &mut VirtioBlk, file_inode: &Inode) -> Vec<u8> {
+pub fn read_file_data(dev: &mut dyn BlockDevice, file_inode: &Inode) -> Vec<u8> {
     let mut data = Vec::new();
     for &block_n in file_inode.block_pointers.iter().take(12) {
         if block_n == 0 {
@@ -604,24 +605,23 @@ pub fn read_file_data(dev: &mut VirtioBlk, file_inode: &Inode) -> Vec<u8> {
 /// enough. Multi-group disks would store a Vec<BlockGroupDescriptor>
 /// instead.
 pub struct Ext2 {
-    dev: Mutex<VirtioBlk>,
+    dev: Mutex<Box<dyn BlockDevice>>,
     sb: Superblock,
     bgd0: BlockGroupDescriptor,
 }
 
 impl Ext2 {
-    /// Take ownership of a VirtioBlk (already through the Lesson 6
-    /// handshake + Lesson 7 queue setup), read superblock and BGD 0,
-    /// return a mounted filesystem ready for reads.
-    pub fn new(mut dev: VirtioBlk) -> Self {
-        let sb = read_superblock(&mut dev);
+    /// Take ownership of an initialized block device, read the superblock and
+    /// BGD 0, and return a mounted filesystem ready for reads.
+    pub fn new(mut dev: Box<dyn BlockDevice>) -> Self {
+        let sb = read_superblock(dev.as_mut());
         assert!(
             sb.is_ext2(),
             "Ext2::new: disk isn't ext2 (magic=0x{:04X})",
             sb.magic
         );
 
-        let bgd0 = read_block_group_descriptor(&mut dev, &sb, 0);
+        let bgd0 = read_block_group_descriptor(dev.as_mut(), &sb, 0);
         println!(
             "[ext2] Ext2::new: magic=0x{:04X}, block_size={}, bgd0.inode_table={}",
             sb.magic, sb.block_size, bgd0.inode_table
@@ -645,9 +645,9 @@ impl Ext2 {
     }
 
     /// Lock the device and run `f` with mutable access. Internal helper.
-    fn with_dev<R>(&self, f: impl FnOnce(&mut VirtioBlk) -> R) -> R {
+    fn with_dev<R>(&self, f: impl FnOnce(&mut dyn BlockDevice) -> R) -> R {
         let mut guard = self.dev.lock();
-        f(&mut *guard)
+        f(guard.as_mut())
     }
 
     /// Read inode `inode_num` from disk. Thin wrapper around the
@@ -743,7 +743,7 @@ impl Filesystem for Ext2 {
 /// For our 1 MB disk with one block group, only `group_index = 0`
 /// makes sense — but the math generalizes to multi-group disks.
 pub fn read_block_group_descriptor(
-    dev: &mut VirtioBlk,
+    dev: &mut dyn BlockDevice,
     sb: &Superblock,
     group_index: u32,
 ) -> BlockGroupDescriptor {

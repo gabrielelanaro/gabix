@@ -532,6 +532,16 @@ A milestone is a "demo-able" checkpoint. Worth a commit + tag + log entry.
 
 ## Progress Log
 
+### 2026-08-01 — Modular kernel layout and shared ARM/x86 entry
+- **Architecture:** Moved x86 boot, interrupt controllers, GDT, timer, paging, syscall entry, and context-switch assembly under `src/arch/x86_64/`. Added architecture facades for interrupt control and timer ticks used by shared kernel modules.
+- **Drivers:** Split the 2,584-line virtio module into transport, queue, block, and network drivers under `src/drivers/virtio/`. Added `BlockDevice` and `FrameDevice` interfaces. ext2 owns a block-device interface, while `src/net/device.rs` owns protocol processing over a frame-device interface.
+- **Kernel services:** Reduced `src/syscall.rs` to syscall-number dispatch and moved handlers into file, socket, process, time, and user-memory modules. Split task scheduling from exit/wait/exec lifecycle operations. Moved ext2 under the filesystem subsystem.
+- **Targets:** Added the `no_std` `crates/kernel-core` crate. x86, ARM `virt`, and Raspberry Pi 2B call its shared boot operation through platform console adapters. ARM startup establishes a stack, enters Rust, and builds as position-independent code.
+- **Cleanup:** Removed the first-RX-MSI test diagnostic and several syscall/scheduler trace messages while moving behavior into focused modules. External test drivers remain outside the kernel.
+- **Verification:** `cargo check --features qemu-exit` passes. `tests/run.sh` passes 20/20, including x86 QEMU, ARM `virt`, Raspberry Pi 2B, process lifecycle, filesystem, UDP, TCP, DHCP, poll, and retransmission behavior.
+- **Status:** No roadmap checkbox changed. The refactor preserves the current milestone behavior.
+- **Next:** Add ARM implementations behind the architecture facades for interrupt control, timer ticks, paging, and task context, then move more shared kernel initialization into `gabix-kernel`.
+
 ### 2026-08-01 — External behavioral suite and independent system under test
 - **Boundary:** The kernel has one scenario-independent boot path in `src/boot.rs` and always executes `/init.elf`. External test scripts choose the init program by constructing the disk image. `main.rs` contains only module wiring, panic/allocation handlers, and `_start` delegation.
 - **Cleanup:** Removed inline boot demonstrations and assertions, the unused kernel test runner, scenario Cargo features, test-only network syscalls 900–903, direct TCP test syscalls 905–907, and in-kernel packet-loss injection. Renamed the QEMU status adapter feature to `qemu-exit`.

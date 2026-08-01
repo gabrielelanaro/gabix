@@ -5,28 +5,21 @@
 extern crate alloc;
 
 mod allocator;
-mod apic;
-mod boot;
+mod arch;
+mod drivers;
 mod elf;
 mod exec;
-mod ext2;
 mod frame_allocator;
 mod fs;
-mod gdt;
-mod interrupts;
 mod irq_mutex;
 mod memory;
 mod net;
-mod pci;
-mod pic;
-mod pit;
 mod process;
 mod qemu_exit;
 mod serial;
 mod syscall;
 mod task;
 mod vga_buffer;
-mod virtio;
 
 use bootloader::BootInfo;
 use core::alloc::Layout;
@@ -51,9 +44,7 @@ fn panic(info: &PanicInfo) -> ! {
         serial::SERIAL1.force_unlock();
     }
     println!("[panic] {}", info);
-    loop {
-        x86_64::instructions::hlt();
-    }
+    arch::x86_64::halt()
 }
 
 #[alloc_error_handler]
@@ -67,5 +58,5 @@ fn alloc_error(layout: Layout) -> ! {
 
 #[no_mangle]
 pub extern "C" fn _start(boot_info: &'static BootInfo) -> ! {
-    boot::run(boot_info)
+    arch::x86_64::boot::run(boot_info)
 }

@@ -43,6 +43,12 @@ impl fmt::Write for SerialPort {
     }
 }
 
+impl gabix_kernel::BootConsole for SerialPort {
+    fn write_byte(&mut self, byte: u8) {
+        SerialPort::write_byte(self, byte);
+    }
+}
+
 lazy_static! {
     /// Global handle to COM1. Locked because `_print` writes through it
     /// from any context including interrupt handlers.

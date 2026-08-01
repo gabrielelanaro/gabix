@@ -5,8 +5,7 @@ use core::arch::naked_asm;
 use core::sync::atomic::{AtomicUsize, Ordering};
 use lazy_static::lazy_static;
 use x86_64::structures::idt::{
-    HandlerFunc, InterruptDescriptorTable, InterruptStackFrame, PageFaultErrorCode,
-    PageFaultHandlerFunc,
+    HandlerFunc, InterruptDescriptorTable, InterruptStackFrame, PageFaultHandlerFunc,
 };
 
 /// Total number of timer ticks since boot. The handler increments this
@@ -18,7 +17,7 @@ pub static VIRTIO_NET_RX_INTERRUPTS: AtomicUsize = AtomicUsize::new(0);
 pub static VIRTIO_NET_TX_INTERRUPTS: AtomicUsize = AtomicUsize::new(0);
 
 /// Vector number for the timer (PIC IRQ 0, mapped to vector 0x20 = 32).
-/// Matches `crate::pic::PIC_1_OFFSET`.
+/// Matches `super::pic::PIC_1_OFFSET`.
 const TIMER_VECTOR: u8 = 0x20;
 pub const VIRTIO_BLK_VECTOR: u8 = 0x21;
 pub const VIRTIO_NET_RX_VECTOR: u8 = 0x30;
@@ -83,7 +82,7 @@ unsafe extern "C" fn virtio_blk_wrapper() {
 
 extern "C" fn virtio_blk_inner() {
     VIRTIO_BLK_INTERRUPTS.fetch_add(1, Ordering::Relaxed);
-    crate::apic::end_of_interrupt();
+    super::apic::end_of_interrupt();
 }
 
 /// Naked wrapper for the virtio-net RX interrupt (vector 0x30).
@@ -122,10 +121,10 @@ unsafe extern "C" fn virtio_net_rx_wrapper() {
 /// way (see the timer ISR's no-printing rule from Lesson 28).
 extern "C" fn virtio_net_rx_inner() {
     VIRTIO_NET_RX_INTERRUPTS.fetch_add(1, Ordering::Relaxed);
-    if let Some(pid) = crate::virtio::net_task_pid() {
+    if let Some(pid) = crate::net::device::net_task_pid() {
         crate::task::wake(pid);
     }
-    crate::apic::end_of_interrupt();
+    super::apic::end_of_interrupt();
 }
 
 /// Naked wrapper for the virtio-net TX interrupt (vector 0x31). The
@@ -148,7 +147,7 @@ unsafe extern "C" fn virtio_net_tx_wrapper() {
 
 extern "C" fn virtio_net_tx_inner() {
     VIRTIO_NET_TX_INTERRUPTS.fetch_add(1, Ordering::Relaxed);
-    crate::apic::end_of_interrupt();
+    super::apic::end_of_interrupt();
 }
 
 /// Load our IDT. After this, the CPU consults our table when an
@@ -274,18 +273,18 @@ extern "C" fn timer_inner() {
     TICKS.fetch_add(1, Ordering::Relaxed);
     // Bounded-latency backstop for deferred RX while virtio-net MSI-X
     // delivery remains unreliable in the current QEMU configuration.
-    if let Some(pid) = crate::virtio::net_task_pid() {
+    if let Some(pid) = crate::net::device::net_task_pid() {
         crate::task::wake(pid);
     }
     // Send EOI before preempting so the next tick can fire.
     unsafe {
-        crate::pic::PICS
+        super::pic::PICS
             .lock()
             .notify_end_of_interrupt(TIMER_VECTOR);
     }
     // The legacy PIC reaches the CPU through the Local APIC's ExtINT
     // virtual-wire input once xAPIC is enabled. Both controllers need EOI.
-    crate::apic::end_of_interrupt();
+    super::apic::end_of_interrupt();
     // Preempt: switch to the next task. When we eventually get switched
     // back to, we resume here, then iretq returns to wherever the
     // interrupted task was.

@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+gabix-kernel = { path = "crates/kernel-core" }
 bootloader = { version = "0.9", features = ["map_physical_memory"] }
 spin = "0.9"
 lazy_static = { version = "1.4", features = ["spin_no_std"] }

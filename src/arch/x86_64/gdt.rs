@@ -44,7 +44,7 @@ lazy_static! {
         // the SYSRET math works. SYSRET computes:
         //   CS = STAR[48:63] + 16, with RPL=3 forced
         //   SS = STAR[48:63] + 8,  with RPL=3 forced
-        // We set STAR[48:63] = 0x10 in syscall::init, which gives:
+        // We set STAR[48:63] = 0x10 in the x86 syscall entry setup, which gives:
         //   CS = 0x20 (= index 4 = USER_CODE) → 0x23 with RPL
         //   SS = 0x18 (= index 3 = USER_DATA) → 0x1B with RPL
         // If we put user_code at index 3 (sel 0x18) and user_data at index 4
@@ -119,7 +119,7 @@ pub fn init() {
 /// task's context — corrupting it for the next switch back.
 ///
 /// Called from `task::yield_now` after picking the new task, alongside
-/// `syscall::set_kernel_rsp` (which is the analogous update for the
+/// `arch::x86_64::syscall::set_kernel_rsp` (the analogous update for the
 /// `syscall` instruction's stack swap).
 pub fn set_rsp0(rsp: u64) {
     // SAFETY: single CPU, no concurrent access. The TSS is read by the

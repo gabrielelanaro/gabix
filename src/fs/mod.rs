@@ -15,6 +15,8 @@
 //! hand `Arc<File>` clones out so the scheduler and the syscall handler can
 //! both touch the same File without aliasing.
 
+pub mod ext2;
+
 use crate::irq_mutex::IrqMutex;
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;

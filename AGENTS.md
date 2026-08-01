@@ -23,9 +23,14 @@ This file is the project's spine. It serves three purposes:
 ### Other files
 
 - `src/main.rs` — kernel entry point and panic/allocation handlers.
-- `src/boot.rs` — x86 boot orchestration; always executes `/init.elf`.
-- `src/` — kernel subsystems: memory, processes, syscalls, filesystems, and devices.
-- `targets/armv7/` — position-independent ARMv7 startup shared by QEMU `virt` and Raspberry Pi 2B.
+- `src/arch/x86_64/` — x86 boot, paging, interrupts, context switching, and syscall entry.
+- `src/drivers/` — device interfaces plus PCI and virtio block/network implementations.
+- `src/fs/` — VFS objects and the ext2 implementation.
+- `src/net/` — protocol state, sockets, and the architecture-independent frame-device owner.
+- `src/syscall/` — file, socket, process, time, and user-memory syscall handlers; `src/syscall.rs` only dispatches numbers.
+- `src/task/` — scheduler mechanics and process lifecycle operations.
+- `crates/kernel-core/` — architecture-neutral boot code shared by x86 and ARM.
+- `targets/armv7/` — position-independent ARMv7 adapters for QEMU `virt` and Raspberry Pi 2B.
 - `tests/` — external behavioral test drivers and user-space fixture programs.
 - `scripts/make-disk.sh` — builds an ext2 disk and installs a caller-selected program as `/init.elf`.
 

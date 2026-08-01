@@ -6,6 +6,7 @@
     .equ UART_BASE, {uart_base}
     .equ GPIO_BASE, {gpio_base}
     .equ CONFIGURE_GPIO, {configure_gpio}
+    .equ STACK_TOP, {stack_top}
 
 _start:
     cpsid if
@@ -14,6 +15,8 @@ _start:
     mrc p15, 0, r0, c0, c0, 5
     ands r0, r0, #3
     bne .Lpark
+
+    ldr sp, =STACK_TOP
 
     .if CONFIGURE_GPIO
     ldr r4, =GPIO_BASE
@@ -39,17 +42,7 @@ _start:
     ldr r0, =0x301
     str r0, [r4, #0x30]
 
-    adr r1, {message}
-.Lwrite:
-    ldrb r2, [r1], #1
-    cmp r2, #0
-    beq .Lexit
-.Lwait_uart:
-    ldr r3, [r4, #0x18]
-    tst r3, #0x20
-    bne .Lwait_uart
-    str r2, [r4]
-    b .Lwrite
+    bl {rust_entry}
 
 .Lexit:
     mov r0, #0x20

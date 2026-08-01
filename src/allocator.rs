@@ -12,7 +12,8 @@
 
 use core::alloc::{GlobalAlloc, Layout};
 use linked_list_allocator::LockedHeap;
-use x86_64::instructions::interrupts;
+
+use crate::arch::interrupts;
 
 pub struct IrqLockedHeap {
     inner: LockedHeap,

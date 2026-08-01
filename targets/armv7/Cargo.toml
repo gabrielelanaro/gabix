@@ -3,6 +3,9 @@ name = "gabix-armv7"
 version = "0.1.0"
 edition = "2021"
 
+[dependencies]
+gabix-kernel = { path = "../../crates/kernel-core" }
+
 [features]
 default = []
 virt = []
