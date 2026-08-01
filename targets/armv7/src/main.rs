@@ -1,6 +1,10 @@
 #![no_std]
 #![no_main]
+#![feature(alloc_error_handler)]
 
+extern crate alloc;
+
+mod allocator;
 mod console;
 #[cfg(feature = "virt")]
 mod memory;
@@ -11,6 +15,7 @@ mod virt;
 #[cfg(feature = "virt")]
 use console::write_line;
 use console::Pl011;
+use core::alloc::Layout;
 #[cfg(feature = "virt")]
 use core::arch::asm;
 use core::arch::global_asm;
@@ -51,6 +56,9 @@ global_asm!(
 extern "C" fn arm_kernel_entry() {
     let mut console = Pl011::new(UART_BASE);
     gabix_kernel::announce_boot(&mut console, PLATFORM);
+    unsafe {
+        allocator::init();
+    }
 
     #[cfg(feature = "virt")]
     unsafe {
@@ -60,11 +68,24 @@ extern "C" fn arm_kernel_entry() {
         if memory::enable_identity_mapping() {
             write_line(&mut console, b"gabix arm virt memory mapped");
         }
+        let boxed = alloc::boxed::Box::new(40u32);
+        let mut values = alloc::vec::Vec::new();
+        values.extend_from_slice(&[1u32, 1]);
+        if *boxed + values.iter().sum::<u32>() == 42 {
+            write_line(&mut console, b"gabix arm virt heap allocated");
+        }
         virt::timer::init();
         while virt::timer::ticks() < 2 {
             asm!("wfi");
         }
         write_line(&mut console, b"gabix arm virt timer advanced");
+    }
+}
+
+#[alloc_error_handler]
+fn allocation_error(_: Layout) -> ! {
+    loop {
+        core::hint::spin_loop();
     }
 }
 

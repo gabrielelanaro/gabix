@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 gabix-kernel = { path = "../../crates/kernel-core" }
+linked_list_allocator = "0.10"
 
 [features]
 default = []
