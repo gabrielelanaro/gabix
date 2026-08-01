@@ -1,4 +1,5 @@
 use core::arch::naked_asm;
+use gabix_kernel::elf::Elf32;
 
 const USER_HEADER: *const u32 = 0x4100_0000 as *const u32;
 const USER_MAGIC: u32 = 0x5849_4247;
@@ -12,6 +13,27 @@ pub fn loaded_entry() -> Option<u32> {
             None
         }
     }
+}
+
+pub unsafe fn load_elf(bytes: &[u8]) -> Option<u32> {
+    let elf = Elf32::parse(bytes)?;
+    let loaded = elf.load_segments(|segment| {
+        let Some(end) = segment.virtual_address.checked_add(segment.memory_size) else {
+            return false;
+        };
+        if segment.virtual_address < 0x4100_0000 || end > USER_STACK_TOP - 0x10_0000 {
+            return false;
+        }
+
+        crate::memory::allow_user_range(segment.virtual_address, segment.memory_size);
+        let destination = segment.virtual_address as *mut u8;
+        core::ptr::write_bytes(destination, 0, segment.memory_size as usize);
+        for (offset, byte) in segment.data.iter().enumerate() {
+            core::ptr::write_volatile(destination.add(offset), *byte);
+        }
+        true
+    });
+    loaded.then_some(elf.entry())
 }
 
 #[unsafe(naked)]

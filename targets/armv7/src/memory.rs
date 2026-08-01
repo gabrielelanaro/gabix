@@ -73,3 +73,14 @@ pub unsafe fn allow_user_section(address: u32) {
     asm!("dsb");
     asm!("isb");
 }
+
+pub unsafe fn allow_user_range(start: u32, len: u32) {
+    let Some(end) = start.checked_add(len) else {
+        return;
+    };
+    let mut section = start / SECTION_SIZE * SECTION_SIZE;
+    while section < end {
+        allow_user_section(section);
+        section = section.saturating_add(SECTION_SIZE);
+    }
+}

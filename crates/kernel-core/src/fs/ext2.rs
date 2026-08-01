@@ -142,8 +142,12 @@ fn read_inode_data(
 ) -> Vec<u8> {
     let mut data = Vec::new();
     for &block_number in inode.blocks.iter().take(12) {
-        if block_number == 0 {
+        if data.len() >= inode.size as usize {
             break;
+        }
+        if block_number == 0 {
+            data.resize(data.len() + superblock.block_size as usize, 0);
+            continue;
         }
         let block = read_block(device, superblock, block_number);
         data.extend_from_slice(&block);

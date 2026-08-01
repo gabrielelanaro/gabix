@@ -72,6 +72,7 @@ extern "C" fn arm_kernel_entry() {
 
     #[cfg(feature = "virt")]
     unsafe {
+        let mut disk_user_entry = None;
         if memory::frame_is_reused() {
             write_line(&mut console, b"gabix arm virt frame reused");
         }
@@ -98,6 +99,9 @@ extern "C" fn arm_kernel_entry() {
                     write_line(&mut console, b"gabix arm virt file read");
                 }
             }
+            if let Some(image) = gabix_kernel::fs::ext2::read_file(&mut block, b"/init.elf") {
+                disk_user_entry = user::load_elf(&image);
+            }
         }
         virt::timer::init();
         while virt::timer::ticks() < 2 {
@@ -105,7 +109,7 @@ extern "C" fn arm_kernel_entry() {
         }
         write_line(&mut console, b"gabix arm virt timer advanced");
 
-        if let Some(entry) = user::loaded_entry() {
+        if let Some(entry) = disk_user_entry.or_else(user::loaded_entry) {
             memory::allow_user_section(entry);
             memory::allow_user_section(user::USER_STACK_TOP - 1);
             user::enter(entry, user::USER_STACK_TOP);

@@ -3,6 +3,7 @@
 extern crate alloc;
 
 pub mod device;
+pub mod elf;
 pub mod fs;
 pub mod memory;
 

@@ -17,6 +17,8 @@ rustc \
     -C panic=abort \
     -C relocation-model=static \
     -C link-arg=-T"$REPO_ROOT/tests/fixtures/armv7-user.ld" \
+    -C link-arg=-z \
+    -C link-arg=max-page-size=0x1000 \
     -o "$fixture_elf" \
     "$REPO_ROOT/tests/fixtures/arm_syscall.rs"
 "$llvm_objcopy" -O binary "$fixture_elf" "$fixture_bin"
