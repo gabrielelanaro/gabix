@@ -10,7 +10,7 @@ out=$(mktemp /tmp/mini-os-test-raspi2b-partition.XXXXXX)
 qemu=${QEMU_SYSTEM_ARM:-/tmp/gabix-qemu-arm/root/usr/bin/qemu-system-arm}
 
 (cd "$REPO_ROOT" && sh scripts/make-arm-disk.sh tests/fixtures/arm_syscall.rs "$root") >/dev/null
-python3 "$TESTS_DIR/support/mbr_image.py" "$disk" "0x83:2048:$root"
+python3 "$REPO_ROOT/scripts/assemble-mbr.py" "$disk" "0x83:2048:$root"
 
 QEMU_MODULE_DIR=/tmp/gabix-qemu-arm/root/usr/lib/qemu \
 "$TIMEOUT_CMD" "$QEMU_TIMEOUT" "$qemu" \
