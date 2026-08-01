@@ -1,5 +1,7 @@
 #![no_std]
 
+pub mod memory;
+
 /// Byte-oriented console supplied by a platform adapter.
 pub trait BootConsole {
     fn write_byte(&mut self, byte: u8);

@@ -1,12 +1,14 @@
 #![no_std]
 #![no_main]
 
-use core::arch::global_asm;
 #[cfg(feature = "virt")]
 use core::arch::asm;
+use core::arch::global_asm;
 use core::panic::PanicInfo;
 #[cfg(feature = "virt")]
 use core::sync::atomic::{AtomicUsize, Ordering};
+#[cfg(feature = "virt")]
+use gabix_kernel::memory::FrameAllocator;
 use gabix_kernel::{BootConsole, Platform};
 
 #[cfg(all(feature = "virt", feature = "raspi2b"))]
@@ -78,6 +80,25 @@ fn write_line(console: &mut impl BootConsole, line: &[u8]) {
         console.write_byte(byte);
     }
     console.write_byte(b'\n');
+}
+
+#[cfg(feature = "virt")]
+static mut FRAMES: FrameAllocator = FrameAllocator::empty();
+
+#[cfg(feature = "virt")]
+unsafe fn prove_frame_allocation(console: &mut impl BootConsole) {
+    let frames = &mut *core::ptr::addr_of_mut!(FRAMES);
+    frames.reset(0x4000_0000, 0x4800_0000);
+    frames.add_usable_range(0x4010_0000, 0x47f0_0000);
+
+    let first = frames.allocate().expect("ARM virt has usable RAM");
+    let second = frames.allocate().expect("ARM virt has a second frame");
+    frames.deallocate(first);
+    let reused = frames.allocate().expect("released frame is reusable");
+
+    if first == reused && first != second {
+        write_line(console, b"gabix arm virt frame reused");
+    }
 }
 
 #[cfg(feature = "virt")]
@@ -158,6 +179,7 @@ extern "C" fn arm_kernel_entry() {
 
     #[cfg(feature = "virt")]
     unsafe {
+        prove_frame_allocation(&mut console);
         virt_timer::init();
         while virt_timer::ticks() < 2 {
             asm!("wfi");
