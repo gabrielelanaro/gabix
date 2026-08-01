@@ -6,6 +6,7 @@ pub mod device;
 pub mod elf;
 pub mod fs;
 pub mod memory;
+pub mod net;
 
 /// Byte-oriented console supplied by a platform adapter.
 pub trait BootConsole {
