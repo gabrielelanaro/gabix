@@ -1,0 +1,683 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Lesson 5 — PCI Bus Enumeration</title>
+<link rel="stylesheet" href="../assets/lesson.css">
+<script src="../assets/code-highlight.js" defer></script>
+<style>
+  .bitfield {
+    display: grid;
+    grid-template-columns: repeat(8, 1fr);
+    gap: 2px;
+    margin: 1rem 0;
+    font-family: var(--font-mono);
+    font-size: 0.78rem;
+  }
+  .bitfield-cell {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    padding: 0.5rem 0.3rem;
+    text-align: center;
+    color: var(--text-dim);
+  }
+  .bitfield-cell.field-enable { background: #fef3c7; color: var(--accent); border-color: var(--accent); font-weight: 600; }
+  .bitfield-cell.field-bus { background: #dbeafe; color: #1e40af; border-color: #3b82f6; font-weight: 600; }
+  .bitfield-cell.field-device { background: #fce7f3; color: #be185d; border-color: #ec4899; font-weight: 600; }
+  .bitfield-cell.field-func { background: #dcfce7; color: #15803d; border-color: #22c55e; font-weight: 600; }
+  .bitfield-cell.field-offset { background: #fef3c7; color: #b45309; border-color: #f59e0b; font-weight: 600; }
+  .bitfield-cell.field-reserved { background: var(--surface-soft); color: var(--text-faint); }
+  .bitfield-row-label {
+    grid-column: 1 / -1;
+    text-align: center;
+    font-size: 0.72rem;
+    color: var(--text-faint);
+    font-style: italic;
+    margin-bottom: 0.3rem;
+  }
+
+  .config-layout {
+    background: var(--code-bg);
+    color: var(--code-fg);
+    padding: 1rem 1.25rem;
+    border-radius: 6px;
+    font-family: var(--font-mono);
+    font-size: 0.78rem;
+    line-height: 1.6;
+    margin: 1rem 0;
+    overflow-x: auto;
+  }
+  .config-layout .offset { color: var(--code-comment); }
+  .config-layout .field { color: var(--code-keyword); }
+  .config-layout .desc { color: #cbd5e1; }
+
+  /* Reuse the pipeline <details> pattern from Lesson 4 */
+  .pci-concept {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--accent);
+    border-radius: 4px;
+    margin: 1rem 0;
+    position: relative;
+  }
+  .pci-concept > summary {
+    padding: 0.6rem 2.2rem 0.6rem 0.9rem;
+    cursor: pointer;
+    list-style: none;
+    position: relative;
+    font-family: var(--font-sans);
+    font-weight: 600;
+    font-size: 0.95rem;
+    color: var(--text);
+  }
+  .pci-concept > summary::-webkit-details-marker { display: none; }
+  .pci-concept > summary::after {
+    content: "▸";
+    position: absolute;
+    right: 0.9rem;
+    top: 50%;
+    transform: translateY(-50%);
+    color: var(--text-faint);
+    transition: transform 0.15s ease;
+  }
+  .pci-concept[open] > summary::after {
+    transform: translateY(-50%) rotate(90deg);
+  }
+  .pci-concept[open] > summary {
+    border-bottom: 1px dashed var(--border);
+  }
+  .pci-concept-body {
+    padding: 0.7rem 0.9rem 0.8rem;
+    font-family: var(--font-serif);
+    font-size: 0.92rem;
+    line-height: 1.55;
+    color: var(--text);
+  }
+  .pci-concept-body p { margin: 0 0 0.6rem; }
+  .pci-concept-body p:last-child { margin-bottom: 0; }
+  .pci-concept-body strong { color: var(--accent); }
+
+  .step {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1rem 1.25rem;
+    margin: 1.25rem 0;
+  }
+  .step-num {
+    font-family: var(--font-mono);
+    font-size: 0.78rem;
+    font-weight: 600;
+    color: var(--accent);
+    background: var(--accent-soft);
+    padding: 2px 8px;
+    border-radius: 3px;
+    margin-right: 0.5rem;
+  }
+  .step-title {
+    font-family: var(--font-sans);
+    font-weight: 600;
+    font-size: 1rem;
+    margin-bottom: 0.4rem;
+  }
+  .step-detail {
+    font-family: var(--font-serif);
+    font-size: 0.95rem;
+    color: var(--text);
+  }
+  .step-detail p:last-child { margin-bottom: 0; }
+
+  .decision {
+    border-left: 3px solid var(--accent);
+    padding: 0.4rem 0 0.4rem 1rem;
+    margin: 1rem 0;
+  }
+  .decision strong { color: var(--accent); }
+
+  .snippet-meta {
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
+    color: var(--text-dim);
+    margin: 1.5rem 0 0.35rem;
+    display: flex;
+    align-items: baseline;
+    gap: 0.6rem;
+  }
+  .snippet-meta .snippet-file {
+    color: var(--accent);
+    font-weight: 600;
+    background: var(--accent-soft);
+    padding: 1px 6px;
+    border-radius: 3px;
+  }
+  .snippet-meta .snippet-what {
+    color: var(--text-faint);
+    font-style: italic;
+  }
+  .snippet-meta + pre { margin-top: 0; }
+</style>
+</head>
+<body>
+<article class="lesson">
+
+  <header class="lesson-header">
+    <div class="lesson-eyebrow">Lesson 5 · M4 · Disk path — find the device</div>
+    <h1 class="lesson-title">PCI Bus Enumeration</h1>
+    <p class="lesson-subtitle">How the kernel discovers what hardware exists. Walk the PCI bus, find the virtio-blk device QEMU exposes.</p>
+    <div class="lesson-meta">
+      <span><strong>Read time</strong> ~20 min</span>
+      <span><strong>Build time</strong> ~30–45 min</span>
+      <span><strong>Prereq</strong> <a href="4.01-storage-stack-overview.html">Lesson 4</a></span>
+    </div>
+  </header>
+
+  <div class="content">
+
+  <p class="lead">
+    The disk is attached to QEMU but the kernel has no idea it's there.
+    Before we can talk to virtio-blk, we have to <em>find</em> it. On
+    modern x86, the discovery protocol is <strong>PCI</strong>
+    (Peripheral Component Interconnect) — a standard bus that lets the
+    CPU enumerate every attached device, read its identity, and configure
+    its memory mappings. This lesson: what PCI is, how to access it via
+    I/O ports, how to walk the bus, and how to find the virtio-blk
+    device specifically.
+  </p>
+
+  <h2>Why PCI exists</h2>
+
+  <p>
+    Before PCI, expansion cards used the ISA bus. ISA had no discovery
+    protocol — every device had hardcoded memory and interrupt settings,
+    configured via physical jumpers on the card. Adding a new device
+    meant consulting manuals to avoid conflicts with existing devices.
+    It was awful.
+  </p>
+
+  <p>
+    PCI (1992) introduced a <strong>configuration space</strong>: a
+    standard 256-byte region per device that the CPU can read to find
+    out what the device is, and write to assign it memory regions,
+    interrupts, and enable bus mastering. The OS doesn't need to know
+    about specific device models — it walks the bus, reads the vendor
+    and device IDs, and loads the right driver. Plug-and-play becomes
+    possible.
+  </p>
+
+  <p>
+    PCIe (Express) is the modern serial successor, but it preserves the
+    PCI configuration space interface — old code still works. When we
+    say "PCI" in these lessons, we mean the configuration-space access
+    protocol that PCI defined and PCIe preserves.
+  </p>
+
+  <h2>The 256-byte configuration space</h2>
+
+  <p>
+    Every PCI device has a 256-byte configuration space. The first 64
+    bytes are standardized — every device has the same layout. The
+    remaining 192 bytes are device-specific. We only need the first 64.
+  </p>
+
+  <div class="config-layout">
+<span class="offset">0x00</span>  <span class="field">vendor_id</span>      <span class="desc">u16 — identifies the manufacturer (0xFFFF = no device)</span>
+<span class="offset">0x02</span>  <span class="field">device_id</span>      <span class="desc">u16 — identifies the specific device model</span>
+<span class="offset">0x04</span>  <span class="field">command</span>        <span class="desc">u16 — bus mastering, I/O access, memory access enable bits</span>
+<span class="offset">0x06</span>  <span class="field">status</span>          <span class="desc">u16 — capabilities list, etc.</span>
+<span class="offset">0x08</span>  <span class="field">revision_id</span>     <span class="desc">u8  — hardware revision</span>
+<span class="offset">0x09</span>  <span class="field">class_code</span>      <span class="desc">u24 — base class, subclass, programming interface (3 bytes)</span>
+<span class="offset">0x0C</span>  <span class="field">cache_line_size</span> <span class="desc">u8</span>
+<span class="offset">0x0D</span>  <span class="field">latency_timer</span>   <span class="desc">u8</span>
+<span class="offset">0x0E</span>  <span class="field">header_type</span>     <span class="desc">u8 — bit 7 = multifunction device</span>
+<span class="offset">0x0F</span>  <span class="field">BIST</span>            <span class="desc">u8 — built-in self-test</span>
+<span class="offset">0x10</span>  <span class="field">BAR0</span>            <span class="desc">u32 — Base Address Register 0</span>
+<span class="offset">0x14</span>  <span class="field">BAR1</span>            <span class="desc">u32 — Base Address Register 1</span>
+<span class="offset">0x18</span>  <span class="field">BAR2</span>            <span class="desc">u32</span>
+<span class="offset">0x1C</span>  <span class="field">BAR3</span>            <span class="desc">u32</span>
+<span class="offset">0x20</span>  <span class="field">BAR4</span>            <span class="desc">u32</span>
+<span class="offset">0x24</span>  <span class="field">BAR5</span>            <span class="desc">u32 — six Base Address Registers total</span>
+<span class="offset">0x28-3F</span>  <span class="field">cardbus / etc.</span> <span class="desc">varies by header type</span></div>
+
+  <p>
+    For this lesson we care about three fields:
+    <code>vendor_id</code> (who made it), <code>device_id</code> (which
+    model), and the <code>BAR</code>s (where the device's registers live
+    in memory).
+  </p>
+
+  <details class="pci-concept">
+    <summary>Read-only vs writable: which fields can the OS change?</summary>
+    <div class="pci-concept-body">
+      <p>
+        Config space is mixed. The <strong>identity fields</strong> are
+        hardwired by the manufacturer and ignore writes &mdash; the
+        device reports them, you can't change them:
+      </p>
+      <p>
+        &bull; <code>vendor_id</code>, <code>device_id</code>,
+        <code>revision_id</code> &mdash; who made it and which model.<br>
+        &bull; <code>class_code</code> &mdash; what kind of device
+        (network, storage, display).<br>
+        &bull; <code>header_type</code> &mdash; layout of the rest of
+        the header (we'll see type 0 for normal devices).<br>
+        &bull; <code>BIST</code> &mdash; mostly read-only.
+      </p>
+      <p>
+        The <strong>control fields</strong> are read-write. The OS uses
+        these to enable the device and configure its memory layout:
+      </p>
+      <p>
+        &bull; <code>command</code> &mdash; bit 0 enables I/O space
+        access, bit 1 enables memory space access, bit 2 enables bus
+        mastering (Direct Memory Access capability). The OS writes
+        these to turn the device on.<br>
+        &bull; <code>status</code> &mdash; some bits are
+        write-1-to-clear error flags (signaled target abort, master
+        abort, parity error).<br>
+        &bull; <strong>BARs</strong> &mdash; the OS writes the desired
+        base address into the BAR; the device then responds to that
+        address. See the next card for details.<br>
+        &bull; <code>cache_line_size</code>, <code>latency_timer</code>
+        &mdash; performance tuning knobs.
+      </p>
+      <p>
+        In practice for mini-os: <strong>SeaBIOS</strong> (QEMU's
+        firmware) runs before the kernel and does the initial PCI setup
+        &mdash; assigns BAR addresses, enables bus mastering. So our
+        kernel <em>could</em> boot without writing any config space. We
+        still implement <code>config_write</code> because Lesson 6 needs
+        it (writing the virtio device status register to set
+        <code>DRIVER_OK</code>), and because it's part of the standard
+        PCI API.
+      </p>
+    </div>
+  </details>
+
+  <details class="pci-concept">
+    <summary>What's a BAR (Base Address Register)?</summary>
+    <div class="pci-concept-body">
+      <p>
+        A BAR tells the OS where the device wants its memory-mapped
+        registers placed. The device doesn't care about the exact
+        address — it just needs <em>some</em> address. The BIOS or the
+        OS picks an unused address range and writes it into the BAR.
+        After that, reads/writes to that virtual address reach the
+        device instead of RAM.
+      </p>
+      <p>
+        Each BAR's low bits encode the type: bit 0 is 0 for memory, 1
+        for I/O. For memory BARs, bits 1-2 are the width (32-bit or
+        64-bit), bit 3 is "prefetchable." The high bits are the address
+        (already shifted — the low 4 bits are the type flags).
+      </p>
+      <p>
+        For virtio-blk, the BARs hold the virtio capability structures
+        (common config, ISR, notification, device-specific config). We'll
+        read these in Lesson 6 to set up the device.
+      </p>
+    </div>
+  </details>
+
+  <h2>Accessing config space: I/O ports 0xCF8 / 0xCFC</h2>
+
+  <p>
+    PCI configuration space is reached through two 32-bit I/O ports.
+    <strong>I/O ports</strong> are a separate x86 address space from
+    memory — accessed via the <code>in</code> and <code>out</code>
+    instructions rather than memory loads and stores. Ports
+    <code>0xCF8</code> (address) and <code>0xCFC</code> (data) are
+    reserved by the PCI standard for config space access.
+  </p>
+
+  <p>
+    The protocol: write a 32-bit address to port <code>0xCF8</code>
+    identifying which device and which offset you want, then read or
+    write 32 bits at port <code>0xCFC</code>.
+  </p>
+
+  <p>
+    The address encodes the bus, device, function, and register offset
+    into 32 bits:
+  </p>
+
+  <div class="bitfield">
+    <div class="bitfield-row-label">31 ───────── 24 ─── 23 ── 16 ── 15 ── 11 ── 10 ─ 8 ── 7 ── 2 ── 1 0</div>
+    <div class="bitfield-cell field-enable">enable<br>1 bit</div>
+    <div class="bitfield-cell field-reserved">reserved<br>7 bits</div>
+    <div class="bitfield-cell field-bus">bus<br>8 bits</div>
+    <div class="bitfield-cell field-device">device<br>5 bits</div>
+    <div class="bitfield-cell field-func">func<br>3 bits</div>
+    <div class="bitfield-cell field-offset">offset<br>6 bits</div>
+    <div class="bitfield-cell field-reserved">00<br>2 bits</div>
+  </div>
+
+  <p>
+    The <strong>enable bit</strong> (bit 31) must be 1 or the access is
+    ignored. The reserved bits (30-24) must be 0. <strong>bus</strong>
+    (8 bits, 0-255), <strong>device</strong> (5 bits, 0-31),
+    <strong>function</strong> (3 bits, 0-7). The offset is in bytes but
+    must be 4-byte aligned — that's why the low 2 bits are reserved.
+  </p>
+
+  <div class="snippet-meta">
+    <span class="snippet-what">— Bit math for the address word</span>
+  </div>
+<pre><span class="c">// Build the 32-bit PCI config address</span>
+<span class="k">let</span> address: u32 = (<span class="n">1</span> &lt;&lt; <span class="n">31</span>)              <span class="c">// enable bit</span>
+              | ((bus     <span class="k">as</span> u32) &lt;&lt; <span class="n">16</span>)  <span class="c">// bits 23-16</span>
+              | ((device  <span class="k">as</span> u32) &lt;&lt; <span class="n">11</span>)  <span class="c">// bits 15-11</span>
+              | ((func    <span class="k">as</span> u32) &lt;&lt; <span class="n">8</span>)   <span class="c">// bits 10-8</span>
+              | ((offset  <span class="k">as</span> u32) &amp; <span class="n">0xFC</span>); <span class="c">// bits 7-2 (low 2 bits clear)</span></pre>
+
+  <h2>Enumeration algorithm</h2>
+
+  <p>
+    PCI topology: up to 256 <em>buses</em>, each with up to 32
+    <em>devices</em>, each with up to 8 <em>functions</em>. A function is
+    the actual addressable unit — a single physical card might expose
+    multiple functions (e.g., a combined Ethernet + storage controller).
+    To enumerate: nested loops.
+  </p>
+
+  <div class="snippet-meta">
+    <span class="snippet-what">— Pseudocode for full bus walk</span>
+  </div>
+<pre><span class="k">for</span> bus <span class="k">in</span> <span class="n">0</span>..=<span class="n">255</span> {
+    <span class="k">for</span> device <span class="k">in</span> <span class="n">0</span>..=<span class="n">31</span> {
+        <span class="k">for</span> func <span class="k">in</span> <span class="n">0</span>..=<span class="n">7</span> {
+            <span class="k">let</span> vendor = config_read(bus, device, func, <span class="n">0x00</span>);
+            <span class="k">if</span> vendor == <span class="n">0xFFFF</span> { <span class="k">continue</span>; } <span class="c">// absent</span>
+
+            <span class="k">let</span> device_id = (vendor &gt;&gt; <span class="n">16</span>) &amp; <span class="n">0xFFFF</span>;
+            <span class="k">let</span> vendor_id = vendor &amp; <span class="n">0xFFFF</span>;
+            <span class="k">println!</span>(<span class="s">"PCI {:02x}:{:02x}.{:x} vendor={:04x} device={:04x}"</span>,
+                       bus, device, func, vendor_id, device_id);
+        }
+    }
+}</pre>
+
+  <p>
+    In practice QEMU only exposes a handful of devices, so most
+    positions return <code>0xFFFF</code>. The ones that exist are
+    worth looking at.
+  </p>
+
+  <details class="pci-concept">
+    <summary>What devices does QEMU's default config expose?</summary>
+    <div class="pci-concept-body">
+      <p>
+        A typical QEMU <code>-machine q35</code> or <code>pc</code>
+        boot shows these PCI devices:
+      </p>
+      <p>
+        &bull; <strong>Host bridge</strong> (Intel 440FX / Q35) —
+        vendor 0x8086 (Intel), device 0x1237 (i440FX) or 0x29C0 (Q35
+        MCH). The bridge between CPU and PCI bus.<br>
+        &bull; <strong>ISA bridge / PIIX</strong> — vendor 0x8086,
+        device 0x7000. Connects PCI to the legacy ISA bus, where
+        serial ports and the PIT live.<br>
+        &bull; <strong>VGA controller</strong> (Bochs / stdvga) —
+        vendor 0x1234, device 0x1111. Our text-mode VGA buffer lives
+        behind this.<br>
+        &bull; <strong>virtio-blk-pci</strong> (if attached) —
+        vendor 0x1AF4 (Red Hat / QEMU), device in the 0x1000-0x107F
+        range. The disk we want to find.<br>
+        &bull; <strong>E1000 / virtio-net</strong> (if networking
+        enabled) — networking cards.
+      </p>
+      <p>
+        By walking the bus and printing every device, we get a
+        hardware inventory. Lesson 5 step 5.3 is exactly this.
+      </p>
+    </div>
+  </details>
+
+  <h2>Finding virtio-blk</h2>
+
+  <p>
+    The virtio vendor ID is <code>0x1AF4</code> — assigned to Red Hat
+    (which originally designed virtio, before it became an OASIS
+    standard). Within that vendor, the device IDs <code>0x1000</code>–<code>0x107F</code>
+    are virtio devices. The non-transitional (modern-only) ID for
+    virtio-blk is <code>0x1042</code>; the transitional
+    (backward-compatible) ID is <code>0x1001</code>.
+  </p>
+
+  <div class="decision">
+    <strong>Modern vs transitional.</strong>
+    Modern virtio (PCI modern transport) is what Linux has used by
+    default since ~2017. Transitional mode supports both modern and
+    legacy transports for backward compatibility. We'll use modern —
+    it's the cleaner interface and what real Linux uses. So we look
+    for vendor 0x1AF4 and a device ID in the 0x1040-0x107F range
+    (non-transitional), specifically 0x1042 for virtio-blk.
+  </div>
+
+  <p>
+    Once we find the device, we read its BARs to learn where the
+    virtio capability structures live in memory. Virtio's "PCI modern"
+    transport doesn't use a single BAR — instead, it puts a list of
+    <em>capabilities</em> in the device's PCI configuration space (the
+    upper, device-specific bytes from 0x40 to 0xFF). Each capability
+    points at a region within one of the BARs that holds a specific
+    virtio structure (common config, ISR, notifications, device-specific
+    config, etc.). Lesson 6 walks through reading the capability list;
+    for Lesson 5 we just identify the device and print its BARs.
+  </p>
+
+  <h2>Build steps — your turn</h2>
+
+  <p>
+    Four substeps. Commit each separately. The first is setup, the next
+    three are kernel code.
+  </p>
+
+  <div class="step">
+    <div class="step-title"><span class="step-num">5.1</span>Create the disk image and attach to QEMU</div>
+    <div class="step-detail">
+      <p>
+        Make a 1 MB raw disk image with a known signature at sector 0
+        (something like <code>"MINIOS_DISK_v0\n"</code> followed by zeros).
+        This is the byte pattern we'll verify in Lesson 8's first read.
+        Disk image lives at <code>disk.img</code> in the project root.
+      </p>
+      <p>
+        Modify the QEMU launch to attach it:
+        <code>-drive file=disk.img,format=raw,if=none,id=drv0 -device virtio-blk-pci,drive=drv0</code>
+        (the two-step form; the shorter <code>if=virtio</code> form also
+        works but is older syntax).
+      </p>
+      <p>
+        Verify QEMU accepts the disk and the kernel still boots
+        unchanged. The kernel doesn't know about the disk yet — that's
+        fine. This step is pure infrastructure.
+      </p>
+    </div>
+  </div>
+
+  <div class="step">
+    <div class="step-title"><span class="step-num">5.2</span>PCI config space access</div>
+    <div class="step-detail">
+      <p>
+        Create a new <code>src/pci.rs</code> module. Define I/O port
+        constants <code>CONFIG_ADDRESS: u16 = 0xCF8</code> and
+        <code>CONFIG_DATA: u16 = 0xCFC</code>. Implement:
+      </p>
+      <p>
+        <code>fn config_read(bus: u8, device: u8, func: u8, offset: u8) -&gt; u32</code>
+        — build the address word per the bit math above, write to
+        <code>0xCF8</code>, read 32 bits from <code>0xCFC</code>.
+      </p>
+      <p>
+        <code>fn config_write(bus: u8, device: u8, func: u8, offset: u8, value: u32)</code>
+        — same address setup, write to <code>0xCFC</code>.
+      </p>
+      <p>
+        Use the <code>x86_64</code> crate's <code>Port::new</code> and
+        <code>read</code>/<code>write</code> methods (we already depend
+        on it). Add <code>mod pci;</code> to <code>main.rs</code>.
+      </p>
+    </div>
+  </div>
+
+  <div class="step">
+    <div class="step-title"><span class="step-num">5.3</span>Walk the bus, list every device</div>
+    <div class="step-detail">
+      <p>
+        Implement <code>fn enumerate()</code> in <code>pci.rs</code>.
+        Nested loops over bus 0, device 0-31, function 0-7. (Walking
+        all 256 buses is unnecessary for QEMU's default topology — bus
+        0 is the only one.) For each combination, read vendor ID; if
+        <code>0xFFFF</code>, skip. Otherwise print
+        <code>[pci] 00:XX.X vendor=YYYY device=ZZZZ</code>.
+      </p>
+      <p>
+        Call <code>pci::enumerate()</code> from <code>kernel_main</code>
+        after the existing tests, before <code>enter_user_mode</code>.
+        Boot the kernel, look at the serial output. You should see
+        Intel 440FX, PIIX, Bochs VGA, and (if attached) virtio-blk.
+      </p>
+    </div>
+  </div>
+
+  <div class="step">
+    <div class="step-title"><span class="step-num">5.4</span>Identify virtio-blk, print its BARs</div>
+    <div class="step-detail">
+      <p>
+        In <code>enumerate()</code>, when you find a device with vendor
+        <code>0x1AF4</code> and a device ID in the 0x1040-0x107F range,
+        call it virtio-blk. Print all six BARs (offsets 0x10, 0x14,
+        0x18, 0x1C, 0x20, 0x24). For each BAR: if the low bit is 0
+        (memory BAR), report the type (32-bit if bits 1-2 are 0, 64-bit
+        if bits 1-2 are 2) and the base address (high bits, mask off
+        the low 4 type bits). If the low bit is 1 (I/O BAR), report that.
+      </p>
+      <p>
+        The output should look roughly like:
+      </p>
+      <p>
+        <code>[pci] virtio-blk found at 00:04.0</code><br>
+        <code>[pci]   BAR0 = 0xFEBC0000 (memory, 32-bit)</code><br>
+        <code>[pci]   BAR1 = 0x00000000 (unused)</code><br>
+        <code>[pci]   BAR2..BAR5 = ...</code>
+      </p>
+      <p>
+        The exact BAR values depend on QEMU's MMIO layout, which varies
+        by machine type and BIOS. The point is to see that the device
+        exists and has memory regions assigned.
+      </p>
+    </div>
+  </div>
+
+  <h2>Verification — what success looks like</h2>
+
+  <p>
+    Boot the kernel after step 5.4. Serial output should include a list
+    of PCI devices, with virtio-blk among them:
+  </p>
+
+<pre><span class="c">// ... boot stuff ...</span>
+[pci] 00:00.0 vendor=8086 device=1237   <span class="c">// Intel i440FX host bridge</span>
+[pci] 00:01.0 vendor=8086 device=7000   <span class="c">// PIIX ISA bridge</span>
+[pci] 00:01.1 vendor=8086 device=7010   <span class="c">// PIIX IDE</span>
+[pci] 00:01.3 vendor=8086 device=7113   <span class="c">// PIIX PM</span>
+[pci] 00:02.0 vendor=1234 device=1111   <span class="c">// Bochs VGA</span>
+[pci] 00:03.0 vendor=8086 device=100E   <span class="c">// E1000 NIC (if enabled)</span>
+[pci] 00:04.0 vendor=1AF4 device=1042   <span class="c">// virtio-blk (the one we want)</span>
+[pci]   virtio-blk found at 00:04.0
+[pci]   BAR0 = 0xFEBC0000 (memory, 32-bit)
+[pci]   BAR1 = 0x00000000 (unused)
+[pci]   BAR2..BAR5 = ...</pre>
+
+  <p>
+    The exact bus/device positions and BAR addresses may differ — QEMU
+    assigns them dynamically. What matters is that we can find a device
+    with <code>vendor=0x1AF4</code> and read its BARs. Lesson 6 picks
+    up from here.
+  </p>
+
+  <h2>Primary source</h2>
+
+  <p>
+    The <a href="https://wiki.osdev.org/PCI">OSDev wiki PCI page</a> is
+    the practical reference — covers config space layout, the address
+    encoding, BAR detection, and bus enumeration with working code
+    examples. More condensed than the official spec.
+  </p>
+
+  <p>
+    For the canonical source, Linux's
+    <a href="https://elixir.bootlin.com/linux/latest/source/arch/x86/pci/direct.c">arch/x86/pci/direct.c</a>
+    implements <code>pci_conf1_read</code> and <code>pci_conf1_write</code>
+    — exactly our <code>config_read</code> / <code>config_write</code>.
+    The bus enumeration in
+    <a href="https://elixir.bootlin.com/linux/latest/source/drivers/pci/probe.c">drivers/pci/probe.c</a>
+    (<code>pci_scan_bus</code> and friends) is far more sophisticated
+    than what we'll build, but the shape is the same.
+  </p>
+
+  <p>
+    The official PCI spec is large and paid. The
+    <a href="https://pcisig.com/specifications">PCI-SIG specifications
+    page</a> hosts it; for our purposes OSDev's summary is sufficient.
+  </p>
+
+  <div class="probe">
+    <div class="probe-title">Pause and think</div>
+    <p>
+      The configuration space is only 256 bytes per device. We saw that
+      it holds vendor/device IDs, command/status, six BARs, and other
+      fixed fields, with device-specific space left over. The virtio
+      PCI modern transport uses some of that leftover space to advertise
+      a list of capabilities — pointers to BAR regions holding specific
+      structures. Why this design? Why not just put the structures
+      directly in the config space at fixed offsets?
+    </p>
+  </div>
+
+  </div>
+
+  <footer class="lesson-footer">
+    <div class="footer-block">
+      <h4>Code tour</h4>
+      <p style="margin:0;">
+        Once you start building, the <a href="../tours/tour-4.02-pci-enumeration.html">tour
+        of changes</a> is the companion to this lesson — actual code that
+        landed for each step, with the serial output that proved it worked.
+        Revisit it after stepping away to remember how the design translated
+        into code.
+      </p>
+    </div>
+
+    <div class="footer-block">
+      <h4>Up next</h4>
+      <p style="margin:0;">
+        Lesson 6 — virtio device initialization. Take the BARs we just
+        discovered and use them to find the virtio common config region.
+        Reset the device, acknowledge, negotiate features
+        (<code>VIRTIO_BLK_F_BLK_SIZE</code> etc.), set DRIVER_OK. The
+        virtio handshake.
+      </p>
+    </div>
+
+    <div class="footer-block">
+      <h4>If anything was unclear</h4>
+      <p style="margin:0;">
+        Ask. Especially the I/O-ports-vs-memory distinction — if the
+        idea of a separate 16-bit address space accessed via
+        <code>in</code>/<code>out</code> instructions doesn't click, flag
+        it. That concept underpins a lot of x86 hardware access.
+      </p>
+    </div>
+
+    <nav class="lesson-nav">
+      <a href="4.01-storage-stack-overview.html">← Lesson 4: Shape of the Storage Stack</a>
+      <a href="roadmap-disk-to-exec.html">Roadmap ↑</a>
+    </nav>
+  </footer>
+
+</article>
+</body>
+</html>

@@ -308,7 +308,7 @@
       <a href="https://docs.oasis-open.org/virtio/virtio/v1.2/csd01/virtio-v1.2-csd01.html#x1-2170001">VIRTIO 1.2 §5.1 Network Device</a>.
     </p>
     <p class="roadmap-lesson-body">
-      <a href="0019-shape-of-network-stack.html">Read the lesson →</a>
+      <a href="6.01-network-stack-overview.html">Read the lesson →</a>
     </p>
   </section>
 
@@ -541,8 +541,8 @@
       <strong>Linux counterparts:</strong>
       <code>net/ipv4/udp.c</code> — <code>__udp4_lib_rcv</code>,
       <code>udp_send_skb</code>.
-      <strong>Lesson:</strong> <a href="0025-udp.html">Open Lesson 25</a>.
-      <strong>Tour:</strong> <a href="../tours/tour-0025-udp.html">Follow the implementation</a>.
+      <strong>Lesson:</strong> <a href="6.07-udp.html">Open Lesson 25</a>.
+      <strong>Tour:</strong> <a href="../tours/tour-6.07-udp.html">Follow the implementation</a>.
       <strong>Spec:</strong> <a href="https://www.rfc-editor.org/rfc/rfc768">RFC 768</a>.
     </p>
   </section>
@@ -587,8 +587,8 @@
       fetches frames, Ethernet/ARP/IP/UDP parse them, the socket table
       routes them, the scheduler wakes the blocked process, and a ring-3
       binary loaded from your ext2 disk answers the host.
-      <strong>Lesson:</strong> <a href="0026-sockets.html">Open Lesson 26</a>.
-      <strong>Tour:</strong> <a href="../tours/tour-0026-sockets.html">Follow the implementation</a>.
+      <strong>Lesson:</strong> <a href="6.08-sockets.html">Open Lesson 26</a>.
+      <strong>Tour:</strong> <a href="../tours/tour-6.08-sockets.html">Follow the implementation</a>.
     </p>
   </section>
 
@@ -599,14 +599,14 @@
       <span class="roadmap-lesson-status">Concept · implementation pending</span>
     </div>
     <p class="roadmap-lesson-body">Extend the blocking socket model with nonblocking <code>recvfrom</code>, <code>EAGAIN</code>, and a small readiness-driven event loop. Readiness follows each FD to its socket queue and lets one task serve many sockets without sleeping on an idle one. Device polling or interrupts remain beneath this user-space readiness layer.</p>
-    <p class="roadmap-linux-ref"><strong>Lesson:</strong> <a href="0027-nonblocking-sockets.html">Open Lesson 27</a>. <strong>Reference:</strong> <a href="../reference/nonblocking-sockets.html">Nonblocking socket quick reference</a>.</p>
+    <p class="roadmap-linux-ref"><strong>Lesson:</strong> <a href="6.09-nonblocking-sockets.html">Open Lesson 27</a>. <strong>Reference:</strong> <a href="../reference/nonblocking-sockets.html">Nonblocking socket quick reference</a>.</p>
   </section>
 
   <h2>After the objective</h2>
 
   <ul>
     <li><strong>TCP.</strong> The deferred arc: three-way handshake, sequence/acknowledgment numbers, the state machine, retransmission. ~4–5 lessons on top of the same IPv4 layer. <a href="https://www.rfc-editor.org/rfc/rfc9293">RFC 9293</a> is the modern consolidated spec.</li>
-    <li><strong>DHCP client.</strong> Replace the hardcoded <code>10.0.2.15</code> with real address acquisition. ~1 lesson, pure UDP application code. <a href="0030-dhcp.html">Lesson 30 concept page ready</a>.</li>
+    <li><strong>DHCP client.</strong> Replace the hardcoded <code>10.0.2.15</code> with real address acquisition. ~1 lesson, pure UDP application code. <a href="6.10-dhcp.html">Lesson 30 concept page ready</a>.</li>
     <li><strong>DNS resolver.</strong> Query <code>10.0.2.3</code>, parse the response. ~1 lesson, also pure UDP.</li>
     <li><strong>Interrupt-driven RX.</strong> Replace polling with the virtio ISR (Interrupt Status Register) → MSI-X or legacy interrupt → wake the stack. Pairs well with Phase 1 signal work.</li>
     <li><strong>tap networking.</strong> Swap slirp for a tap device to let the host ping the guest and run tcpdump on real frames. Host-side setup, no kernel changes.</li>
@@ -644,7 +644,7 @@
     </div>
 
     <nav class="lesson-nav">
-      <a href="0019-shape-of-network-stack.html">Lesson 19: Shape of the Network Stack →</a>
+      <a href="6.01-network-stack-overview.html">Lesson 19: Shape of the Network Stack →</a>
       <a href="roadmap-disk-to-exec.html">Disk roadmap ↑</a>
     </nav>
   </footer>

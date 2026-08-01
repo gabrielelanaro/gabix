@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>0.01 The ARM port, read beside x86</title><link rel="stylesheet" href="../assets/lesson.css"><style>
+  .job{margin:1.8rem 0 0}
+  .job h3{margin-bottom:.15rem}
+  .job .godeeper{font-size:.92em;color:#555;margin:.35rem 0 0}
+  .job .godeeper a{color:#06c}
+  .callout{background:#f6f4ee;border-left:3px solid #c9b88a;padding:.7rem 1rem;margin:1.2rem 0;font-size:.95em}
+  .callout code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+  table.map{border-collapse:collapse;width:100%;margin:1rem 0;font-size:.95em}
+  table.map th,table.map td{border:1px solid #ddd;padding:.5rem .6rem;text-align:left;vertical-align:top}
+  table.map th{background:#f0ede6;font-weight:600}
+  table.map td:first-child{font-weight:600;white-space:nowrap}
+  .win{background:#eef5ee;border-left:3px solid #5a9e5a;padding:.7rem 1rem;margin:1.4rem 0}
+  code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:.9em;background:#f3f1ea;padding:.05em .35em;border-radius:3px}
+</style></head>
+<body><article class="lesson"><header class="lesson-header">
+<div class="lesson-eyebrow">Orientation · Module 0 · Lesson 0.01</div>
+<h1 class="lesson-title">The ARM port, read beside x86</h1>
+<p class="lesson-subtitle">What actually changes when you move a kernel to a second CPU — walked one job at a time, against the x86 you already know.</p>
+</header><div class="content">
+
+<p>Gabix ran on one CPU: x86_64, inside an emulator. You wanted it on a second CPU, ARM, so it could run on the Raspberry Pi 2B on your desk. Moving a kernel to a new CPU sounds like rewriting it. The first thing this lesson shows is how little of the kernel actually depends on the CPU. What follows is a walk through the parts that do — each read against the x86 version you already have, so you can see exactly what changed, and which lesson to open when you want the detail.</p>
+
+<h2>Most of the kernel does not care which CPU runs it</h2>
+
+<p>Consider what the kernel does to read a file. It asks the disk for some bytes, walks the ext2 on-disk format to find which bytes belong to the file, and hands them to the program. Not one step in that chain depends on x86 or ARM — the ext2 layout is the same bytes whoever reads it. The same is true of the network: the bytes of a TCP segment mean the same thing on every CPU.</p>
+
+<p>Gabix pulled all of this CPU-independent code into one library that both kernels share, and left only the genuinely CPU-specific code in per-CPU directories:</p>
+
+<div class="callout">
+<strong>Where the code lives, after the port.</strong><br>
+<code>crates/kernel-core</code> — shared by both kernels: ext2, the ELF loader's logic, the network protocol codecs, the file-descriptor machinery.<br>
+<code>src/arch/x86_64/</code> — the x86 side: paging, the interrupt table, the syscall entry, context switching.<br>
+<code>targets/armv7/</code> — the ARM side: the same jobs, written for the ARM CPU and the Raspberry Pi's chips.
+</div>
+
+<p>This is how Linux is built too. Linux's <code>fs/</code>, <code>net/</code>, and <code>mm/</code> directories are shared by every architecture; <code>arch/x86/</code> and <code>arch/arm/</code> hold only the parts that genuinely differ. So when you ask <em>what did it take to port gabix to ARM</em>, the honest first answer is: less than you would think. The rest of this lesson is the list of the things that did take work.</p>
+
+<h2>Five jobs where the CPU matters</h2>
+
+<p>There are five things a kernel does where the choice of CPU changes the code. We take them in the order the hardware makes you care about them: starting up, protecting user programs, translating memory, getting interrupted, and finding devices.</p>
+
+<section class="job">
+<h3>1. Starting up</h3>
+<p>When you apply power, the CPU starts running instructions at some fixed address, fully privileged, with no setup at all. The kernel's first few instructions have to build enough of a world — a stack, a way to print to the console, eventually memory — to hand control to ordinary Rust code.</p>
+<p>On x86, a separate program called a bootloader does a lot of this for you: it loads the kernel into memory and jumps in with the CPU in a known state. On ARM there is usually no such helper. The board's firmware loads the kernel image (on the Pi, a file named <code>kernel7.img</code>) into memory and jumps to its first instruction; the kernel does the rest itself.</p>
+<p>One wrinkle is pure Raspberry Pi. The Pi 2B has four CPU cores, and the firmware starts all four at the same first instruction at the same instant. Gabix is not ready to use four cores, so its first instruction asks the CPU "which core am I?" and everything but core 0 immediately parks itself in a low-power wait. You can read this in the first lines of <code>targets/armv7/src/boot.S</code>.</p>
+<p class="godeeper">Go deeper: <a href="../reference/modules.html#m1">Module 1</a>, and <a href="../reference/modules.html#m7">Module 7</a> for the Pi specifics.</p>
+</section>
+
+<section class="job">
+<h3>2. Letting a program run with fewer rights — and giving it a way back to the kernel</h3>
+<p>This is the heart of what makes a kernel a kernel. A user program must not be free to read kernel memory or run the CPU's most dangerous instructions. But it must be able to ask the kernel to do those things on its behalf — read a file, send a packet, get the time of day. So the CPU needs two things built in: a way to run a program with reduced rights, and a controlled door that program can knock on to re-enter the kernel.</p>
+<p>x86 calls the privilege levels <em>rings</em>. The kernel runs in ring 0 (full rights); a user program runs in ring 3 (restricted). The current ring is a small field the CPU keeps about the program it is running. To call the kernel, the program runs a single instruction, <code>syscall</code>. The CPU treats that instruction specially: it raises the privilege to ring 0 and jumps to a kernel address the kernel registered in advance. Returning to the program is the reverse instruction, <code>sysret</code>, which drops back to ring 3.</p>
+<p>ARM does the same job with a different vocabulary. Instead of rings it has <em>modes</em>: User mode for programs, Supervisor mode for the kernel, and a few others for handling errors and interrupts. The current mode lives in a field in a CPU status register. To call the kernel, the program runs an instruction called <code>svc</code>. The CPU switches to Supervisor mode and jumps to a fixed entry point the kernel set up. Returning drops the mode back to User.</p>
+<p>Same two problems — restrict the program, then give it a door — solved two ways. This is the single biggest conceptual difference between the two kernels, and Module 1 takes it apart instruction by instruction.</p>
+<p class="godeeper">Go deeper: <a href="../reference/modules.html#m1">Module 1</a>.</p>
+</section>
+
+<section class="job">
+<h3>3. Translating memory</h3>
+<p>Every program must see its own memory, and it must not see another program's memory or the kernel's. The CPU enforces this with a table. On every memory access a program makes, the CPU consults the table, which says — for each range of addresses — where the bytes physically live and whether this program is allowed to reach them.</p>
+<p>On x86 the kernel gives each process its own table and swaps it in when that process runs; the blocks are small (4 KB). Gabix on x86 builds a fresh table for every process, which is how two programs can both believe they live at the same address.</p>
+<p>The ARM port so far does the simpler thing: one shared table for everything, with large 1 MB blocks, mapping every address to itself. It does not yet give each process its own memory. Instead it flips the permission bits on the single 1 MB block a user program lives in, so the program can reach its own code and nothing else. That is enough to run a user program. Per-process tables are a later step.</p>
+<p class="godeeper">Go deeper: <a href="../reference/modules.html#m2">Module 2</a>.</p>
+</section>
+
+<section class="job">
+<h3>4. Getting interrupted</h3>
+<p>Left to itself, the CPU runs a program's instructions one after another. The kernel needs the CPU's attention pulled away on two occasions: when a timer fires (so the kernel can switch to another program), and when a device finishes a job (a disk read completes, a network packet arrives). The running program cannot be trusted to yield; the hardware has to force the issue.</p>
+<p>The mechanism has two halves: a chip that raises the signal, and a table that tells the CPU where to jump. On x86 the chip is the Local APIC and the table is the IDT — 256 numbered slots, each holding the address of one handler. When the signal arrives, the CPU reads the slot's address and jumps there, into the kernel, at full privilege.</p>
+<p>ARM has the same two halves, with different names and, on the Pi, a different chip. On the ARM emulator the chip is called the GIC; on the Raspberry Pi it is a controller Broadcom built into the board. The table is tiny — eight slots — and sits at an address the kernel wrote into a CPU register. When the signal arrives, the CPU jumps to one of those eight. Which of the eight it is, and how you then ask the controller "which device interrupted?", differs between the emulator and the real Pi — and matters when you debug on Monday.</p>
+<p class="godeeper">Go deeper: <a href="../reference/modules.html#m1">Module 1</a> for the mechanism; <a href="../reference/modules.html#m7">Module 7</a> for the Pi's controller.</p>
+</section>
+
+<section class="job">
+<h3>5. Finding devices</h3>
+<p>Before the kernel can read a disk or send a packet, it has to find the device. The two architectures make the kernel look in completely different places.</p>
+<p>On x86, devices sit on a shared bus called PCI. The kernel walks the bus — "who is at slot 0? slot 1? slot 2?" — and reads a little identifying information each device reports. It is like knocking on every door in a hallway.</p>
+<p>The ARM emulator has no such bus. Instead it places up to 32 virtual devices at 32 fixed addresses in memory, and the kernel reads each address looking for a magic value that means "I am a virtio device." There is no discovery protocol; the locations are agreed in advance.</p>
+<p>The Raspberry Pi is different again, and harder. There are no virtio devices and no PCI bus. The "disk" is the SD card, reached through a controller Broadcom made. The "network card" is a chip that hangs off the Pi's USB port. Each is a separate piece of hardware with its own rulebook, and the kernel drives each one by its own rules. This is the module that matters most for getting gabix running on the actual board.</p>
+<p class="godeeper">Go deeper: <a href="../reference/modules.html#m4">Module 4</a> for the mechanism; <a href="../reference/modules.html#m7">Module 7</a> for the Pi's real chips.</p>
+</section>
+
+<h2>The port in one table</h2>
+
+<table class="map">
+<thead><tr><th>Job</th><th>x86</th><th>ARM</th></tr></thead>
+<tbody>
+<tr><td>Starting up</td><td>A bootloader loads the kernel and hands over.</td><td>Firmware loads the image and jumps in; the first code parks the extra cores on the Pi.</td></tr>
+<tr><td>Protect a program; let it call the kernel</td><td>Rings (0 for kernel, 3 for programs); the <code>syscall</code> instruction.</td><td>Modes (Supervisor, User); the <code>svc</code> instruction.</td></tr>
+<tr><td>Translate memory</td><td>One table per program; small 4 KB blocks.</td><td>One shared table; large 1 MB blocks (so far).</td></tr>
+<tr><td>Get interrupted</td><td>Local APIC chip; a 256-slot table (the IDT).</td><td>GIC chip (emulator) or a Broadcom chip (Pi); an 8-slot table.</td></tr>
+<tr><td>Find devices</td><td>Walk the PCI bus.</td><td>Read fixed memory addresses (emulator), or drive specific Broadcom chips (Pi).</td></tr>
+</tbody>
+</table>
+
+<div class="win">
+<strong>What you should be able to do after this lesson.</strong> Point at any of the five jobs above and say, in one sentence, what x86 does and what ARM does differently — and name the module that takes it apart. If any of the five still feels fuzzy, that is the module to open next.
+</div>
+
+<h2>Where to go next</h2>
+
+<p>The full list of lessons, organized by module, is on the <a href="../reference/modules.html">course map</a>. The natural first deep dive is <a href="../reference/modules.html#m1">Module 1 (The CPU)</a>, because privilege and the syscall door are the foundation everything else stands on. If Monday is closer than your curiosity, jump to <a href="../reference/modules.html#m7">Module 7 (the Raspberry Pi hardware)</a> and learn the chips you are about to debug.</p>
+
+<div class="callout">
+<strong>Primary sources.</strong> The reference behind every claim about the ARM CPU is the <em>ARMv7-AR Architecture Reference Manual</em> (often called the "ARM ARM"). The reference behind every claim about the Pi's chips is the <em>BCM2836 ARM Peripherals</em> manual. You do not need to open either to follow this course — each later lesson links the exact section it depends on.
+</div>
+
+<p style="margin-top:1.6rem;color:#555">If anything in this lesson is unclear, ask. The agent is your teacher here: it can re-explain any of the five jobs, pull up the exact lines of gabix source behind a claim, or go deeper into any module on the spot.</p>
+
+</div><footer class="lesson-footer">
+<div class="footer-block"><h4>Sources</h4><p style="margin:0"><a href="https://developer.arm.com/documentation/ddi0406/latest">ARMv7-AR Architecture Reference Manual</a> · <a href="https://www.raspberrypi.org/app/uploads/2012/02/BCM2836-ARM-Peripherals.pdf">BCM2836 ARM Peripherals</a> · <a href="https://www.qemu.org/docs/master/system/arm/virt.html">QEMU <code>virt</code> machine</a> · <a href="https://www.intel.com/sdm">Intel SDM (x86)</a></p></div>
+<nav class="lesson-nav"><a href="../reference/modules.html">↑ Course map</a><a href="../reference/modules.html#m1">Module 1 →</a></nav>
+</footer></article></body></html>

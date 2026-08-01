@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Tour - Lesson 20 - virtio-net Initialization</title>
+<link rel="stylesheet" href="../assets/lesson.css">
+<script src="../assets/code-highlight.js" defer></script>
+<style>
+  .tour-step { margin: 3rem 0; padding-top: 1rem; border-top: 1px solid var(--border); }
+  .tour-step:first-of-type { border-top: none; padding-top: 0; }
+  .tour-step-num {
+    display: inline-block; font-family: var(--font-mono); font-size: 0.78rem;
+    font-weight: 600; color: var(--accent); background: var(--accent-soft);
+    padding: 2px 8px; border-radius: 3px; margin-right: 0.6rem;
+  }
+  .tour-step-title {
+    font-family: var(--font-sans); font-weight: 700; font-size: 1.3rem;
+    color: var(--text); margin: 0 0 0.4rem; display: inline;
+  }
+  .tour-step-h2 { margin: 0 0 1rem; }
+  .tour-files { font-family: var(--font-mono); font-size: 0.82rem; color: var(--text-dim); margin: 0.5rem 0 1.5rem; }
+  .tour-files strong { color: var(--text); font-weight: 600; }
+  .snippet-meta { font-family: var(--font-mono); font-size: 0.72rem; color: var(--text-dim); margin: 1.5rem 0 0.35rem; display: flex; align-items: baseline; gap: 0.6rem; }
+  .snippet-meta .snippet-file { color: var(--accent); font-weight: 600; background: var(--accent-soft); padding: 1px 6px; border-radius: 3px; }
+  .snippet-meta .snippet-what { color: var(--text-faint); font-style: italic; }
+  .snippet-meta + pre, .snippet-meta + pre.tour-output { margin-top: 0; }
+  pre.tour-output { background: #111827; color: #e5e7eb; border-left: 3px solid var(--accent); padding: 1rem 1.25rem; border-radius: 0 6px 6px 0; font-size: 0.8rem; line-height: 1.55; margin: 1rem 0; overflow-x: auto; }
+  pre.tour-output .ok { color: #86efac; }
+  .plain-map {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1rem 1.25rem;
+    margin: 1.25rem 0;
+    overflow-x: auto;
+  }
+  .plain-map pre { background: transparent; color: var(--text); padding: 0; margin: 0; }
+</style>
+</head>
+<body>
+<article class="lesson">
+  <header class="lesson-header">
+    <div class="lesson-eyebrow">Tour - Lesson 20 - Companion to <a href="../lessons/4.07-virtio-net-init.html" style="color:inherit;">the lesson</a></div>
+    <h1 class="lesson-title">Code Tour - Wake the Network Card</h1>
+    <p class="lesson-subtitle">The card moves from PCI-visible to driver-owned: features accepted, MAC read, queues enabled, RX buffers posted.</p>
+    <div class="lesson-meta">
+      <span><strong>Files</strong> <code>src/virtio.rs</code>, <code>src/main.rs</code></span>
+      <span><strong>Test</strong> <code>tests/test_virtio_net_init.sh</code></span>
+    </div>
+  </header>
+
+  <div class="content">
+  <p class="lead">
+    Lesson 20 is the setup step before packets. The kernel gives the device
+    two queues and a small pile of empty receive buffers, then sets
+    <code>DRIVER_OK</code>.
+  </p>
+
+  <div class="plain-map">
+<pre>probe virtio-net
+map common config, notifications, device config
+negotiate VERSION_1 + NET_F_MAC
+read MAC from device config
+configure RX queue 0 and TX queue 1
+post 8 empty RX buffers
+set DRIVER_OK</pre>
+  </div>
+
+  <div class="tour-step">
+    <h2 class="tour-step-h2"><span class="tour-step-num">20.1</span><span class="tour-step-title">Add a network-device driver shell</span></h2>
+    <div class="tour-files"><strong>File:</strong> <code>src/virtio.rs</code></div>
+    <p>
+      <code>VirtioNet</code> stores the same common pieces as the block driver:
+      PCI location, common config, notification registers, and queues. It also
+      stores the device-config region, the MAC address, and the RX buffers.
+    </p>
+    <div class="snippet-meta"><span class="snippet-file">src/virtio.rs</span><span class="snippet-what">driver state</span></div>
+<pre><span class="k">pub struct</span> <span class="t">VirtioNet</span> {
+    common_virt: <span class="t">u64</span>,
+    notify_virt: <span class="t">u64</span>,
+    device_config_virt: <span class="t">u64</span>,
+    mac: [<span class="t">u8</span>; 6],
+    rx_queue: <span class="t">Option</span>&lt;<span class="t">VirtQueue</span>&gt;,
+    tx_queue: <span class="t">Option</span>&lt;<span class="t">VirtQueue</span>&gt;,
+    rx_buffers: <span class="t">Vec</span>&lt;<span class="t">RxBuffer</span>&gt;,
+}</pre>
+    <p>
+      The device-config region is the new mapped region. That is where the
+      MAC address lives.
+    </p>
+  </div>
+
+  <div class="tour-step">
+    <h2 class="tour-step-h2"><span class="tour-step-num">20.2</span><span class="tour-step-title">Negotiate the small feature set</span></h2>
+    <div class="tour-files"><strong>File:</strong> <code>src/virtio.rs</code></div>
+    <p>
+      The network driver asks for two bits: modern virtio transport and a
+      valid MAC address in device config. Every offload stays disabled.
+    </p>
+    <div class="snippet-meta"><span class="snippet-file">src/virtio.rs</span><span class="snippet-what">feature subset</span></div>
+<pre><span class="k">let</span> supported_low = <span class="t">VIRTIO_NET_F_MAC</span>;
+<span class="k">let</span> supported_high = 0x1; <span class="c">// VIRTIO_F_VERSION_1</span>
+
+write_driver_features(low = 0x00000020, high = 0x00000001);
+set_status(<span class="t">ACKNOWLEDGE</span> | <span class="t">DRIVER</span> | <span class="t">FEATURES_OK</span>);</pre>
+    <p>
+      The test checks that <code>FEATURES_OK</code> sticks before the driver
+      touches queues.
+    </p>
+  </div>
+
+  <div class="tour-step">
+    <h2 class="tour-step-h2"><span class="tour-step-num">20.3</span><span class="tour-step-title">Read the MAC</span></h2>
+    <div class="tour-files"><strong>File:</strong> <code>src/virtio.rs</code></div>
+    <p>
+      Once <code>NET_F_MAC</code> is accepted, the first six bytes of device
+      config are the card address. QEMU gives this guest
+      <code>52:54:00:12:34:56</code>.
+    </p>
+    <div class="snippet-meta"><span class="snippet-file">src/virtio.rs</span><span class="snippet-what">device config read</span></div>
+<pre><span class="k">for</span> (i, byte) <span class="k">in</span> mac.iter_mut().enumerate() {
+    *byte = read_volatile((device_config_virt + i <span class="k">as</span> <span class="t">u64</span>) <span class="k">as</span> *<span class="k">const</span> <span class="t">u8</span>);
+}</pre>
+  </div>
+
+  <div class="tour-step">
+    <h2 class="tour-step-h2"><span class="tour-step-num">20.4</span><span class="tour-step-title">Enable RX and TX queues</span></h2>
+    <div class="tour-files"><strong>File:</strong> <code>src/virtio.rs</code></div>
+    <p>
+      The block driver needed one queue. The network driver configures queue
+      0 for receive and queue 1 for transmit. Both use the existing
+      <code>VirtQueue</code> memory layout from Lesson 7.
+    </p>
+    <div class="snippet-meta"><span class="snippet-file">src/virtio.rs</span><span class="snippet-what">queue setup</span></div>
+<pre><span class="k">let</span> rx_queue = <span class="t">VirtQueue</span>::new(64);
+configure_queue_at(0, &amp;rx_queue, <span class="s">"RX"</span>);
+
+<span class="k">let</span> tx_queue = <span class="t">VirtQueue</span>::new(64);
+configure_queue_at(1, &amp;tx_queue, <span class="s">"TX"</span>);</pre>
+  </div>
+
+  <div class="tour-step">
+    <h2 class="tour-step-h2"><span class="tour-step-num">20.5</span><span class="tour-step-title">Post eight empty RX buffers</span></h2>
+    <div class="tour-files"><strong>File:</strong> <code>src/virtio.rs</code></div>
+    <p>
+      Each RX buffer gets one descriptor with <code>F_WRITE</code>, because the
+      device writes received bytes into memory owned by the kernel. The driver
+      publishes all eight descriptors before <code>DRIVER_OK</code>.
+    </p>
+    <div class="snippet-meta"><span class="snippet-file">src/virtio.rs</span><span class="snippet-what">receive supply</span></div>
+<pre>desc.addr = buffer_phys;
+desc.len = 2048;
+desc.flags = <span class="t">VIRTQ_DESC_F_WRITE</span>;
+
+rx_queue.submit_chain(desc_idx);</pre>
+    <p>
+      The current implementation allocates one 4 KiB frame per 2048-byte RX
+      buffer. That wastes half a page per buffer and keeps the bookkeeping
+      simple for the first receive path.
+    </p>
+  </div>
+
+  <div class="tour-step">
+    <h2 class="tour-step-h2"><span class="tour-step-num">20.6</span><span class="tour-step-title">Boot-test the init path</span></h2>
+    <div class="tour-files"><strong>File:</strong> <code>tests/test_virtio_net_init.sh</code></div>
+    <p>
+      The test greps for the serial lines that prove each phase completed.
+    </p>
+    <div class="snippet-meta"><span class="snippet-file">serial output</span><span class="snippet-what">expected markers</span></div>
+<pre>[virtio-net] device_status after FEATURES_OK: 0x0B
+[virtio-net] MAC 52:54:00:12:34:56
+[virtio-net] queue 0 (RX) active
+[virtio-net] queue 1 (TX) active
+[virtio-net] posted 8 RX buffers
+[virtio-net] device_status after DRIVER_OK: 0x0F</pre>
+  </div>
+
+  <h2>Verification</h2>
+<pre class="tour-output"><span class="ok">cargo check --features test-mode</span>
+50 warnings
+
+<span class="ok">./tests/test_virtio_net_init.sh</span>
+[net-init] PASS</pre>
+
+  <h2>Where to Ask Questions</h2>
+  <p>
+    Good follow-ups: why RX buffers must exist before <code>DRIVER_OK</code>,
+    why queue 0 and queue 1 have opposite directions, or why the MAC is read
+    from device config instead of hardcoded.
+  </p>
+  </div>
+
+  <footer class="lesson-footer">
+    <div class="footer-block">
+      <h4>Practice</h4>
+      <p style="margin:0;">
+        Say the init path from memory: features, MAC, queues, RX supply,
+        DRIVER_OK.
+      </p>
+    </div>
+    <nav class="lesson-nav">
+      <a href="../lessons/4.07-virtio-net-init.html">Lesson 20</a>
+      <a href="../lessons/6.01-network-stack-overview.html">Lesson 19</a>
+    </nav>
+  </footer>
+</article>
+</body>
+</html>

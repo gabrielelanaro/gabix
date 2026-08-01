@@ -1,0 +1,771 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Lesson 28 — Interrupt-Driven I/O</title>
+  <link rel="stylesheet" href="../assets/lesson.css">
+  <script src="../assets/code-highlight.js" defer></script>
+  <style>
+    .poll-code {
+      background: var(--code-bg);
+      color: var(--code-fg);
+      padding: 1rem 1.25rem;
+      border-radius: 8px;
+      font-family: var(--font-mono);
+      font-size: 0.84rem;
+      line-height: 1.55;
+      margin: 1.5rem 0;
+      overflow-x: auto;
+      white-space: pre;
+    }
+    .poll-code .c { color: var(--code-comment); font-style: italic; }
+    .poll-code .k { color: var(--code-keyword); }
+    .poll-code .n { color: var(--code-number); }
+    .poll-code .f { color: #93c5fd; }
+
+    .delivery-diagram {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 1.5rem 1.75rem;
+      margin: 1.5rem 0;
+      font-family: var(--font-mono);
+      font-size: 0.82rem;
+      line-height: 1.75;
+      overflow-x: auto;
+    }
+    .delivery-diagram .dd-stage {
+      display: grid;
+      grid-template-columns: auto 1fr;
+      gap: 0.6rem;
+      align-items: baseline;
+      padding: 0.3rem 0;
+    }
+    .delivery-diagram .dd-num {
+      color: var(--accent);
+      font-weight: 700;
+      text-align: center;
+      min-width: 1.4rem;
+    }
+    .delivery-diagram .dd-arrow {
+      text-align: center;
+      color: var(--text-faint);
+      padding: 0.15rem 0;
+    }
+    .delivery-diagram .dd-label {
+      color: var(--text);
+    }
+    .delivery-diagram .dd-label code {
+      background: transparent;
+      color: var(--accent);
+      padding: 0;
+    }
+
+    .reg-table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 1.25rem 0;
+      font-size: 0.9rem;
+    }
+    .reg-table th, .reg-table td {
+      text-align: left;
+      padding: 0.5rem 0.6rem;
+      border-bottom: 1px solid var(--border);
+      vertical-align: top;
+    }
+    .reg-table th {
+      font-family: var(--font-sans);
+      font-size: 0.78rem;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      color: var(--text-dim);
+    }
+    .reg-table td code { color: var(--accent); }
+
+    .flow-compare {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 1rem;
+      margin: 1.5rem 0;
+    }
+    .flow-compare .fc-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 1rem 1.15rem;
+    }
+    .flow-compare .fc-card.before { border-left: 4px solid var(--text-faint); }
+    .flow-compare .fc-card.after  { border-left: 4px solid var(--accent); }
+    .flow-compare .fc-title {
+      font-family: var(--font-sans);
+      font-size: 0.8rem;
+      font-weight: 600;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      color: var(--text-dim);
+      margin: 0 0 0.6rem;
+    }
+    .flow-compare .fc-body {
+      font-family: var(--font-mono);
+      font-size: 0.8rem;
+      line-height: 1.7;
+      color: var(--text);
+    }
+    .flow-compare .fc-body .accent { color: var(--accent); font-weight: 600; }
+    .flow-compare .fc-body .waste { color: #b91c1c; }
+    @media (max-width: 640px) {
+      .flow-compare { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+<article class="lesson">
+  <header class="lesson-header">
+    <div class="lesson-eyebrow">Lesson 28 &middot; Interrupt-driven I/O</div>
+    <h1 class="lesson-title">Interrupt-Driven I/O</h1>
+    <p class="lesson-subtitle">Replace virtio-blk's 200,000-iteration busy-wait with a Local APIC, an MSI-X vector, and an ISR that fires when the hardware finishes the read.</p>
+    <div class="lesson-meta">
+      <span><strong>Prereq</strong> <a href="4.06-block-layer.html">Lesson 9</a> (block layer), <a href="6.09-nonblocking-sockets.html">Lesson 27</a> (poll)</span>
+      <span><strong>Focus</strong> APIC + MSI-X + ISR</span>
+      <span><strong>Build status</strong> implemented and tested</span>
+    </div>
+  </header>
+
+  <div class="content">
+
+    <p class="lead">
+      Every disk read in mini-os costs the CPU 200,000 busy-wait iterations.
+      Every network frame costs a cooperative task that polls forever.
+      The device finishes its work in microseconds; the kernel discovers
+      this by spinning. This lesson replaces that spin with a hardware
+      interrupt &mdash; the device signals completion, the CPU sleeps
+      until it arrives.
+    </p>
+
+    <h2>The cost of polling</h2>
+
+    <p>
+      Here is <code>read_sector</code> today, from
+      <code>src/virtio.rs:331</code>:
+    </p>
+
+    <div class="poll-code"><span class="c">// Submit the read request, kick the device, then ... spin.</span>
+<span class="k">let</span> completion = (<span class="n">0</span>..<span class="n">200_000</span>u32)
+    .<span class="f">find_map</span>(|_| <span class="k">self</span>.queue.<span class="f">as_mut</span>().<span class="f">unwrap</span>().<span class="f">poll_completion</span>())
+    .<span class="f">expect</span>(<span class="c">"read_sector: no completion arrived"</span>);</div>
+
+    <p>
+      Each iteration reads <code>used-&gt;idx</code> from memory &mdash; a
+      volatile load &mdash; compares it against <code>last_used_idx</code>,
+      finds them equal, returns <code>None</code>, loops back. The CPU
+      executes this at full clock speed. For the few microseconds a
+      virtio-blk read takes inside QEMU, the core spins through hundreds
+      of iterations, each one a wasted memory read discovering nothing.
+    </p>
+
+    <p>
+      Multiply across one boot. ext2 mount reads the superblock (2
+      sectors), the block group descriptor table (1 sector), the root
+      inode (1 sector), the root directory block (1 sector). Each
+      <code>read_sector</code> call spins the same loop. Then the ELF
+      loader reads the binary's blocks. The poll loop runs thousands
+      of times to discover completions that were ready almost
+      instantly.
+    </p>
+
+    <p>
+      The network path is the same shape but runs continuously. The
+      polling worker from <code>src/virtio.rs:808</code>:
+    </p>
+
+    <div class="poll-code"><span class="k">pub unsafe extern</span> <span class="s">"C"</span> <span class="k">fn</span> <span class="f">network_worker</span>() {
+    <span class="k">loop</span> {
+        <span class="k">let</span> _ = <span class="f">with_net_device</span>(|device| device.<span class="f">poll_rx</span>());
+        <span class="f">crate::task::yield_now</span>();
+    }
+}</div>
+
+    <p>
+      This task yields (so it doesn't starve others), but it wakes every
+      schedule cycle and polls the RX virtqueue. When no frames arrive
+      &mdash; the common case &mdash; the poll is pure waste. The CPU runs
+      this task thousands of times per second, each time reading the
+      used ring and finding it empty.
+    </p>
+
+    <h2>The delivery path you already own</h2>
+
+    <p>
+      The timer interrupt is a working device interrupt. The kernel
+      already has every piece of the delivery path &mdash; for the timer.
+      Extending it to virtio means reusing the same machinery with a
+      different trigger.
+    </p>
+
+    <p>Trace the timer's path end to end:</p>
+
+    <div class="delivery-diagram">
+      <div class="dd-stage">
+        <span class="dd-num">1</span>
+        <span class="dd-label">PIT (Programmable Interval Timer) fires at 100&nbsp;Hz</span>
+      </div>
+      <div class="dd-arrow">&darr;</div>
+      <div class="dd-stage">
+        <span class="dd-num">2</span>
+        <span class="dd-label">8259 PIC maps IRQ&nbsp;0 &rarr; raises vector <code>0x20</code> to the CPU</span>
+      </div>
+      <div class="dd-arrow">&darr;</div>
+      <div class="dd-stage">
+        <span class="dd-num">3</span>
+        <span class="dd-label">CPU pushes interrupt frame (RIP, CS, RFLAGS, RSP, SS) onto the kernel stack</span>
+      </div>
+      <div class="dd-arrow">&darr;</div>
+      <div class="dd-stage">
+        <span class="dd-num">4</span>
+        <span class="dd-label">CPU consults <code>IDT[0x20]</code> &rarr; jumps to <code>timer_wrapper</code></span>
+      </div>
+      <div class="dd-arrow">&darr;</div>
+      <div class="dd-stage">
+        <span class="dd-num">5</span>
+        <span class="dd-label">Wrapper pushes all 15 GP registers, calls <code>timer_inner</code></span>
+      </div>
+      <div class="dd-arrow">&darr;</div>
+      <div class="dd-stage">
+        <span class="dd-num">6</span>
+        <span class="dd-label"><code>timer_inner</code>: increment tick counter, send EOI to PIC and Local APIC, call <code>yield_now()</code></span>
+      </div>
+      <div class="dd-arrow">&darr;</div>
+      <div class="dd-stage">
+        <span class="dd-num">7</span>
+        <span class="dd-label">Wrapper restores registers, <code>iretq</code> pops the frame</span>
+      </div>
+    </div>
+
+    <p>
+      Every device interrupt follows this shape: device signals
+      &rarr; controller delivers &rarr; CPU pushes frame &rarr; IDT
+      dispatches &rarr; ISR runs &rarr; EOI &rarr; <code>iretq</code>.
+      Steps 3, 4, 5, and 7 are identical regardless of source. What
+      changes is step 1 (how the device signals), step 2 (which
+      controller delivers), and step 6 (what the ISR does).
+    </p>
+
+    <p>
+      The timer goes through the 8259 PIC. virtio-blk will go through
+      the Local APIC via MSI-X. The ISRs differ in content but share
+      the same wrapper, the same IDT registration, and the same
+      <code>iretq</code> return.
+    </p>
+
+    <h2>Why the PIC is the wrong tool for virtio</h2>
+
+    <p>
+      Think of the PIC's IRQ lines as phone lines. The PIC has 15 of
+      them. A real computer has far more than 15 devices, so devices
+      share phone lines.
+    </p>
+
+    <p>
+      When a shared line rings, the CPU picks up and runs the handler
+      for that line. But it doesn't know <em>which device</em> on that
+      line is calling. So it has to ask each device: "was that you?"
+      The virtio ISR status register &mdash; a one-byte register inside
+      the virtio PCI capability list (cfg_type&nbsp;3, defined at
+      <code>src/virtio.rs:42</code> but never mapped or read today)
+      &mdash; exists for exactly this. Reading its bit&nbsp;0 answers
+      "yes, that was me."
+    </p>
+
+    <p>
+      That round-trip &mdash; "was that you?" &mdash; is the first cost.
+      Two more follow from the way shared lines work electrically:
+    </p>
+
+    <ul>
+      <li>
+        <strong>The line stays ringing until you explicitly hang
+        up.</strong> The device holds the line active until the driver
+        reads that ISR register, which clears it. Forget to read ISR
+        and the line stays stuck ringing forever &mdash; no further
+        interrupts get through.
+      </li>
+      <li>
+        <strong>Every device on the line wakes up for every
+        interrupt.</strong> Two devices sharing IRQ&nbsp;11 means both
+        get asked "was that you?" every time either one fires. Most of
+        the time the answer is "no" &mdash; wasted work.
+      </li>
+    </ul>
+
+    <p>
+      QEMU gives each PCI device its own virtual pin, so sharing isn't
+      a real problem in our environment. But using the PIC path means
+      building the "was that you?" and "hang up the line" machinery
+      that real hardware is leaving behind. Linux's virtio driver
+      prefers
+      <a href="https://elixir.bootlin.com/linux/latest/source/drivers/virtio/virtio_pci_common.c">MSI-X
+      and falls back to the PIC path</a> only when MSI-X is unavailable.
+      We'll do the same.
+    </p>
+
+    <h2>MSI-X &mdash; each device gets a private line</h2>
+
+    <p>
+      MSI-X (Message Signaled Interrupts, Extended) gives each device
+      its own private line. Instead of asserting a physical pin that
+      might be shared, the device writes a few bytes to a specific
+      memory address &mdash; the Local APIC's address at
+      <code>0xFEE00000</code>. The APIC reads the write, sees the vector
+      number encoded in it, and delivers the interrupt to the CPU core.
+      No shared line, no "was that you?", no "hang up."
+    </p>
+
+    <p>Four consequences follow:</p>
+
+    <ol>
+      <li>
+        <strong>No shared lines.</strong> Each virtqueue gets its own
+        private vector. When the ISR fires, the vector number alone
+        tells it exactly which queue completed. No asking "was that
+        you?" &mdash; the answer is built into the delivery.
+      </li>
+      <li>
+        <strong>One write, one event.</strong> The shared-line approach
+        holds the line ringing until the driver explicitly clears it.
+        MSI-X is a single memory write: the interrupt fires once, done.
+        Nothing to clear at the device, no stuck lines if the driver
+        forgets a step. The ISR processes completions and sends EOI to
+        the APIC &mdash; that's the whole acknowledgment.
+      </li>
+      <li>
+        <strong>No ISR status register needed.</strong> The old "was
+        that you?" register (cfg_type&nbsp;3) exists in the capability
+        list but drivers using MSI-X never read it. The memory write
+        itself is the complete signal. The driver processes the used
+        ring and moves on.
+      </li>
+      <li>
+        <strong>Scalable.</strong> The PIC tops out at 15 lines. MSI-X
+        supports 2048 vectors. A modern NVMe drive uses dozens &mdash;
+        one per queue per CPU core. The PIC cannot reach this.
+      </li>
+    </ol>
+
+    <h2>The Local APIC</h2>
+
+    <p>
+      The Local APIC (Advanced Programmable Interrupt Controller) is a
+      per-CPU interrupt controller built into the processor die. On
+      x86-64 every core has its own, memory-mapped at physical address
+      <code>0xFEE00000</code>. The kernel reads and writes APIC
+      registers by loading from and storing to addresses in that
+      4&nbsp;KB page.
+    </p>
+
+    <p>
+      mini-os currently uses the 8259 PIC exclusively. Enabling the
+      Local APIC does not break the PIC. QEMU boots in "virtual wire"
+      compatibility mode where PIC interrupts (including our timer on
+      IRQ&nbsp;0) continue to be delivered through the APIC transparently.
+      The APIC adds the ability to receive MSI-X writes on top of the
+      existing timer path.
+    </p>
+
+    <p>Three registers matter for this lesson:</p>
+
+    <table class="reg-table">
+      <thead>
+        <tr><th>Register</th><th>APIC offset from <code>0xFEE00000</code></th><th>Purpose</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><code>SPURIOUS_VECTOR</code></td>
+          <td><code>0xF0</code></td>
+          <td>Bit&nbsp;8 is the APIC global enable switch. Bits&nbsp;0&ndash;7 set the spurious vector (a catchall for interrupts with no handler &mdash; we'll use <code>0xFF</code>).</td>
+        </tr>
+        <tr>
+          <td><code>EOI</code></td>
+          <td><code>0xB0</code></td>
+          <td>Writing <code>0</code> signals end-of-interrupt for the current APIC-delivered interrupt. Replaces <code>PICS.notify_end_of_interrupt()</code> for MSI-X sources.</td>
+        </tr>
+        <tr>
+          <td><code>IA32_APIC_BASE</code></td>
+          <td>MSR <code>0x1B</code></td>
+          <td>Contains the APIC's physical base address (bits&nbsp;12&ndash;35) and the global enable bit (bit&nbsp;11). Must be set before any APIC register access works.</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <p>
+      To enable: set bit&nbsp;11 of the
+      <a href="https://wiki.osdev.org/APIC#Enabling">IA32_APIC_BASE MSR</a>,
+      map the 4&nbsp;KB page at <code>0xFEE00000</code> via
+      <code>map_mmio</code> (the same function used for virtio's PCI
+      capabilities in Lesson 6), then write the spurious vector register
+      with bit&nbsp;8 set and a vector like <code>0xFF</code>. The PIC
+      keeps working. MSI-X starts landing.
+    </p>
+
+    <div class="callout">
+      <div class="callout-title">EOI: two controllers, two destinations</div>
+      <p style="margin:0;">
+        The timer interrupt arrives through the PIC, so
+        <code>timer_inner</code> sends EOI to the PIC and to the Local APIC
+        because QEMU routes the legacy PIC through its ExtINT virtual-wire
+        input after xAPIC is enabled. The virtio-blk
+        interrupt will arrive through the APIC via MSI-X, so its ISR
+        must send EOI to the APIC &mdash; write <code>0</code> to
+        <code>0xFEE000B0</code>. Sending EOI to the wrong controller
+        leaves the source stuck and no further interrupts arrive from
+        it.
+      </p>
+    </div>
+
+    <h2>Configuring MSI-X for a virtqueue</h2>
+
+    <p>
+      The virtio PCI capability walker (<code>src/virtio.rs:148</code>)
+      currently collects only vendor-specific capabilities
+      (cap&nbsp;ID&nbsp;<code>0x09</code>). The MSI-X capability
+      (cap&nbsp;ID&nbsp;<code>0x11</code>) is silently skipped &mdash;
+      the <code>if cap_id == CAP_VENDOR_SPECIFIC</code> check filters
+      it out.
+    </p>
+
+    <p>
+      MSI-X lives in a PCI capability with this structure:
+    </p>
+
+    <table class="reg-table">
+      <thead>
+        <tr><th>Field</th><th>Offset in cap</th><th>What it tells the driver</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Capability ID</td><td>+0 (byte)</td><td><code>0x11</code> = MSI-X</td></tr>
+        <tr><td>Next cap pointer</td><td>+1 (byte)</td><td>Linked-list continuation</td></tr>
+        <tr><td>Message Control</td><td>+2 (u16)</td><td>Bits 0&ndash;10: table size (N+1 vectors). Bit 15: MSI-X enable.</td></tr>
+        <tr><td>Table Offset / BIR</td><td>+4 (u32)</td><td>Bits 0&ndash;2: which BAR holds the table. Bits 3+: offset within that BAR.</td></tr>
+        <tr><td>PBA Offset / BIR</td><td>+8 (u32)</td><td>Same format &mdash; Pending Bit Array location (we won't use it).</td></tr>
+      </tbody>
+    </table>
+
+    <p>
+      The MSI-X table itself is an array of entries, each 16&nbsp;bytes:
+    </p>
+
+    <table class="reg-table">
+      <thead>
+        <tr><th>Entry field</th><th>Size</th><th>Driver writes</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Message Address</td><td>u32</td><td><code>0xFEE00000</code> (the APIC base &mdash; where the device sends its DMA write)</td></tr>
+        <tr><td>Message Upper Address</td><td>u32</td><td><code>0</code> (32-bit address mode)</td></tr>
+        <tr><td>Message Data</td><td>u32</td><td>Vector number (<code>0x21</code> for our first device interrupt)</td></tr>
+        <tr><td>Vector Control</td><td>u32</td><td>Bit&nbsp;0 = mask. Write <code>0</code> to unmask.</td></tr>
+      </tbody>
+    </table>
+
+    <p>
+      After programming one table entry, the driver writes that entry's
+      index into the virtqueue's <code>msix_vector</code> field at
+      common-config offset
+      <a href="https://docs.oasis-open.org/virtio/virtio/v1.2/csd01/virtio-v1.2-csd01.html#x1-1650004"><code>0x1A</code></a>
+      (VIRTIO&nbsp;1.2 &sect;4.1.4.3). This field currently sits at its
+      default <code>0xFFFF</code> (NO_VECTOR), meaning "no MSI-X
+      assigned." Writing <code>0</code> (entry index zero) tells the
+      device: when this queue's used ring advances, perform the MSI-X
+      write defined in table entry zero.
+    </p>
+
+    <h2>What changes in read_sector</h2>
+
+    <div class="flow-compare">
+      <div class="fc-card before">
+        <div class="fc-title">Current &mdash; busy-wait</div>
+        <div class="fc-body">
+          submit descriptor<br>
+          kick device<br>
+          <span class="waste">loop 200,000 times:</span><br>
+          &nbsp;&nbsp;<span class="waste">read used-&gt;idx</span><br>
+          &nbsp;&nbsp;<span class="waste">find it unchanged</span><br>
+          &nbsp;&nbsp;<span class="waste">loop back</span><br>
+          completion found<br>
+          return sector data
+        </div>
+      </div>
+      <div class="fc-card after">
+        <div class="fc-title">After &mdash; interrupt</div>
+        <div class="fc-body">
+          submit descriptor<br>
+          kick device<br>
+          <span class="accent">loop:</span><br>
+          &nbsp;&nbsp;<span class="accent">check poll_completion</span><br>
+          &nbsp;&nbsp;<span class="accent">if found: break</span><br>
+          &nbsp;&nbsp;<span class="accent">hlt</span> (CPU sleeps)<br>
+          ISR fires &rarr; processes used ring<br>
+          &nbsp;&nbsp;<span class="accent">&uarr; wakes here</span><br>
+          return sector data
+        </div>
+      </div>
+    </div>
+
+    <p>
+      <code>hlt</code> (halt) is the x86 instruction that stops the CPU
+      core until the next interrupt. Combined with interrupts enabled
+      (<code>sti</code>, which is the normal kernel state), it is a
+      one-instruction sleep. The core draws near-zero power. When an
+      interrupt arrives &mdash; the timer every 10&nbsp;ms, or the
+      virtio-blk MSI-X write the moment the device finishes &mdash; the
+      CPU wakes, the ISR runs, and execution resumes after
+      <code>hlt</code>.
+    </p>
+
+    <p>The replacement loop:</p>
+
+    <div class="poll-code"><span class="k">let</span> completion = <span class="k">loop</span> {
+    interrupts::<span class="f">disable</span>();
+    <span class="k">if let</span> <span class="f">Some</span>(c) = <span class="k">self</span>.queue.<span class="f">as_mut</span>().<span class="f">unwrap</span>().<span class="f">poll_completion</span>() {
+        interrupts::<span class="f">enable</span>();
+        <span class="k">break</span> c;
+    }
+    <span class="c">// Atomic sti; hlt closes the check-to-sleep race.</span>
+    interrupts::<span class="f">enable_and_hlt</span>();
+};</div>
+
+    <p>
+      The timer interrupt still fires every 10&nbsp;ms &mdash;
+      <code>hlt</code> wakes, <code>poll_completion</code> returns
+      <code>None</code>, the loop goes back to <code>hlt</code>. A
+      brief check, then back to sleep. When the device finishes, its
+      MSI-X write hits the APIC, the ISR sends EOI and returns, and
+      the next <code>poll_completion</code> call returns the result.
+    </p>
+
+    <div class="callout">
+      <div class="callout-title">hlt and the scheduler</div>
+      <p style="margin:0 0 0.6rem;">
+        <code>hlt</code> does not freeze the scheduler. When the timer
+        fires during <code>hlt</code>, the timer ISR runs
+        <code>yield_now()</code> as usual &mdash; the scheduler switches
+        to another task. That task gets CPU time. Eventually we come
+        back, resume after <code>hlt</code>, and check the used ring.
+        <code>hlt</code> just prevents the CPU from burning cycles
+        between timer ticks; it does not prevent other processes from
+        running.
+      </p>
+      <p style="margin:0;">
+        This means two processes could both call
+        <code>read_sector</code> while each other's requests are in
+        flight. The current virtqueue is single-outstanding (one
+        request at a time) and has no lock. For Lesson&nbsp;28 this is
+        safe &mdash; boot is single-user, and user programs that read
+        from disk don't run concurrently in the test scenarios. Lesson&nbsp;29
+        replaces the <code>hlt</code> loop with proper blocking states
+        (task marked <code>Blocked</code>, ISR wakes it) and adds the
+        locking that concurrent access requires.
+      </p>
+    </div>
+
+    <p>
+      This is still synchronous I/O &mdash; <code>read_sector</code>
+      blocks until the data arrives. But the CPU is no longer burning
+      cycles during the wait. It sleeps between timer ticks. That is
+      the difference between polling and interrupt-driven I/O.
+    </p>
+
+    <h2>Build steps</h2>
+
+    <p>
+      Five steps. The first three set up hardware infrastructure; the
+      last two replace the poll loop and verify.
+    </p>
+
+    <div class="recipe">
+      <div class="recipe-step">
+        <div class="recipe-num">28.1</div>
+        <div class="recipe-body">
+          <strong>Enable the Local APIC.</strong> Create a new module
+          <code>src/apic.rs</code>. Read the <code>IA32_APIC_BASE</code>
+          MSR (<code>0x1B</code>), set bit&nbsp;11 (APIC global enable),
+          write it back. Map the 4&nbsp;KB page at physical
+          <code>0xFEE00000</code> via
+          <code>crate::memory::map_mmio</code>. Write the spurious
+          vector register (offset <code>0xF0</code>): set bit&nbsp;8 and
+          vector <code>0xFF</code>. Call <code>apic::init()</code> from
+          the boot sequence after <code>pic::init()</code>. Verify: boot
+          still works, timer still fires, tick counter still increments.
+        </div>
+      </div>
+
+      <div class="recipe-step">
+        <div class="recipe-num">28.2</div>
+        <div class="recipe-body">
+          <strong>Parse and map the MSI-X capability.</strong> In
+          <code>parse_virtio_capabilities</code>
+          (<code>src/virtio.rs:130</code>), add a branch for
+          <code>cap_id == 0x11</code> (MSI-X). Read the Message Control
+          field (cap offset +2, u16): table size is
+          <code>(ctrl &amp; 0x7FF) + 1</code>. Read the Table Offset/BIR
+          field (cap offset +4, u32): BAR index is
+          <code>bir &amp; 0x7</code>, table offset is
+          <code>bir &amp; !0x7</code>. Compute the table's physical
+          address from the BAR base, map it via
+          <code>map_mmio</code>. Store the virtual address and entry
+          count in the <code>VirtioBlk</code> struct. Enable MSI-X by
+          writing bit&nbsp;15 to the Message Control field.
+        </div>
+      </div>
+
+      <div class="recipe-step">
+        <div class="recipe-num">28.3</div>
+        <div class="recipe-body">
+          <strong>Program the MSI-X vector for virtio-blk's
+          queue.</strong> Pick vector <code>0x21</code> (one past the
+          timer's <code>0x20</code>). In MSI-X table entry&nbsp;0: write
+          Message Address = <code>0xFEE00000</code>, Message Upper
+          Address = <code>0</code>, Message Data = <code>0x21</code>,
+          Vector Control = <code>0</code> (unmasked). Then in the common
+          config region: select queue&nbsp;0 (write
+          <code>COMMON_QUEUE_SELECT</code>), write <code>0</code> to
+          <code>COMMON_QUEUE_MSIX_VECTOR</code> (offset
+          <code>0x1A</code>) to bind entry&nbsp;0 to queue&nbsp;0.
+          Verify: serial print confirming vector assignment.
+        </div>
+      </div>
+
+      <div class="recipe-step">
+        <div class="recipe-num">28.4</div>
+        <div class="recipe-body">
+          <strong>IDT entry and ISR handler.</strong> Write a naked
+          wrapper for vector <code>0x21</code> &mdash; identical shape
+          to <code>timer_wrapper</code> (push 15 registers, call inner,
+          pop 15 registers, <code>iretq</code>). The inner handler does
+          one thing: send EOI to the Local APIC (write <code>0</code>
+          to APIC offset <code>0xB0</code>). Do <em>not</em> call
+          <code>poll_completion</code> from the ISR &mdash;
+          <code>read_sector</code> checks the used ring itself after
+          <code>hlt</code> wakes. If the ISR drained the ring,
+          <code>read_sector</code>'s <code>poll_completion</code> would
+          find nothing. The ISR's only job is to acknowledge the
+          interrupt so the APIC can deliver the next one, and to cause
+          <code>hlt</code> to return. Register in
+          <code>IDT[0x21]</code> and reload the IDT. Verify: boot
+          reaches the same point without triple-faulting.
+        </div>
+      </div>
+
+      <div class="recipe-step">
+        <div class="recipe-num">28.5</div>
+        <div class="recipe-body">
+          <strong>Replace the poll loop in read_sector.</strong> Replace
+          the <code>(0..200_000).find_map(...)</code> expression at
+          <code>src/virtio.rs:331</code> with the <code>hlt</code>-based
+          wait loop shown above. Verify: read sector&nbsp;0, confirm the
+          boot signature bytes match (<code>MINIOS_DISK_v0\n</code>),
+          confirm ext2 mount still works, confirm the ELF loader still
+          reaches ring&nbsp;3.
+        </div>
+      </div>
+    </div>
+
+    <div class="callout">
+      <div class="callout-title">Current mini-os boundary after Lesson 28</div>
+      <p style="margin:0;">
+        virtio-blk reads are interrupt-driven &mdash; the CPU sleeps
+        between submit and completion. The timer still wakes it every
+        10&nbsp;ms for a brief check. virtio-net TX, RX, and ARP
+        resolution still poll. Blocking <code>recvfrom</code> and
+        <code>poll</code> still rely on the cooperative polling worker.
+        Lesson&nbsp;29 generalizes: interrupt-driven networking, proper
+        sleep/wake for blocking calls, and the network worker task is
+        deleted.
+      </p>
+    </div>
+
+    <h2>Primary sources</h2>
+
+    <p>
+      The
+      <a href="https://docs.oasis-open.org/virtio/virtio/v1.2/csd01/virtio-v1.2-csd01.html#x1-1650004">VIRTIO&nbsp;1.2
+      specification &sect;4.1.4</a>
+      covers MSI-X vector configuration for virtio PCI devices.
+      Section&nbsp;2.7 covers the interrupt-delivery model and event
+      suppression. For the Local APIC, the authoritative reference is
+      <a href="https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html">Intel
+      64 and IA-32 Architectures Software Developer's Manual, Volume&nbsp;3,
+      Chapter&nbsp;10</a> (the APIC architecture). The
+      <a href="https://wiki.osdev.org/APIC">OSDev wiki APIC page</a>
+      condenses what an OS implementor needs. For MSI-X, the
+      <a href="https://wiki.osdev.org/PCI#MSI-X">OSDev wiki PCI MSI-X
+      section</a> has the practical capability-structure layout. Linux's
+      <a href="https://elixir.bootlin.com/linux/latest/source/drivers/virtio/virtio_pci_common.c"><code>drivers/virtio/virtio_pci_common.c</code></a>
+      shows the production MSI-X setup we are re-implementing.
+    </p>
+
+    <div class="probe">
+      <div class="probe-title">Probe &mdash; check the model before you build</div>
+      <p>
+        The timer ISR sends EOI to the PIC
+        (<code>PICS.lock().notify_end_of_interrupt(0x20)</code>) and the
+        Local APIC virtual-wire path. The
+        virtio-blk ISR will send EOI to the Local APIC (write
+        <code>0</code> to APIC offset <code>0xB0</code>). Two
+        questions: what happens to future virtio-blk interrupts if the
+        ISR forgets to send EOI to the APIC? And what happens if the
+        ISR sends EOI to the PIC instead of the APIC &mdash; does the
+        APIC care, does the PIC care, and does either un-stick the
+        virtio-blk interrupt source?
+      </p>
+    </div>
+
+    <p>
+      Say your answer back to me, or push on anything that didn't land
+      &mdash; the difference between edge-triggered and level-triggered
+      interrupts, why <code>hlt</code> is safe inside a kernel
+      function, or how the APIC and PIC coexist. The probe is where the
+      conversation starts.
+    </p>
+
+  </div>
+
+  <footer class="lesson-footer">
+    <div class="footer-block">
+      <h4>What this unlocks</h4>
+      <p style="margin:0;">
+        Lesson&nbsp;29 generalizes to virtio-net: RX and TX MSI-X
+        vectors, ISR-driven frame processing, deletion of the
+        <code>network_worker</code> polling task, and proper sleep/wake
+        for blocking <code>recvfrom</code> and <code>poll</code>.
+        End state: zero polling in the entire I/O path.
+      </p>
+    </div>
+
+    <div class="footer-block">
+      <h4>Primary sources</h4>
+      <p style="margin:0;">
+        <a href="https://docs.oasis-open.org/virtio/virtio/v1.2/csd01/virtio-v1.2-csd01.html#x1-1650004">VIRTIO 1.2 &sect;4.1.4 (MSI-X)</a> &middot;
+        <a href="https://docs.oasis-open.org/virtio/virtio/v1.2/csd01/virtio-v1.2-csd01.html#x1-90002">VIRTIO 1.2 &sect;2.7 (interrupts)</a> &middot;
+        <a href="https://wiki.osdev.org/APIC">OSDev APIC</a> &middot;
+        <a href="https://wiki.osdev.org/PCI#MSI-X">OSDev MSI-X</a> &middot;
+        <a href="https://elixir.bootlin.com/linux/latest/source/drivers/virtio/virtio_pci_common.c">Linux virtio_pci_common.c</a>
+      </p>
+    </div>
+
+    <div class="footer-block">
+      <h4>Keep nearby</h4>
+      <p style="margin:0;">
+        <a href="4.04-virtqueues.html">Lesson 7: virtqueues</a> &mdash; the used ring, <code>poll_completion</code>, and the descriptor free list that this lesson's ISR will drain.<br>
+        <a href="4.05-first-disk-read.html">Lesson 8: first disk read</a> &mdash; the 3-descriptor chain and kick path that stays unchanged.<br>
+        <a href="6.09-nonblocking-sockets.html">Lesson 27: nonblocking sockets</a> &mdash; the <code>poll</code> syscall whose wakeup path Lesson 29 will port to interrupts.
+      </p>
+    </div>
+
+    <nav class="lesson-nav">
+      <a href="6.09-nonblocking-sockets.html">&larr; Lesson 27: nonblocking sockets</a>
+      <a href="roadmap-networking.html">Networking roadmap &uarr;</a>
+    </nav>
+  </footer>
+</article>
+</body>
+</html>

@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Gabix course map</title><link rel="stylesheet" href="../assets/lesson.css"><style>
+  .module{margin:2.2rem 0 0;padding-top:.4rem;border-top:1px solid #e3e3e3}
+  .module h2{margin-bottom:.2rem}
+  .module .mod-num{color:#888;font-weight:600}
+  .module .cover{color:#444;margin:.1rem 0 .6rem;max-width:62ch}
+  ul.lessons{list-style:none;padding-left:0;margin:.3rem 0;columns:2;column-gap:2rem}
+  ul.lessons.one{columns:1}
+  ul.lessons li{margin:.18rem 0;break-inside:avoid}
+  .code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:.9em}
+  .planned{color:#9a6a00}
+  .planned::before{content:"◐ ";color:#c09000}
+  .done{color:#1a6b2e}
+  .legend{font-size:.9em;color:#555;margin:.4rem 0 1.2rem}
+  a.lid{color:#06c;text-decoration:none}
+  a.lid:hover{text-decoration:underline}
+</style></head>
+<body><article class="lesson"><header class="lesson-header">
+<div class="lesson-eyebrow">Course map</div>
+<h1 class="lesson-title">Gabix course map</h1>
+<p class="lesson-subtitle">Seven topic modules plus an orientation. Lessons are numbered <span class="code">module.lesson</span> so you can work the modules in parallel. Both x86_64 and ARMv7 are taught as first-class answers to the same questions.</p>
+</header><div class="content">
+
+<p class="legend"><span class="done">●</span> lesson written &nbsp;&nbsp; <span class="planned">◐</span> planned &nbsp;&nbsp;|&nbsp;&nbsp; Start with <span class="code">0.01</span> (the ARM port overview), then open any module.</p>
+
+<section class="module" id="m0">
+  <h2><span class="mod-num">Module 0 —</span> Orientation</h2>
+  <p class="cover">The course map, the cross-cutting overviews, the roadmaps, and the spaced-repetition reviews. Read <span class="code">0.01</span> before diving into a module.</p>
+  <ul class="lessons one">
+    <li><a class="lid done" href="../lessons/0.01-the-arm-port.html">0.01 the ARM port, read beside x86</a></li>
+    <li><a class="lid done" href="../lessons/roadmap-disk-to-exec.html">roadmap: disk to exec</a></li>
+    <li><a class="lid done" href="../lessons/roadmap-networking.html">roadmap: networking</a></li>
+    <li><a class="lid done" href="../lessons/review-01-cold-boot.html">review 01: cold boot</a></li>
+  </ul>
+</section>
+
+<section class="module" id="m1">
+  <h2><span class="mod-num">Module 1 —</span> The CPU</h2>
+  <p class="cover">A program running on the CPU can, in principle, read or write any memory and run any instruction. The kernel has to stop user programs from doing that, and it has to give each program a controlled way back in when it needs the kernel to do something for it — read a file, send a packet, get the time. This module covers both: running a program with fewer privileges, and the door a program knocks on to call the kernel. x86 and ARM solve the same two problems differently; we read both.</p>
+  <ul class="lessons one">
+    <li><span class="planned">1.01 privileges and the door back in — how x86 and ARM each let a program run with reduced rights and call the kernel</span></li>
+    <li><span class="planned">1.02 interrupt entry — how a device or a timer grabs the CPU's attention</span></li>
+  </ul>
+</section>
+
+<section class="module" id="m2">
+  <h2><span class="mod-num">Module 2 —</span> Memory</h2>
+  <p class="cover">Every program must see its own memory and must not see another program's memory or the kernel's. The CPU enforces that with a table it checks on every memory access: the table says, for each range of addresses, where the bytes really live and whether this program is allowed to reach them. This module covers how that table is built and how the CPU is switched on to start using it. x86 gives each process its own table; the ARM port so far uses one shared table for everything.</p>
+  <ul class="lessons one">
+    <li><span class="planned">2.01 the translation table — how each memory access is checked and redirected</span></li>
+    <li><span class="planned">2.02 turning the table on — the sequence that makes the CPU start using it</span></li>
+  </ul>
+</section>
+
+<section class="module" id="m3">
+  <h2><span class="mod-num">Module 3 —</span> Processes</h2>
+  <p class="cover">To run more than one program, the kernel has to pause one, remember exactly where it was, and resume another later — without either program noticing. Starting a new program means reading its file off disk and laying its code out in memory. And one program has to be able to start a copy of itself, replace itself with a different program, and wait for a child to finish. This module covers all three, plus the small set of CPU registers the kernel must save and restore to switch between programs on x86 and on ARM.</p>
+  <ul class="lessons">
+    <li><a class="lid done" href="../lessons/3.01-elf-header.html">3.01 ELF header</a></li>
+    <li><a class="lid done" href="../lessons/3.02-exec.html">3.02 exec</a></li>
+    <li><a class="lid done" href="../lessons/3.03-process-table.html">3.03 process table</a></li>
+    <li><a class="lid done" href="../lessons/3.04-fork-wait-reap.html">3.04 fork, wait, reap</a></li>
+    <li><span class="planned">3.05 ARM context switching</span></li>
+  </ul>
+</section>
+
+<section class="module" id="m4">
+  <h2><span class="mod-num">Module 4 —</span> Devices</h2>
+  <p class="cover">The CPU has to find the devices wired to the board — a disk, a network card — and move bytes in and out of them. It also has to learn the moment a device finishes a job, instead of asking over and over. This module covers how the kernel discovers a device, how it hands the device a read or write request and learns the device is done, and how the device signals the CPU when there is news. x86 finds devices on a shared bus and is signaled by one interrupt controller; the ARM QEMU machine places devices at fixed memory addresses and is signaled by another. The request and response machinery is the same on both.</p>
+  <ul class="lessons">
+    <li><a class="lid done" href="../lessons/4.01-storage-stack-overview.html">4.01 storage stack overview</a></li>
+    <li><a class="lid done" href="../lessons/4.02-pci-enumeration.html">4.02 PCI enumeration</a></li>
+    <li><a class="lid done" href="../lessons/4.03-virtio-init.html">4.03 virtio init</a></li>
+    <li><a class="lid done" href="../lessons/4.04-virtqueues.html">4.04 virtqueues</a></li>
+    <li><a class="lid done" href="../lessons/4.05-first-disk-read.html">4.05 first disk read</a></li>
+    <li><a class="lid done" href="../lessons/4.06-block-layer.html">4.06 block layer</a></li>
+    <li><a class="lid done" href="../lessons/4.07-virtio-net-init.html">4.07 virtio-net init</a></li>
+    <li><a class="lid done" href="../lessons/4.08-rx-ring-animation.html">4.08 RX ring animation</a></li>
+    <li><a class="lid done" href="../lessons/4.09-interrupt-driven-io.html">4.09 interrupt-driven I/O</a></li>
+    <li><a class="lid done" href="../lessons/4.10-interrupt-driven-networking.html">4.10 interrupt-driven networking</a></li>
+    <li><a class="lid done" href="../lessons/4.11-tty-stack-overview.html">4.11 TTY stack overview</a></li>
+    <li><span class="planned">4.12 serial and keyboard input</span></li>
+    <li><span class="planned">ARM device discovery at fixed memory addresses</span></li>
+  </ul>
+</section>
+
+<section class="module" id="m5">
+  <h2><span class="mod-num">Module 5 —</span> Storage</h2>
+  <p class="cover">A file is not really a file to the hardware — it is a set of fixed-size sectors scattered across a disk. This module covers the three layers that turn those sectors into the <span class="code">open</span> / <span class="code">read</span> / <span class="code">write</span> / <span class="code">close</span> a program calls: the layer that reads one sector, the layer that gives every file the same interface regardless of where it lives, and the layer that knows where the ext2 filesystem keeps each file's data on the disk. None of this depends on the CPU; the x86 and ARM kernels share it.</p>
+  <ul class="lessons">
+    <li><a class="lid done" href="../lessons/5.01-vfs-overview.html">5.01 VFS overview</a></li>
+    <li><a class="lid done" href="../lessons/5.02-file-descriptor-table.html">5.02 file-descriptor table</a></li>
+    <li><a class="lid done" href="../lessons/5.03-inodes-and-paths.html">5.03 inodes and paths</a></li>
+    <li><a class="lid done" href="../lessons/5.04-ext2-superblock.html">5.04 ext2 superblock</a></li>
+    <li><a class="lid done" href="../lessons/5.05-ext2-inode-lookup.html">5.05 ext2 inode lookup</a></li>
+    <li><a class="lid done" href="../lessons/5.06-ext2-directory-walk.html">5.06 ext2 directory walk</a></li>
+    <li><a class="lid done" href="../lessons/5.07-mounting-ext2.html">5.07 mounting ext2</a></li>
+  </ul>
+</section>
+
+<section class="module" id="m6">
+  <h2><span class="mod-num">Module 6 —</span> Networking</h2>
+  <p class="cover">To send bytes to another computer over a wire, the kernel has to wrap them in the frame the wire expects, find the other machine's address, hand the frame to the network card, and — when the bytes matter — make sure they arrive, in order, exactly once. This module walks that path one layer at a time, from the raw frame up to a reliable stream a program can read and write like a file. Each layer has a name you will meet inside. The code does not depend on the CPU, so the x86 lessons carry straight over to ARM. The open end is the layer that talks to a web server — the path to the LinkedIn goal.</p>
+  <ul class="lessons">
+    <li><a class="lid done" href="../lessons/6.01-network-stack-overview.html">6.01 network stack overview</a></li>
+    <li><a class="lid done" href="../lessons/6.02-first-frames.html">6.02 first frames</a></li>
+    <li><a class="lid done" href="../lessons/6.03-arp.html">6.03 ARP</a></li>
+    <li><a class="lid done" href="../lessons/6.04-ipv4.html">6.04 IPv4</a></li>
+    <li><a class="lid done" href="../lessons/6.05-icmp-ping.html">6.05 ICMP ping</a></li>
+    <li><a class="lid done" href="../lessons/6.06-ping-packet-lab.html">6.06 ping packet lab</a></li>
+    <li><a class="lid done" href="../lessons/6.07-udp.html">6.07 UDP</a></li>
+    <li><a class="lid done" href="../lessons/6.08-sockets.html">6.08 sockets</a></li>
+    <li><a class="lid done" href="../lessons/6.09-nonblocking-sockets.html">6.09 nonblocking sockets</a></li>
+    <li><a class="lid done" href="../lessons/6.10-dhcp.html">6.10 DHCP</a></li>
+    <li><a class="lid done" href="../lessons/6.11-tcp-handshake.html">6.11 TCP handshake</a></li>
+    <li><a class="lid done" href="../lessons/6.12-tcp-reliable-stream.html">6.12 TCP reliable stream</a></li>
+    <li><a class="lid done" href="../lessons/6.13-tcp-teardown.html">6.13 TCP teardown</a></li>
+    <li><span class="planned">talking to a web server — the LinkedIn path</span></li>
+  </ul>
+</section>
+
+<section class="module" id="m7">
+  <h2><span class="mod-num">Module 7 —</span> Real hardware: the Raspberry Pi 2B</h2>
+  <p class="cover">The ARM manual describes the CPU core. It does not describe the actual chips on a Raspberry Pi board — the SD card socket, the USB sockets, the Ethernet socket. Those chips are made by Broadcom, they have their own manual, and they have their own rules for how you talk to them. This module covers those chips: how the Pi reads the SD card, drives its USB port, and reaches Ethernet through a chip that bridges USB to Ethernet. This is the gap between "works in the emulator" and "works on the board you plug in Monday."</p>
+  <ul class="lessons one">
+    <li><span class="planned">7.01 what the Pi 2B replaces from the standard ARM platform</span></li>
+    <li><span class="planned">reading the SD card</span></li>
+    <li><span class="planned">driving the USB port</span></li>
+    <li><span class="planned">the USB-to-Ethernet chip</span></li>
+    <li><span class="planned">asking the board for power and an address (the mailbox)</span></li>
+    <li><span class="planned">the Pi's own timer and interrupt controller</span></li>
+  </ul>
+</section>
+
+<p style="margin-top:2.2rem;color:#555;max-width:62ch">The orientation lesson <span class="code">0.01 the ARM port overview</span> is the entry point: it walks the gabix source one layer at a time and shows what changed from x86 to ARM, in the same plain voice as this page. Ask the agent to open it, or to start any module above.</p>
+
+</div><footer class="lesson-footer"><div class="footer-block"><h4>Sources</h4><p style="margin:0"><a href="https://developer.arm.com/documentation/ddi0406/latest">ARMv7-AR Architecture Reference Manual</a> · <a href="https://www.raspberrypi.org/app/uploads/2012/02/BCM2836-ARM-Peripherals.pdf">BCM2836 ARM Peripherals</a> · <a href="https://www.qemu.org/docs/master/system/arm/virt.html">QEMU <span class="code">virt</span> machine</a> · <a href="https://www.intel.com/sdm">Intel SDM (x86)</a></p></div></footer></article></body></html>

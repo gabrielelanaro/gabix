@@ -1,0 +1,291 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Lesson 31 — TCP Handshake</title>
+  <link rel="stylesheet" href="../assets/lesson.css">
+  <link rel="stylesheet" href="../assets/byte-layout.css">
+  <link rel="stylesheet" href="../assets/sequence-diagram.css">
+  <style>
+    .field-guide { display:grid; grid-template-columns:repeat(auto-fit, minmax(15rem, 1fr)); gap:.8rem; margin:1.5rem 0; }
+    .field-guide-item { padding:.9rem 1rem; border:1px solid var(--border); border-radius:6px; background:var(--surface); }
+    .field-guide-item p { margin:.3rem 0 0; font-size:.9rem; }
+    .field-guide-item strong { font-family:var(--font-mono); font-size:.82rem; color:var(--accent); }
+
+    .state-table { font-family:var(--font-mono); font-size:.84rem; border-collapse:collapse; margin:1.5rem 0; width:100%; }
+    .state-table th, .state-table td { border:1px solid var(--border); padding:.55rem .7rem; text-align:left; vertical-align:top; }
+    .state-table th { background:var(--surface); font-family:var(--font-sans); font-size:.78rem; text-transform:uppercase; letter-spacing:.06em; color:var(--text-dim); }
+    .state-table td:first-child { font-weight:600; color:var(--accent); white-space:nowrap; }
+
+    .compare { display:grid; grid-template-columns:1fr 1fr; gap:1rem; margin:1.5rem 0; }
+    .compare-card { padding:1rem 1.15rem; border:1px solid var(--border); border-radius:8px; background:var(--surface); }
+    .compare-card h4 { margin:0 0 .5rem; font-family:var(--font-sans); font-size:.78rem; letter-spacing:.08em; text-transform:uppercase; color:var(--text-dim); }
+    .compare-card.tcp { border-left:4px solid var(--accent); }
+    .compare-card.tcp h4 { color:var(--accent); }
+    .compare-card ul { margin:.4rem 0 0; padding-left:1.1rem; font-size:.92rem; }
+    .compare-card li { margin:.25rem 0; }
+    @media(max-width:640px){ .compare{grid-template-columns:1fr} }
+  </style>
+</head>
+<body>
+<article class="lesson">
+  <header class="lesson-header">
+    <div class="lesson-eyebrow">Lesson 31 · TCP arc · 1 of 3</div>
+    <h1 class="lesson-title">The TCP three-way handshake</h1>
+    <p class="lesson-subtitle">Agree to talk, exchange the first byte: SYN, SYN-ACK, ACK, then one payload segment each way.</p>
+    <div class="lesson-meta">
+      <span><strong>Primary spec</strong> <a href="https://www.rfc-editor.org/rfc/rfc9293">RFC 9293</a></span>
+      <span><strong>Linux counterpart</strong> <code>net/ipv4/tcp_input.c</code></span>
+      <span><strong>Proof target</strong> <code>10.0.2.3:53</code> (slirp DNS over TCP)</span>
+    </div>
+  </header>
+
+  <div class="content">
+
+    <p class="lead">You sent datagrams through a UDP socket in Lessons 25 to 30. Each call to <code>sendto()</code> transmitted one self-contained message and forgot about it. If the network dropped a datagram, the sender never learned. If datagrams arrived out of order, the application had to notice and reorder. These limitations are tolerable for short request-reply protocols like DNS and DHCP, but not for transferring files, remote login, or loading a web page. A program sending a file wants to write bytes into a stream and trust that they will arrive at the peer intact, in order, exactly once.</p>
+    <p>TCP (Transmission Control Protocol) provides that stream. To keep its guarantee, both endpoints must remember per-connection state: each other's addresses, the position of the next byte to send, the next byte expected, the receive window, and the buffers holding bytes in flight. That remembered state is what makes a TCP connection a connection. Before any bytes flow, the two computers must agree that the connection exists and exchange their starting byte positions. This three-message agreement is the <strong>three-way handshake</strong>. This lesson builds the segment format, the handshake, the establishment states, and the exchange of one byte in each direction. Lesson 32 makes the byte stream reliable under packet loss. Lesson 33 adds teardown and a TCP echo server.</p>
+
+    <h2>What "connection-oriented" means</h2>
+
+    <p>UDP sent one datagram and forgot about it. The UDP socket object from Lesson 26 held only a port number, a receive queue, and a waiter. Nothing in it referenced a particular peer or a particular byte position.</p>
+
+    <p>TCP keeps state per peer. That state is what makes the protocol reliable. Every byte sent gets a sequence number. Every byte received gets an acknowledgment. A byte that goes unacknowledged for too long is sent again. None of that works without state on both sides remembering where the stream is up to.</p>
+
+    <p>The state lives in a struct called the <strong>TCP Control Block</strong> (TCB). Linux calls it <a href="https://elixir.bootlin.com/linux/latest/source/include/linux/tcp.h"><code>struct tcp_sock</code></a> and stores several hundred bytes per connection (timers, congestion window, SACK state, the works). mini-os will start smaller: local and remote address, local and remote port, four byte-position counters (<code>send_next</code>, <code>send_unacked</code>, <code>recv_next</code>, <code>recv_window</code>), the connection state, and a small retransmit queue.</p>
+
+    <div class="compare">
+      <div class="compare-card">
+        <h4>UDP socket (Lesson 26)</h4>
+        <ul>
+          <li>local port</li>
+          <li>datagram receive queue</li>
+          <li>one blocked waiter</li>
+          <li>no peer address &mdash; each <code>recvfrom</code> may return a different sender</li>
+        </ul>
+      </div>
+      <div class="compare-card tcp">
+        <h4>TCP connection (this lesson)</h4>
+        <ul>
+          <li>local and remote IP + port (a fixed peer)</li>
+          <li>send byte position (<code>send_next</code>, <code>send_unacked</code>)</li>
+          <li>receive byte position (<code>recv_next</code>)</li>
+          <li>flow-control window</li>
+          <li>connection state (CLOSED, SYN_SENT, ESTABLISHED, &hellip;)</li>
+        </ul>
+      </div>
+    </div>
+
+    <h2>The TCP segment</h2>
+
+    <p>A TCP segment is a 20-byte header plus an optional payload. The header is two and a half times UDP's, because it carries the connection-state machinery: two 32-bit byte-position numbers (sequence, acknowledgment), a window advertisement, a flag byte, and a pointer for urgent data.</p>
+
+    <div class="byte-layout">
+      <div class="byte-layout-header">
+        <span class="byte-layout-name">TCP header (20 bytes minimum)</span>
+        <span class="byte-layout-size">options follow at byte 20</span>
+      </div>
+      <div class="byte-bar">
+        <div class="byte-field type-u16" style="--bytes:2" data-tip="sender's port"><span class="byte-field-name">source port</span><span class="byte-field-meta">u16</span><span class="byte-field-range">0x00–01</span><span class="byte-field-mini">SP</span></div>
+        <div class="byte-field type-u16" style="--bytes:2" data-tip="receiver's port"><span class="byte-field-name">dest port</span><span class="byte-field-meta">u16</span><span class="byte-field-range">0x02–03</span><span class="byte-field-mini">DP</span></div>
+        <div class="byte-field type-u32" style="--bytes:4" data-tip="byte position of the first payload byte in this segment"><span class="byte-field-name">sequence</span><span class="byte-field-meta">u32</span><span class="byte-field-range">0x04–07</span><span class="byte-field-mini">SEQ</span></div>
+        <div class="byte-field type-u32" style="--bytes:4" data-tip="next byte the sender expects to receive"><span class="byte-field-name">ack number</span><span class="byte-field-meta">u32</span><span class="byte-field-range">0x08–0B</span><span class="byte-field-mini">ACK</span></div>
+        <div class="byte-field type-u8" style="--bytes:1" data-tip="high nibble: header length in 32-bit words. low nibble: reserved."><span class="byte-field-name">data offset</span><span class="byte-field-meta">4+4 bits</span><span class="byte-field-range">0x0C</span><span class="byte-field-mini">DO</span></div>
+        <div class="byte-field type-u8" style="--bytes:1" data-tip="CWR ECE URG ACK PSH RST SYN FIN"><span class="byte-field-name">flags</span><span class="byte-field-meta">8 bits</span><span class="byte-field-range">0x0D</span><span class="byte-field-mini">F</span></div>
+        <div class="byte-field type-u16" style="--bytes:2" data-tip="bytes the sender can still receive"><span class="byte-field-name">window</span><span class="byte-field-meta">u16</span><span class="byte-field-range">0x0E–0F</span><span class="byte-field-mini">WIN</span></div>
+        <div class="byte-field type-u16" style="--bytes:2" data-tip="RFC 1071 checksum with TCP pseudo-header"><span class="byte-field-name">checksum</span><span class="byte-field-meta">u16</span><span class="byte-field-range">0x10–11</span><span class="byte-field-mini">Σ</span></div>
+        <div class="byte-field type-u16" style="--bytes:2" data-tip="only meaningful when URG is set"><span class="byte-field-name">urgent ptr</span><span class="byte-field-meta">u16</span><span class="byte-field-range">0x12–13</span><span class="byte-field-mini">URG</span></div>
+      </div>
+      <div class="byte-layout-note">All multi-byte fields use network byte order: big-endian. The TCP pseudo-header for the checksum adds source IP, dest IP, a zero byte, protocol number 6, and the TCP length &mdash; same shape as UDP in Lesson 25.</div>
+    </div>
+
+    <div class="field-guide" aria-label="What each TCP header field means">
+      <div class="field-guide-item"><strong><code>sequence</code> · bytes 4–7</strong><p>The byte position of the first payload byte in this segment within the sender's outbound byte stream. A SYN or FIN flag consumes one sequence number even though it carries no data, which is why the receiver's ACK after a SYN is <code>seq + 1</code>.</p></div>
+      <div class="field-guide-item"><strong><code>ack number</code> · bytes 8–11</strong><p>The next byte the sender of this segment expects to receive. Meaningful only when the ACK flag is set. An ACK with value <code>N</code> tells the recipient that every byte it sent with sequence below <code>N</code> has arrived.</p></div>
+      <div class="field-guide-item"><strong><code>data offset</code> · byte 12 (high nibble)</strong><p>Header length in 32-bit words. With no options this field is <code>5</code> (5 × 4 = 20 bytes). With options it grows; the maximum is <code>15</code> (60 bytes total). The payload begins at byte <code>data_offset × 4</code>.</p></div>
+      <div class="field-guide-item"><strong><code>flags</code> · byte 13</strong><p>Eight control bits, read most-significant first: <code>CWR ECE URG ACK PSH RST SYN FIN</code>. The handshake uses three of them: <strong>SYN</strong> (synchronize sequence numbers), <strong>ACK</strong> (the ack-number field is valid), <strong>RST</strong> (abort the connection). The others belong to data flow and teardown.</p></div>
+      <div class="field-guide-item"><strong><code>window</code> · bytes 14–15</strong><p>The number of bytes the sender of this segment can still accept in its receive buffer. This is TCP's flow-control channel: the receiver tells the sender how much room is left. A window of zero means "stop sending until I advertise more."</p></div>
+      <div class="field-guide-item"><strong><code>checksum</code> · bytes 16–17</strong><p>RFC 1071 internet checksum, computed over the TCP header, the payload, and a 12-byte pseudo-header containing the source IP, dest IP, protocol number 6, and the TCP length. Same construction as UDP in Lesson 25.</p></div>
+      <div class="field-guide-item"><strong><code>urgent ptr</code> · bytes 18–19</strong><p>An offset from the sequence number marking the end of "urgent" data in the stream. mini-os will leave this zero and never set URG. Telnet uses it; modern protocols rarely do.</p></div>
+      <div class="field-guide-item"><strong>options · byte 20 onward</strong><p>Variable-length option pairs (kind, length, value). Common options in a SYN: MSS (maximum segment size, kind 2), window scale (kind 3), SACK-permitted (kind 4), timestamps (kind 8). mini-os will send MSS only.</p></div>
+    </div>
+
+    <h2>The exchange, segment by segment</h2>
+
+    <div class="seq-diagram">
+      <div class="seq-actors" style="--lanes:2">
+        <div class="seq-actor"><strong>client</strong><span class="seq-ep">10.0.2.15:ephemeral · active open</span></div>
+        <div class="seq-actor"><strong>server</strong><span class="seq-ep">10.0.2.3:53 · listening</span></div>
+      </div>
+      <div class="seq-body">
+        <div class="seq-lane" style="--x:25%"></div>
+        <div class="seq-lane" style="--x:75%"></div>
+        <div class="seq-msg" style="--x1:25%; --x2:75%">
+          <span class="seq-tag"><span class="seq-num">1</span> SYN</span>
+          <div class="seq-line arr-r"></div>
+          <span class="seq-detail">flags=SYN · seq=x · ack=0 · no payload<br>client picks its Initial Sequence Number <code>x</code></span>
+        </div>
+        <div class="seq-msg" style="--x1:25%; --x2:75%">
+          <span class="seq-tag"><span class="seq-num">2</span> SYN+ACK</span>
+          <div class="seq-line arr-l"></div>
+          <span class="seq-detail">flags=SYN,ACK · seq=y · ack=x+1<br>server picks <code>y</code>, acknowledges <code>x</code> by sending <code>x+1</code></span>
+        </div>
+        <div class="seq-msg" style="--x1:25%; --x2:75%">
+          <span class="seq-tag"><span class="seq-num">3</span> ACK</span>
+          <div class="seq-line arr-r"></div>
+          <span class="seq-detail">flags=ACK · seq=x+1 · ack=y+1<br>client acknowledges <code>y</code>. No SYN flag, no payload.</span>
+        </div>
+      </div>
+    </div>
+
+    <p>After segment 3, both ends agree that the connection exists and is in the <code>ESTABLISHED</code> state. Application bytes can now flow in either direction, with each side's sequence number advancing by the number of bytes sent.</p>
+
+    <h2>Why three messages, not two</h2>
+
+    <p>Two directions, two independent starting points. The client must tell the server its starting sequence number <code>x</code>, and the server must tell the client its starting sequence number <code>y</code>. Each side must also acknowledge the other's starting number so the sender of that number learns it arrived.</p>
+
+    <p>That is four facts to establish: <code>x</code> from client, ACK of <code>x</code> from server, <code>y</code> from server, ACK of <code>y</code> from client. The middle message combines two of them: the server's SYN-ACK carries its own starting number <code>y</code> and acknowledges the client's <code>x</code> in the same segment. Four facts fit into three packets.</p>
+
+    <p>The third message carries no SYN flag. It is pure ACK: "I received your SYN-ACK, here is my acknowledgment of your starting number." Without it, the server would have sent <code>y</code> but never learned whether the client received it. The connection would sit in <code>SYN_RCVD</code> on the server side indefinitely.</p>
+
+    <h2>Why sequence numbers do not start at zero</h2>
+
+    <p>Both ends pick an <strong>Initial Sequence Number</strong> (ISN) that is not zero, and not predictable. RFC 9293 §3.4 specifies the requirement; <a href="https://www.rfc-editor.org/rfc/rfc6528">RFC 6528</a> describes the algorithm modern implementations use (a clock-driven or per-connection random offset).</p>
+
+    <p>The reason is an attack. If an off-path attacker can guess the ISN a server will assign to a new connection, the attacker can forge TCP segments with the correct sequence number and inject data into the connection. The classic exploit is <em>Blind TCP Spoofing</em>: the attacker sends a flood of guessed segments, hoping one lands in the receive window. Random ISNs make the guess astronomically unlikely. A predictable counter starting at 0 every boot would be trivially exploitable.</p>
+
+    <p>For mini-os the security threat is not real &mdash; the only peer is slirp &mdash; but the principle matters. The implementation will derive the ISN from the existing timer tick counter, which is monotonic and changes between connections. That is not cryptographically secure, but it satisfies the RFC's intent of "different ISN per connection" without depending on a random source we do not yet have.</p>
+
+    <h2>Connection states for establishment</h2>
+
+    <p>Each TCB holds a state field. The states relevant to opening a connection are five. Teardown (Lesson 33) adds six more.</p>
+
+    <table class="state-table">
+      <thead>
+        <tr><th>State</th><th>What it means</th><th>Who enters it</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><code>CLOSED</code></td><td>No TCB exists for this peer. Stable starting state.</td><td>Both, before any segment is sent.</td></tr>
+        <tr><td><code>LISTEN</code></td><td>Waiting for an inbound SYN. A bound passive socket.</td><td>The server side. mini-os will reach this state via <code>bind</code> + <code>listen</code> syscalls (Lesson 33).</td></tr>
+        <tr><td><code>SYN_SENT</code></td><td>Sent SYN, waiting for SYN-ACK.</td><td>The active opener (client) after sending segment 1.</td></tr>
+        <tr><td><code>SYN_RCVD</code></td><td>Received SYN, sent SYN-ACK, waiting for the final ACK.</td><td>The server after sending segment 2.</td></tr>
+        <tr><td><code>ESTABLISHED</code></td><td>Handshake complete. Data flow is permitted.</td><td>Both, after the third handshake message is sent or received.</td></tr>
+      </tbody>
+    </table>
+
+    <p>The active-open path is <code>CLOSED → SYN_SENT → ESTABLISHED</code>. The passive-open path is <code>LISTEN → SYN_RCVD → ESTABLISHED</code>. Lesson 31 exercises the active-open path &mdash; we send the first SYN to a host that is already listening, then exchange one byte in each direction.</p>
+
+    <h2>What to build in mini-os</h2>
+
+    <p>Lesson 31 covers the segment format, the TCB, the active-open handshake, one bounded payload sent, and the first response byte returned to user mode. The sliding-window send/recv API, retransmission, and teardown are Lessons 32 and 33. The server side (<code>LISTEN</code>, <code>SYN_RCVD</code>) waits for Lesson 33's echo server.</p>
+
+    <div class="recipe">
+      <div class="recipe-step">
+        <div class="recipe-num">31.1</div>
+        <div class="recipe-body">
+          <strong>TCP header build/parse.</strong> Add <code>src/net/tcp.rs</code> with a <code>TcpHeader</code> struct and <code>build</code>/<code>parse</code> functions covering the 20 fixed bytes. Reuse the existing <code>src/net/checksum.rs</code> with a TCP pseudo-header (source IP, dest IP, zero byte, protocol <code>6</code>, TCP length). Demux protocol <code>6</code> from the existing IPv4 receive path. Verify by building a SYN segment in a unit fixture and dumping the bytes.
+        </div>
+      </div>
+
+      <div class="recipe-step">
+        <div class="recipe-num">31.2</div>
+        <div class="recipe-body">
+          <strong>The TCP Control Block.</strong> Define <code>struct TcpControlBlock</code> with fields for local/remote IP + port, <code>send_next</code>, <code>send_unacked</code>, <code>recv_next</code>, <code>recv_window</code>, and a <code>state</code> enum. Storage for now: a single global slot (one TCP connection at a time). A socket-table abstraction like UDP's arrives in Lesson 33 when the server side needs to demux multiple connections.
+        </div>
+      </div>
+
+      <div class="recipe-step">
+        <div class="recipe-num">31.3</div>
+        <div class="recipe-body">
+          <strong>Active open &mdash; send SYN.</strong> Derive an ISN from the timer tick counter (monotonic, changes per call). Build a SYN segment with <code>seq=ISN</code>, flags=<code>SYN</code>, no payload. Transmit through the existing IPv4 + Ethernet path. Set the TCB state to <code>SYN_SENT</code>. Block the calling task (reuse Lesson 26's waiter mechanism) waiting for the SYN-ACK.
+        </div>
+      </div>
+
+      <div class="recipe-step">
+        <div class="recipe-num">31.4</div>
+        <div class="recipe-body">
+          <strong>Receive SYN-ACK, send final ACK.</strong> In the TCP receive path, when a segment arrives with <code>SYN</code> and <code>ACK</code> flags and <code>ack = ISN+1</code>, accept it: record the server's ISN from <code>seq</code>, advance <code>recv_next</code> past the SYN (one byte, conceptually), build the third handshake segment (flags=<code>ACK</code>, <code>seq=ISN+1</code>, <code>ack=server_ISN+1</code>), transmit it, set state to <code>ESTABLISHED</code>, wake the blocked task.
+        </div>
+      </div>
+
+      <div class="recipe-step">
+        <div class="recipe-num">31.5</div>
+        <div class="recipe-body">
+          <strong>Send one bounded payload.</strong> Once ESTABLISHED, the ring-3 fixture writes a valid 31-byte, length-prefixed DNS query through <code>SYS_NET_TCP_SEND = 906</code>. The kernel builds a segment with flags=<code>PSH,ACK</code>, <code>seq=send_next</code>, and <code>ack=recv_next</code>; transmits it; then advances <code>send_next</code> by 31. A DNS-over-TCP server requires a complete query before it can return a response. Retransmission arrives in Lesson 32.
+        </div>
+      </div>
+
+      <div class="recipe-step">
+        <div class="recipe-num">31.6</div>
+        <div class="recipe-body">
+          <strong>Receive one data byte, send ACK.</strong> When a segment with payload arrives in ESTABLISHED, copy the payload into the TCB's receive buffer, advance <code>recv_next</code> by the payload length, build an ACK segment with <code>ack=recv_next</code>, transmit it. Deliver the byte to the ring-3 fixture through <code>SYS_NET_TCP_RECV = 907</code>, blocking if no byte has arrived yet (reuse the existing waiter mechanism).
+        </div>
+      </div>
+
+      <div class="recipe-step">
+        <div class="recipe-num">31.7</div>
+        <div class="recipe-body">
+          <strong>End-to-end proof.</strong> New syscall <code>SYS_NET_TCP_CONNECT = 905</code> triggers an active open to <code>10.0.2.3:53</code> (slirp's DNS server accepts TCP). The ring-3 fixture sends the DNS query, receives the server's first response byte, and reports both on serial output. Serial shows the chosen client ISN, the server ISN and matching ACK, the final ACK, <code>CLOSED → SYN_SENT → ESTABLISHED</code>, the 31-byte sequence advance, and the response-length acknowledgment advance.
+        </div>
+      </div>
+    </div>
+
+    <div class="callout">
+      <div class="callout-title">Boundary &mdash; what Lesson 31 deliberately does not do</div>
+      <p style="margin:0;">
+        Lesson 31 sends one bounded segment and returns the first received byte. This proves the byte-position model: sequence advances by payload length, and ACK names the next expected byte. The full sliding-window send/recv API, retransmission on loss, and RTT estimation arrive in Lesson 32. Passive open (<code>LISTEN</code>) and teardown arrive in Lesson 33.
+      </p>
+    </div>
+
+    <div class="callout">
+      <div class="callout-title">Why <code>10.0.2.3:53</code> instead of <code>10.0.2.2:80</code></div>
+      <p style="margin:0;">
+        slirp's gateway at <code>10.0.2.2</code> answers ARP and proxies DHCP, but the gateway host itself does not run services that accept inbound TCP from the guest. The DNS forwarder at <code>10.0.2.3</code> does &mdash; it implements both UDP/53 (Lesson 30's DHCP references it) and TCP/53 (RFC 7766 requires both transports for DNS). Connecting to <code>10.0.2.3:53</code> gives the handshake a live server that will respond with a real SYN-ACK without any host-side setup.
+      </p>
+    </div>
+
+    <div class="probe">
+      <div class="probe-title">Probe &mdash; the third segment carries no SYN</div>
+      <p>
+        The third handshake message is a pure ACK: it carries the <code>ACK</code> flag, no <code>SYN</code> flag, and no payload. Yet the connection is not ESTABLISHED until the server receives it. What state is the server in before segment 3 arrives, what does it learn from segment 3 that it did not already know from segment 2, and what happens to the connection if segment 3 is lost in transit?
+      </p>
+    </div>
+
+    <p>Answer the probe when ready, or ask about any field, state, or build step before implementation. The build starts at step 31.1.</p>
+
+  </div>
+
+  <footer class="lesson-footer">
+    <div class="footer-block">
+      <h4>What this completes</h4>
+      <p style="margin:0;">
+        Lesson 31 lands the TCP segment format, the three-way handshake, the establishment states, and one byte exchanged in each direction. The kernel gains a TCP receive path alongside UDP, a single-slot TCB, and three new syscalls (<code>connect</code>, <code>send</code>, <code>recv</code>). ESTABLISHED is reached and the byte-position model (sequence advances by payload length, ACK tracks the next expected byte) is proven on the wire.
+      </p>
+    </div>
+
+    <div class="footer-block">
+      <h4>Primary sources</h4>
+      <p style="margin:0;">
+        <a href="https://www.rfc-editor.org/rfc/rfc9293">RFC 9293</a> &mdash; the modern consolidated TCP spec (obsoletes RFC 793). Establishment is in §3.5, the state machine in §4.1, the ISN requirement in §3.4. <a href="https://www.rfc-editor.org/rfc/rfc6528">RFC 6528</a> &mdash; ISN randomization. <a href="https://www.rfc-editor.org/rfc/rfc7766">RFC 7766</a> &mdash; DNS over TCP (justifies the <code>10.0.2.3:53</code> test target). Linux counterparts: <a href="https://elixir.bootlin.com/linux/latest/source/net/ipv4/tcp_input.c"><code>net/ipv4/tcp_input.c</code></a> for the receive state machine, <a href="https://elixir.bootlin.com/linux/latest/source/net/ipv4/tcp_output.c"><code>net/ipv4/tcp_output.c</code></a> for SYN/SYN-ACK/ACK segment generation, <a href="https://elixir.bootlin.com/linux/latest/source/include/linux/tcp.h"><code>include/linux/tcp.h</code></a> for <code>struct tcp_sock</code>.
+      </p>
+    </div>
+
+    <div class="footer-block">
+      <h4>Keep nearby</h4>
+      <p style="margin:0;">
+        <a href="6.04-ipv4.html">Lesson 23: IPv4</a> &mdash; the layer TCP rides on; pseudo-header checksum pattern reused here.<br>
+        <a href="6.07-udp.html">Lesson 25: UDP</a> &mdash; the contrast case. Same IPv4 + pseudo-header, no connection state.<br>
+        <a href="6.08-sockets.html">Lesson 26: sockets</a> &mdash; the blocked-task wakeup mechanism this lesson's SYN_SENT wait reuses.<br>
+        <a href="6.10-dhcp.html">Lesson 30: DHCP</a> &mdash; the other recent ring-3 client. Both are protocols layered on UDP/TCP above the existing IP stack.
+      </p>
+    </div>
+
+    <nav class="lesson-nav" aria-label="Lesson navigation">
+      <a href="6.10-dhcp.html">&larr; Lesson 30: DHCP</a>
+      <a href="roadmap-networking.html">Networking roadmap</a>
+      <a href="6.12-tcp-reliable-stream.html">Lesson 32: reliable stream &rarr;</a>
+    </nav>
+  </footer>
+</article>
+</body>
+</html>

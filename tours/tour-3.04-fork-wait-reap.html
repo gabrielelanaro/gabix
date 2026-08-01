@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Tour - Lesson 18 - Inherit, Exit, Reap</title>
+<link rel="stylesheet" href="../assets/lesson.css">
+<script src="../assets/code-highlight.js" defer></script>
+<style>
+  .tour-step { margin: 3rem 0; padding-top: 1rem; border-top: 1px solid var(--border); }
+  .tour-step:first-of-type { border-top: none; padding-top: 0; }
+  .tour-step-num {
+    display: inline-block; font-family: var(--font-mono); font-size: 0.78rem;
+    font-weight: 600; color: var(--accent); background: var(--accent-soft);
+    padding: 2px 8px; border-radius: 3px; margin-right: 0.6rem;
+  }
+  .tour-step-title {
+    font-family: var(--font-sans); font-weight: 700; font-size: 1.3rem;
+    color: var(--text); margin: 0 0 0.4rem; display: inline;
+  }
+  .tour-step-h2 { margin: 0 0 1rem; }
+  .tour-files { font-family: var(--font-mono); font-size: 0.82rem; color: var(--text-dim); margin: 0.5rem 0 1.5rem; }
+  .tour-files strong { color: var(--text); font-weight: 600; }
+  .snippet-meta { font-family: var(--font-mono); font-size: 0.72rem; color: var(--text-dim); margin: 1.5rem 0 0.35rem; display: flex; align-items: baseline; gap: 0.6rem; }
+  .snippet-meta .snippet-file { color: var(--accent); font-weight: 600; background: var(--accent-soft); padding: 1px 6px; border-radius: 3px; }
+  .snippet-meta .snippet-what { color: var(--text-faint); font-style: italic; }
+  .snippet-meta + pre, .snippet-meta + pre.tour-output { margin-top: 0; }
+  pre.tour-output { background: #111827; color: #e5e7eb; border-left: 3px solid var(--accent); padding: 1rem 1.25rem; border-radius: 0 6px 6px 0; font-size: 0.8rem; line-height: 1.55; margin: 1rem 0; overflow-x: auto; }
+  pre.tour-output .ok { color: #86efac; }
+  .plain-map {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1rem 1.25rem;
+    margin: 1.25rem 0;
+    overflow-x: auto;
+  }
+  .plain-map pre { background: transparent; color: var(--text); padding: 0; margin: 0; }
+</style>
+</head>
+<body>
+<article class="lesson">
+  <header class="lesson-header">
+    <div class="lesson-eyebrow">Tour - Lesson 18 - Companion to <a href="../lessons/3.04-fork-wait-reap.html" style="color:inherit;">the lesson</a></div>
+    <h1 class="lesson-title">Code Tour - Inherit, Exit, Reap</h1>
+    <p class="lesson-subtitle">A guided pass through the small pieces that make forked files, exit cleanup, and wait-by-PID work together.</p>
+    <div class="lesson-meta">
+      <span><strong>Files</strong> <code>src/fs.rs</code>, <code>src/task.rs</code>, <code>src/syscall.rs</code></span>
+      <span><strong>Test</strong> <code>tests/test_inherit_wait.sh</code></span>
+    </div>
+  </header>
+
+  <div class="content">
+  <p class="lead">
+    Lesson 18 is about ownership. A forked child receives handles to the same
+    open files as its parent. When a process exits, it releases those handles.
+    When a parent waits, it reads the exit code and removes the finished child
+    from the process table.
+  </p>
+
+  <div class="plain-map">
+<pre>parent opens /hello.txt
+parent reads "hello"
+fork
+child reads " from" using the inherited fd
+child exits with code 7 and closes its fd
+parent waits for that child PID and gets status 7
+parent reads " disk", proving the child advanced the shared cursor</pre>
+  </div>
+
+  <div class="tour-step">
+    <h2 class="tour-step-h2"><span class="tour-step-num">18.1</span><span class="tour-step-title">Copy the FD table shape</span></h2>
+    <div class="tour-files"><strong>File:</strong> <code>src/fs.rs</code></div>
+    <p>
+      <code>FdTable::clone_shallow</code> creates a fresh table with the same
+      slot numbers. Each slot points at the same <code>File</code> object
+      through an <code>Arc</code>. That shared <code>File</code> holds the
+      cursor, so parent and child advance one read position.
+    </p>
+    <div class="snippet-meta"><span class="snippet-file">src/fs.rs</span><span class="snippet-what">shared File handles</span></div>
+<pre><span class="k">pub fn</span> clone_shallow(&amp;<span class="k">self</span>) -&gt; <span class="t">Self</span> {
+    <span class="t">Self</span> {
+        table: <span class="k">self</span>.table.clone(),
+    }
+}</pre>
+    <p>
+      Cloning an <code>Arc&lt;File&gt;</code> bumps a counter. The file object
+      stays alive until every process drops its handle.
+    </p>
+  </div>
+
+  <div class="tour-step">
+    <h2 class="tour-step-h2"><span class="tour-step-num">18.2</span><span class="tour-step-title">Give the child inherited files</span></h2>
+    <div class="tour-files"><strong>File:</strong> <code>src/task.rs</code></div>
+    <p>
+      <code>spawn_fork_child</code> already builds the child process. It now
+      reads the parent process, clones the parent's FD table, and passes that
+      table into <code>Process::new</code>.
+    </p>
+    <div class="snippet-meta"><span class="snippet-file">src/task.rs</span><span class="snippet-what">fork child process setup</span></div>
+<pre><span class="k">let</span> child_fd_table = table
+    .get(parent_pid)
+    .expect(<span class="s">"spawn_fork_child: parent process missing"</span>)
+    .fd_table
+    .clone_shallow();
+
+<span class="k">let</span> proc = <span class="t">Process</span>::new(
+    <span class="s">"fork-child"</span>,
+    <span class="t">Some</span>(parent_pid),
+    memory::<span class="t">AddressSpace</span>::from_current(),
+    child_fd_table,
+);</pre>
+    <p>
+      The child still gets its own address space and stacks. File handles are
+      the shared part here.
+    </p>
+  </div>
+
+  <div class="tour-step">
+    <h2 class="tour-step-h2"><span class="tour-step-num">18.3</span><span class="tour-step-title">Close files during exit</span></h2>
+    <div class="tour-files"><strong>File:</strong> <code>src/task.rs</code></div>
+    <p>
+      <code>mark_current_zombie</code> sets the exit code and replaces the
+      process FD table with an empty table. The old table drops after the
+      process-table lock is released.
+    </p>
+    <div class="snippet-meta"><span class="snippet-file">src/task.rs</span><span class="snippet-what">release open descriptors</span></div>
+<pre><span class="k">let</span> closed_fds = proc.fd_table.open_count();
+<span class="k">let</span> old_fd_table = core::mem::replace(
+    &amp;<span class="k">mut</span> proc.fd_table,
+    <span class="t">FdTable</span>::new(),
+);
+
+drop(old_fd_table);</pre>
+    <p>
+      The zombie keeps the small pieces the parent needs: PID, parent link,
+      and exit status. Open files leave at exit time.
+    </p>
+  </div>
+
+  <div class="tour-step">
+    <h2 class="tour-step-h2"><span class="tour-step-num">18.4</span><span class="tour-step-title">Wait for one child or any child</span></h2>
+    <div class="tour-files"><strong>Files:</strong> <code>src/syscall.rs</code>, <code>src/task.rs</code></div>
+    <p>
+      The syscall layer reads two arguments: target PID in <code>rdi</code>,
+      status pointer in <code>rsi</code>. <code>u64::MAX</code> means any child.
+      A positive PID means that exact child.
+    </p>
+    <div class="snippet-meta"><span class="snippet-file">src/task.rs</span><span class="snippet-what">wait target</span></div>
+<pre><span class="k">pub enum</span> <span class="t">WaitTarget</span> {
+    <span class="t">Any</span>,
+    <span class="t">Specific</span>(<span class="t">Pid</span>),
+}</pre>
+    <p>
+      <code>wait_for_zombie_child</code> searches only children that match the
+      target. If the target child still exists and has not exited yet, the
+      parent blocks. If the target child is gone or never belonged to the
+      parent, the syscall returns <code>-1</code>.
+    </p>
+  </div>
+
+  <div class="tour-step">
+    <h2 class="tour-step-h2"><span class="tour-step-num">18.5</span><span class="tour-step-title">Test the story end to end</span></h2>
+    <div class="tour-files"><strong>Files:</strong> <code>tests/fixtures/inherit_wait.rs</code>, <code>tests/test_inherit_wait.sh</code></div>
+    <p>
+      The fixture uses the contents of <code>/hello.txt</code> as a measuring
+      stick. The parent reads the first word, the child reads the next word,
+      then the parent reads the next word after waiting for the child.
+    </p>
+    <div class="snippet-meta"><span class="snippet-file">tests/fixtures/inherit_wait.rs</span><span class="snippet-what">observable markers</span></div>
+<pre><span class="c">// expected serial markers</span>
+[inherit] child read shared fd
+[inherit] wait specific status=7
+[inherit] parent saw child advance cursor</pre>
+    <p>
+      The shell test also checks for two <code>closed_fds=1</code> logs: one
+      from the child exit and one from the parent exit.
+    </p>
+  </div>
+
+  <h2>Verification</h2>
+<pre class="tour-output"><span class="ok">cargo check --features test-mode,test-fork</span>
+<span class="ok">cargo check --features test-mode,test-inherit</span>
+<span class="ok">./tests/test_inherit_wait.sh</span>
+<span class="ok">./tests/test_fork_smoke.sh</span>
+<span class="ok">./tests/test_hello.sh</span></pre>
+
+  <h2>Where to Ask Questions</h2>
+  <p>
+    Good follow-ups: why the cursor is shared, why exit closes files before
+    wait reaps the child, or why <code>wait(pid)</code> must ignore other
+    exited children.
+  </p>
+  </div>
+
+  <footer class="lesson-footer">
+    <div class="footer-block">
+      <h4>Practice</h4>
+      <p style="margin:0;">
+        Explain the three moments in one sentence each: inherit at fork,
+        close at exit, remove at wait.
+      </p>
+    </div>
+    <nav class="lesson-nav">
+      <a href="../lessons/3.04-fork-wait-reap.html">Lesson 18</a>
+      <a href="../lessons/3.03-process-table.html">Lesson 17</a>
+    </nav>
+  </footer>
+</article>
+</body>
+</html>

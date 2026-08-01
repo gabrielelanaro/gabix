@@ -1,0 +1,270 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Lesson 33 — Teardown and Echo Server</title>
+  <link rel="stylesheet" href="../assets/lesson.css">
+  <link rel="stylesheet" href="../assets/sequence-diagram.css">
+  <style>
+    .state-table { font-family: var(--font-mono); font-size: 0.84rem; border-collapse: collapse; margin: 1.5rem 0; width: 100%; }
+    .state-table th, .state-table td { border: 1px solid var(--border); padding: 0.55rem 0.7rem; text-align: left; vertical-align: top; }
+    .state-table th { background: var(--surface); font-family: var(--font-sans); font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-dim); }
+    .state-table td:first-child { font-weight: 600; color: var(--accent); white-space: nowrap; }
+
+    .code-block {
+      font-family: var(--font-mono);
+      background: var(--code-bg);
+      color: var(--code-fg);
+      padding: 0.9rem 1.1rem;
+      border-radius: 6px;
+      margin: 1rem 0;
+      overflow-x: auto;
+      white-space: pre;
+      font-size: 0.84rem;
+      line-height: 1.65;
+    }
+    .code-block .c { color: var(--code-comment); font-style: italic; }
+    .code-block .k { color: var(--code-keyword); }
+    .code-block .f { color: #93c5fd; }
+  </style>
+</head>
+<body>
+<article class="lesson">
+  <header class="lesson-header">
+    <div class="lesson-eyebrow">Lesson 33 · TCP arc · 3 of 3</div>
+    <h1 class="lesson-title">Teardown and the echo server</h1>
+    <p class="lesson-subtitle">Close the connection cleanly. Build the server side. Run TCP echo end to end.</p>
+    <div class="lesson-meta">
+      <span><strong>Primary spec</strong> <a href="https://www.rfc-editor.org/rfc/rfc9293">RFC 9293</a> §3.5</span>
+      <span><strong>Linux counterpart</strong> <code>net/ipv4/tcp_minisocks.c</code></span>
+      <span><strong>Proof</strong> ring-3 TCP echo server, host client connects and exchanges data</span>
+    </div>
+  </header>
+
+  <div class="content">
+
+    <p class="lead">Every TCP connection holds kernel memory: a TCB, a retransmit queue, send and receive buffers, and a port number that cannot be reused while the connection exists. Lessons 31 and 32 left those resources held forever. Once a connection reached ESTABLISHED it stayed there until the kernel rebooted. For a kernel that opens one connection per boot this is tolerable. For a real program it is not. A web browser opens dozens of TCP connections to load a single page; a database server opens thousands per minute. Each connection must release its memory and its port when the work is done.</p>
+    <p>TCP provides a structured close for exactly this purpose. One side signals "I have no more bytes to send" by transmitting a segment with the FIN flag. The other side acknowledges, eventually sends its own FIN when its work is done, the first side acknowledges that, and the connection's resources are released. This exchange is teardown. This lesson builds teardown, adds the server side of TCP (the <strong>listen</strong> and <strong>accept</strong> machinery that lets mini-os accept inbound connections rather than only initiate them), and finishes with a ring-3 TCP echo server that opens, exchanges data, and closes cleanly.</p>
+
+    <h2>The four-segment close</h2>
+
+    <p>Each direction of a TCP connection closes independently. The side that calls <code>close()</code> first is the <strong>active closer</strong>; it sends a segment with the FIN flag set. FIN means "I have no more bytes to send on this stream." The receiver of FIN acknowledges it, exactly like a data segment: the FIN consumes one sequence number, and the ACK carries that sequence plus one.</p>
+
+    <p>The <strong>passive closer</strong> can still send data after acknowledging the active closer's FIN. It is in the <code>CLOSE_WAIT</code> state, which permits outbound data. When the passive closer has no more bytes to send either, it transmits its own FIN. The active closer acknowledges it. The connection is fully closed.</p>
+
+    <div class="seq-diagram">
+      <div class="seq-actors" style="--lanes:2">
+        <div class="seq-actor"><strong>active closer</strong><span class="seq-ep">calls close() first</span></div>
+        <div class="seq-actor"><strong>passive closer</strong><span class="seq-ep">receives the first FIN</span></div>
+      </div>
+      <div class="seq-body">
+        <div class="seq-lane" style="--x:25%"></div>
+        <div class="seq-lane" style="--x:75%"></div>
+        <div class="seq-msg" style="--x1:25%; --x2:75%">
+          <span class="seq-tag"><span class="seq-num">1</span> FIN seq=u</span>
+          <div class="seq-line arr-r"></div>
+          <span class="seq-detail">flags=FIN,ACK · consumes one sequence number · no payload</span>
+        </div>
+        <div class="seq-msg" style="--x1:75%; --x2:25%">
+          <span class="seq-tag"><span class="seq-num">2</span> ACK ack=u+1</span>
+          <div class="seq-line arr-l"></div>
+          <span class="seq-detail">passive closer confirms received · enters CLOSE_WAIT · app can still send remaining bytes</span>
+        </div>
+        <div class="seq-msg" style="--x1:75%; --x2:25%">
+          <span class="seq-tag"><span class="seq-num">3</span> FIN seq=v</span>
+          <div class="seq-line arr-l"></div>
+          <span class="seq-detail">passive closer's app calls close() · sends its own FIN · enters LAST_ACK</span>
+        </div>
+        <div class="seq-msg" style="--x1:25%; --x2:75%">
+          <span class="seq-tag"><span class="seq-num">4</span> ACK ack=v+1</span>
+          <div class="seq-line arr-r"></div>
+          <span class="seq-detail">active closer confirms received · enters TIME_WAIT for 2*MSL · passive closer enters CLOSED</span>
+        </div>
+      </div>
+    </div>
+
+    <p>The exchange is symmetric: each direction closes with one FIN and one ACK, four segments total. Both FINs consume one sequence number, so each ACK is <code>fin_seq + 1</code>.</p>
+
+    <h2>Half-close</h2>
+
+    <p>Between segment 2 and segment 3, the passive closer may continue sending data. The active closer has shut down its outbound direction (no more bytes will be sent) but its inbound direction is still open: it can receive the data the passive closer sends and ACK each segment.</p>
+
+    <p>This state is called a <strong>half-close</strong>. Most applications do not use it; they close both directions nearly simultaneously. Real uses include the <code>shutdown(fd, SHUT_WR)</code> syscall, which sends FIN but keeps the socket readable. mini-os implements the protocol's half-close correctly even though the echo server does not use it explicitly.</p>
+
+    <h2>The six teardown states</h2>
+
+    <p>Teardown adds six states to the five establishment states from Lesson 31. The full TCP state machine has eleven.</p>
+
+    <table class="state-table">
+      <thead>
+        <tr><th>State</th><th>Meaning</th><th>Entered when</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><code>FIN_WAIT_1</code></td><td>Sent our FIN, waiting for the ACK and the peer's FIN.</td><td>Active closer sends segment 1.</td></tr>
+        <tr><td><code>FIN_WAIT_2</code></td><td>Received ACK of our FIN, waiting for the peer's FIN. The peer may still send data.</td><td>Active closer receives segment 2.</td></tr>
+        <tr><td><code>CLOSE_WAIT</code></td><td>Received the peer's FIN, sent ACK. Our application has not yet called close().</td><td>Passive closer receives segment 1 and sends segment 2.</td></tr>
+        <tr><td><code>CLOSING</code></td><td>Sent our FIN, received the peer's FIN before our FIN's ACK. Unusual; happens when both sides close simultaneously.</td><td>Active closer receives segment 3 before segment 2.</td></tr>
+        <tr><td><code>LAST_ACK</code></td><td>Sent our FIN after receiving the peer's FIN, waiting for the final ACK.</td><td>Passive closer sends segment 3.</td></tr>
+        <tr><td><code>TIME_WAIT</code></td><td>Sent the final ACK. Wait 2*MSL before releasing resources.</td><td>Active closer sends segment 4.</td></tr>
+      </tbody>
+    </table>
+
+    <h2>Why TIME_WAIT lasts 2*MSL</h2>
+
+    <p>The active closer enters TIME_WAIT after sending the final ACK (segment 4) and stays there for 2*MSL, typically 60 to 240 seconds. <strong>MSL</strong> is the Maximum Segment Lifetime: an assumption about how long a packet can wander the internet before being discarded. RFC 9293 section 3.5 assumes 2 minutes; modern deployments use shorter values.</p>
+
+    <p>Two reasons justify the wait:</p>
+
+    <ol>
+      <li><strong>The final ACK might be lost.</strong> Segment 4 can vanish in transit. The passive closer's FIN retransmit timer fires, it resends FIN, the active closer (still in TIME_WAIT) replies with another ACK. If the active closer had already gone to CLOSED, the resend would arrive at no socket and trigger an RST, which the passive closer would log as a connection error.</li>
+      <li><strong>Old duplicate segments from the previous incarnation must drain.</strong> A delayed segment from the connection that just closed could still be in flight on some path. If the same 4-tuple (local IP, local port, remote IP, remote port) is reused immediately for a new connection, that old segment could be accepted by the new connection and corrupt its byte stream. Waiting 2*MSL guarantees any old segment has been discarded: maximum time in flight one way (MSL) plus maximum time the ACK can take to come back (another MSL).</li>
+    </ol>
+
+    <p>For mini-os the threat is not real (slirp has no wandering duplicates), but the wait is implemented for protocol correctness.</p>
+
+    <h2>The passive side: listen and accept</h2>
+
+    <p>The TCP connection in Lesson 31 was active-open: the kernel sent the first SYN. A server does the opposite. It binds a port, marks it as willing to accept incoming SYNs, and waits. When a SYN arrives, the kernel completes the handshake on a fresh TCB and hands that TCB to the application.</p>
+
+    <p>Two new syscalls implement the server side:</p>
+
+    <ul>
+      <li><strong><code>listen(fd, backlog)</code></strong> marks the bound socket as passive. <code>backlog</code> is the maximum number of half-open connections (received SYN, sent SYN-ACK, waiting for final ACK) the kernel will queue.</li>
+      <li><strong><code>accept(fd)</code></strong> blocks until a handshake completes on the listening socket, then returns a new file descriptor for the established connection. The original listening socket stays in LISTEN, ready to accept more connections.</li>
+    </ul>
+
+    <h2>The TCP socket table</h2>
+
+    <p>Lesson 31 stored one TCB in a single global slot. A server needs many: the listening socket has its own TCB, and each accepted connection has its own. mini-os generalizes the single slot into a <code>BTreeMap&lt;SocketId, TcpControlBlock&gt;</code> keyed by the four-tuple (local IP, local port, remote IP, remote port), the same shape as the UDP socket table from Lesson 26.</p>
+
+    <p>Incoming TCP segments demux by destination port. A SYN to a listening port goes to the listener's accept queue. A segment with both endpoints filled in goes to the matching established TCB.</p>
+
+    <h2>The echo server</h2>
+
+    <p>The ring-3 echo server is the lesson's proof. Its main loop:</p>
+
+    <div class="code-block"><span class="f">listen</span>(server_fd, backlog=<span class="k">4</span>);
+<span class="k">loop</span> {
+    <span class="k">let</span> conn = <span class="f">accept</span>(server_fd);  <span class="c">// blocks until SYN arrives</span>
+    <span class="f">fork</span>();                        <span class="c">// child serves this connection</span>
+    <span class="k">if</span> (child) {
+        <span class="k">loop</span> {
+            <span class="k">let</span> n = <span class="f">read</span>(conn, buf, <span class="k">sizeof</span> buf);
+            <span class="k">if</span> (n == <span class="k">0</span>) <span class="k">break</span>;         <span class="c">// peer closed</span>
+            <span class="f">write</span>(conn, buf, n);
+        }
+        <span class="f">close</span>(conn);                 <span class="c">// sends FIN</span>
+        <span class="f">exit</span>();
+    }
+}</div>
+
+    <p>This is the structure of every TCP server since 4.2BSD (1983). <code>accept</code> returns one new file descriptor per connection. <code>fork</code> lets the parent loop back to accept the next connection while the child serves the current one. mini-os's <code>fork</code> from Lesson 18 supplies the process machinery.</p>
+
+    <h2>What to build in mini-os</h2>
+
+    <div class="recipe">
+      <div class="recipe-step">
+        <div class="recipe-num">33.1</div>
+        <div class="recipe-body">
+          <strong>Send FIN (active close).</strong> When the application calls <code>close</code> on a TCP socket in ESTABLISHED state, build a segment with flags=<code>FIN,ACK</code>, <code>seq=send_next</code>, <code>ack=recv_next</code>, no payload. Transmit it, push it onto the retransmit queue (FIN consumes a sequence number and must be reliably delivered). Set state to <code>FIN_WAIT_1</code>.
+        </div>
+      </div>
+
+      <div class="recipe-step">
+        <div class="recipe-num">33.2</div>
+        <div class="recipe-body">
+          <strong>Receive FIN, send ACK.</strong> In the TCP receive path, when a segment arrives with the FIN flag set: send an ACK with <code>ack = received_seq + payload_len + 1</code> (the +1 accounts for the FIN's consumed sequence number). If state was ESTABLISHED, move to <code>CLOSE_WAIT</code>. If state was FIN_WAIT_1, move to <code>CLOSING</code>. If state was FIN_WAIT_2, move to <code>TIME_WAIT</code> and start the 2*MSL timer.
+        </div>
+      </div>
+
+      <div class="recipe-step">
+        <div class="recipe-num">33.3</div>
+        <div class="recipe-body">
+          <strong>Passive close from CLOSE_WAIT.</strong> When the application calls <code>close</code> on a socket in <code>CLOSE_WAIT</code>, send our own FIN, transition to <code>LAST_ACK</code>. When the final ACK arrives (segment 4 in the diagram), transition to <code>CLOSED</code> and free the TCB.
+        </div>
+      </div>
+
+      <div class="recipe-step">
+        <div class="recipe-num">33.4</div>
+        <div class="recipe-body">
+          <strong>TIME_WAIT 2*MSL timer.</strong> On entering TIME_WAIT, record the tick count plus 2*MSL worth of ticks (use 30 seconds for mini-os, shorter than the spec's 4 minutes). Each timer tick, check TIME_WAIT TCBs for expiry and free them. Handle retransmitted FINs by replying with another ACK; do not transition out of TIME_WAIT, but reset the timer.
+        </div>
+      </div>
+
+      <div class="recipe-step">
+        <div class="recipe-num">33.5</div>
+        <div class="recipe-body">
+          <strong>Listen and accept syscalls.</strong> Add <code>SYS_LISTEN = 908</code> and <code>SYS_ACCEPT = 909</code>. <code>listen</code> marks a TCP socket's TCB as <code>LISTEN</code> and stores a half-open queue. <code>accept</code> blocks on that queue. When a SYN arrives for a listening port, allocate a new TCB in <code>SYN_RCVD</code>, send SYN-ACK, complete the handshake on the new TCB, push the established TCB onto the listener's accept queue, wake the blocked <code>accept</code> call.
+        </div>
+      </div>
+
+      <div class="recipe-step">
+        <div class="recipe-num">33.6</div>
+        <div class="recipe-body">
+          <strong>Multi-connection socket table.</strong> Replace the single global TCB slot from Lesson 31 with a <code>BTreeMap&lt;SocketId, TcpControlBlock&gt;</code>. <code>SocketId</code> is the four-tuple (local IP, local port, remote IP, remote port). Demux incoming segments by full four-tuple; fall back to local-port-only for segments destined to a LISTEN socket. Free TCBs on transition to CLOSED.
+        </div>
+      </div>
+
+      <div class="recipe-step">
+        <div class="recipe-num">33.7</div>
+        <div class="recipe-body">
+          <strong>Ring-3 echo server.</strong> Add <code>/tcp_echo.elf</code>: bind a port (for example 8080), listen, loop on accept, fork per connection, read until EOF, write back each chunk, close. Configure QEMU with <code>-netdev user,hostfwd=tcp:127.0.0.1:8080-10.0.2.15:8080</code> so a host-side client (for example <code>nc 127.0.0.1 8080</code>) can reach the guest. Host-side verification: send a string, receive the same string back, send EOF, observe clean close in serial output and on the host's packet capture.
+        </div>
+      </div>
+    </div>
+
+    <div class="callout">
+      <div class="callout-title">What this lesson skips</div>
+      <p style="margin:0;">
+        RST-based abort (sent in response to a segment on a nonexistent TCB, or on a half-open connection). <code>SO_REUSEADDR</code>, the option that lets a socket bind a port still in TIME_WAIT. Keepalive, the timer that probes an idle connection. These all live in real TCP and are out of scope for the mini-os arc.
+      </p>
+    </div>
+
+    <div class="probe">
+      <div class="probe-title">Probe — TIME_WAIT's two jobs</div>
+      <p>
+        TIME_WAIT lasts 2*MSL (typically 1 to 4 minutes). The connection sits in that state, holding its TCB and four-tuple, after the active closer has sent the final ACK. Two distinct reasons justify the wait. Name both, and identify which one matters on a real internet path with wandering duplicate packets, versus which one matters even on a perfectly reliable link where the final ACK can still be lost.
+      </p>
+    </div>
+
+    <p>Answer the probe when ready, or ask about any state, syscall, or build step before implementation. The build starts at step 33.1.</p>
+
+  </div>
+
+  <footer class="lesson-footer">
+    <div class="footer-block">
+      <h4>What this completes</h4>
+      <p style="margin:0;">
+        Lesson 33 closes the planned TCP arc. mini-os opens active connections (Lesson 31), retransmits stream bytes under loss (Lesson 32), accepts inbound connections, echoes their bytes, and completes the passive-close path through <code>CLOSE_WAIT</code>, <code>LAST_ACK</code>, and <code>CLOSED</code>. The connection table routes server traffic by four-tuple. TIME_WAIT expiry, FIN retransmission, and fork-per-connection service remain later extensions.
+      </p>
+    </div>
+
+    <div class="footer-block">
+      <h4>Primary sources</h4>
+      <p style="margin:0;">
+        <a href="https://www.rfc-editor.org/rfc/rfc9293">RFC 9293</a> section 3.5 (close), section 3.6 (state machine), section 3.5.3 (TIME_WAIT). 4.4BSD's <code>netinet/tcp_input.c</code> for the canonical state machine implementation. Linux counterparts: <a href="https://elixir.bootlin.com/linux/latest/source/net/ipv4/tcp_input.c"><code>net/ipv4/tcp_input.c</code></a>, <a href="https://elixir.bootlin.com/linux/latest/source/net/ipv4/tcp_minisocks.c"><code>net/ipv4/tcp_minisocks.c</code></a> (TIME_WAIT handling).
+      </p>
+    </div>
+
+    <div class="footer-block">
+      <h4>Keep nearby</h4>
+      <p style="margin:0;">
+        <a href="6.11-tcp-handshake.html">Lesson 31: TCP handshake</a>: the connection this lesson ends.<br>
+        <a href="6.12-tcp-reliable-stream.html">Lesson 32: reliable stream</a>: the data flow that closes when FIN is sent.<br>
+        <a href="6.08-sockets.html">Lesson 26: UDP sockets</a>: the per-process FD table and socket-object pattern that TCP sockets reuse.<br>
+        <a href="3.04-fork-wait-reap.html">Lesson 18: fork/wait</a>: the process machinery the echo server's per-connection <code>fork()</code> requires.<br>
+        <a href="../tours/tour-6.13-tcp-teardown.html">Lesson 33 code tour</a>: the Rust implementation and QEMU proof.<br>
+        <a href="../reference/tcp-teardown.html">TCP teardown quick reference</a>: passive-open and passive-close state sequences.
+      </p>
+    </div>
+
+    <nav class="lesson-nav" aria-label="Lesson navigation">
+      <a href="6.12-tcp-reliable-stream.html">&larr; Lesson 32: reliable stream</a>
+      <a href="roadmap-networking.html">Networking roadmap</a>
+      <a href="roadmap-networking.html">After the objective &rarr;</a>
+    </nav>
+  </footer>
+</article>
+</body>
+</html>

@@ -1,0 +1,673 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Tour — Lesson 9 · Block Layer Abstraction</title>
+<link rel="stylesheet" href="../assets/lesson.css">
+<script src="../assets/code-highlight.js" defer></script>
+<link rel="stylesheet" href="../assets/byte-layout.css">
+<style>
+  .tour-step {
+    margin: 3rem 0;
+    padding-top: 1rem;
+    border-top: 1px solid var(--border);
+  }
+  .tour-step:first-of-type { border-top: none; padding-top: 0; }
+  .tour-step-num {
+    display: inline-block;
+    font-family: var(--font-mono);
+    font-size: 0.78rem;
+    font-weight: 600;
+    color: var(--accent);
+    background: var(--accent-soft);
+    padding: 2px 8px;
+    border-radius: 3px;
+    margin-right: 0.6rem;
+  }
+  .tour-step-title {
+    font-family: var(--font-sans);
+    font-weight: 700;
+    font-size: 1.3rem;
+    color: var(--text);
+    margin: 0 0 0.4rem;
+    display: inline;
+  }
+  .tour-step-h2 { margin: 0 0 1rem; }
+  .tour-files {
+    font-family: var(--font-mono);
+    font-size: 0.82rem;
+    color: var(--text-dim);
+    margin: 0.5rem 0 1.5rem;
+  }
+  .tour-files strong { color: var(--text); font-weight: 600; }
+
+  .snippet-meta {
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
+    color: var(--text-dim);
+    margin: 1.5rem 0 0.35rem;
+    display: flex;
+    align-items: baseline;
+    gap: 0.6rem;
+  }
+  .snippet-meta .snippet-file {
+    color: var(--accent);
+    font-weight: 600;
+    background: var(--accent-soft);
+    padding: 1px 6px;
+    border-radius: 3px;
+  }
+  .snippet-meta .snippet-what {
+    color: var(--text-faint);
+    font-style: italic;
+  }
+  .snippet-meta + pre,
+  .snippet-meta + pre.tour-output { margin-top: 0; }
+
+  pre.tour-output {
+    background: #111827;
+    color: #e5e7eb;
+    border-left: 3px solid var(--accent);
+    padding: 1rem 1.25rem;
+    border-radius: 0 6px 6px 0;
+    font-size: 0.8rem;
+    line-height: 1.55;
+    margin: 1rem 0;
+  }
+  pre.tour-output .ann { color: #9ca3af; font-style: italic; }
+  pre.tour-output .ok  { color: #86efac; }
+  pre.tour-output .keystone { color: #fbbf24; font-weight: bold; }
+
+  .pull-quote {
+    border-left: 3px solid var(--accent);
+    padding: 0.4rem 0 0.4rem 1rem;
+    margin: 1.5rem 0;
+    font-style: italic;
+    color: var(--text-dim);
+  }
+
+  /* Codebase map (tree) — copied from Lesson 8 tour */
+  .codebase-map {
+    background: var(--surface-soft);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 1rem 1.25rem;
+    margin: 1.5rem 0;
+  }
+  .codebase-map-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    margin-bottom: 0.8rem;
+    padding-bottom: 0.5rem;
+    border-bottom: 1px solid var(--border);
+    font-family: var(--font-sans);
+  }
+  .codebase-map-title {
+    font-weight: 600;
+    color: var(--text);
+    font-size: 0.95rem;
+  }
+  .codebase-map-meta {
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+    color: var(--text-dim);
+  }
+
+  .cb-group { margin-bottom: 0.5rem; }
+  .cb-group:last-child { margin-bottom: 0; }
+  .cb-group > summary {
+    font-family: var(--font-sans);
+    font-size: 0.7rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--text-faint);
+    font-weight: 600;
+    cursor: pointer;
+    list-style: none;
+    padding: 0.4rem 0 0.4rem 1.5rem;
+    position: relative;
+    border-bottom: 1px dashed var(--border);
+    margin-bottom: 0.4rem;
+  }
+  .cb-group > summary::-webkit-details-marker { display: none; }
+  .cb-group > summary::before {
+    content: "▾";
+    position: absolute;
+    left: 0.4rem;
+    top: 50%;
+    transform: translateY(-50%);
+    color: var(--text-faint);
+    transition: transform 0.15s ease;
+  }
+  .cb-group:not([open]) > summary::before {
+    transform: translateY(-50%) rotate(-90deg);
+  }
+
+  .cb-rows {
+    position: relative;
+    padding-left: 1.1rem;
+  }
+  .cb-rows::before {
+    content: '';
+    position: absolute;
+    left: 0.5rem;
+    top: 0;
+    bottom: 0;
+    width: 1px;
+    background: var(--border-bright);
+  }
+  .cb-row {
+    display: grid;
+    grid-template-columns: 50px 1fr auto 2fr;
+    gap: 0.8rem;
+    align-items: baseline;
+    padding: 0.25rem 0.5rem 0.25rem 0;
+    margin-left: -0.6rem;
+    position: relative;
+    border-radius: 3px;
+    transition: background 0.1s ease;
+  }
+  .cb-row::before {
+    content: '';
+    position: absolute;
+    left: 0;
+    top: 0.85rem;
+    width: 0.6rem;
+    height: 1px;
+    background: var(--border-bright);
+  }
+  .cb-row:hover { background: var(--surface); }
+  .cb-chip {
+    font-family: var(--font-sans);
+    font-size: 0.66rem;
+    font-weight: 700;
+    color: white;
+    text-align: center;
+    padding: 1px 0;
+    border-radius: 3px;
+    letter-spacing: 0.04em;
+  }
+  .cb-chip.new { background: #15803d; }
+  .cb-chip.mod { background: var(--accent); }
+  .cb-chip.ctx { background: transparent; color: var(--text-faint); border: 1px dashed var(--border-bright); }
+  .cb-name {
+    font-family: var(--font-mono);
+    font-weight: 600;
+    color: var(--text);
+    font-size: 0.82rem;
+  }
+  .cb-lines {
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
+    color: var(--text-faint);
+    text-align: right;
+    min-width: 4rem;
+  }
+  .cb-desc {
+    font-family: var(--font-sans);
+    font-size: 0.78rem;
+    color: var(--text-dim);
+  }
+  .codebase-map-legend {
+    margin-top: 0.8rem;
+    padding-top: 0.5rem;
+    border-top: 1px solid var(--border);
+    font-family: var(--font-sans);
+    font-size: 0.75rem;
+    color: var(--text-dim);
+    display: flex;
+    gap: 1.2rem;
+    flex-wrap: wrap;
+  }
+  .codebase-map-legend > span {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+  }
+  .codebase-map-legend .cb-chip { min-width: 36px; }
+</style>
+</head>
+<body>
+<article class="lesson">
+
+  <header class="lesson-header">
+    <div class="lesson-eyebrow">Tour · Lesson 9 · Companion to <a href="../lessons/4.06-block-layer.html" style="color:inherit;">the lesson</a></div>
+    <h1 class="lesson-title">Code Tour — Block Layer Abstraction</h1>
+    <p class="lesson-subtitle">One refactor, one new method, three test calls. The shortest tour yet — Lesson 9 is mostly wrapping Lesson 8's mechanics behind a clean API.</p>
+    <div class="lesson-meta">
+      <span><strong>Steps done</strong> 9.1 – 9.3 (complete)</span>
+      <span><strong>Commit</strong> <code>6875d9b</code></span>
+    </div>
+  </header>
+
+  <div class="content">
+
+  <p class="lead">
+    Lesson 9 takes the inline descriptor-chain + DMA + submit/kick/poll
+    dance from Lesson 8 and wraps it in one function:
+    <code>read_sector(sector) -&gt; [u8; 512]</code>. Above this function,
+    filesystem code (ext2 in Lesson 11) reasons about blocks. Below it,
+    virtio-blk driver code reasons about descriptors.
+  </p>
+
+  <div class="pull-quote">
+    One commit, not three. The refactor (9.1) plus the new method (9.2)
+    plus the test (9.3) form one cohesive change — splitting would leave
+    intermediate commits that don't build cleanly. Lesson 9's value
+    comes from the refactor and the new method together.
+  </div>
+
+  <h2>Codebase map — what's in <code>src/</code> right now</h2>
+
+  <div class="codebase-map">
+    <div class="codebase-map-header">
+      <span class="codebase-map-title">src/ — kernel sources</span>
+      <span class="codebase-map-meta">6,318 lines · 16 files · +41 since L8</span>
+    </div>
+
+    <details class="cb-group" open>
+      <summary>Disk path (current focus: Lessons 5–9)</summary>
+      <div class="cb-rows">
+        <div class="cb-row">
+          <span class="cb-chip mod">MOD</span>
+          <span class="cb-name">virtio.rs</span>
+          <span class="cb-lines">1,155</span>
+          <span class="cb-desc">virtio-blk driver + virtqueue + read_sector</span>
+        </div>
+        <div class="cb-row">
+          <span class="cb-chip mod">MOD</span>
+          <span class="cb-name">main.rs</span>
+          <span class="cb-lines">439</span>
+          <span class="cb-desc">kernel entry; setup_queue + read_sector tests</span>
+        </div>
+        <div class="cb-row">
+          <span class="cb-chip ctx">ctx</span>
+          <span class="cb-name">pci.rs</span>
+          <span class="cb-lines">273</span>
+          <span class="cb-desc">PCI config + bus enumeration (L5)</span>
+        </div>
+      </div>
+    </details>
+
+    <details class="cb-group">
+      <summary>Memory layer</summary>
+      <div class="cb-rows">
+        <div class="cb-row">
+          <span class="cb-chip ctx">ctx</span>
+          <span class="cb-name">memory.rs</span>
+          <span class="cb-lines">674</span>
+          <span class="cb-desc">page tables, MMIO mapping, AddressSpace</span>
+        </div>
+        <div class="cb-row">
+          <span class="cb-chip ctx">ctx</span>
+          <span class="cb-name">frame_allocator.rs</span>
+          <span class="cb-lines">157</span>
+          <span class="cb-desc">bitmap frame allocator</span>
+        </div>
+        <div class="cb-row">
+          <span class="cb-chip ctx">ctx</span>
+          <span class="cb-name">allocator.rs</span>
+          <span class="cb-lines">22</span>
+          <span class="cb-desc">heap (linked_list_allocator wrapper)</span>
+        </div>
+      </div>
+    </details>
+
+    <details class="cb-group">
+      <summary>VFS (Lessons 1–3)</summary>
+      <div class="cb-rows">
+        <div class="cb-row">
+          <span class="cb-chip ctx">ctx</span>
+          <span class="cb-name">fs.rs</span>
+          <span class="cb-lines">385</span>
+          <span class="cb-desc">Inode, File, FdTable, ROOT_INODE</span>
+        </div>
+      </div>
+    </details>
+
+    <details class="cb-group">
+      <summary>Scheduling + user/kernel boundary</summary>
+      <div class="cb-rows">
+        <div class="cb-row">
+          <span class="cb-chip ctx">ctx</span>
+          <span class="cb-name">task.rs</span>
+          <span class="cb-lines">1,045</span>
+          <span class="cb-desc">scheduler, task states, fork/exit</span>
+        </div>
+        <div class="cb-row">
+          <span class="cb-chip ctx">ctx</span>
+          <span class="cb-name">syscall.rs</span>
+          <span class="cb-lines">1,006</span>
+          <span class="cb-desc">syscall dispatch</span>
+        </div>
+        <div class="cb-row">
+          <span class="cb-chip ctx">ctx</span>
+          <span class="cb-name">user.rs</span>
+          <span class="cb-lines">376</span>
+          <span class="cb-desc">user-mode entry, ring 3 transition</span>
+        </div>
+      </div>
+    </details>
+
+    <details class="cb-group">
+      <summary>Hardware / low-level</summary>
+      <div class="cb-rows">
+        <div class="cb-row">
+          <span class="cb-chip ctx">ctx</span>
+          <span class="cb-name">interrupts.rs</span>
+          <span class="cb-lines">246</span>
+          <span class="cb-desc">IDT, handlers</span>
+        </div>
+        <div class="cb-row">
+          <span class="cb-chip ctx">ctx</span>
+          <span class="cb-name">vga_buffer.rs</span>
+          <span class="cb-lines">191</span>
+          <span class="cb-desc">VGA text mode + print!/println!</span>
+        </div>
+        <div class="cb-row">
+          <span class="cb-chip ctx">ctx</span>
+          <span class="cb-name">gdt.rs</span>
+          <span class="cb-lines">111</span>
+          <span class="cb-desc">GDT, TSS, segment selectors</span>
+        </div>
+        <div class="cb-row">
+          <span class="cb-chip ctx">ctx</span>
+          <span class="cb-name">serial.rs</span>
+          <span class="cb-lines">50</span>
+          <span class="cb-desc">serial port output</span>
+        </div>
+        <div class="cb-row">
+          <span class="cb-chip ctx">ctx</span>
+          <span class="cb-name">pic.rs</span>
+          <span class="cb-lines">45</span>
+          <span class="cb-desc">8259 PIC remap</span>
+        </div>
+        <div class="cb-row">
+          <span class="cb-chip ctx">ctx</span>
+          <span class="cb-name">pit.rs</span>
+          <span class="cb-lines">43</span>
+          <span class="cb-desc">programmable interval timer</span>
+        </div>
+      </div>
+    </details>
+
+    <div class="codebase-map-legend">
+      <span><span class="cb-chip new">NEW</span> added this lesson</span>
+      <span><span class="cb-chip mod">MOD</span> modified this lesson</span>
+      <span><span class="cb-chip ctx">ctx</span> unchanged context</span>
+    </div>
+  </div>
+
+  <p>
+    Only <code>virtio.rs</code> and <code>main.rs</code> changed.
+    <code>virtio.rs</code> gained ~70 lines (queue field,
+    <code>setup_queue</code>, <code>queue_mut</code>,
+    <code>read_sector</code>, plus the <code>build_read_chain</code>
+    signature change). <code>main.rs</code> shrank by ~100 lines —
+    the inline Lesson 8 chain/submit/kick/poll/verify block collapsed
+    into one <code>read_sector</code> call.
+  </p>
+
+  <!-- ============================================================ -->
+  <!-- STEP 9.1                                                     -->
+  <!-- ============================================================ -->
+
+  <div class="tour-step">
+    <h2 class="tour-step-h2">
+      <span class="tour-step-num">9.1</span>
+      <span class="tour-step-title">Refactor: VirtioBlk owns VirtQueue</span>
+    </h2>
+    <div class="tour-files">
+      <strong>Files:</strong> <code>src/virtio.rs</code> (VirtioBlk struct + new methods), <code>src/main.rs</code> (use new API)
+    </div>
+
+    <p>
+      Previously <code>virtio_dev</code> and <code>queue</code> were
+      separate locals in main.rs. For <code>read_sector</code> to work,
+      it needs both. The clean fix: <code>VirtioBlk</code> owns the
+      queue.
+    </p>
+
+    <div class="snippet-meta">
+      <span class="snippet-file">src/virtio.rs</span>
+      <span class="snippet-what">— new field on VirtioBlk</span>
+    </div>
+<pre><span class="k">pub struct</span> <span class="t">VirtioBlk</span> {
+    bus: <span class="t">u8</span>,
+    device: <span class="t">u8</span>,
+    func: <span class="t">u8</span>,
+    common_virt: <span class="t">u64</span>,
+    notify_virt: <span class="t">u64</span>,
+    notify_off_multiplier: <span class="t">u32</span>,
+    queue: <span class="t">Option</span>&lt;<span class="t">VirtQueue</span>&gt;,  <span class="c">// ← new</span>
+}</pre>
+
+    <div class="snippet-meta">
+      <span class="snippet-file">src/virtio.rs</span>
+      <span class="snippet-what">— setup_queue + queue_mut</span>
+    </div>
+<pre><span class="k">pub fn</span> setup_queue(&amp;<span class="k">mut self</span>, queue_size: <span class="t">u16</span>) {
+    <span class="k">let</span> queue = <span class="t">VirtQueue</span>::new(queue_size);
+    <span class="k">self</span>.configure_queue(&amp;queue);
+    <span class="k">self</span>.queue = <span class="t">Some</span>(queue);
+}
+
+<span class="k">pub fn</span> queue_mut(&amp;<span class="k">mut self</span>) -&gt; &amp;<span class="k">mut</span> <span class="t">VirtQueue</span> {
+    <span class="k">self</span>.queue.as_mut().expect(<span class="s">"queue not set up"</span>)
+}</pre>
+
+    <p>
+      Boot sequence in main.rs shrinks:
+    </p>
+
+    <div class="snippet-meta">
+      <span class="snippet-file">src/main.rs</span>
+      <span class="snippet-what">— old vs new</span>
+    </div>
+<pre><span class="c">// Old (L7-L8):</span>
+<span class="k">let</span> queue = <span class="t">VirtQueue</span>::new(<span class="n">64</span>);
+virtio_dev.configure_queue(&amp;queue);
+<span class="c">// ... queue stays as a local in main</span>
+
+<span class="c">// New (L9):</span>
+virtio_dev.setup_queue(<span class="n">64</span>);
+<span class="c">// ... queue is inside virtio_dev, accessed via queue_mut() if needed</span></pre>
+  </div>
+
+  <!-- ============================================================ -->
+  <!-- STEP 9.2                                                     -->
+  <!-- ============================================================ -->
+
+  <div class="tour-step">
+    <h2 class="tour-step-h2">
+      <span class="tour-step-num">9.2</span>
+      <span class="tour-step-title">Add <code>read_sector</code></span>
+    </h2>
+    <div class="tour-files">
+      <strong>Files:</strong> <code>src/virtio.rs</code> (new method, build_read_chain signature change)
+    </div>
+
+    <p>
+      The full Lesson 8 dance, hidden behind one function:
+    </p>
+
+    <div class="snippet-meta">
+      <span class="snippet-file">src/virtio.rs</span>
+      <span class="snippet-what">— read_sector: 9 lines of mechanism</span>
+    </div>
+<pre><span class="k">pub fn</span> read_sector(&amp;<span class="k">mut self</span>, sector: <span class="t">u64</span>) -&gt; [<span class="t">u8</span>; <span class="n">512</span>] {
+    <span class="k">let</span> buffers = <span class="t">BlkBuffers</span>::new();
+    <span class="k">let</span> req = <span class="t">VirtioBlkReq</span>::new_read(sector);
+    buffers.write_header(&amp;req);
+
+    <span class="k">let</span> (head, mid, tail) = <span class="k">self</span>.queue.as_mut().unwrap()
+        .build_read_chain(buffers.header_phys, buffers.data_phys, buffers.status_phys);
+
+    <span class="k">self</span>.queue.as_mut().unwrap().submit_chain(head);
+    <span class="k">self</span>.kick();
+
+    <span class="k">let</span> _completion = (<span class="n">0</span>..<span class="n">200_000</span>)
+        .find_map(|_| <span class="k">self</span>.queue.as_mut().unwrap().poll_completion())
+        .expect(<span class="s">"read_sector: no completion"</span>);
+
+    <span class="k">assert_eq!</span>(buffers.read_status(), <span class="n">VIRTIO_BLK_S_OK</span>);
+
+    <span class="k">let</span> queue = <span class="k">self</span>.queue.as_mut().unwrap();
+    queue.free_descriptor(head);
+    queue.free_descriptor(mid);
+    queue.free_descriptor(tail);
+
+    <span class="k">let mut</span> block = [<span class="n">0u8</span>; <span class="n">512</span>];
+    block.copy_from_slice(&amp;buffers.read_data_prefix(<span class="n">512</span>));
+    block
+}</pre>
+
+    <p>
+      <strong>Borrow checker note:</strong> each
+      <code>self.queue.as_mut().unwrap()</code> is a separate statement
+      rather than a single <code>let queue = ...</code> binding. The
+      binding would lock the borrow for the whole function and conflict
+      with <code>self.kick()</code>. Each chained call releases the
+      borrow at the end of the statement.
+    </p>
+
+    <p>
+      <strong>build_read_chain signature change:</strong> now returns
+      <code>(head, mid, tail)</code> instead of just
+      <code>head</code>. Necessary so the caller can free all three
+      descriptors. Callers that only need head use
+      <code>let (head, _, _)</code>.
+    </p>
+
+    <div class="snippet-meta">
+      <span class="snippet-file">src/virtio.rs</span>
+      <span class="snippet-what">— build_read_chain returns all 3 indices</span>
+    </div>
+<pre><span class="k">pub fn</span> build_read_chain(
+    &amp;<span class="k">mut self</span>,
+    header_phys: <span class="t">u64</span>,
+    data_phys: <span class="t">u64</span>,
+    status_phys: <span class="t">u64</span>,
+) -&gt; (<span class="t">u16</span>, <span class="t">u16</span>, <span class="t">u16</span>) {  <span class="c">// was: u16</span>
+    <span class="c">// ... allocate 3, write_descriptor 3 times ...</span>
+    (head, mid, tail)
+}</pre>
+  </div>
+
+  <!-- ============================================================ -->
+  <!-- STEP 9.3                                                     -->
+  <!-- ============================================================ -->
+
+  <div class="tour-step">
+    <h2 class="tour-step-h2">
+      <span class="tour-step-num">9.3</span>
+      <span class="tour-step-title">Verify: read multiple sectors</span>
+    </h2>
+    <div class="tour-files">
+      <strong>Files:</strong> <code>src/main.rs</code> (3 read_sector calls + assertions)
+    </div>
+
+    <p>
+      Three calls, three arrays. Sector 0 has the disk signature;
+      sectors 1 and 2 are all zero (no filesystem yet — ext2's
+      superblock will go to sector 2 in Lesson 11):
+    </p>
+
+    <div class="snippet-meta">
+      <span class="snippet-file">src/main.rs</span>
+      <span class="snippet-what">— the test block</span>
+    </div>
+<pre><span class="k">let</span> block0 = virtio_dev.read_sector(<span class="n">0</span>);
+<span class="k">assert_eq!</span>(&amp;block0[<span class="n">0</span>..<span class="n">15</span>], <span class="s">b"MINIOS_DISK_v0\n"</span>);
+<span class="k">assert_eq!</span>(block0[<span class="n">15</span>..].iter().filter(|&amp;&amp;b| b == <span class="n">0</span>).count(), <span class="n">497</span>);
+
+<span class="k">let</span> block1 = virtio_dev.read_sector(<span class="n">1</span>);
+<span class="k">assert_eq!</span>(block1.iter().filter(|&amp;&amp;b| b == <span class="n">0</span>).count(), <span class="n">512</span>);
+
+<span class="k">let</span> block2 = virtio_dev.read_sector(<span class="n">2</span>);
+<span class="k">assert_eq!</span>(block2.iter().filter(|&amp;&amp;b| b == <span class="n">0</span>).count(), <span class="n">512</span>);</pre>
+
+<pre class="tour-output"><span class="ann">[test] first disk read via read_sector (Keystone 1, recap from L8)</span>
+[virtio] read_sector(sector=0)
+[virtio]   read_sector(sector=0) complete (513 bytes)
+[virtio]   read_sector(0)[0..15] = "MINIOS_DISK_v0\n"
+[virtio]   read_sector(0)[15..512] = 497 zero bytes (expect 497)
+<span class="keystone">[virtio] *** Keystone 1: bytes flowed from disk ***</span>
+
+<span class="ann">[test] block layer API — read multiple sectors (9.3)</span>
+[virtio] read_sector(sector=1)
+[virtio]   read_sector(sector=1) complete (513 bytes)
+[virtio] read_sector(sector=2)
+[virtio]   read_sector(sector=2) complete (513 bytes)
+[virtio]   read_sector(1): 512 zero bytes (expect 512)
+[virtio]   read_sector(2): 512 zero bytes (expect 512)
+<span class="ok">[virtio] *** block layer ready — ext2 can mount on top ***</span></pre>
+  </div>
+
+  <!-- ============================================================ -->
+  <!-- SUMMARY                                                      -->
+  <!-- ============================================================ -->
+
+  <h2>What landed, by file</h2>
+
+  <p>
+    <strong><code>src/virtio.rs</code></strong> (+70 lines):
+  </p>
+  <ul>
+    <li>New field <code>queue: Option&lt;VirtQueue&gt;</code> on VirtioBlk</li>
+    <li>New method <code>setup_queue(queue_size)</code> — allocate + configure in one call</li>
+    <li>New method <code>queue_mut()</code> — accessor for test code</li>
+    <li>New method <code>read_sector(sector) -&gt; [u8; 512]</code> — the block layer API</li>
+    <li>Changed <code>build_read_chain</code> to return <code>(head, mid, tail)</code></li>
+  </ul>
+
+  <p>
+    <strong><code>src/main.rs</code></strong> (-100 lines net):
+  </p>
+  <ul>
+    <li><code>virtio_dev</code> now <code>mut</code> (was immutable)</li>
+    <li>Replaced <code>VirtQueue::new + configure_queue</code> with <code>virtio_dev.setup_queue(64)</code></li>
+    <li>Replaced the inline Lesson 8 chain/submit/kick/poll/verify block with one <code>read_sector(0)</code> call + assertions on the returned array</li>
+    <li>Added 9.3 test: <code>read_sector(1)</code> and <code>read_sector(2)</code> for multi-sector coverage</li>
+  </ul>
+
+  <h2>Commit</h2>
+
+  <ul>
+    <li><code>6875d9b</code> — Lesson 9: block layer abstraction (read_sector)</li>
+  </ul>
+
+  <p>
+    Pattern preserved from earlier lessons: each step is verified via
+    QEMU before the next. Lesson 9 was committed as a single unit
+    because the refactor and the new method form one cohesive change —
+    the commit message documents why splitting would leave broken
+    intermediate states.
+  </p>
+
+  </div>
+
+  <footer class="lesson-footer">
+    <div class="footer-block">
+      <h4>Up next</h4>
+      <p style="margin:0;">
+        Lesson 11 — ext2 superblock parser. The superblock lives at
+        byte offset 1024 = sector 2. <code>read_sector(2)</code> will
+        return the bytes; we parse the on-disk ext2 superblock
+        structure out of them. Lesson 10 (page cache) is deferred —
+        it's an optimization, not on the critical path to "load and
+        run an ELF from disk."
+      </p>
+    </div>
+
+    <nav class="lesson-nav">
+      <a href="../lessons/4.06-block-layer.html">↑ Lesson 9</a>
+      <a href="tour-4.05-first-disk-read.html">← Tour 8</a>
+    </nav>
+  </footer>
+
+</article>
+</body>
+</html>

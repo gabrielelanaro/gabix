@@ -1,0 +1,661 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Lesson 34 — How Terminals Work</title>
+<link rel="stylesheet" href="../assets/lesson.css">
+<script src="../assets/code-highlight.js" defer></script>
+<link rel="stylesheet" href="../assets/byte-layout.css">
+<style>
+  .device-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 1.25rem 0;
+    font-size: 0.9rem;
+  }
+  .device-table th, .device-table td {
+    text-align: left;
+    padding: 0.5rem 0.6rem;
+    border-bottom: 1px solid var(--border);
+    vertical-align: top;
+  }
+  .device-table th {
+    font-family: var(--font-sans);
+    font-size: 0.78rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--text-dim);
+  }
+  .device-table td code { color: var(--accent); }
+
+  .flow-diagram {
+    font-family: var(--font-mono);
+    font-size: 0.82rem;
+    line-height: 1.55;
+    background: var(--surface-soft, #f8f8f6);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1.2rem 1.3rem;
+    margin: 1.5rem 0;
+    overflow-x: auto;
+    white-space: pre;
+  }
+  .flow-diagram .fd-caption {
+    font-family: var(--font-sans);
+    font-size: 0.78rem;
+    color: var(--text-faint);
+    margin-bottom: 0.9rem;
+    font-style: italic;
+  }
+</style>
+</head>
+<body>
+<article class="lesson">
+
+  <header class="lesson-header">
+    <div class="lesson-eyebrow">Lesson 34 · Phase 2c · terminal</div>
+    <h1 class="lesson-title">How Terminals Work</h1>
+    <p class="lesson-subtitle">Scan codes and UART bytes, the line discipline, the TTY file descriptor, the shell. The fourth stack in mini-os, from the hardware up.</p>
+    <div class="lesson-meta">
+      <span><strong>Read time</strong> ~20 min</span>
+      <span><strong>Build time</strong> ~15 min</span>
+      <span><strong>Prereq</strong> Lessons 17–18 (fork/exec/wait) for the shell; Lessons 28–29 (interrupts) for the driver</span>
+    </div>
+  </header>
+
+  <div class="content">
+
+  <p class="lead">
+    The kernel writes two devices. The VGA text buffer at <code>0xB8000</code>
+    places characters on screen; the 16550 UART at I/O port <code>0x3F8</code>
+    emits bytes to the host terminal through QEMU's <code>-serial stdio</code>.
+    Output works. Input does not. The serial driver in
+    <code>src/serial.rs:28</code> writes only — nothing reads the UART's
+    receive register, nothing reads port <code>0x60</code> where the keyboard
+    controller deposits its bytes, and <code>src/pic.rs:42</code> masks every
+    device interrupt but the timer with <code>0xFE, 0xFF</code>. A program in
+    mini-os cannot ask what you typed. This phase builds the path.
+  </p>
+
+  <h2>Four layers</h2>
+
+  <p>
+    "Terminal" names four pieces, each doing one job. Bytes travel bottom to
+    top.
+  </p>
+
+  <div class="layer-stack">
+    <div class="layer-row">
+      <span class="layer-name">application — the shell</span>
+      <span class="layer-desc">A user program that calls <code>read(0, buf, len)</code>, parses the line, forks and execs a command. Lesson 38.</span>
+    </div>
+    <div class="layer-row">
+      <span class="layer-name">TTY device — fd 0 (stdin)</span>
+      <span class="layer-desc">The file-descriptor surface. <code>read(0, ...)</code> blocks until a line is ready, then copies it into the caller's buffer. Lesson 37.</span>
+    </div>
+    <div class="layer-row current">
+      <span class="layer-name">line discipline — cooked vs raw</span>
+      <span class="layer-desc">Policy over raw bytes. Cooked mode: buffer until Enter, echo each byte to output, handle backspace, generate signals on Ctrl-C. Lesson 36.</span>
+    </div>
+    <div class="layer-row">
+      <span class="layer-name">driver — bytes from hardware</span>
+      <span class="layer-desc">Read the device register, translate if needed (scan code → character), hand the byte to the discipline. Lessons 35 and 39.</span>
+    </div>
+    <div class="layer-row">
+      <span class="layer-name">hardware — keyboard controller or UART</span>
+      <span class="layer-desc">The Intel 8042 keyboard controller at ports <code>0x60/0x64</code>, or the 16550 UART at <code>0x3F8</code>. QEMU emulates both.</span>
+    </div>
+  </div>
+
+  <p>
+    The shape repeats the storage and network stacks: hardware at the bottom,
+    a thin driver, a kernel subsystem that turns raw device output into
+    something a file descriptor can deliver, a user program on top.
+    <span class="margin-note">The discipline is the new piece. <strong>Storage
+    and network pass bytes through untouched.</strong> A terminal edits them:
+    backspace, echo, Ctrl-C. None of those is a property of the keyboard or
+    the program. They live in the discipline, applied to every byte that
+    crosses it.</span>
+    The new piece is the line discipline. Storage and network stacks pass
+    bytes through untouched; a terminal edits them. Backspace, echo, and
+    Ctrl-C are properties of neither keyboard nor program — they live in the
+    discipline, applied to every byte that crosses it.
+  </p>
+
+  <h2>The two input devices</h2>
+
+  <p>
+    QEMU delivers keystrokes to the guest by two paths. They differ in how
+    much translation the driver performs.
+  </p>
+
+  <table class="device-table">
+    <thead>
+      <tr><th></th><th>PS/2 keyboard (i8042)</th><th>Serial UART (16550)</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>data register</td>
+        <td>port <code>0x60</code></td>
+        <td>port <code>0x3F8</code> (offset 0)</td>
+      </tr>
+      <tr>
+        <td>status register</td>
+        <td>port <code>0x64</code>, bit 0 = byte ready</td>
+        <td>port <code>0x3FD</code>, bit 0 = byte ready</td>
+      </tr>
+      <tr>
+        <td>interrupt</td>
+        <td>IRQ 1 → vector <code>0x21</code></td>
+        <td>IRQ 4 → vector <code>0x24</code></td>
+      </tr>
+      <tr>
+        <td>unit delivered</td>
+        <td><strong>scan code</strong> — a number naming a physical key</td>
+        <td><strong>byte</strong> — the ASCII character itself</td>
+      </tr>
+      <tr>
+        <td>driver's job</td>
+        <td>track make/break, modifier state, look up a keymap</td>
+        <td>read the byte, hand it to the discipline</td>
+      </tr>
+      <tr>
+        <td>QEMU wiring</td>
+        <td>always present; receives from the graphical window's keyboard</td>
+        <td><code>-serial stdio</code> connects the host terminal's stdin</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <p>
+    The UART is the simpler device by a wide margin. One <code>in</code>
+    instruction returns the character the user typed. The keyboard sends scan
+    codes — numbers that name physical keys — and the driver reconstructs
+    characters from them with a keymap and a state machine. The serial path
+    is built first (Lesson 35); the keyboard path last (Lesson 39), so the
+    discipline and shell develop against the easier device.
+  </p>
+
+  <h2>The keyboard: scan codes, not characters</h2>
+
+  <p>
+    A keyboard is a grid of switches. When a switch closes, the keyboard's
+    controller scans the grid, identifies the key by row and column, and
+    sends a number — the <strong>scan code</strong> — to the motherboard.
+    The number names the key's position, not what is printed on its keytop.
+    Code <code>0x1C</code> returns from the slot inhabited by 'A' on a US
+    keyboard, 'Q' on a French AZERTY keyboard, nothing on a stenotype board.
+    Layout is a software problem; the keyboard is layout-agnostic.
+    <span class="margin-note">The IBM PC keyboard (1981) transmitted set 1.
+    The IBM AT (1984) introduced set 2, the default ever since. QEMU
+    emulates the AT controller and produces set 2 codes.</span>
+  </p>
+
+  <p>
+    The motherboard side is the <strong>8042 keyboard controller</strong> — a
+    single-chip microcontroller Intel designed in 1979 for the IBM AT, still
+    emulated on every PC-compatible motherboard. The 8042 receives scan codes
+    over a serial PS/2 cable, buffers one byte at I/O port <code>0x60</code>,
+    and raises IRQ 1. The CPU reads the byte with <code>in al, 0x60</code>.
+    Status at port <code>0x64</code>, bit 0, reports "output buffer full" for
+    polling.
+  </p>
+
+  <p>
+    Each press produces a <strong>make code</strong>; each release produces a
+    <strong>break code</strong>. This is how the driver learns Shift, Ctrl,
+    and key-down duration. The keyboard offers three scan code sets; set 2 is
+    the AT default and what QEMU produces. The byte sequence for typing
+    'A' then Enter:
+  </p>
+
+  <div class="byte-layout">
+    <div class="byte-layout-header">
+      <span class="byte-layout-name">PS/2 scan codes, set 2 — typing "A" then Enter</span>
+      <span class="byte-layout-size">6 bytes for 2 keystrokes</span>
+    </div>
+    <div class="byte-bar">
+      <div class="byte-field type-u8" style="--bytes: 1"
+           data-tip="0x1C · make code for the A key · key went down">
+        <span class="byte-field-name">A make</span>
+        <span class="byte-field-meta">u8 · 1 B</span>
+        <span class="byte-field-range">0x00</span>
+      </div>
+      <div class="byte-field type-u8" style="--bytes: 1"
+           data-tip="0xF0 · break prefix · next byte names the key being released">
+        <span class="byte-field-name">break</span>
+        <span class="byte-field-meta">u8 · 1 B</span>
+        <span class="byte-field-range">0x01</span>
+      </div>
+      <div class="byte-field type-u8" style="--bytes: 1"
+           data-tip="0x1C · the A key again · key went up">
+        <span class="byte-field-name">A break</span>
+        <span class="byte-field-meta">u8 · 1 B</span>
+        <span class="byte-field-range">0x02</span>
+      </div>
+      <div class="byte-field type-u8" style="--bytes: 1"
+           data-tip="0x5A · make code for Enter · key went down">
+        <span class="byte-field-name">Enter make</span>
+        <span class="byte-field-meta">u8 · 1 B</span>
+        <span class="byte-field-range">0x03</span>
+      </div>
+      <div class="byte-field type-u8" style="--bytes: 1"
+           data-tip="0xF0 · break prefix">
+        <span class="byte-field-name">break</span>
+        <span class="byte-field-meta">u8 · 1 B</span>
+        <span class="byte-field-range">0x04</span>
+      </div>
+      <div class="byte-field type-u8" style="--bytes: 1"
+           data-tip="0x5A · Enter release">
+        <span class="byte-field-name">Enter break</span>
+        <span class="byte-field-meta">u8 · 1 B</span>
+        <span class="byte-field-range">0x05</span>
+      </div>
+    </div>
+    <div class="field-reference">
+      <dl>
+        <dt>make code <span class="type-tag type-u8">u8</span></dt>
+        <dd>
+          <p>
+            Sent on key-down. Identifies the key's physical slot. The driver
+            looks it up in a keymap to produce a character; Caps Lock and
+            Shift select which entry the lookup returns.
+          </p>
+          <div class="example">1C  →  lookup[0x1C]  →  'a' (or 'A' under Shift)</div>
+        </dd>
+        <dt>break sequence <span class="type-tag type-u8">u8 u8</span></dt>
+        <dd>
+          <p>
+            <code>0xF0</code> followed by the key's make code, sent on
+            key-up. The driver clears modifier state here: Shift break
+            (<code>0xF0 0x12</code>) ends the shifted lookup. Break codes
+            for letter keys carry no character and can be ignored; breaks
+            for modifiers must be tracked.
+          </p>
+          <div class="example">F0 1C  →  "A released"  →  no character</div>
+        </dd>
+      </dl>
+    </div>
+  </div>
+
+  <p>
+    Six bytes for two keystrokes. The driver walks a state machine over them:
+    was the previous byte <code>0xF0</code>? is Shift held? did this key
+    already send its make — autorepeat, or a new press? Shift+A grows the
+    sequence to eight bytes (<code>12 1C F0 1C F0 12</code> for Shift make,
+    A make, A break, Shift break); the driver must remember the Shift make
+    when the A make arrives several bytes later. Lesson 39 builds the
+    machine.
+  </p>
+
+  <div class="callout">
+    <div class="callout-title">One snag, surfaced now</div>
+    <p style="margin:0;">
+      <code>src/interrupts.rs:23</code> sets <code>VIRTIO_BLK_VECTOR: u8 =
+      0x21</code>. Vector <code>0x21</code> is PIC IRQ 1 — the keyboard's
+      line. If virtio-blk is genuinely wired to that vector (MSI-X table
+      entry, or legacy INTx fallback), the keyboard collides with it. The
+      UART's IRQ 4 lands at vector <code>0x24</code>, which is free, so
+      Lesson 35's serial build is unaffected. Lesson 39 must resolve
+      <code>0x21</code> before its ISR goes in.
+    </p>
+  </div>
+
+  <h2>The serial port: bytes already</h2>
+
+  <p>
+    The 16550 UART sends and receives one byte at a time over a serial line.
+    QEMU's <code>-serial stdio</code> wires the host terminal's stdin and
+    stdout to the guest's first UART: bytes written to port
+    <code>0x3F8</code> land in the host terminal; bytes typed in the host
+    terminal arrive at port <code>0x3F8</code> in the guest. No translation,
+    no keymap, no make/break. The byte the user typed is the byte the kernel
+    reads.
+    <span class="margin-note">The original IBM PC (1981) used the 8250 UART,
+    which had no FIFO. The 16550 (1987) added a 16-byte receive FIFO that
+    interrupts once per several bytes instead of once per byte — the
+    difference between an interrupt storm and a quiet line at 115200 baud.
+    QEMU emulates the 16550.</span>
+  </p>
+
+  <p>
+    The UART raises IRQ 4 when its receive register holds a byte the CPU has
+    not read. Status at port <code>0x3FD</code>, bit 0, reports the same
+    condition for polling: set means receive holding register full,
+    <code>in al, 0x3F8</code> returns a valid byte. Bit 5 reports the
+    transmit side. The mini-os driver already uses transmit; Lesson 35 adds
+    receive.
+  </p>
+
+  <p>
+    The UART transmits and receives independently. The kernel must echo each
+    received byte back to the transmit register, or the user types blind.
+    One <code>out</code> per received byte; the first act of the Lesson 35
+    build.
+  </p>
+
+  <h2>The line discipline</h2>
+
+  <p>
+    Raw bytes from either device are not what a program wants. A program
+    calls <code>read(0, buf, 128)</code> expecting one full line of text —
+    the characters typed, ending at Enter, mistakes corrected. The line
+    discipline turns the stream of individual bytes into that line. It sits
+    between the driver and the TTY device.
+    <span class="margin-note">Linux carries a table of disciplines.
+    <strong><code>n_tty</code></strong> is the default. <code>ppp</code>,
+    <code>slip</code>, and mouse-protocol readers were once loaded for
+    serial lines carrying non-terminal traffic.</span>
+  </p>
+
+  <p>
+    Two modes. <strong>Cooked</strong> (canonical) buffers bytes until Enter,
+    lets the user edit with Backspace and Ctrl-U, echoes each byte as it
+    arrives, delivers one completed line per <code>read()</code>.
+    <strong>Raw</strong> passes bytes through immediately, one at a time,
+    with no editing and no echo — what a full-screen editor or a serial
+    console protocol wants. mini-os starts cooked; raw is a flag away once
+    the structure exists.
+  </p>
+
+  <p>
+    Cooked mode performs three actions on every byte from the driver:
+  </p>
+
+  <div class="flow-diagram"><div class="fd-caption">cooked-mode byte handling — one byte in, possibly zero or more bytes out</div>byte from driver
+  │
+  ├─ 0x08 (Backspace) or 0x7F (DEL)?
+  │     └─ buffer not empty?
+  │           ├─ yes: drop last byte from buffer, write "\b \b" to output
+  │           └─ no:  do nothing (bell is optional)
+  │
+  ├─ 0x0A (LF) or 0x0D (CR)?
+  │     └─ append '\n' to buffer, echo '\r\n' to output,
+  │        mark buffer "line ready", wake any blocked reader
+  │
+  ├─ 0x03 (Ctrl-C)?
+  │     └─ discard buffer, deliver SIGINT to the foreground process group
+  │        (signal delivery is later work; for now: reset buffer, print "^C")
+  │
+  └─ any other printable byte?
+        └─ append to buffer, echo the byte to output</div>
+
+  <p>
+    Three jobs in one component. <strong>Edit</strong>: backspace fixes the
+    current line before Enter commits it. <strong>Echo</strong>: the user
+    sees each character as they type, because the device shows nothing on
+    its own. <strong>Commit</strong>: Enter turns the accumulated bytes into
+    a deliverable line. Without the discipline, every program implements all
+    three itself, and a typo is permanent.
+  </p>
+
+  <h2>The TTY device and the shell</h2>
+
+  <p>
+    The discipline's output — completed lines — must reach a program. The
+    bridge is the <strong>TTY device</strong>, an entry in the file
+    descriptor table that returns bytes from the discipline's line buffer
+    when read. By Unix convention the first three descriptors a process
+    inherits are <code>0</code> (stdin, read side), <code>1</code> (stdout,
+    write side), <code>2</code> (stderr, write side).
+    <code>sys_read(0, buf, len)</code> in mini-os returns EOF immediately;
+    Lesson 37 routes it to the discipline's <code>tty_readline()</code>,
+    which blocks the caller until Enter commits a line, then copies the line
+    into the caller's buffer.
+    <span class="margin-note">"Everything is a file" earns its keep here. A
+    program reads from a keyboard, a pipe, a socket, a regular file with the
+    same <code>read()</code>. The discipline is what fits the keyboard to
+    that interface.</span>
+  </p>
+
+  <p>
+    Above the TTY sits the shell — an ordinary user program, no kernel
+    privileges, looping over four operations:
+  </p>
+
+  <div class="flow-diagram"><div class="fd-caption">the shell loop — a user program built on fork/exec/wait (Lessons 17–18)</div>loop {
+  write(1, "$ ", 2);              // print the prompt
+  n = read(0, line, 128);         // block until Enter
+  if (n &lt;= 0) exit(0);            // EOF (Ctrl-D) → exit
+  parse line into argv[];          // split on spaces
+  if (is_builtin(argv[0])) {       // exit, cd, ...
+    run_builtin(argv);
+    continue;
+  }
+  pid = fork();                    // Lesson 17
+  if (pid == 0) {
+    exec(argv[0], argv);           // Lesson 16 — replace image
+    exit(127);                     // exec failed
+  } else {
+    wait4(pid, &amp;status, 0);       // Lesson 18 — reap child
+  }
+}</div>
+
+  <p>
+    Every primitive in that loop already exists in mini-os. <code>fork</code>
+    was Lesson 17; <code>exec</code> was Lesson 16; <code>wait4</code> was
+    Lesson 18. The shell proves those syscalls compose: a program whose only
+    job is to launch other programs from input it reads itself. The new
+    kernel work is the bottom three layers — driver, discipline, TTY device
+    — because the top reuses Phase 1's process machinery wholesale.
+  </p>
+
+  <h2>What Linux does</h2>
+
+  <p>
+    The Linux TTY subsystem is the production version of this stack.
+  </p>
+
+  <ul>
+    <li>
+      <a href="https://elixir.bootlin.com/linux/latest/source/drivers/tty/tty_io.c"><code>drivers/tty/tty_io.c</code></a>
+      — the TTY core. <code>tty_read</code> and <code>tty_write</code> are
+      the file-operation methods behind every <code>/dev/tty</code> file
+      descriptor. The layer the discipline plugs into.
+    </li>
+    <li>
+      <a href="https://elixir.bootlin.com/linux/latest/source/drivers/tty/n_tty.c"><code>drivers/tty/n_tty.c</code></a>
+      — the default line discipline. <code>n_tty_receive_char_lnext</code>
+      and friends implement cooked-mode editing, echo, and signal
+      generation. The flowchart above as C.
+    </li>
+    <li>
+      <a href="https://elixir.bootlin.com/linux/latest/source/drivers/tty/serial/8250/8250_port.c"><code>drivers/tty/serial/8250/8250_port.c</code></a>
+      — the 16550 UART driver. <code>serial8250_handle_irq</code> drains the
+      receive register on IRQ 4 and hands each byte to the discipline. The
+      Lesson 35 counterpart.
+    </li>
+    <li>
+      <a href="https://elixir.bootlin.com/linux/latest/source/drivers/input/keyboard/atkbd.c"><code>drivers/input/keyboard/atkbd.c</code></a>
+      — the AT keyboard driver. Set 2 scan-code reception and the make/break
+      state machine. Read for Lesson 39.
+    </li>
+    <li>
+      <a href="https://elixir.bootlin.com/linux/latest/source/include/linux/tty.h"><code>include/linux/tty.h</code></a>
+      — <code>struct tty_struct</code>, the object that ties driver,
+      discipline, and file descriptor together. A useful reference for the
+      shape even when the mini-os version is simpler.
+    </li>
+  </ul>
+
+  <p>
+    The <a href="https://www.kernel.org/doc/html/latest/admin-guide/serial-console.html">Linux
+    serial-console documentation</a> describes how a kernel attaches a shell
+    to a UART at boot — exactly what mini-os builds.
+  </p>
+
+  <h2>Reuse from earlier phases</h2>
+
+  <ul>
+    <li>
+      <strong>The interrupt infrastructure (Lessons 28–29).</strong> The
+      IDT-entry shape, the naked-asm wrappers, the APIC EOI path, and the
+      task-wakeup-from-ISR pattern that virtio-net RX uses are exactly what
+      the UART receive ISR needs. Lesson 35's
+      <code>serial_rx_wrapper</code> is the virtio-net RX wrapper with two
+      port reads swapped in.
+    </li>
+    <li>
+      <strong>The serial port (since Lesson 1).</strong> The UART is already
+      mapped and the transmit path works. Lesson 35 adds the receive path
+      to the same driver, in the same file — no new device discovery.
+    </li>
+    <li>
+      <strong>The process syscalls (Lessons 16–18).</strong> The shell is a
+      user program with no new syscalls of its own.
+      <code>fork</code>, <code>exec</code>, and <code>wait4</code> compose
+      directly into the shell loop above. The one new syscall is
+      <code>sys_read(0, ...)</code> learning to block on the discipline
+      instead of returning EOF.
+    </li>
+  </ul>
+
+  <p>
+    The genuinely new work is the line discipline. It has no counterpart in
+    the disk or network stacks, which pass bytes through untouched. The
+    discipline is the first mini-os component whose job is to <em>edit</em>
+    a byte stream, and its placement — between driver and file descriptor —
+    is what lets one discipline serve both keyboard and UART.
+  </p>
+
+  <h2>The build — a smoke test</h2>
+
+  <p>
+    Like Lesson 19's "attach the card and see it on the PCI bus," this
+    lesson's build proves one thing: <em>a byte you type reaches the
+    kernel.</em> No ISR, no discipline, no shell — a polling read of the
+    UART receive register in the main loop, echoed straight back. The full
+    stack starts in Lesson 35.
+  </p>
+
+  <div class="recipe">
+    <div class="recipe-step">
+      <div class="recipe-num">1</div>
+      <div class="recipe-body">
+        <strong>Add a receive method to <code>src/serial.rs</code>.</strong>
+        Read the line status register at port <code>0x3FD</code>; if bit 0
+        is set, <code>in al, 0x3F8</code> returns the byte the user typed.
+        Expose as <code>pub fn try_read_byte() -&gt; Option&lt;u8&gt;</code>
+        so the main loop can poll without blocking.
+      </div>
+    </div>
+    <div class="recipe-step">
+      <div class="recipe-num">2</div>
+      <div class="recipe-body">
+        <strong>Poll and echo in the kernel main loop.</strong> Where
+        <code>main.rs</code> currently spins after <code>exec</code>,
+        insert <code>if let Some(b) = serial::try_read_byte() {
+        serial::write_byte(b); }</code>. Type into the QEMU window;
+        characters appear as typed. First input the kernel has ever seen.
+      </div>
+    </div>
+    <div class="recipe-step">
+      <div class="recipe-num">3</div>
+      <div class="recipe-body">
+        <strong>Verify and commit.</strong> Run with <code>-serial
+        stdio</code>, type <code>hello</code>, observe <code>hello</code>
+        echoed back. The disk path and existing tests must still pass (this
+        is a read-only addition). Commit, e.g. <em>"Lesson 34: serial UART
+        receive polling smoke test."</em>
+      </div>
+    </div>
+  </div>
+
+  <div class="callout">
+    <div class="callout-title">Deferred work</div>
+    <p style="margin:0;">
+      No interrupt, no buffering, no editing, no shell. The smoke test
+      proves the wire works. Lesson 35 turns polling into IRQ-driven
+      receive with a ring buffer; Lesson 36 builds the discipline; Lesson
+      37 wires fd 0; Lesson 38 builds the shell; Lesson 39 adds the PS/2
+      keyboard as the second device.
+    </p>
+  </div>
+
+  <h2>Primary source</h2>
+
+  <p>
+    <a href="https://wiki.osdev.org/Serial_Ports">OSDev — Serial Ports</a>
+    for the 16550 register layout mini-os uses;
+    <a href="https://wiki.osdev.org/PS/2_Keyboard">OSDev — PS/2
+    Keyboard</a> for scan code sets and the 8042 controller;
+    <a href="https://www.oreilly.com/library/view/understanding-the-linux/0596005653/"><em>Understanding
+    the Linux Kernel</em> (Bovet &amp; Cesati), Ch. 13</a> for the
+    discipline and TTY abstraction. The Linux sources linked above are the
+    ground truth. All listed in <a href="../RESOURCES.md">RESOURCES.md</a>.
+  </p>
+
+  <div class="probe">
+    <div class="probe-title">Probe — check the model before you build</div>
+    <p>
+      The TTY is in cooked mode. You type <code>a</code>, <code>b</code>,
+      <code>c</code>, then Backspace, then <code>d</code>, then Enter.
+      Trace the three layers: what bytes does the UART deliver to the
+      driver, what does the discipline's buffer hold after each step, and
+      what bytes does the application receive from <code>read()</code>?
+      Then the same keystrokes in raw mode — what changes at the
+      application boundary, and why does the screen stay blank unless the
+      application prints each byte itself?
+    </p>
+  </div>
+
+  <p>
+    Answer back, or push on what did not land — why the discipline echoes,
+    why break codes are needed at all, how <code>sys_read(0, ...)</code>
+    blocking on a line differs from blocking on a socket. The probe is
+    where the conversation starts.
+  </p>
+
+  </div>
+
+  <footer class="lesson-footer">
+    <div class="footer-block">
+      <h4>What this unlocks</h4>
+      <p style="margin:0;">
+        Lesson 35 turns the polling read into IRQ-driven receive: unmask
+        IRQ 4, install the receive ISR at vector <code>0x24</code>, buffer
+        bytes into a ring, echo each one back. The keystone — a typed
+        character reaching the kernel through hardware interrupts, not a
+        busy loop.
+      </p>
+    </div>
+
+    <div class="footer-block">
+      <h4>The arc</h4>
+      <p style="margin:0;">
+        Lesson 1 of 6: L34 (concept) → L35 (serial input, keystone) →
+        L36 (line discipline) → L37 (fd 0 wired) → L38 (shell) →
+        L39 (PS/2 keyboard). Objective: an interactive shell that launches
+        programs from disk.
+      </p>
+    </div>
+
+    <div class="footer-block">
+      <h4>Primary source</h4>
+      <p style="margin:0;">
+        <a href="https://wiki.osdev.org/Serial_Ports">OSDev — Serial Ports</a> ·
+        <a href="https://wiki.osdev.org/PS/2_Keyboard">OSDev — PS/2 Keyboard</a> ·
+        <a href="https://elixir.bootlin.com/linux/latest/source/drivers/tty/n_tty.c">Linux <code>n_tty.c</code></a>
+      </p>
+    </div>
+
+    <div class="footer-block">
+      <h4>Read next</h4>
+      <p style="margin:0;">
+        <a href="4.12-serial-input.html">Lesson 35 (serial input — the keystone)</a> —
+        unmask IRQ 4, install the receive ISR, ring-buffer the bytes, echo
+        them back. First interrupt-driven input.
+      </p>
+    </div>
+
+    <nav class="lesson-nav">
+      <a href="6.13-tcp-teardown.html">← L33 TCP teardown</a>
+      <a href="#" class="placeholder">Phase 2c terminal ↑</a>
+      <a href="4.12-serial-input.html">L35 serial input →</a>
+    </nav>
+  </footer>
+
+</article>
+</body>
+</html>

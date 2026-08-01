@@ -1,0 +1,671 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Tour — Lesson 10 · ext2 Superblock</title>
+<link rel="stylesheet" href="../assets/lesson.css">
+<script src="../assets/code-highlight.js" defer></script>
+<link rel="stylesheet" href="../assets/byte-layout.css">
+<style>
+  .tour-step {
+    margin: 3rem 0;
+    padding-top: 1rem;
+    border-top: 1px solid var(--border);
+  }
+  .tour-step:first-of-type { border-top: none; padding-top: 0; }
+  .tour-step-num {
+    display: inline-block;
+    font-family: var(--font-mono);
+    font-size: 0.78rem;
+    font-weight: 600;
+    color: var(--accent);
+    background: var(--accent-soft);
+    padding: 2px 8px;
+    border-radius: 3px;
+    margin-right: 0.6rem;
+  }
+  .tour-step-title {
+    font-family: var(--font-sans);
+    font-weight: 700;
+    font-size: 1.3rem;
+    color: var(--text);
+    margin: 0 0 0.4rem;
+    display: inline;
+  }
+  .tour-step-h2 { margin: 0 0 1rem; }
+  .tour-files {
+    font-family: var(--font-mono);
+    font-size: 0.82rem;
+    color: var(--text-dim);
+    margin: 0.5rem 0 1.5rem;
+  }
+  .tour-files strong { color: var(--text); font-weight: 600; }
+  .snippet-meta {
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
+    color: var(--text-dim);
+    margin: 1.5rem 0 0.35rem;
+    display: flex;
+    align-items: baseline;
+    gap: 0.6rem;
+  }
+  .snippet-meta .snippet-file {
+    color: var(--accent);
+    font-weight: 600;
+    background: var(--accent-soft);
+    padding: 1px 6px;
+    border-radius: 3px;
+  }
+  .snippet-meta .snippet-what {
+    color: var(--text-faint);
+    font-style: italic;
+  }
+  .snippet-meta + pre,
+  .snippet-meta + pre.tour-output { margin-top: 0; }
+  pre.tour-output {
+    background: #111827;
+    color: #e5e7eb;
+    border-left: 3px solid var(--accent);
+    padding: 1rem 1.25rem;
+    border-radius: 0 6px 6px 0;
+    font-size: 0.8rem;
+    line-height: 1.55;
+    margin: 1rem 0;
+  }
+  pre.tour-output .ann { color: #9ca3af; font-style: italic; }
+  pre.tour-output .ok  { color: #86efac; }
+  pre.tour-output .keystone { color: #fbbf24; font-weight: bold; }
+  .pull-quote {
+    border-left: 3px solid var(--accent);
+    padding: 0.4rem 0 0.4rem 1rem;
+    margin: 1.5rem 0;
+    font-style: italic;
+    color: var(--text-dim);
+  }
+  /* Codebase map (tree) — same as previous tours */
+  .codebase-map {
+    background: var(--surface-soft);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 1rem 1.25rem;
+    margin: 1.5rem 0;
+  }
+  .codebase-map-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    margin-bottom: 0.8rem;
+    padding-bottom: 0.5rem;
+    border-bottom: 1px solid var(--border);
+    font-family: var(--font-sans);
+  }
+  .codebase-map-title {
+    font-weight: 600;
+    color: var(--text);
+    font-size: 0.95rem;
+  }
+  .codebase-map-meta {
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+    color: var(--text-dim);
+  }
+  .cb-group { margin-bottom: 0.5rem; }
+  .cb-group:last-child { margin-bottom: 0; }
+  .cb-group > summary {
+    font-family: var(--font-sans);
+    font-size: 0.7rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--text-faint);
+    font-weight: 600;
+    cursor: pointer;
+    list-style: none;
+    padding: 0.4rem 0 0.4rem 1.5rem;
+    position: relative;
+    border-bottom: 1px dashed var(--border);
+    margin-bottom: 0.4rem;
+  }
+  .cb-group > summary::-webkit-details-marker { display: none; }
+  .cb-group > summary::before {
+    content: "▾";
+    position: absolute;
+    left: 0.4rem;
+    top: 50%;
+    transform: translateY(-50%);
+    color: var(--text-faint);
+    transition: transform 0.15s ease;
+  }
+  .cb-group:not([open]) > summary::before {
+    transform: translateY(-50%) rotate(-90deg);
+  }
+  .cb-rows {
+    position: relative;
+    padding-left: 1.1rem;
+  }
+  .cb-rows::before {
+    content: '';
+    position: absolute;
+    left: 0.5rem;
+    top: 0;
+    bottom: 0;
+    width: 1px;
+    background: var(--border-bright);
+  }
+  .cb-row {
+    display: grid;
+    grid-template-columns: 50px 1fr auto 2fr;
+    gap: 0.8rem;
+    align-items: baseline;
+    padding: 0.25rem 0.5rem 0.25rem 0;
+    margin-left: -0.6rem;
+    position: relative;
+    border-radius: 3px;
+    transition: background 0.1s ease;
+  }
+  .cb-row::before {
+    content: '';
+    position: absolute;
+    left: 0;
+    top: 0.85rem;
+    width: 0.6rem;
+    height: 1px;
+    background: var(--border-bright);
+  }
+  .cb-row:hover { background: var(--surface); }
+  .cb-chip {
+    font-family: var(--font-sans);
+    font-size: 0.66rem;
+    font-weight: 700;
+    color: white;
+    text-align: center;
+    padding: 1px 0;
+    border-radius: 3px;
+    letter-spacing: 0.04em;
+  }
+  .cb-chip.new { background: #15803d; }
+  .cb-chip.mod { background: var(--accent); }
+  .cb-chip.ctx { background: transparent; color: var(--text-faint); border: 1px dashed var(--border-bright); }
+  .cb-name {
+    font-family: var(--font-mono);
+    font-weight: 600;
+    color: var(--text);
+    font-size: 0.82rem;
+  }
+  .cb-lines {
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
+    color: var(--text-faint);
+    text-align: right;
+    min-width: 4rem;
+  }
+  .cb-desc {
+    font-family: var(--font-sans);
+    font-size: 0.78rem;
+    color: var(--text-dim);
+  }
+  .codebase-map-legend {
+    margin-top: 0.8rem;
+    padding-top: 0.5rem;
+    border-top: 1px solid var(--border);
+    font-family: var(--font-sans);
+    font-size: 0.75rem;
+    color: var(--text-dim);
+    display: flex;
+    gap: 1.2rem;
+    flex-wrap: wrap;
+  }
+  .codebase-map-legend > span {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+  }
+  .codebase-map-legend .cb-chip { min-width: 36px; }
+</style>
+</head>
+<body>
+<article class="lesson">
+
+  <header class="lesson-header">
+    <div class="lesson-eyebrow">Tour · Lesson 10 · Companion to <a href="../lessons/5.04-ext2-superblock.html" style="color:inherit;">the lesson</a></div>
+    <h1 class="lesson-title">Code Tour — ext2 Superblock</h1>
+    <p class="lesson-subtitle">From raw disk sectors to a parsed filesystem header. Four commits, each verified via the printed superblock fields.</p>
+    <div class="lesson-meta">
+      <span><strong>Steps done</strong> 10.1 – 10.4 (complete)</span>
+      <span><strong>Commits</strong> <code>f7cc83e</code> → <code>34a7e78</code></span>
+    </div>
+  </header>
+
+  <div class="content">
+
+  <p class="lead">
+    Lesson 10 is the start of the filesystem phase. We tell
+    <code>mkfs.ext2</code> to format the disk image as a real ext2
+    filesystem, then teach the kernel to read the first structure
+    (the superblock) and verify it's actually ext2.
+  </p>
+
+  <div class="pull-quote">
+    The disk doesn't know it's ext2. Bytes are bytes. ext2 is a
+    parsing convention the kernel applies to those bytes. Lesson 10
+    installs that convention — at least the first 1024 bytes of it.
+  </div>
+
+  <h2>Codebase map — what's in <code>src/</code> right now</h2>
+
+  <div class="codebase-map">
+    <div class="codebase-map-header">
+      <span class="codebase-map-title">src/ — kernel sources</span>
+      <span class="codebase-map-meta">6,439 lines · 17 files · +121 since L9</span>
+    </div>
+
+    <details class="cb-group" open>
+      <summary>Disk path + filesystem (current focus: Lessons 5–10)</summary>
+      <div class="cb-rows">
+        <div class="cb-row">
+          <span class="cb-chip new">NEW</span>
+          <span class="cb-name">ext2.rs</span>
+          <span class="cb-lines">98</span>
+          <span class="cb-desc">ext2 superblock parser (L10)</span>
+        </div>
+        <div class="cb-row">
+          <span class="cb-chip mod">MOD</span>
+          <span class="cb-name">main.rs</span>
+          <span class="cb-lines">448</span>
+          <span class="cb-desc">kernel entry; added ext2 test block</span>
+        </div>
+        <div class="cb-row">
+          <span class="cb-chip ctx">ctx</span>
+          <span class="cb-name">virtio.rs</span>
+          <span class="cb-lines">1,155</span>
+          <span class="cb-desc">virtio-blk driver + virtqueue + read_sector</span>
+        </div>
+        <div class="cb-row">
+          <span class="cb-chip ctx">ctx</span>
+          <span class="cb-name">pci.rs</span>
+          <span class="cb-lines">273</span>
+          <span class="cb-desc">PCI config + bus enumeration (L5)</span>
+        </div>
+      </div>
+    </details>
+
+    <details class="cb-group">
+      <summary>Memory layer</summary>
+      <div class="cb-rows">
+        <div class="cb-row">
+          <span class="cb-chip ctx">ctx</span>
+          <span class="cb-name">memory.rs</span>
+          <span class="cb-lines">674</span>
+          <span class="cb-desc">page tables, MMIO mapping, AddressSpace</span>
+        </div>
+        <div class="cb-row">
+          <span class="cb-chip ctx">ctx</span>
+          <span class="cb-name">frame_allocator.rs</span>
+          <span class="cb-lines">157</span>
+          <span class="cb-desc">bitmap frame allocator</span>
+        </div>
+        <div class="cb-row">
+          <span class="cb-chip ctx">ctx</span>
+          <span class="cb-name">allocator.rs</span>
+          <span class="cb-lines">22</span>
+          <span class="cb-desc">heap (linked_list_allocator wrapper)</span>
+        </div>
+      </div>
+    </details>
+
+    <details class="cb-group">
+      <summary>VFS (Lessons 1–3, will merge with ext2 in L13)</summary>
+      <div class="cb-rows">
+        <div class="cb-row">
+          <span class="cb-chip ctx">ctx</span>
+          <span class="cb-name">fs.rs</span>
+          <span class="cb-lines">385</span>
+          <span class="cb-desc">in-memory Inode, File, FdTable, ROOT_INODE</span>
+        </div>
+      </div>
+    </details>
+
+    <details class="cb-group">
+      <summary>Scheduling + user/kernel boundary</summary>
+      <div class="cb-rows">
+        <div class="cb-row">
+          <span class="cb-chip ctx">ctx</span>
+          <span class="cb-name">task.rs</span>
+          <span class="cb-lines">1,045</span>
+          <span class="cb-desc">scheduler, task states, fork/exit</span>
+        </div>
+        <div class="cb-row">
+          <span class="cb-chip ctx">ctx</span>
+          <span class="cb-name">syscall.rs</span>
+          <span class="cb-lines">1,006</span>
+          <span class="cb-desc">syscall dispatch</span>
+        </div>
+        <div class="cb-row">
+          <span class="cb-chip ctx">ctx</span>
+          <span class="cb-name">user.rs</span>
+          <span class="cb-lines">376</span>
+          <span class="cb-desc">user-mode entry, ring 3 transition</span>
+        </div>
+      </div>
+    </details>
+
+    <details class="cb-group">
+      <summary>Hardware / low-level</summary>
+      <div class="cb-rows">
+        <div class="cb-row">
+          <span class="cb-chip ctx">ctx</span>
+          <span class="cb-name">interrupts.rs</span>
+          <span class="cb-lines">246</span>
+          <span class="cb-desc">IDT, handlers</span>
+        </div>
+        <div class="cb-row">
+          <span class="cb-chip ctx">ctx</span>
+          <span class="cb-name">vga_buffer.rs</span>
+          <span class="cb-lines">191</span>
+          <span class="cb-desc">VGA text mode + print!/println!</span>
+        </div>
+        <div class="cb-row">
+          <span class="cb-chip ctx">ctx</span>
+          <span class="cb-name">gdt.rs</span>
+          <span class="cb-lines">111</span>
+          <span class="cb-desc">GDT, TSS, segment selectors</span>
+        </div>
+        <div class="cb-row">
+          <span class="cb-chip ctx">ctx</span>
+          <span class="cb-name">serial.rs</span>
+          <span class="cb-lines">50</span>
+          <span class="cb-desc">serial port output</span>
+        </div>
+        <div class="cb-row">
+          <span class="cb-chip ctx">ctx</span>
+          <span class="cb-name">pic.rs</span>
+          <span class="cb-lines">45</span>
+          <span class="cb-desc">8259 PIC remap</span>
+        </div>
+        <div class="cb-row">
+          <span class="cb-chip ctx">ctx</span>
+          <span class="cb-name">pit.rs</span>
+          <span class="cb-lines">43</span>
+          <span class="cb-desc">programmable interval timer</span>
+        </div>
+      </div>
+    </details>
+
+    <div class="codebase-map-legend">
+      <span><span class="cb-chip new">NEW</span> added this lesson</span>
+      <span><span class="cb-chip mod">MOD</span> modified this lesson</span>
+      <span><span class="cb-chip ctx">ctx</span> unchanged context</span>
+    </div>
+  </div>
+
+  <p>
+    <strong>One new file</strong> (<code>src/ext2.rs</code>, 98 lines)
+    and <strong>one modified</strong> (<code>src/main.rs</code>, added
+    the Lesson 10 test block). The ext2 module is fully isolated —
+    depends only on <code>crate::virtio::VirtioBlk</code> for the
+    <code>read_sector</code> method. Next lesson (inode lookup) will
+    add to <code>ext2.rs</code> rather than touching anything else.
+  </p>
+
+  <!-- ============================================================ -->
+  <!-- STEP 10.1                                                    -->
+  <!-- ============================================================ -->
+
+  <div class="tour-step">
+    <h2 class="tour-step-h2">
+      <span class="tour-step-num">10.1</span>
+      <span class="tour-step-title">Format the disk image as ext2</span>
+    </h2>
+    <div class="tour-files">
+      <strong>Files:</strong> <code>scripts/make-disk.sh</code> (mkfs.ext2 step added)
+    </div>
+
+    <p>
+      The old script just created a sparse 1 MB file and wrote
+      <code>MINIOS_DISK_v0\n</code> at offset 0. The new script adds
+      a <code>mkfs.ext2 -F disk.img</code> call to format the file as
+      a real ext2 filesystem. The signature is gone — Lesson 10
+      verifies the ext2 magic instead.
+    </p>
+
+    <p>
+      macOS doesn't ship <code>mkfs.ext2</code>. The script tries
+      multiple paths (<code>command -v</code>, brew location,
+      <code>/usr/sbin</code> fallback) so it works on both macOS with
+      <code>brew install e2fsprogs</code> and on Linux directly.
+    </p>
+
+    <div class="snippet-meta">
+      <span class="snippet-file">scripts/make-disk.sh</span>
+      <span class="snippet-what">— the format step</span>
+    </div>
+<pre>truncate -s "${SIZE_MB}M" "$DISK_IMG"
+"$MKFS_EXT2" -F "$DISK_IMG"
+
+# Verify: bytes at offset 1080 should be 53 EF (ext2 magic in LE)
+dd if="$DISK_IMG" bs=1 skip=1080 count=2 2&gt;/dev/null | hexdump -C</pre>
+
+<pre class="tour-output"><span class="ann">$ ./scripts/make-disk.sh</span>
+Creating filesystem with 1024 1k blocks and 128 inodes
+Writing superblocks and filesystem accounting information: done
+Created disk.img (1 MB, ext2)
+ext2 magic at offset 1080 (should be 53 EF):
+00000000  53 ef                                             |S.|</pre>
+
+    <p>
+      Magic bytes <code>53 ef</code> at offset 1080 = 0xEF53 in
+      little-endian. Disk is now ext2.
+    </p>
+  </div>
+
+  <!-- ============================================================ -->
+  <!-- STEP 10.2                                                    -->
+  <!-- ============================================================ -->
+
+  <div class="tour-step">
+    <h2 class="tour-step-h2">
+      <span class="tour-step-num">10.2</span>
+      <span class="tour-step-title">Superblock struct + parser</span>
+    </h2>
+    <div class="tour-files">
+      <strong>Files:</strong> <code>src/ext2.rs</code> (new module), <code>src/main.rs</code> (declare module)
+    </div>
+
+    <p>
+      The Superblock struct holds 10 fields — the ones we need for
+      inode lookup and directory walking in upcoming lessons. The
+      full on-disk struct is 1024 bytes with dozens of fields; we
+      ignore the rest (quota stuff, journal hints, etc.).
+    </p>
+
+    <div class="snippet-meta">
+      <span class="snippet-file">src/ext2.rs</span>
+      <span class="snippet-what">— Superblock struct</span>
+    </div>
+<pre><span class="k">pub struct</span> <span class="t">Superblock</span> {
+    <span class="k">pub</span> inodes_count:       <span class="t">u32</span>,
+    <span class="k">pub</span> blocks_count:       <span class="t">u32</span>,
+    <span class="k">pub</span> r_blocks_count:     <span class="t">u32</span>,
+    <span class="k">pub</span> free_blocks_count:  <span class="t">u32</span>,
+    <span class="k">pub</span> free_inodes_count:  <span class="t">u32</span>,
+    <span class="k">pub</span> first_data_block:   <span class="t">u32</span>,
+    <span class="k">pub</span> block_size:          <span class="t">u32</span>,  <span class="c">// 1024 &lt;&lt; s_log_block_size</span>
+    <span class="k">pub</span> magic:               <span class="t">u16</span>,
+    <span class="k">pub</span> state:               <span class="t">u16</span>,
+}</pre>
+
+    <p>
+      Parser uses <code>from_le_bytes</code> at each field's spec
+      offset. Closure helpers hide the <code>try_into().unwrap()</code>
+      boilerplate:
+    </p>
+
+    <div class="snippet-meta">
+      <span class="snippet-file">src/ext2.rs</span>
+      <span class="snippet-what">— parse(): bytewise read at spec offsets</span>
+    </div>
+<pre><span class="k">pub fn</span> parse(bytes: &amp;[<span class="t">u8</span>]) -&gt; <span class="t">Self</span> {
+    <span class="k">let</span> u32_at = |off: <span class="t">usize</span>| -&gt; <span class="t">u32</span> {
+        <span class="t">u32</span>::from_le_bytes(bytes[off..off+<span class="n">4</span>].try_into().unwrap())
+    };
+    <span class="k">let</span> u16_at = |off: <span class="t">usize</span>| -&gt; <span class="t">u16</span> {
+        <span class="t">u16</span>::from_le_bytes(bytes[off..off+<span class="n">2</span>].try_into().unwrap())
+    };
+
+    <span class="k">let</span> s_log_block_size = u32_at(<span class="n">24</span>);
+    <span class="t">Self</span> {
+        inodes_count:       u32_at(<span class="n">0</span>),
+        blocks_count:       u32_at(<span class="n">4</span>),
+        <span class="c">// ...</span>
+        block_size: <span class="n">1024</span> &lt;&lt; s_log_block_size,
+        magic:      u16_at(<span class="n">56</span>),
+        state:      u16_at(<span class="n">58</span>),
+    }
+}</pre>
+
+    <p>
+      Why from_le_bytes instead of <code>repr(C)</code> transmute:
+    </p>
+    <ul>
+      <li><strong>No alignment assumption.</strong> The byte slice doesn't need 4-byte alignment.</li>
+      <li><strong>Explicit endianness documentation.</strong> Code says "this is LE" via the function name.</li>
+      <li><strong>Portable.</strong> Same code works on big-endian architectures — from_le_bytes handles the conversion.</li>
+      <li><strong>No <code>unsafe</code>.</strong> Pure safe Rust.</li>
+    </ul>
+  </div>
+
+  <!-- ============================================================ -->
+  <!-- STEP 10.3 + 10.4                                             -->
+  <!-- ============================================================ -->
+
+  <div class="tour-step">
+    <h2 class="tour-step-h2">
+      <span class="tour-step-num">10.3 + 10.4</span>
+      <span class="tour-step-title">Read superblock from disk + verify</span>
+    </h2>
+    <div class="tour-files">
+      <strong>Files:</strong> <code>src/ext2.rs</code> (read_superblock function), <code>src/main.rs</code> (test block)
+    </div>
+
+    <p>
+      The superblock is 1024 bytes; <code>read_sector</code> returns
+      512. Read two sectors, concat, parse:
+    </p>
+
+    <div class="snippet-meta">
+      <span class="snippet-file">src/ext2.rs</span>
+      <span class="snippet-what">— read_superblock</span>
+    </div>
+<pre><span class="k">pub fn</span> read_superblock(dev: &amp;<span class="k">mut</span> <span class="t">VirtioBlk</span>) -&gt; <span class="t">Superblock</span> {
+    <span class="k">let</span> sector2 = dev.read_sector(<span class="n">2</span>);
+    <span class="k">let</span> sector3 = dev.read_sector(<span class="n">3</span>);
+
+    <span class="k">let mut</span> bytes = [<span class="n">0u8</span>; <span class="n">1024</span>];
+    bytes[.. <span class="n">512</span>].copy_from_slice(&amp;sector2);
+    bytes[<span class="n">512</span>..].copy_from_slice(&amp;sector3);
+
+    <span class="t">Superblock</span>::parse(&amp;bytes)
+}</pre>
+
+    <p>
+      Test block in main.rs:
+    </p>
+
+    <div class="snippet-meta">
+      <span class="snippet-file">src/main.rs</span>
+      <span class="snippet-what">— the Lesson 10 test</span>
+    </div>
+<pre><span class="k">let</span> sb = ext2::read_superblock(&amp;<span class="k">mut</span> virtio_dev);
+sb.print();
+
+<span class="k">assert!</span>(sb.is_ext2(), <span class="s">"ext2 magic not found"</span>);
+<span class="k">assert_eq!</span>(sb.block_size, <span class="n">1024</span>);
+<span class="k">assert_eq!</span>(sb.first_data_block, <span class="n">1</span>);
+<span class="k">assert_eq!</span>(sb.state, <span class="n">1</span>, <span class="s">"filesystem should be clean"</span>);
+<span class="k">assert!</span>(sb.inodes_count &gt; <span class="n">0</span> &amp;&amp; sb.inodes_count &lt; <span class="n">1000</span>);
+<span class="k">assert!</span>(sb.blocks_count &gt; <span class="n">0</span> &amp;&amp; sb.blocks_count &lt; <span class="n">10000</span>);</pre>
+
+    <p>
+      Bug along the way: my first cut read <code>s_state</code> as
+      u32, which slurped in the next field (<code>s_errors</code>)
+      too — got 65537 instead of 1. Fixed by reading as u16 per
+      the ext2 spec.
+    </p>
+
+<pre class="tour-output"><span class="ann">[test] ext2 superblock parser (10.1-10.4)</span>
+[ext2] reading superblock (sectors 2 and 3)
+[ext2] parsed superblock:
+[ext2]   magic         = 0xEF53  <span class="ok">✓ ext2</span>
+[ext2]   inodes_count  = 128
+[ext2]   blocks_count  = 1024
+[ext2]   free_inodes   = 117
+[ext2]   free_blocks   = 970
+[ext2]   first_data    = 1
+[ext2]   block_size    = 1024 bytes
+[ext2]   state         = 1 (clean)
+<span class="keystone">[ext2] *** superblock parsed — ext2 filesystem recognized ***</span></pre>
+  </div>
+
+  <!-- ============================================================ -->
+  <!-- SUMMARY                                                      -->
+  <!-- ============================================================ -->
+
+  <h2>What landed, by file</h2>
+
+  <p>
+    <strong><code>src/ext2.rs</code></strong> (new, 98 lines):
+  </p>
+  <ul>
+    <li><code>Superblock</code> struct — 10 fields we care about</li>
+    <li><code>Superblock::parse(&amp;[u8])</code> — bytewise parser via from_le_bytes</li>
+    <li><code>Superblock::is_ext2()</code> — magic == 0xEF53 check</li>
+    <li><code>Superblock::print()</code> — pretty-print all fields</li>
+    <li><code>read_superblock(&amp;mut VirtioBlk)</code> — read sectors 2+3, parse</li>
+    <li>Constants: <code>EXT2_MAGIC</code>, <code>EXT2_ROOT_INO = 2</code></li>
+  </ul>
+
+  <p>
+    <strong><code>scripts/make-disk.sh</code></strong>: mkfs.ext2 step added, with multi-platform mkfs.ext2 path lookup.
+  </p>
+
+  <p>
+    <strong><code>src/main.rs</code></strong>: declared <code>mod ext2;</code>, added Lesson 10 test block, removed Lesson 8 signature check (disk no longer has the signature), removed Lesson 9 zero-byte check on sectors 1/2 (they now contain ext2 metadata).
+  </p>
+
+  <h2>Commits</h2>
+
+  <ul>
+    <li><code>f7cc83e</code> — Lesson 10 step 10.1: format disk image as ext2</li>
+    <li><code>380a52d</code> — Lesson 10 step 10.2: Superblock struct + parser</li>
+    <li><code>34a7e78</code> — Lesson 10 steps 10.3 + 10.4: read superblock from disk + verify</li>
+  </ul>
+
+  <p>
+    Pattern preserved from earlier lessons: each step is verified
+    via QEMU before the next. The filesystem phase has begun.
+  </p>
+
+  </div>
+
+  <footer class="lesson-footer">
+    <div class="footer-block">
+      <h4>Up next</h4>
+      <p style="margin:0;">
+        Lesson 11 — page cache (deferred). Or jump to Lesson 12 —
+        ext2 inode lookup. With the superblock parsed, we know
+        where the inode table lives (in the block group descriptor
+        table, which we'll parse next). Look up inode 2 (the root
+        directory by ext2 convention) and parse its 128-byte
+        on-disk structure.
+      </p>
+    </div>
+
+    <nav class="lesson-nav">
+      <a href="../lessons/5.04-ext2-superblock.html">↑ Lesson 10</a>
+      <a href="tour-4.06-block-layer.html">← Tour 9</a>
+    </nav>
+  </footer>
+
+</article>
+</body>
+</html>

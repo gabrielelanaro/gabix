@@ -1,0 +1,783 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Lesson 23 — IPv4 — Header, Checksum, Demux</title>
+<link rel="stylesheet" href="../assets/lesson.css">
+<script src="../assets/code-highlight.js" defer></script>
+<link rel="stylesheet" href="../assets/byte-layout.css">
+<style>
+  .checksum-walk {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1rem 1.2rem;
+    margin: 1.25rem 0;
+    font-family: var(--font-mono);
+    font-size: 0.82rem;
+    line-height: 1.7;
+    overflow-x: auto;
+  }
+  .checksum-walk .cw-step {
+    display: grid;
+    grid-template-columns: 1.5rem 1fr;
+    column-gap: 0.5rem;
+    row-gap: 0.15rem;
+    padding: 0.15rem 0;
+    align-items: baseline;
+  }
+  .checksum-walk .cw-num {
+    color: var(--text-faint);
+    text-align: right;
+  }
+  .checksum-walk .cw-text,
+  .checksum-walk .cw-result {
+    color: var(--text);
+    min-width: 0;
+  }
+  .checksum-walk .cw-comment {
+    grid-column: 2;
+    color: var(--text-faint);
+    font-family: var(--font-sans);
+    font-size: 0.78rem;
+    display: block;
+  }
+  .checksum-walk .cw-result {
+    color: var(--accent);
+    font-weight: 600;
+  }
+
+  .build-flow {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 1.2rem;
+    margin: 1.5rem 0;
+  }
+  .build-flow .bf-col {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 0.9rem 1.1rem 1rem;
+  }
+  .build-flow .bf-col.tx { border-top: 3px solid #b45309; background: #fffbeb; }
+  .build-flow .bf-col.rx { border-top: 3px solid #15803d; background: #f0fdf4; }
+  .build-flow .bf-title {
+    font-family: var(--font-sans);
+    font-weight: 700;
+    font-size: 0.95rem;
+    margin-bottom: 0.6rem;
+  }
+  .build-flow .bf-step {
+    font-family: var(--font-mono);
+    font-size: 0.78rem;
+    color: var(--text);
+    padding: 0.2rem 0;
+    line-height: 1.55;
+    display: grid;
+    grid-template-columns: 1.5rem 1fr;
+    gap: 0.4rem;
+  }
+  .build-flow .bf-step .bf-num {
+    color: var(--text-faint);
+    text-align: right;
+  }
+  .build-flow .bf-step.tx .bf-num { color: #b45309; font-weight: 600; }
+  .build-flow .bf-step.rx .bf-num { color: #15803d; font-weight: 600; }
+  .build-flow .bf-note {
+    font-family: var(--font-serif);
+    font-size: 0.82rem;
+    color: var(--text-dim);
+    font-style: italic;
+    margin-top: 0.7rem;
+    padding-top: 0.5rem;
+    border-top: 1px dashed var(--border);
+  }
+
+  .demux-tree {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1rem 1.2rem;
+    margin: 1.25rem 0;
+    font-family: var(--font-mono);
+    font-size: 0.82rem;
+    line-height: 1.7;
+  }
+  .demux-tree .dt-root { color: var(--text); font-weight: 600; }
+  .demux-tree .dt-branch { color: var(--accent); padding-left: 1.5rem; }
+  .demux-tree .dt-leaf { color: #15803d; padding-left: 3rem; }
+  .demux-tree .dt-drop { color: #b91c1c; padding-left: 3rem; font-style: italic; }
+  .demux-tree .dt-comment {
+    color: var(--text-faint);
+    font-family: var(--font-sans);
+    font-size: 0.78rem;
+  }
+
+  .protocol-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 1.25rem 0;
+    font-size: 0.9rem;
+  }
+  .protocol-table th, .protocol-table td {
+    text-align: left;
+    padding: 0.45rem 0.6rem;
+    border-bottom: 1px solid var(--border);
+    vertical-align: top;
+  }
+  .protocol-table th {
+    font-family: var(--font-sans);
+    font-size: 0.78rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--text-dim);
+  }
+  .protocol-table td code { color: var(--accent); }
+</style>
+</head>
+<body>
+<article class="lesson">
+
+  <header class="lesson-header">
+    <div class="lesson-eyebrow">Lesson 23 · Phase 2 · networking · the network layer</div>
+    <h1 class="lesson-title">IPv4 — Header, Checksum, Demux</h1>
+    <p class="lesson-subtitle">The layer that survives multi-hop journeys. Twenty bytes of header, one byte of protocol demux key, one byte of TTL, and a checksum algorithm written once here and reused by ICMP and UDP later. Build, validate, dispatch.</p>
+    <div class="lesson-meta">
+      <span><strong>Read time</strong> ~30 min</span>
+      <span><strong>Build time</strong> ~60–90 min</span>
+      <span><strong>Prereq</strong> <a href="6.03-arp.html">Lesson 22</a></span>
+    </div>
+  </header>
+
+  <div class="content">
+
+  <p class="lead">
+    ARP connected two address spaces on one wire. IPv4 is the layer
+    above — the one whose addresses survive the whole multi-hop
+    journey, the one that gets re-wrapped in a fresh Ethernet frame
+    at every router hop without being touched. This lesson builds the
+    IPv4 header parser and builder, plus the internet checksum
+    algorithm that protects it. Once these are in place, the layer
+    above (ICMP in Lesson 24, UDP in Lesson 25) has somewhere to
+    dispatch to.
+  </p>
+
+  <h2>The 20-byte IPv4 header</h2>
+
+  <p>
+    Fixed part is 20 bytes, no options, specified in RFC 791 (1981,
+    still current). Every multi-byte field is big-endian — the
+    Lesson 21 reflex continues. The header is small enough to memorize
+    and large enough to do real work:
+  </p>
+
+  <div class="byte-layout">
+    <div class="byte-layout-header">
+      <span class="byte-layout-name">IPv4 header — 20 bytes (no options)</span>
+      <span class="byte-layout-size">RFC 791 · all multi-byte fields big-endian</span>
+    </div>
+    <div class="byte-bar">
+      <div class="byte-field type-u8" style="--bytes: 1"
+           data-tip="ver | IHL · 0x45 · version=4, header length=5×4=20 B">
+        <span class="byte-field-name">ver/IHL</span>
+        <span class="byte-field-meta">u8 · packed</span>
+        <span class="byte-field-range">0x00</span>
+      </div>
+      <div class="byte-field type-u8" style="--bytes: 1"
+           data-tip="DSCP/ECN · 0x00 · type of service / congestion notification — unused for us">
+        <span class="byte-field-name">DSCP/ECN</span>
+        <span class="byte-field-meta">u8</span>
+        <span class="byte-field-range">0x01</span>
+      </div>
+      <div class="byte-field type-u16" style="--bytes: 2"
+           data-tip="total length · BE · entire IP packet: this header + payload">
+        <span class="byte-field-name">total len</span>
+        <span class="byte-field-meta">u16 BE</span>
+        <span class="byte-field-range">0x02–0x03</span>
+      </div>
+      <div class="byte-field type-u16" style="--bytes: 2"
+           data-tip="identification · groups fragments of one packet — unused with DF=1">
+        <span class="byte-field-name">id</span>
+        <span class="byte-field-meta">u16 BE</span>
+        <span class="byte-field-range">0x04–0x05</span>
+      </div>
+      <div class="byte-field type-u16" style="--bytes: 2"
+           data-tip="flags | frag_off · 0x4000 = DF (Don't Fragment); other bits we reject">
+        <span class="byte-field-name">flags/frag</span>
+        <span class="byte-field-meta">u16 BE</span>
+        <span class="byte-field-range">0x06–0x07</span>
+      </div>
+      <div class="byte-field type-u8" style="--bytes: 1"
+           data-tip="TTL · 64 outbound · decremented per router hop, dropped at 0">
+        <span class="byte-field-name">TTL</span>
+        <span class="byte-field-meta">u8</span>
+        <span class="byte-field-range">0x08</span>
+      </div>
+      <div class="byte-field type-u8" style="--bytes: 1"
+           data-tip="protocol · DEMUX KEY · 1=ICMP, 6=TCP, 17=UDP">
+        <span class="byte-field-name">protocol</span>
+        <span class="byte-field-meta">u8</span>
+        <span class="byte-field-range">0x09</span>
+      </div>
+      <div class="byte-field type-u16" style="--bytes: 2"
+           data-tip="header checksum · RFC 1071 over the 20-byte header (with this field treated as 0 during computation)">
+        <span class="byte-field-name">checksum</span>
+        <span class="byte-field-meta">u16 BE</span>
+        <span class="byte-field-range">0x0A–0x0B</span>
+      </div>
+      <div class="byte-field type-u32" style="--bytes: 4"
+           data-tip="src IP · CONSTANT end-to-end · 10.0.2.15 for outbound, gateway's IP for inbound">
+        <span class="byte-field-name">src IP</span>
+        <span class="byte-field-meta">[u8; 4]</span>
+        <span class="byte-field-range">0x0C–0x0F</span>
+      </div>
+      <div class="byte-field type-u32" style="--bytes: 4"
+           data-tip="dst IP · CONSTANT end-to-end · the address named in the letter, not on this hop's envelope">
+        <span class="byte-field-name">dst IP</span>
+        <span class="byte-field-meta">[u8; 4]</span>
+        <span class="byte-field-range">0x10–0x13</span>
+      </div>
+    </div>
+    <div class="field-reference">
+      <dl>
+        <dt>ver / IHL <span class="type-tag type-u8">u8 packed</span></dt>
+        <dd>
+          <p>
+            Two 4-bit fields in one byte. Version (4, always — this is
+            IPv4) and IHL (Internet Header Length) in 4-byte units.
+            <code>0x45</code> = version 4, header 5×4 = 20 bytes.
+            Options exist and would make IHL larger. This slice only
+            accepts the 20-byte base header.
+          </p>
+        </dd>
+        <dt>total length <span class="type-tag type-u16">u16 BE</span></dt>
+        <dd>
+          <p>
+            Everything from the IP header's first byte to the last
+            payload byte. Big-endian: bytes <code>00 22</code> read as
+            <code>0x0022</code> = 34 (20 IP + 8 UDP + 6 payload). The
+            ext2 <code>from_le_bytes</code> reflex gives 0x2200 =
+            8704 — silently wrong.
+          </p>
+        </dd>
+        <dt>id, flags, frag_off <span class="type-tag type-u16">u16 BE ×2</span></dt>
+        <dd>
+          <p>
+            Fragmentation machinery. The Identification field groups
+            fragments of one original packet; the Flags + Fragment
+            Offset field says "this is fragment N of packet X." We
+            set <code>DF=1</code> (Don't Fragment) on outbound and
+            reject any inbound packet with the More-Fragments flag or
+            a non-zero fragment offset. Slirp keeps our packets small,
+            and this slice only accepts complete packets.
+          </p>
+        </dd>
+        <dt>TTL <span class="type-tag type-u8">u8</span></dt>
+        <dd>
+          <p>
+            Time To Live — a hop budget. Every router that forwards
+            this packet decrements TTL by 1. If it hits zero, the
+            packet is dropped (and an ICMP Time Exceeded goes back to
+            the sender, in a full implementation). The reason TTL
+            exists: routing loops happen. Without a hop counter, a
+            packet caught in a loop (A→B→C→A→B→C→...) would circle
+            forever, consuming bandwidth. We set TTL to 64 outbound.
+          </p>
+        </dd>
+        <dt>protocol <span class="type-tag type-u8">u8</span></dt>
+        <dd>
+          <p>
+            <strong>The demux key for the network layer.</strong> One
+            byte that tells the receiving kernel which parser owns
+            the payload. <code>1</code> = ICMP (Lesson 24),
+            <code>6</code> = TCP (post-phase),
+            <code>17</code> = UDP (Lesson 25). This single byte is
+            how IPv4 stays agnostic about what rides on top of it.
+          </p>
+          <div class="example">0x11  →  17  →  UDP parser</div>
+        </dd>
+        <dt>checksum <span class="type-tag type-u16">u16 BE</span></dt>
+        <dd>
+          <p>
+            The Internet checksum (RFC 1071, covered below) over the
+            20-byte header. Verified on RX (sum should fold to
+            0xFFFF); computed and inserted on TX. If RX checksum
+            fails, the packet is corrupt — drop it. Same algorithm
+            reused by ICMP and UDP, so we implement it once.
+          </p>
+        </dd>
+        <dt>src IP / dst IP <span class="type-tag type-u32">[u8; 4] ×2</span></dt>
+        <dd>
+          <p>
+            The two addresses that stay constant end-to-end across
+            every hop. The Ethernet MAC addresses get rewritten at
+            every router. Source IP and destination IP stay stable
+            across the route. This is the letter-and-envelope analogy
+            from Lesson 19 made concrete:
+            src/dst IP are on the letter, src/dst MAC are on the
+            envelope, and only the envelope is replaced per hop.
+          </p>
+        </dd>
+      </dl>
+    </div>
+  </div>
+
+  <h2>The Internet checksum — RFC 1071</h2>
+
+  <p>
+    One algorithm, shared by IP, ICMP, UDP, and TCP. Written once as
+    a utility in this lesson, reused three times in the next three
+    lessons. The design is from 1988, when routers computed checksums
+    in software on slow CPUs, so the algorithm had to be cheap. It
+    is.
+  </p>
+
+  <p>
+    The recipe, in four moves:
+  </p>
+
+  <div class="checksum-walk">
+    <div class="cw-step"><span class="cw-num">1.</span><span class="cw-text">Treat the bytes as a sequence of 16-bit words, big-endian on the wire.</span></div>
+    <div class="cw-step"><span class="cw-num">2.</span><span class="cw-text">Sum all words, treating the 16-bit result as one's-complement (carries fold back).</span>
+      <span class="cw-comment">If the running sum exceeds 0xFFFF, add the carry (high 16 bits) back into the low 16 bits.</span>
+    </div>
+    <div class="cw-step"><span class="cw-num">3.</span><span class="cw-text">At the end, fold any final carry in.</span>
+      <span class="cw-comment">A long header can produce one final carry that didn't get folded during accumulation.</span>
+    </div>
+    <div class="cw-step"><span class="cw-num">4.</span><span class="cw-text">Invert the result (one's complement) to get the checksum.</span>
+      <span class="cw-comment">Write the inverted value into the checksum field.</span>
+    </div>
+  </div>
+
+  <p>
+    Worked example with the four bytes <code>00 01 f2 03</code>:
+  </p>
+
+  <div class="checksum-walk">
+    <div class="cw-step"><span class="cw-num">1.</span><span class="cw-text">Words: <code>0x0001</code>, <code>0xf203</code></span></div>
+    <div class="cw-step"><span class="cw-num">2.</span><span class="cw-text">Sum: <code>0x0001 + 0xf203 = 0xf204</code></span></div>
+    <div class="cw-step"><span class="cw-num">3.</span><span class="cw-text">No carry to fold.</span></div>
+    <div class="cw-step"><span class="cw-num">4.</span><span class="cw-text">Invert: <code>!0xf204 = 0x0dfb</code></span></div>
+    <div class="cw-step"><span class="cw-num">=</span><span class="cw-result">checksum = 0x0dfb</span></div>
+  </div>
+
+  <p>
+    Two properties make this algorithm clever. <strong>Verify by
+    re-summing:</strong> if you sum the header (including the
+    checksum field) the same way, you get <code>0xFFFF</code> — any
+    bit flip in transit makes the sum something else. So RX
+    validation is just "sum and check for 0xFFFF after inversion."
+    <strong>Endian-independent if you sum consistently:</strong> the
+    bytes <code>00 01</code> and <code>01 00</code> both sum to the
+    same value if you treat them as 16-bit words the same way every
+    time. This is why the algorithm could be deployed on mixed-endian
+    1980s hardware without per-machine fixes.
+  </p>
+
+  <p>
+    Three things to remember when implementing:
+  </p>
+
+  <ul>
+    <li>
+      When computing the checksum to <em>insert</em>, treat the
+      checksum field as zero. The header being checksummed is still
+      waiting for its checksum bytes.
+    </li>
+    <li>
+      When verifying, sum the header including the existing checksum.
+      The result inverts to zero. Any other result means the header is
+      corrupt.
+    </li>
+    <li>
+      Odd byte length is allowed for some payloads (UDP, ICMP) — pad
+      the last byte with zero to make a final 16-bit word.
+    </li>
+  </ul>
+
+  <p>
+    One utility function covers IP, ICMP, UDP, TCP, and any future
+    protocol that uses this checksum (almost all of them). It takes
+    <code>&amp;[u8]</code> and returns <code>u16</code>. Lesson 24's
+    ICMP and Lesson 25's UDP both call it with their respective
+    header bytes plus (for UDP) the pseudo-header.
+  </p>
+
+  <h2>The protocol demux tree</h2>
+
+  <p>
+    On the receive side, mini-os now has a real poll-and-dispatch
+    path. <code>NetDevice::poll_rx()</code> receives one Ethernet
+    frame, sends ARP frames to the ARP handler, sends EtherType
+    <code>0x0800</code> frames to the IPv4 handler, and returns a
+    small <code>NetRxEvent</code>. IPv4's protocol byte then names the
+    next payload owner.
+  </p>
+
+  <div class="demux-tree">
+    <div class="dt-root">Ethernet frame arrives, recv_frame returns it</div>
+    <div class="dt-branch">↳ EtherType == 0x0800 (IPv4)? → IPv4 parser</div>
+    <div class="dt-leaf">↳ protocol == 1 (ICMP)? → icmp::receive (L24)</div>
+    <div class="dt-leaf">↳ protocol == 17 (UDP)? → udp::receive (L25)</div>
+    <div class="dt-drop">↳ protocol == 6 (TCP)? → drop (post-phase)</div>
+    <div class="dt-drop">↳ anything else? → drop with log line</div>
+    <div class="dt-branch">↳ EtherType == 0x0806 (ARP)? → arp::receive (L22) ✓ done</div>
+    <div class="dt-drop">↳ anything else? → drop</div>
+  </div>
+
+  <p>
+    One print line per dispatch keeps the kernel's network log
+    readable:
+    <code>[ip] rx proto=17 src=10.0.2.2 dst=10.0.2.15 len=43</code>.
+    The host-forward test sends UDP to <code>127.0.0.1:5555</code>;
+    QEMU user networking forwards it to guest UDP port 5555; mini-os
+    receives the resulting IPv4 frame through virtio-net.
+  </p>
+
+  <h2>The protocol numbers we care about</h2>
+
+  <p>
+    The full registry is at
+    <a href="https://www.iana.org/assignments/protocol-numbers/protocol-numbers.xhtml">IANA</a>
+    — about 150 entries. Three matter for mini-os:
+  </p>
+
+  <table class="protocol-table">
+    <thead>
+      <tr><th>Number</th><th>Protocol</th><th>Used in</th><th>Header shape</th></tr>
+    </thead>
+    <tbody>
+      <tr><td><code>1</code></td><td>ICMP</td><td>Lesson 24 (keystone)</td><td>type (1) + code (1) + checksum (2) + rest</td></tr>
+      <tr><td><code>6</code></td><td>TCP</td><td>post-phase</td><td>20 bytes minimum, complex state</td></tr>
+      <tr><td><code>17</code></td><td>UDP</td><td>Lesson 25 (objective)</td><td>8 bytes, no options</td></tr>
+    </tbody>
+  </table>
+
+  <p>
+    Anything else gets dropped with a log line. Mini-os implements the
+    IP protocols this networking phase needs.
+  </p>
+
+  <h2>Routing — which MAC to ARP for</h2>
+
+  <p>
+    Lesson 22 covered how ARP turns an IP address into a MAC address
+    on the local wire. There's a decision before that lookup: is the
+    destination IP even on our wire, or does the frame need to go to
+    the gateway router first? That decision is the routing step. It
+    picks which IP we hand to ARP — the destination itself, or the
+    gateway's IP.
+  </p>
+
+  <p>
+    The test is one bitwise AND. We compute the network prefix of our
+    own IP and the network prefix of the destination IP using the same
+    mask. If the prefixes match, the destination is on our local
+    network — we can ARP for the destination directly. If they differ,
+    the destination is somewhere else on the internet — we ARP for the
+    gateway, and the gateway takes the packet from there.
+  </p>
+
+  <pre><code>fn next_hop_for(dst_ip: Ipv4Addr) -> Ipv4Addr {
+    if dst_ip & NETMASK == OUR_IP & NETMASK {
+        dst_ip                  // local network — ARP for the host
+    } else {
+        GATEWAY_IP              // somewhere else — ARP for the gateway
+    }
+}</code></pre>
+
+  <p>
+    Slirp hands mini-os three constants at boot: <code>OUR_IP =
+    10.0.2.15</code>, <code>GATEWAY_IP = 10.0.2.2</code>,
+    <code>NETMASK = 255.255.255.0</code>. The mask
+    <code>255.255.255.0</code> in binary is 24 leading ones followed
+    by 8 zeros — keep the top three octets, ignore the bottom one.
+    So <code>10.0.2.15 &amp; mask = 10.0.2.0</code> and
+    <code>10.0.2.2 &amp; mask = 10.0.2.0</code> — same prefix, local.
+    A destination like <code>142.250.190.78</code> has a different
+    top three octets, different prefix, gateway. One if-statement,
+    no lookup table.
+  </p>
+
+  <p>
+    The compact notation for "first N bits are network, rest are
+    host" is CIDR (Classless Inter-Domain Routing) — written
+    <code>address/N</code>. Slirp's network is
+    <code>10.0.2.0/24</code>: 24 network bits, 8 host bits, 256
+    addresses (254 usable). The <code>/N</code> prefix length and the
+    dotted-quad mask are two spellings of the same bitmask.
+  </p>
+
+  <table class="protocol-table">
+    <thead>
+      <tr><th>CIDR</th><th>Netmask</th><th>Host bits</th><th>Usable hosts</th><th>Where you see it</th></tr>
+    </thead>
+    <tbody>
+      <tr><td><code>/8</code></td><td><code>255.0.0.0</code></td><td>24</td><td>16,777,214</td><td>Legacy class A blocks</td></tr>
+      <tr><td><code>/16</code></td><td><code>255.255.0.0</code></td><td>16</td><td>65,534</td><td>Large enterprise, cloud VPC</td></tr>
+      <tr><td><code>/24</code></td><td><code>255.255.255.0</code></td><td>8</td><td>254</td><td>Home LAN, slirp, small office</td></tr>
+      <tr><td><code>/25</code></td><td><code>255.255.255.128</code></td><td>7</td><td>126</td><td>Two subnets inside a /24</td></tr>
+      <tr><td><code>/26</code></td><td><code>255.255.255.192</code></td><td>6</td><td>62</td><td>Four subnets inside a /24</td></tr>
+      <tr><td><code>/28</code></td><td><code>255.255.255.240</code></td><td>4</td><td>14</td><td>Point-to-point links, DMZ slices</td></tr>
+      <tr><td><code>/30</code></td><td><code>255.255.255.252</code></td><td>2</td><td>2</td><td>Router-to-router links</td></tr>
+      <tr><td><code>/32</code></td><td><code>255.255.255.255</code></td><td>0</td><td>1</td><td>Single host — firewall rules, loopback</td></tr>
+    </tbody>
+  </table>
+
+  <p>
+    The mask itself comes from somewhere. On a real LAN, the host
+    learns it from DHCP (Dynamic Host Configuration Protocol) at the
+    same time it learns its own IP — both arrive in the same lease.
+    On a statically-configured server, an operator wrote it into a
+    config file. On mini-os under slirp, the mask is hardcoded
+    alongside <code>OUR_IP</code> and <code>GATEWAY_IP</code>, because
+    slirp's network layout is fixed by QEMU and never changes.
+  </p>
+
+  <p>
+    One network, one mask, one gateway. Mini-os's routing table is a
+    single row. Linux on a real machine has many rows —
+    <code>ip route</code> shows them, sorted by prefix length so the
+    most specific match wins. The kernel data structure is the
+    forwarding information base (FIB), implemented in
+    <code>net/ipv4/fib_trie.c</code> as a compressed trie for fast
+    longest-prefix lookup. Every entry names an output interface, a
+    next-hop gateway (or "on-link" for direct delivery), and a
+    prefix. The decision algorithm — longest matching prefix — is the
+    generalization of mini-os's single if-statement to many
+    overlapping networks.
+  </p>
+
+  <h2>TX and RX — the two paths</h2>
+
+  <div class="build-flow">
+    <div class="bf-col tx">
+      <div class="bf-title">TX — send IP packet to dst IP</div>
+      <div class="bf-step tx"><span class="bf-num">1</span><span>Build Ipv4Header: ver/IHL=0x45, total_len=20+payload_len, id=0, flags=0x4000 (DF), ttl=64, protocol=N, src=OUR_IP, dst=target_ip, checksum=0</span></div>
+      <div class="bf-step tx"><span class="bf-num">2</span><span>Compute internet_checksum over the 20-byte header, write it into the checksum field</span></div>
+      <div class="bf-step tx"><span class="bf-num">3</span><span>Concatenate: Ipv4Header bytes + payload</span></div>
+      <div class="bf-step tx"><span class="bf-num">4</span><span>Call <code>NetDevice::resolve_arp(next_hop_ip)</code> — returns the next-hop MAC from Lesson 22's cache</span></div>
+      <div class="bf-step tx"><span class="bf-num">5</span><span>Build Ethernet header (dst=resolved MAC, src=OUR_MAC, ethertype=0x0800), wrap IP packet</span></div>
+      <div class="bf-step tx"><span class="bf-num">6</span><span>Call <code>net::send_frame(eth_frame)</code> from Lesson 21</span></div>
+      <div class="bf-note">
+        The two-layer assembly mirrors the two-layer dispatch on RX.
+        Each layer prepends its header; the receiving side will
+        strip them in reverse order.
+      </div>
+    </div>
+    <div class="bf-col rx">
+      <div class="bf-title">RX — IPv4 packet arrived</div>
+      <div class="bf-step rx"><span class="bf-num">1</span><span>Ethernet parser already stripped its 14-byte header and dispatched on EtherType 0x0800 to us</span></div>
+      <div class="bf-step rx"><span class="bf-num">2</span><span>Parse Ipv4Header from the next 20 bytes</span></div>
+      <div class="bf-step rx"><span class="bf-num">3</span><span>Validate: ver == 4, IHL == 5, dst_ip == OUR_IP, total_len sane, checksum folds to 0xFFFF</span></div>
+      <div class="bf-step rx"><span class="bf-num">4</span><span>Reject fragments: if MF flag set or frag_off != 0, drop with log</span></div>
+      <div class="bf-step rx"><span class="bf-num">5</span><span>Dispatch on protocol byte: 1 → ICMP, 17 → UDP, else drop with log</span></div>
+      <div class="bf-note">
+        Every layer above Ethernet is opt-in. Unknown protocols get a
+        small log line and the frame is ignored. The print line per
+        dispatch is what makes the network stack debuggable when L24
+        or L25 misbehaves.
+      </div>
+    </div>
+  </div>
+
+  <p>
+    Two validation steps deserve emphasis. <strong>dst_ip ==
+    OUR_IP:</strong> the packet might have been broadcast at L2 and
+    therefore addressed to us by MAC, but carry a different IP
+    destination. Drop it — IP delivery is for us specifically, not
+    "everyone who heard the broadcast." <strong>Checksum folds to
+    0xFFFF:</strong> any other folded value means the header is
+    corrupt and later parsing would be guesswork.
+  </p>
+
+  <h2>Fragmentation — parse, reject</h2>
+
+  <p>
+    RFC 791 lets routers split a packet too large for the next link's
+    MTU into fragments. Each fragment is a separate IP packet with
+    the same Identification field, the More-Fragments flag set on
+    all but the last, and a non-zero Fragment Offset naming where in
+    the original this fragment belongs. The receiver collects all
+    fragments and reassembles before handing to the layer above.
+  </p>
+
+  <p>
+    Reassembly stays outside this slice for three reasons. First,
+    slirp keeps our packets small enough for the link MTU. Second,
+    reassembly needs timers for lost fragments, ordering by offset, a
+    buffer pool for partial packets, and reassembly-attack defenses.
+    Third, modern Path MTU Discovery keeps fragments rare on the
+    public internet: senders learn the smallest MTU on the path and
+    size packets before sending. This lesson sets DF=1 on outbound
+    packets and rejects inbound packets with MF set or a non-zero
+    fragment offset.
+  </p>
+
+  <h2>The build — what landed</h2>
+
+  <div class="recipe">
+    <div class="recipe-step">
+      <div class="recipe-num">1</div>
+      <div class="recipe-body">
+        <strong>Internet checksum utility.</strong>
+        New file: <code>src/net/checksum.rs</code>. Function
+        <code>pub fn internet_checksum(data: &amp;[u8]) -&gt; u16</code>
+        implementing RFC 1071: sum 16-bit BE words with carry
+        folding, then invert. The boot proof checks the four-byte
+        example above:
+        <code>[ip] checksum example 00 01 f2 03 -&gt; 0x0DFB</code>.
+      </div>
+    </div>
+    <div class="recipe-step">
+      <div class="recipe-num">2</div>
+      <div class="recipe-body">
+        <strong>Ipv4Header parse and validate.</strong>
+        New file: <code>src/net/ipv4.rs</code>. The parser accepts a
+        full IP packet, checks version 4, IHL 5, sane total length,
+        checksum validity, and the fragment flags. A valid header
+        returns an <code>Ipv4Header</code> with total length, TTL,
+        protocol, checksum, source IP, and destination IP fields.
+      </div>
+    </div>
+    <div class="recipe-step">
+      <div class="recipe-num">3</div>
+      <div class="recipe-body">
+        <strong>Ipv4Header build.</strong>
+        <code>Ipv4Header::build(protocol, src_ip, dst_ip, payload_len)</code>
+        fills the 20-byte header with <code>0x45</code>, DF set,
+        TTL 64, protocol number, source/destination IPs, and a
+        computed checksum. The boot proof builds a UDP-marked packet,
+        parses it back, and prints:
+        <code>[ip] parsed header proto=17 src=10.0.2.15 dst=10.0.2.2 len=24 checksum ok</code>.
+      </div>
+    </div>
+    <div class="recipe-step">
+      <div class="recipe-num">4</div>
+      <div class="recipe-body">
+        <strong>RX dispatch + user-triggered TX integration.</strong>
+        <code>NetDevice::poll_rx</code> is the central receive
+        dispatcher. It recycles one RX buffer, handles ARP requests or
+        replies, parses IPv4 frames, and returns <code>NetRxEvent</code>.
+        <code>NetDevice::send_ipv4_packet</code> builds the IPv4
+        header, asks ARP for the next-hop MAC, wraps the packet in an
+        Ethernet frame, and calls <code>send_frame</code>. The
+        <code>/net_smoke.elf</code> user program asks the kernel to run
+        this path through <code>SYS_NET_TX_TEST</code>. The QEMU TX test
+        locks this proof:
+        <code>[ip] tx proto=17 src=10.0.2.15 dst=10.0.2.2 len=24 next-hop=10.0.2.2 (52:55:0a:00:02:02)</code>.
+        For RX, the same user program calls <code>SYS_NET_RX_WAIT</code>,
+        the shell test sends UDP from the host to <code>127.0.0.1:5555</code>,
+        and QEMU forwards it into the guest. The expected proof line is:
+        <code>[ip] *** user-triggered host-forwarded UDP packet received through QEMU: src=10.0.2.2 dst=10.0.2.15 len=45 ***</code>.
+      </div>
+    </div>
+  </div>
+
+  <div class="callout">
+    <div class="callout-title">Lesson 23 scope</div>
+    <p style="margin:0;">
+      This slice covers the base IPv4 header, checksum verification,
+      fragment rejection, EtherType dispatch, user-triggered ARP-backed
+      TX, and a user-triggered host-to-guest IPv4 RX proof through QEMU
+      user networking.
+      ICMP arrives in Lesson 24. UDP arrives in Lesson 25. IP options,
+      source routing, IGMP, and fragment reassembly stay outside this
+      networking phase.
+    </p>
+  </div>
+
+  <h2>Primary source</h2>
+
+  <p>
+    <a href="https://www.rfc-editor.org/rfc/rfc791">RFC 791 —
+    "Internet Protocol DARPA Internet Program Protocol Specification,"
+    Postel, 1981</a>. The IP specification. Dense but complete;
+    sections 3.1 (header format) and 3.2 (fragmentation) are what
+    this lesson implements. For the checksum,
+    <a href="https://www.rfc-editor.org/rfc/rfc1071">RFC 1071 —
+    "Computing the Internet Checksum," 1988</a> — short, with worked
+    examples and C code. For Linux's parallels:
+    <a href="https://elixir.bootlin.com/linux/latest/source/net/ipv4/ip_input.c">net/ipv4/ip_input.c</a>
+    — <code>ip_rcv</code> is our receive path's bigger sibling;
+    <code>net/ipv4/ip_output.c</code> — TX side;
+    <code>lib/checksum.c</code> — the same RFC 1071 algorithm with
+    architecture-specific optimizations.
+  </p>
+
+  <div class="probe">
+    <div class="probe-title">Probe — check the model before you build</div>
+    <p>
+      A router receives an IPv4 packet with TTL = 1 and decrements it
+      to 0 before forwarding. <strong>What does the router do with
+      the packet?</strong> Why does the protocol specify that
+      behavior, and what real-world failure mode does it prevent?
+      Bonus: would the answer change if the packet's source IP was
+      forged (spoofed), and how would the ICMP Time Exceeded reply
+      behave in that case?
+    </p>
+  </div>
+
+  <p>
+    Say your answer back to me, or push on whatever didn't land —
+    the checksum algorithm's verify-by-re-summing property, the
+    protocol field's role as demux key, the RX validation order, or
+    why we set DF=1. I'm your teacher for this phase; the probe is
+    where the conversation starts.
+  </p>
+
+  </div>
+
+  <footer class="lesson-footer">
+    <div class="footer-block">
+      <h4>What this unlocks</h4>
+      <p style="margin:0;">
+        Lesson 24 plugs ICMP into the protocol=1 dispatch slot. One
+        echo request, one echo reply, and the network stack has its
+        keystone — ping the gateway and see the reply come back
+        through the full IPv4 → ARP → Ethernet stack.
+      </p>
+    </div>
+
+    <div class="footer-block">
+      <h4>Roadmap</h4>
+      <p style="margin:0;">
+        This is lesson 5 of 8 in
+        <a href="roadmap-networking.html">the Phase 2 networking roadmap</a> —
+        keystone: ping the gateway (L24, next); objective: user-space
+        UDP echo server (L26).
+      </p>
+    </div>
+
+    <div class="footer-block">
+      <h4>Primary source</h4>
+      <p style="margin:0;">
+        <a href="https://www.rfc-editor.org/rfc/rfc791">RFC 791 — IPv4</a> ·
+        <a href="https://www.rfc-editor.org/rfc/rfc1071">RFC 1071 — Internet Checksum</a> ·
+        <a href="https://www.iana.org/assignments/protocol-numbers/protocol-numbers.xhtml">IANA Protocol Numbers</a> ·
+        <a href="https://elixir.bootlin.com/linux/latest/source/net/ipv4/ip_input.c">Linux net/ipv4/ip_input.c</a>
+      </p>
+    </div>
+
+    <div class="footer-block">
+      <h4>Code tour</h4>
+      <p style="margin:0;">
+        Read the companion walkthrough:
+        <a href="../tours/tour-6.04-ipv4.html">tour-6.04-ipv4.html</a>.
+        It follows the checksum helper, IPv4 header parser/builder,
+        TX wrapper, RX dispatcher, host-forward RX proof, and QEMU
+        tests.
+      </p>
+    </div>
+
+    <nav class="lesson-nav">
+      <a href="6.03-arp.html">← L22 ARP</a>
+      <a href="roadmap-networking.html">Phase 2 roadmap ↑</a>
+      <a href="../tours/tour-6.04-ipv4.html">Code tour →</a>
+    </nav>
+  </footer>
+
+</article>
+</body>
+</html>

@@ -1,0 +1,788 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Lesson 4 — Shape of the Storage Stack</title>
+<link rel="stylesheet" href="../assets/lesson.css">
+<script src="../assets/code-highlight.js" defer></script>
+<style>
+  .stack-layer {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 0.75rem 1rem;
+    margin: 0.4rem 0;
+    font-family: var(--font-mono);
+    font-size: 0.88rem;
+  }
+  .stack-layer .layer-name {
+    color: var(--accent);
+    font-weight: 600;
+    margin-right: 0.6rem;
+  }
+  .stack-layer .layer-tag {
+    font-family: var(--font-sans);
+    font-size: 0.7rem;
+    background: var(--accent-soft);
+    color: var(--accent);
+    padding: 1px 6px;
+    border-radius: 3px;
+    margin-left: 0.5rem;
+    vertical-align: middle;
+  }
+  .stack-layer .layer-tag.done { background: #dcfce7; color: #15803d; }
+  .stack-layer .layer-tag.next { background: #fef3c7; color: var(--accent); }
+  .stack-layer .layer-tag.future { background: var(--surface-soft); color: var(--text-faint); }
+  .stack-arrow {
+    text-align: center;
+    color: var(--text-faint);
+    font-size: 0.9rem;
+    line-height: 1;
+    margin: 0.15rem 0;
+  }
+
+  /* Pipeline diagram for the read() journey */
+  .pipeline {
+    margin: 1.5rem 0;
+    font-family: var(--font-sans);
+  }
+  .pipe-stage {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--accent);
+    border-radius: 4px;
+    position: relative;
+  }
+  .pipe-stage.pipe-user {
+    background: #dcfce7;
+    border-left-color: #15803d;
+  }
+  .pipe-stage.pipe-user .pipe-tag { color: #15803d; }
+  .pipe-stage.pipe-hw {
+    background: var(--surface-soft);
+    border-left-color: var(--text-faint);
+  }
+  .pipe-stage.pipe-hw .pipe-tag { color: var(--text-dim); }
+  .pipe-stage.pipe-disk {
+    background: #fef3c7;
+    border-left-color: var(--accent);
+  }
+  .pipe-stage.pipe-disk .pipe-action { font-style: italic; }
+
+  .pipe-stage > summary {
+    display: grid;
+    grid-template-columns: 150px 1fr;
+    gap: 1rem;
+    align-items: center;
+    padding: 0.5rem 2.2rem 0.5rem 0.9rem;
+    cursor: pointer;
+    list-style: none;
+    position: relative;
+  }
+  .pipe-stage > summary::-webkit-details-marker { display: none; }
+  .pipe-stage > summary::after {
+    content: "▸";
+    position: absolute;
+    right: 0.9rem;
+    top: 50%;
+    transform: translateY(-50%);
+    color: var(--text-faint);
+    font-size: 0.85rem;
+    transition: transform 0.15s ease;
+  }
+  .pipe-stage[open] > summary::after {
+    transform: translateY(-50%) rotate(90deg);
+  }
+  .pipe-stage[open] > summary {
+    border-bottom: 1px dashed var(--border);
+  }
+
+  .pipe-detail {
+    padding: 0.7rem 0.9rem 0.8rem;
+    font-family: var(--font-serif);
+  }
+  .pipe-detail p {
+    margin: 0 0 0.6rem;
+    font-size: 0.9rem;
+    line-height: 1.55;
+    color: var(--text);
+  }
+  .pipe-detail p:last-child { margin-bottom: 0; }
+  .pipe-detail strong { color: var(--accent); }
+
+  .pipe-tag {
+    font-family: var(--font-mono);
+    font-size: 0.78rem;
+    font-weight: 600;
+    color: var(--accent);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+  .pipe-action {
+    font-family: var(--font-mono);
+    font-size: 0.85rem;
+    color: var(--text);
+  }
+  .pipe-miss {
+    display: inline-block;
+    background: #fca5a5;
+    color: #7f1d1d;
+    padding: 1px 6px;
+    border-radius: 3px;
+    font-size: 0.72rem;
+    font-weight: 700;
+    margin-left: 0.4rem;
+    font-family: var(--font-sans);
+  }
+  .pipe-down {
+    display: grid;
+    grid-template-columns: 150px 1fr;
+    gap: 1rem;
+    align-items: center;
+    padding: 0.3rem 0.9rem 0.3rem 0;
+    font-family: var(--font-sans);
+  }
+  .pipe-arrow {
+    text-align: center;
+    color: var(--accent);
+    font-size: 1.1rem;
+    font-weight: bold;
+    line-height: 1;
+  }
+  .pipe-label {
+    font-size: 0.78rem;
+    color: var(--text-dim);
+    font-style: italic;
+  }
+  .pipe-back {
+    display: grid;
+    grid-template-columns: 150px 1fr;
+    gap: 1rem;
+    align-items: start;
+    margin-top: 0.6rem;
+    padding: 0.6rem 0.9rem;
+    background: rgba(255,255,255,0.4);
+    border: 1px dashed var(--border-bright);
+    border-radius: 4px;
+  }
+  .pipe-back-arrow {
+    text-align: center;
+    color: #15803d;
+    font-size: 1.4rem;
+    font-weight: bold;
+    line-height: 1;
+  }
+  .pipe-back-label {
+    font-size: 0.82rem;
+    color: var(--text);
+    font-style: italic;
+    line-height: 1.5;
+  }
+
+  @media (max-width: 640px) {
+    .pipe-stage > summary, .pipe-down, .pipe-back {
+      grid-template-columns: 1fr;
+      gap: 0.3rem;
+    }
+    .pipe-arrow, .pipe-back-arrow { text-align: left; }
+  }
+</style>
+</head>
+<body>
+<article class="lesson">
+
+  <header class="lesson-header">
+    <div class="lesson-eyebrow">Lesson 4 · M4 · 4.7 Disk path begins</div>
+    <h1 class="lesson-title">Shape of the Storage Stack</h1>
+    <p class="lesson-subtitle">Where disk, filesystem, block layer, and drivers sit — and what each one's job is.</p>
+    <div class="lesson-meta">
+      <span><strong>Read time</strong> ~15 min</span>
+      <span><strong>Build time</strong> many lessons</span>
+      <span><strong>Prereq</strong> <a href="5.03-inodes-and-paths.html">Lesson 3</a></span>
+    </div>
+  </header>
+
+  <div class="content">
+
+  <p class="lead">
+    The goal is concrete: plug a disk into QEMU, load an ELF (Executable and
+    Linkable Format) binary from it, execute it. The path from where we are
+    now (a memory-only VFS) to that goal is a series of <strong>layers</strong>.
+    Each layer has a Linux counterpart we can read alongside. This lesson
+    introduces the stack and what each layer is for, so the next several
+    lessons (PCI, virtio, block layer, ext2, ELF, exec) fit into a coherent
+    picture instead of feeling like disconnected topics.
+  </p>
+
+  <h2>The stack, top to bottom</h2>
+
+  <p>
+    When a user program calls <code>read(fd, buf, len)</code>, the request
+    flows downward through several layers, hits hardware, and the data flows
+    back up. Each layer has a specific job. Read the diagram top-down — the
+    top is what user code sees, the bottom is the physical disk.
+  </p>
+
+  <div class="diagram">
+    <div class="stack-layer">
+      <span class="layer-name">User program</span>
+      <code>read(fd, buf, len)</code>
+      <span class="layer-tag">syscall boundary</span>
+    </div>
+    <div class="stack-arrow">↓</div>
+    <div class="stack-layer">
+      <span class="layer-name">VFS</span>
+      dispatch by file operations table
+      <span class="layer-tag done">we have this</span>
+    </div>
+    <div class="stack-arrow">↓</div>
+    <div class="stack-layer">
+      <span class="layer-name">Page cache</span>
+      cache of recently-accessed file pages, indexed by (inode, offset)
+      <span class="layer-tag future">future</span>
+    </div>
+    <div class="stack-arrow">↓</div>
+    <div class="stack-layer">
+      <span class="layer-name">Filesystem</span>
+      interpret bytes as files (ext2 in our case)
+      <span class="layer-tag future">future — was Vec&lt;u8&gt;</span>
+    </div>
+    <div class="stack-arrow">↓</div>
+    <div class="stack-layer">
+      <span class="layer-name">Block layer</span>
+      <code>read_sector(n) -&gt; [u8; 512]</code>
+      <span class="layer-tag future">future</span>
+    </div>
+    <div class="stack-arrow">↓</div>
+    <div class="stack-layer">
+      <span class="layer-name">Device driver</span>
+      virtio-blk — talks to the device via virtqueues
+      <span class="layer-tag next">next</span>
+    </div>
+    <div class="stack-arrow">↓</div>
+    <div class="stack-layer">
+      <span class="layer-name">PCI bus</span>
+      how the kernel finds the device
+      <span class="layer-tag next">next</span>
+    </div>
+    <div class="stack-arrow">↓</div>
+    <div class="stack-layer">
+      <span class="layer-name">Hardware</span>
+      QEMU's emulated virtio-blk-pci disk
+      <span class="layer-tag done">attach via QEMU flag</span>
+    </div>
+    <div class="diagram-caption">
+      Each layer transforms the request into a more concrete form. VFS asks
+      for "the next 10 bytes of file 17." The filesystem translates that
+      into "block 42 from disk." The driver translates that into a
+      virtqueue read request. The hardware does the read.
+    </div>
+  </div>
+
+  <h2>What each layer is for</h2>
+
+  <h3>VFS — the generic interface</h3>
+  <p>
+    <strong>Already built (Lessons 1–3).</strong>
+    The user-facing <code>open</code> / <code>read</code> / <code>write</code>
+    / <code>close</code> API. Doesn't know or care where the bytes come
+    from — heap Vec, page cache, network. Dispatches through a file
+    operations table (<code>fops</code>) on each open file. Our mini-os VFS
+    has the same shape as Linux's; what we're missing is the dispatch —
+    our <code>sys_read</code> reaches directly into <code>data.lock()</code>
+    instead of calling <code>file-&gt;f_op-&gt;read()</code>.
+  </p>
+
+  <h3>Page cache — the in-RAM window over disk</h3>
+  <p>
+    <strong>Future.</strong>
+    In Linux, every inode has an <code>address_space</code>: a mapping
+    from page offset to a cached 4 KB page. When you read from a file, the
+    kernel checks the page cache first. On a hit, the read returns straight
+    from RAM (microseconds). On a miss, the kernel asks the filesystem to
+    fetch the page from disk (milliseconds — a thousand times slower).
+  </p>
+  <p>
+    For <strong>ramfs</strong> (Linux's in-memory filesystem), the page
+    cache <em>is</em> the storage — there's no disk behind it. Our mini-os
+    VFS is in this category: <code>Mutex&lt;Vec&lt;u8&gt;&gt;</code> on the
+    inode is essentially a ramfs page cache, just using the heap allocator
+    instead of frames. The Lesson 2 sidebar on memory layering covered
+    this.
+  </p>
+  <p>
+    For disk-backed filesystems like ext2, the page cache is a window: it
+    caches what's been read, and writes get flushed back to disk eventually
+    (writeback).
+  </p>
+
+  <h3>Filesystem — interpret bytes as files</h3>
+  <p>
+    <strong>Future — ext2.</strong>
+    The filesystem translates file-level operations ("read byte 1000 of
+    inode 17") into block-level operations ("read block 42, then block 43,
+    then take bytes 0-999 of the concatenation"). Each filesystem has its
+    own on-disk byte format: ext2's inodes are different from FAT's
+    directory entries, which are different from XFS's B-trees.
+  </p>
+  <p>
+    ext2 was chosen for mini-os because it's the simplest disk filesystem
+    Linux supports — no journal, no extents, no checksums. The format is
+    well-documented and stable. Linux's <code>fs/ext2/</code> directory
+    is small enough to actually read.
+  </p>
+
+  <h3>Block layer — block-number abstraction</h3>
+  <p>
+    <strong>Future.</strong>
+    Filesystems don't talk directly to device drivers — they go through
+    the block layer, which provides a uniform <code>read_sector(n)</code>
+    / <code>write_block(n)</code> interface. The block layer also handles
+    request queuing, merging, scheduling (deadline, BFQ, none), and
+    plugging. In Linux, requests become <code>struct bio</code> (block
+    I/O) objects that get submitted to the device's request queue.
+  </p>
+  <p>
+    For mini-os we'll start with the simplest possible block layer: a
+    function <code>read_sector(n: u64) -&gt; [u8; 512]</code> that calls
+    straight into the virtio-blk driver. No merging, no scheduling, no
+    async. Just a synchronous read.
+  </p>
+
+  <h3>Device driver — virtio-blk</h3>
+  <p>
+    <strong>Next.</strong>
+    The driver is the layer that knows how to talk to a specific piece of
+    hardware. For virtio-blk, that means: find the device on the PCI bus,
+    initialize it via the virtio PCI modern transport, set up virtqueues
+    (the shared-memory ring buffers used to submit requests), and submit
+    read/write requests.
+  </p>
+  <p>
+    Virtio is a special kind of device: it's designed specifically for
+    virtual machines. Real hardware doesn't speak virtio. The host (QEMU)
+    and the guest (our kernel) share memory, and the guest writes
+    "do this I/O" requests into a ring buffer. The host polls the ring,
+    does the actual I/O against the backing file (our <code>disk.img</code>),
+    and writes responses into another ring. Much faster than emulating a
+    real hardware disk controller.
+  </p>
+
+  <h3>PCI — how the kernel finds the device</h3>
+  <p>
+    <strong>Next.</strong>
+    Before we can talk to virtio-blk, we have to find it. On x86, PCI
+    (Peripheral Component Interconnect) is the bus that connects
+    peripherals to the CPU. Every PCI device has a 256-byte configuration
+    space that the CPU reaches via I/O ports <code>0xCF8</code> (address)
+    and <code>0xCFC</code> (data). Reading that space tells us the
+    device's vendor ID, device ID, class, and the addresses of its
+    memory-mapped registers (the BARs — Base Address Registers).
+  </p>
+  <p>
+    To enumerate the bus: walk every device number (0-31) on every bus
+    number (0-255), every function (0-7), read the vendor ID, and see
+    what's there. Vendor <code>0x1AF4</code> = Red Hat / QEMU (virtio's
+    owner). Within virtio, device IDs <code>0x1000</code>–<code>0x107F</code>
+    are the modern virtio devices; <code>0x1042</code>+ are non-transitional
+    (modern only). virtio-blk specifically is <code>0x1042</code> in the
+    modern non-transitional form.
+  </p>
+
+  <h3>Hardware — QEMU's virtio-blk-pci device</h3>
+  <p>
+    <strong>Already attachable.</strong>
+    QEMU exposes a virtio-blk device when launched with
+    <code>-drive file=disk.img,format=raw,if=none,id=drv0 -device virtio-blk-pci,drive=drv0</code>
+    (or the shorter <code>-drive file=disk.img,format=raw,if=virtio</code>).
+    From the kernel's perspective, this is a PCI device at some bus/device
+    position; we'll find it via PCI enumeration.
+  </p>
+
+  <h2>The read() journey</h2>
+
+  <p>
+    Trace a <code>read(fd, buf, 10)</code> on a disk-backed filesystem.
+    Request flows <strong>down</strong> the stack; bytes flow back
+    <strong>up</strong> the same path.
+  </p>
+
+  <div class="pipeline">
+    <details class="pipe-stage pipe-user">
+      <summary>
+        <span class="pipe-tag">User</span>
+        <span class="pipe-action"><code>read(fd, buf, 10)</code></span>
+      </summary>
+      <div class="pipe-detail">
+        <p>
+          The user program invokes the <code>read</code> system call. On
+          x86-64, arguments go in registers &mdash; <code>rax</code>=0 for
+          SYS_READ, <code>rdi</code>=fd, <code>rsi</code>=buf,
+          <code>rdx</code>=10 &mdash; and the <code>syscall</code>
+          instruction traps into the kernel. Same convention mini-os
+          already uses; Lesson 2 walked through the calling code.
+        </p>
+      </div>
+    </details>
+
+    <div class="pipe-down">
+      <span class="pipe-arrow">&darr;</span>
+      <span class="pipe-label">syscall enters kernel</span>
+    </div>
+
+    <details class="pipe-stage">
+      <summary>
+        <span class="pipe-tag">VFS</span>
+        <span class="pipe-action">look up <code>Arc&lt;Inode&gt;</code> from fd table</span>
+      </summary>
+      <div class="pipe-detail">
+        <p>
+          The integer <code>fd</code> (file descriptor &mdash; a small
+          integer like 3) is an index into the per-process file descriptor
+          table. Each slot holds an <code>Arc&lt;File&gt;</code>, which
+          holds an <code>Arc&lt;Inode&gt;</code> &mdash; the file itself.
+        </p>
+        <p>
+          This is exactly what mini-os's <code>sys_read</code> does today
+          (built in Lesson 2). Linux adds one more layer: the
+          <code>File</code> struct has a function-pointer table called
+          <strong>fops</strong> (file operations) so each filesystem can
+          plug in its own <code>read</code>, <code>write</code>,
+          <code>seek</code>, etc. Our VFS inlines that dispatch &mdash;
+          real disk-backed filesystems make it real.
+        </p>
+      </div>
+    </details>
+
+    <div class="pipe-down">
+      <span class="pipe-arrow">&darr;</span>
+      <span class="pipe-label">dispatch via fops</span>
+    </div>
+
+    <details class="pipe-stage">
+      <summary>
+        <span class="pipe-tag">Page cache</span>
+        <span class="pipe-action">check <code>(inode 17, page 0)</code> &nbsp; <span class="pipe-miss">MISS</span></span>
+      </summary>
+      <div class="pipe-detail">
+        <p>
+          The <strong>page cache</strong> is the kernel's cache of
+          recently-accessed 4 KB file chunks in RAM. Indexed by
+          <code>(inode, page_offset)</code> &mdash; so <em>inode 17, page
+          0</em> means "the first 4 KB of file 17."
+        </p>
+        <p>
+          <strong>Hit</strong>: bytes already in memory, return
+          immediately. <strong>Miss</strong>: have to fetch from disk.
+          mini-os doesn't have a page cache yet &mdash; our
+          <code>Inode::data: Mutex&lt;Vec&lt;u8&gt;&gt;</code> IS the
+          storage (like Linux's ramfs, where the cache is the storage).
+          When we add disk backing in Lesson 10, we'll need to introduce
+          the page cache as a separate layer that sits between the VFS
+          and the filesystem.
+        </p>
+      </div>
+    </details>
+
+    <div class="pipe-down">
+      <span class="pipe-arrow">&darr;</span>
+      <span class="pipe-label">ask fs which blocks hold bytes 0-9</span>
+    </div>
+
+    <details class="pipe-stage">
+      <summary>
+        <span class="pipe-tag">Filesystem (ext2)</span>
+        <span class="pipe-action">read inode 17, <code>i_block[0] = 42</code></span>
+      </summary>
+      <div class="pipe-detail">
+        <p>
+          ext2 stores file contents in fixed-size <strong>blocks</strong>
+          (typically 1 KB or 4 KB each) scattered across the disk. Each
+          inode has an <code>i_block</code> array of 15 entries:
+        </p>
+        <p>
+          &bull; Slots 0&ndash;11: <strong>direct</strong> pointers &mdash;
+          each points at one data block.<br>
+          &bull; Slot 12: <strong>single-indirect</strong> &mdash; points
+          at a block full of pointers.<br>
+          &bull; Slot 13: <strong>double-indirect</strong>. Slot 14:
+          <strong>triple-indirect</strong>.
+        </p>
+        <p>
+          For a 10-byte file, only <code>i_block[0]</code> is used; it
+          points at the block holding the bytes. Reading bytes 0&ndash;9
+          means: read block 42, take its first 10 bytes.
+        </p>
+      </div>
+    </details>
+
+    <div class="pipe-down">
+      <span class="pipe-arrow">&darr;</span>
+      <span class="pipe-label"><code>read_sector(42)</code></span>
+    </div>
+
+    <details class="pipe-stage">
+      <summary>
+        <span class="pipe-tag">Block layer</span>
+        <span class="pipe-action">passthrough (no merging yet)</span>
+      </summary>
+      <div class="pipe-detail">
+        <p>
+          Linux's block layer queues and merges requests across processes,
+          applies I/O schedulers (deadline, BFQ, none), and submits them
+          to device drivers as <code>struct bio</code> objects. It also
+          handles request plugging, batching, and priority.
+        </p>
+        <p>
+          <strong>mini-os will skip all of that.</strong> A synchronous
+          <code>read_sector(n) -&gt; [u8; 512]</code> function that calls
+          the driver directly. Good enough for a learning kernel; the
+          optimization machinery is a whole separate topic.
+        </p>
+      </div>
+    </details>
+
+    <div class="pipe-down">
+      <span class="pipe-arrow">&darr;</span>
+      <span class="pipe-label">submit read request, sector 84</span>
+    </div>
+
+    <details class="pipe-stage">
+      <summary>
+        <span class="pipe-tag">virtio-blk driver</span>
+        <span class="pipe-action">push to virtqueue, <strong>kick</strong> device</span>
+      </summary>
+      <div class="pipe-detail">
+        <p>
+          virtio uses shared-memory ring buffers called
+          <strong>virtqueues</strong>. Three regions:
+        </p>
+        <p>
+          &bull; <strong>Descriptor table</strong> &mdash; each entry
+          points at a kernel buffer (the data being read or written).<br>
+          &bull; <strong>Available ring</strong> &mdash; kernel appends
+          descriptor indices here to submit work.<br>
+          &bull; <strong>Used ring</strong> &mdash; device appends
+          descriptor indices here to signal completion.
+        </p>
+        <p>
+          To submit a read: write a descriptor pointing at your buffer,
+          add its index to the available ring, then <strong>kick</strong>
+          the device by writing to a specific MMIO register &mdash; the
+          "hey, there's work" notification. We'll build this in Lesson 6.
+        </p>
+      </div>
+    </details>
+
+    <div class="pipe-down">
+      <span class="pipe-arrow">&darr;</span>
+      <span class="pipe-label">via PCI MMIO write</span>
+    </div>
+
+    <details class="pipe-stage pipe-hw">
+      <summary>
+        <span class="pipe-tag">QEMU (hardware)</span>
+        <span class="pipe-action">reads sector 84 of <code>disk.img</code></span>
+      </summary>
+      <div class="pipe-detail">
+        <p>
+          QEMU is the host process running our VM. When it sees the kick,
+          it polls the virtqueue, reads the request from shared memory,
+          performs the actual file read against <code>disk.img</code> on
+          the host filesystem, writes the response bytes into the kernel's
+          buffer, and adds an entry to the used ring.
+        </p>
+        <p>
+          From QEMU's perspective: a file read on the host. From the guest
+          kernel's perspective: "the hardware delivered data." That
+          interface symmetry &mdash; kernel code can't tell virtual from
+          real hardware &mdash; is what makes virtio a clean abstraction.
+        </p>
+      </div>
+    </details>
+
+    <div class="pipe-down">
+      <span class="pipe-arrow">&darr;</span>
+      <span class="pipe-label">writes 512 bytes into kernel buffer, posts completion</span>
+    </div>
+
+    <details class="pipe-stage pipe-disk">
+      <summary>
+        <span class="pipe-tag">Disk bytes</span>
+        <span class="pipe-action">512 bytes in kernel buffer</span>
+      </summary>
+      <div class="pipe-detail">
+        <p>
+          One disk sector is 512 bytes. With 1 KB ext2 blocks, block N
+          maps to sector 2N &mdash; so block 42 = sector 84. After the
+          read completes, those 512 bytes sit in a kernel-allocated
+          buffer, ready to flow back up.
+        </p>
+        <p>
+          The journey reverses: block layer caches the page in the page
+          cache, ext2 extracts bytes 0&ndash;9, VFS copies them to the
+          user buffer, <code>read()</code> returns 10.
+        </p>
+      </div>
+    </details>
+
+    <div class="pipe-back">
+      <span class="pipe-back-arrow">&uarr;</span>
+      <span class="pipe-back-label">
+        bytes return up the same stack: driver &rarr; block layer (cache
+        page) &rarr; ext2 (extract bytes 0&ndash;9) &rarr; VFS
+        (<code>copy_to_user</code>) &rarr; user buffer
+      </span>
+    </div>
+  </div>
+
+  <p>
+    Each layer is replaceable. Swap ext2 for ext4 and the middle stages
+    change; swap virtio-blk for NVMe and the bottom stages change; the
+    user program at the top never notices. That replaceability is what
+    makes the layering worth the indirection cost.
+  </p>
+
+  <h2>What we'll build, in order</h2>
+
+  <p>
+    The next several lessons work upward from the hardware. We don't build
+    ext2 first and then figure out how to read its blocks — we build the
+    pipe that delivers bytes first.
+  </p>
+
+  <ol>
+    <li>
+      <strong>Attach the disk</strong> — QEMU launched with a raw disk
+      image. No kernel code; just infrastructure.
+    </li>
+    <li>
+      <strong>PCI bus enumeration</strong> — find every device on the PCI
+      bus. Print the list. Foundation for finding virtio-blk.
+    </li>
+    <li>
+      <strong>virtio device initialization</strong> — for the virtio-blk
+      device specifically, do the virtio PCI modern handshake. Probe,
+      negotiate features, enable.
+    </li>
+    <li>
+      <strong>Virtqueues</strong> — set up the request ring. Allocate
+      buffers. Implement <code>submit_request</code>.
+    </li>
+    <li>
+      <strong>First disk read</strong> — read sector 0, verify the
+      signature bytes match what we wrote. End-to-end proof that the
+      driver works.
+    </li>
+    <li>
+      <strong>Block layer</strong> — wrap the driver in
+      <code>read_sector(n)</code>. Trivial wrapper, but it's the API the
+      filesystem will use.
+    </li>
+    <li>
+      <strong>ext2 superblock</strong> — parse the on-disk superblock at
+      offset 1024. Validate the magic. Print filesystem parameters.
+    </li>
+    <li>
+      <strong>ext2 inodes and directories</strong> — find the root inode
+      (number 2 by ext2 convention), parse its directory entries.
+    </li>
+    <li>
+      <strong>Mount</strong> — wire ext2 into our existing VFS. Path
+      resolution now reads from disk instead of the lazy_static root.
+    </li>
+    <li>
+      <strong>ELF loader</strong> — parse an ELF file's program headers,
+      map its segments into a fresh address space.
+    </li>
+    <li>
+      <strong><code>exec()</code> syscall</strong> — load an ELF from the
+      filesystem and run it. The culmination: an externally-compiled
+      binary, written to the disk image, executed by the kernel.
+    </li>
+  </ol>
+
+  <p>
+    Each step unlocks the next. The disk read is the keystone — once
+    bytes flow from disk, every step after that is parsing and dispatch.
+  </p>
+
+  <h2>Primary source</h2>
+
+  <p>
+    The canonical reference for the storage stack is
+    <a href="https://www.kernel.org/doc/html/latest/filesystems/index.html">the
+    filesystems chapter of the Linux documentation</a>. For the block
+    layer specifically, <a href="https://www.kernel.org/doc/html/latest/block/index.html">the
+    block layer docs</a> cover <code>struct bio</code>, request queues,
+    and the I/O scheduler.
+  </p>
+
+  <p>
+    For virtio, the spec is
+    <a href="https://docs.oasis-open.org/virtio/virtio/v1.2/virtio-v1.2.html">OASIS
+    Virtual I/O Device (VIRTIO) version 1.2</a>. Heavy reading, but
+    authoritative. The
+    <a href="https://docs.oasis-open.org/virtio/virtio/v1.2/csd01/virtio-v1.2-csd01.html#x1-200002">block
+    device chapter</a> specifically defines the request format we'll be
+    sending.
+  </p>
+
+  <p>
+    For ext2, the canonical reference is the
+    <a href="https://www.nongnu.org/ext2-doc/ext2.html">Ext2 Disk Storage
+    Structure documentation</a>. Field-by-field, every structure laid out.
+  </p>
+
+  <p>
+    For PCI, the
+    <a href="https://wiki.osdev.org/PCI">OSDev wiki PCI page</a> is the
+    practical "how do I do this" reference. The official spec is large
+    and expensive; OSDev condenses what an OS implementor actually needs.
+  </p>
+
+  <div class="probe">
+    <div class="probe-title">Pause and think</div>
+    <p>
+      Linux supports dozens of disk-backed filesystems — ext2, ext4, XFS,
+      Btrfs, FAT, NTFS, F2FS — and dozens of disk drivers — virtio-blk,
+      NVMe, SATA, SCSI, USB mass storage. Pick a combination the Linux
+      kernel actually runs (say, ext4 on NVMe) and trace a
+      <code>read()</code> through the eight layers above. Which layers
+      change? Which stay identical?
+    </p>
+  </div>
+
+  </div>
+
+  <footer class="lesson-footer">
+    <div class="footer-block">
+      <h4>Up next</h4>
+      <p style="margin:0;">
+        Lesson 5 — PCI bus enumeration. The kernel side of "find every
+        device on the PCI bus, list vendor and device IDs, identify the
+        virtio-blk." Pure concept-to-code, no async, no interrupts.
+      </p>
+    </div>
+
+    <div class="footer-block">
+      <h4>If anything was unclear</h4>
+      <p style="margin:0;">
+        Ask. Especially the page-cache-vs-ramfs distinction — Lesson 2's
+        sidebar touched it but didn't fully resolve "if ramfs's page cache
+        IS the storage, what does a disk-backed filesystem's page cache
+        look like?" The answer matters for how we'll structure the ext2
+        layer.
+      </p>
+    </div>
+
+    <nav class="lesson-nav">
+      <a href="5.03-inodes-and-paths.html">← Lesson 3: Real Inodes and Paths</a>
+      <a href="../reference/vfs-glossary.html">Glossary ↑</a>
+    </nav>
+  </footer>
+
+</article>
+</body>
+</html>

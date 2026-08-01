@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Code Tour — Lesson 29 — Deferred Networking</title>
+  <link rel="stylesheet" href="../assets/lesson.css">
+  <link rel="icon" href="data:,">
+  <script src="../assets/code-highlight.js" defer></script>
+  <style>
+    .route { margin:1.3rem 0; padding:1rem 1.2rem; overflow:auto; border:1px solid var(--border); border-radius:8px; background:var(--surface); }
+    .route pre { margin:0; padding:0; background:transparent; color:var(--text); font-size:.8rem; }
+    .step { margin:2.8rem 0; padding-top:1rem; border-top:1px solid var(--border); }
+    .tag { display:inline-block; margin-right:.5rem; padding:2px 8px; border-radius:3px; color:var(--accent); background:var(--accent-soft); font:600 .78rem var(--font-mono); }
+    .files { color:var(--text-dim); font:.8rem var(--font-mono); }
+    .proof { padding:1rem 1.2rem; border-left:4px solid #15803d; background:#111827; color:#e5e7eb; font:.8rem/1.55 var(--font-mono); }
+  </style>
+</head>
+<body>
+<article class="lesson">
+  <header class="lesson-header">
+    <div class="lesson-eyebrow">Code tour · companion to <a href="../lessons/4.10-interrupt-driven-networking.html" style="color:inherit">Lesson 29</a></div>
+    <h1 class="lesson-title">One UDP echo through deferred virtio-net work</h1>
+    <p class="lesson-subtitle">Follow the tested route from a blocked ring-3 receiver to RX drain, socket wakeup, padded Ethernet TX, and the host reply.</p>
+    <div class="lesson-meta"><span><strong>Fixture</strong> <code>/udp_echo.elf</code></span><span><strong>Proof</strong> <code>tests/test_interrupt_driven_networking.sh</code></span><span><strong>Latency</strong> at most one 100&nbsp;Hz tick</span></div>
+  </header>
+  <div class="content">
+    <p class="lead">A UDP packet arrives at the virtual network card. The card signals the CPU. The CPU runs an interrupt handler &mdash; a small function that must finish in microseconds and cannot sleep. That handler does the minimum: increment a counter, mark a kernel task Ready, and tell the interrupt controller the interrupt is handled. The kernel task (<code>net-rx</code>) does the rest: acquire the device lock, drain the receive ring, parse each frame (Ethernet &rarr; IPv4 &rarr; UDP), and push the payload onto the socket&rsquo;s receive queue.</p>
+    <p>Work that takes a few instructions runs in the interrupt handler. Work that needs locks or could block runs in <code>net-rx</code>.</p>
+    <p>One wrinkle: QEMU does not reliably deliver virtio-net interrupts in this build, so a 100&nbsp;Hz timer also wakes <code>net-rx</code> each tick. An arriving packet is processed within 10&nbsp;ms whether the device&rsquo;s interrupt signal arrived or not. The programmed interrupt path stays in place for later diagnosis.</p>
+
+    <div class="route"><pre>host sendto(127.0.0.1:5555)
+  → QEMU hostfwd → virtio RX used ring
+  → timer or RX MSI-X wakes net-rx
+  → network_task drains → Ethernet → IPv4 → UDP
+  → socket::deliver queues bytes and wakes PID 0
+  → recvfrom returns sender → ring-3 sendto
+  → UDP → IPv4 → Ethernet + zero padding to 60 bytes
+  → virtio TX → QEMU slirp → host recvfrom</pre></div>
+
+    <section class="step"><h2><span class="tag">29.1</span>Queues receive dedicated MSI-X mappings</h2><p class="files"><a href="../src/virtio.rs">src/virtio.rs</a> · <a href="../src/interrupts.rs">src/interrupts.rs</a> · <a href="../src/apic.rs">src/apic.rs</a></p><p>virtio-net has a per-device MSI-X table. RX queue 0 uses entry 0 and vector <code>0x30</code>; TX queue 1 uses entry 1 and vector <code>0x31</code>. These vectors are numbered above the PIC range <code>0x20–0x2f</code>. Each naked wrapper pushes all general-purpose registers before calling its Rust inner handler.</p><pre data-lang="rust">pub const VIRTIO_NET_RX_VECTOR: u8 = 0x30;
+pub const VIRTIO_NET_TX_VECTOR: u8 = 0x31;
+
+extern "C" fn virtio_net_rx_inner() {
+    VIRTIO_NET_RX_INTERRUPTS.fetch_add(1, Ordering::Relaxed);
+    if let Some(pid) = crate::virtio::net_task_pid() { crate::task::wake(pid); }
+    crate::apic::end_of_interrupt();
+}</pre></section>
+
+    <section class="step"><h2><span class="tag">29.2</span>The deferred task blocks between drains</h2><p class="files"><a href="../src/main.rs">src/main.rs</a> · <a href="../src/virtio.rs">src/virtio.rs</a> · <a href="../src/task.rs">src/task.rs</a></p><p><code>main</code> installs the device, spawns <code>net-rx</code>, and publishes its PID. The task disables interrupts around “drain until empty, then Blocked,” closing the empty-ring/lost-wakeup race. <code>try_lock</code> returns immediately if NET_DEVICE is held, so the task does not wait with interrupts disabled.</p><pre data-lang="rust">loop {
+    without_interrupts(|| {
+        if try_with_net_device(|device| while device.poll_rx().is_some() {}).is_some() {
+            crate::task::block_current();
+        }
+    });
+    crate::task::yield_now();
+}</pre></section>
+
+    <section class="step"><h2><span class="tag">29.3</span>The timer wakes net-rx every tick in QEMU</h2><p class="files"><a href="../src/interrupts.rs">src/interrupts.rs</a></p><p>The current QEMU configuration accepts the queue-to-vector mappings but does not emit virtio-net MSI-X consistently. Every timer tick marks <code>net-rx</code> Ready. The scheduler runs a short empty drain when idle and processes an arriving frame within 10&nbsp;ms at 100&nbsp;Hz. Packet parsing remains outside the timer ISR.</p><pre data-lang="rust">if let Some(pid) = crate::virtio::net_task_pid() {
+    crate::task::wake(pid);
+}</pre></section>
+
+    <section class="step"><h2><span class="tag">29.4</span>Delivery crosses from driver state to socket state</h2><p class="files"><a href="../src/virtio.rs">src/virtio.rs</a> · <a href="../src/net/socket.rs">src/net/socket.rs</a></p><p><code>poll_rx</code> recycles the descriptor after copying bounded packet data. The dispatcher validates Ethernet, IPv4, and UDP, then calls <code>socket::deliver</code>. <code>socket::deliver</code> pushes the payload onto the socket receive queue, reads the receiver PID, releases the socket lock, and calls <code>task::wake(pid)</code>.</p><pre data-lang="rust">crate::net::socket::deliver(
+    udp_packet.header.dst_port,
+    Endpoint { ip: udp_packet.ip_header.src_ip, port: udp_packet.header.src_port },
+    udp_packet.payload(),
+);</pre></section>
+
+    <section class="step"><h2><span class="tag">29.5</span>Blocking receive registers the waiter and blocks the task under one lock</h2><p class="files"><a href="../src/syscall.rs">src/syscall.rs</a> · <a href="../src/task.rs">src/task.rs</a></p><p><code>block_current_if</code> passes the current PID to the closure, which calls <code>socket::register_waiter_if_empty</code>. If the closure returns true, <code>block_current_if</code> marks the scheduler entry Blocked under the same lock. Interrupts stay disabled through the <code>yield_now</code> call, so a timer cannot preempt the syscall between the waiter registration and the context switch.</p><pre data-lang="rust">interrupts::disable();
+let should_block = task::block_current_if(|pid| socket.register_waiter_if_empty(pid));
+if should_block { task::yield_now(); } else { interrupts::enable(); }</pre></section>
+
+    <section class="step"><h2><span class="tag">29.6</span>Ethernet padding makes short TX buffers valid</h2><p class="files"><a href="../src/virtio.rs">src/virtio.rs</a></p><p>The first diagnostic payload produced 14 Ethernet + 20 IPv4 + 8 UDP + 16 data = 58 bytes. The TX descriptor length is set to at least 64 bytes so QEMU slirp accepts the frame. The TX frame buffer is already zero-filled, so extending the descriptor length appends zero bytes after the UDP packet without changing the IPv4 total-length or UDP length fields.</p><pre data-lang="rust">const ETHERNET_MIN_TX_BUFFER: usize = 64;
+let tx_len = core::cmp::max(eth_frame.len(), ETHERNET_MIN_TX_BUFFER);
+tx_queue.build_tx_chain(header_phys, 12, frame_phys, tx_len as u32);</pre><details class="question"><summary>Why does UDP checksum ignore the two padding bytes?</summary><p>The IPv4 total-length and UDP length fields end before Ethernet padding. Receivers use those protocol lengths and discard bytes that remain in the Ethernet payload.</p></details></section>
+
+    <section class="step"><h2><span class="tag">29.7</span>The test proves two different frame sizes</h2><p class="files"><a href="../tests/test_interrupt_driven_networking.sh">tests/test_interrupt_driven_networking.sh</a> · <a href="../tests/fixtures/udp_echo.rs">tests/fixtures/udp_echo.rs</a></p><p>The host sends 64-byte and 256-byte binary payloads through an explicit slirp forwarding endpoint and requires exact replies. The ring-3 server echoes both through Linux-compatible socket syscalls and exits with code 0. The short-frame failure was reproduced separately using the packet capture from the diagnosis.</p><div class="proof">[net-irq-test] host received two byte-for-byte echoes
+[echo_server] echoed two datagrams from ring 3
+[net-irq-test] QEMU exit code: 33
+<span style="color:#86efac">[net-irq-test] PASS</span></div></section>
+
+    <div class="probe"><div class="probe-title">Retrieval probe</div><p>A 16-byte UDP payload creates a 58-byte Ethernet frame. Identify the four lengths that produce 58, then explain why trailing Ethernet padding changes neither the IPv4 checksum nor the UDP checksum.</p></div>
+    <p>Ask me about any step that remains unclear. The best next reading is the <a href="https://docs.oasis-open.org/virtio/virtio/v1.2/virtio-v1.2.html">VIRTIO 1.2 specification</a>, especially PCI MSI-X vector configuration and used-buffer notifications.</p>
+  </div>
+  <footer class="lesson-footer"><nav class="lesson-nav"><a href="../lessons/4.10-interrupt-driven-networking.html">&larr; Lesson 29</a><a href="../lessons/6.10-dhcp.html">Lesson 30: DHCP &rarr;</a></nav></footer>
+</article>
+</body>
+</html>

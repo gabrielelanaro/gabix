@@ -1,0 +1,515 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Tour — Lesson 6 · virtio Device Initialization</title>
+<link rel="stylesheet" href="../assets/lesson.css">
+<script src="../assets/code-highlight.js" defer></script>
+<style>
+  .tour-step {
+    margin: 3rem 0;
+    padding-top: 1rem;
+    border-top: 1px solid var(--border);
+  }
+  .tour-step:first-of-type { border-top: none; padding-top: 0; }
+  .tour-step-num {
+    display: inline-block;
+    font-family: var(--font-mono);
+    font-size: 0.78rem;
+    font-weight: 600;
+    color: var(--accent);
+    background: var(--accent-soft);
+    padding: 2px 8px;
+    border-radius: 3px;
+    margin-right: 0.6rem;
+  }
+  .tour-step-title {
+    font-family: var(--font-sans);
+    font-weight: 700;
+    font-size: 1.3rem;
+    color: var(--text);
+    margin: 0 0 0.4rem;
+    display: inline;
+  }
+  .tour-step-h2 { margin: 0 0 1rem; }
+  .tour-files {
+    font-family: var(--font-mono);
+    font-size: 0.82rem;
+    color: var(--text-dim);
+    margin: 0.5rem 0 1.5rem;
+  }
+  .tour-files strong { color: var(--text); font-weight: 600; }
+
+  .snippet-meta {
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
+    color: var(--text-dim);
+    margin: 1.5rem 0 0.35rem;
+    display: flex;
+    align-items: baseline;
+    gap: 0.6rem;
+  }
+  .snippet-meta .snippet-file {
+    color: var(--accent);
+    font-weight: 600;
+    background: var(--accent-soft);
+    padding: 1px 6px;
+    border-radius: 3px;
+  }
+  .snippet-meta .snippet-what {
+    color: var(--text-faint);
+    font-style: italic;
+  }
+  .snippet-meta + pre,
+  .snippet-meta + pre.tour-output { margin-top: 0; }
+
+  pre.tour-output {
+    background: #111827;
+    color: #e5e7eb;
+    border-left: 3px solid var(--accent);
+    padding: 1rem 1.25rem;
+    border-radius: 0 6px 6px 0;
+    font-size: 0.8rem;
+    line-height: 1.55;
+    margin: 1rem 0;
+  }
+  pre.tour-output .ann { color: #9ca3af; font-style: italic; }
+  pre.tour-output .ok { color: #86efac; }
+  pre.tour-output .err { color: #fca5a5; }
+
+  .pull-quote {
+    border-left: 3px solid var(--accent);
+    padding: 0.4rem 0 0.4rem 1rem;
+    margin: 1.5rem 0;
+    font-style: italic;
+    color: var(--text-dim);
+  }
+</style>
+</head>
+<body>
+<article class="lesson">
+
+  <header class="lesson-header">
+    <div class="lesson-eyebrow">Tour · Lesson 6 · Companion to <a href="../lessons/4.03-virtio-init.html" style="color:inherit;">the lesson</a></div>
+    <h1 class="lesson-title">Code Tour — virtio Device Initialization</h1>
+    <p class="lesson-subtitle">What the design looks like once it lands in Rust. Step by step, with the verification output that proved each one.</p>
+    <div class="lesson-meta">
+      <span><strong>Steps done</strong> 6.1 – 6.4 (complete)</span>
+      <span><strong>Last commit</strong> <code>d5f03d3</code></span>
+    </div>
+  </header>
+
+  <div class="content">
+
+  <p class="lead">
+    The <a href="../lessons/4.03-virtio-init.html">lesson</a>
+    walks through the virtio handshake design &mdash; capability list,
+    common config region, status byte bits, the four-phase sequence.
+    This page is the <em>code</em> &mdash; what each step added to
+    <code>src/virtio.rs</code>, <code>src/memory.rs</code>,
+    <code>src/pci.rs</code>, and <code>src/main.rs</code>, with the
+    serial output that proved it.
+  </p>
+
+  <!-- ============================================================
+       STEP 6.1
+       ============================================================ -->
+  <section class="tour-step">
+    <h2 class="tour-step-h2">
+      <span class="tour-step-num">6.1</span><span class="tour-step-title">Parse the PCI capability list</span>
+    </h2>
+    <div class="tour-files"><strong>Files touched:</strong> <code>src/virtio.rs</code> (new), <code>src/main.rs</code></div>
+
+    <p>
+      New <code>src/virtio.rs</code> module. The PCI capability list is
+      a linked list of vendor-defined feature records living in the
+      upper half of PCI config space (offsets 0x40&ndash;0xFF). virtio
+      uses vendor-specific caps (cap_id=0x09) with a sub-header pointing
+      at regions inside the device's BARs.
+    </p>
+
+    <div class="snippet-meta">
+      <span class="snippet-file">src/virtio.rs</span>
+      <span class="snippet-what">— VirtioCap struct and parse function (key part)</span>
+    </div>
+<pre><span class="k">pub struct</span> <span class="t">VirtioCap</span> {
+    <span class="k">pub</span> cfg_type: <span class="t">u8</span>,   <span class="c">// 1=common, 2=notify, 3=ISR, 4=device, 5=PCI</span>
+    <span class="k">pub</span> bar: <span class="t">u8</span>,       <span class="c">// which BAR (0-5)</span>
+    <span class="k">pub</span> offset: <span class="t">u32</span>,    <span class="c">// offset within that BAR (bytes)</span>
+    <span class="k">pub</span> length: <span class="t">u32</span>,    <span class="c">// size of the region (bytes)</span>
+}
+
+<span class="k">pub fn</span> <span class="f">parse_virtio_capabilities</span>(bus, device, func) -&gt; <span class="t">Vec</span>&lt;<span class="t">VirtioCap</span>&gt; {
+    <span class="c">// Read capabilities pointer at offset 0x34</span>
+    <span class="k">let mut</span> cap_offset = <span class="f">pci::config_read</span>(..., <span class="n">0x34</span>) &amp; <span class="n">0xFF</span> <span class="k">as</span> <span class="t">u8</span>;
+
+    <span class="k">while</span> cap_offset != <span class="n">0</span> {
+        <span class="k">let</span> word0 = <span class="f">pci::config_read</span>(..., cap_offset);
+        <span class="k">let</span> cap_id = (word0 &amp; <span class="n">0xFF</span>) <span class="k">as</span> <span class="t">u8</span>;
+        <span class="k">let</span> next_ptr = ((word0 &gt;&gt; <span class="n">8</span>) &amp; <span class="n">0xFF</span>) <span class="k">as</span> <span class="t">u8</span>;
+
+        <span class="k">if</span> cap_id == <span class="n">0x09</span> {  <span class="c">// vendor-specific</span>
+            <span class="k">let</span> cfg_type = ((word0 &gt;&gt; <span class="n">24</span>) &amp; <span class="n">0xFF</span>) <span class="k">as</span> <span class="t">u8</span>;
+            <span class="k">let</span> bar = <span class="f">pci::config_read</span>(..., cap_offset + <span class="n">4</span>) &amp; <span class="n">0xFF</span>;
+            <span class="k">let</span> offset = <span class="f">pci::config_read</span>(..., cap_offset + <span class="n">8</span>);
+            <span class="k">let</span> length = <span class="f">pci::config_read</span>(..., cap_offset + <span class="n">12</span>);
+            <span class="c">// ...push VirtioCap...</span>
+        }
+        cap_offset = next_ptr;  <span class="c">// follow linked list</span>
+    }
+}</pre>
+
+    <p>
+      The linked-list walk: read the pointer at offset 0x34, follow
+      <code>next_ptr</code> from each cap to the next, stop when
+      <code>next_ptr == 0</code>. For vendor-specific caps
+      (<code>cap_id == 0x09</code>), the sub-header at bytes 3-15 holds
+      the virtio sub-type and the (BAR, offset, length) of the region.
+    </p>
+
+    <h3>Verification</h3>
+
+    <div class="snippet-meta">
+      <span class="snippet-what">— Boot serial output (5 virtio caps found)</span>
+    </div>
+<pre class="tour-output"><span class="ann">[virtio]</span> parsing capability list of 00:04.0
+<span class="ann">[virtio]</span>   cap: cfg_type=<span class="ok">5</span> (PCI config (alt)), bar=0, offset=0x0000, length=0x0000
+<span class="ann">[virtio]</span>   cap: cfg_type=<span class="ok">2</span> (notifications), bar=4, offset=0x3000, length=0x1000
+<span class="ann">[virtio]</span>   cap: cfg_type=<span class="ok">4</span> (device config), bar=4, offset=0x2000, length=0x1000
+<span class="ann">[virtio]</span>   cap: cfg_type=<span class="ok">3</span> (ISR status), bar=4, offset=0x1000, length=0x1000
+<span class="ann">[virtio]</span>   cap: cfg_type=<span class="ok">1</span> (common config), bar=4, offset=0x0000, length=0x1000
+<span class="ann">[virtio]</span>   found 5 virtio caps</pre>
+
+    <p>
+      All five virtio sub-types present. Common config at
+      <code>BAR4 + 0x0000</code> &mdash; this is the region step 6.2
+      will map and access. The other three (ISR, device config,
+      notifications) come into play later: ISR for interrupts (we'll
+      poll instead), device config for sector size info, notifications
+      for virtqueue kicks in Lesson 7.
+    </p>
+
+    <p class="pull-quote">
+      Commit <code>fc21746</code>. Wall-clock time: ~3 minutes.
+    </p>
+  </section>
+
+  <!-- ============================================================
+       STEP 6.2
+       ============================================================ -->
+  <section class="tour-step">
+    <h2 class="tour-step-h2">
+      <span class="tour-step-num">6.2</span><span class="tour-step-title">Map MMIO + reset/ACK/DRIVER</span>
+    </h2>
+    <div class="tour-files"><strong>Files touched:</strong> <code>src/memory.rs</code>, <code>src/pci.rs</code>, <code>src/virtio.rs</code>, <code>src/main.rs</code></div>
+
+    <p>
+      Three new pieces: a way to map MMIO regions into kernel memory,
+      a way to read BAR base addresses programmatically, and a
+      VirtioBlk struct with the first phase of the handshake.
+    </p>
+
+    <h3>MMIO mapping helper</h3>
+
+    <div class="snippet-meta">
+      <span class="snippet-file">src/memory.rs</span>
+      <span class="snippet-what">— map_mmio: ensure an MMIO region is reachable</span>
+    </div>
+<pre><span class="k">pub fn</span> <span class="f">map_mmio</span>(phys_start: <span class="t">u64</span>, size: <span class="t">u64</span>) -&gt; <span class="t">u64</span> {
+    <span class="k">let</span> offset = <span class="f">phys_offset</span>();
+    <span class="k">let</span> virt_start = phys_start + offset;
+
+    <span class="k">let</span> aspace = <span class="t">AddressSpace</span>::from_current();
+    <span class="k">let</span> flags = <span class="t">PageTableFlags</span>::PRESENT
+        | <span class="t">PageTableFlags</span>::WRITABLE
+        | <span class="t">PageTableFlags</span>::NO_CACHE      <span class="c">// load-bearing for MMIO</span>
+        | <span class="t">PageTableFlags</span>::NO_EXECUTE;
+
+    <span class="c">// For each page in the range, map it if not already mapped</span>
+    <span class="k">for</span> page <span class="k">in</span> <span class="t">Page</span>::range_inclusive(start_page, end_page) {
+        <span class="k">if</span> <span class="f">translate</span>(page.start_address()).is_none() {
+            <span class="k">unsafe</span> { aspace.map_to(page.start_address(), current_phys, flags).unwrap(); }
+        }
+        current_phys += <span class="n">4096</span>;
+    }
+    virt_start
+}</pre>
+
+    <p>
+      <code>NO_CACHE</code> is the load-bearing detail. Without it, the
+      CPU might cache device register reads/writes &mdash; a stored read
+      could return a stale value, a buffered write might not reach the
+      device for microseconds. Device protocols assume every load/store
+      hits the hardware immediately.
+    </p>
+
+    <h3>BAR base extraction</h3>
+
+    <div class="snippet-meta">
+      <span class="snippet-file">src/pci.rs</span>
+      <span class="snippet-what">— bar_base: decode a BAR's physical address</span>
+    </div>
+<pre><span class="k">pub fn</span> <span class="f">bar_base</span>(bus, device, func, bar_index) -&gt; <span class="t">u64</span> {
+    <span class="k">let</span> bar = <span class="f">config_read</span>(..., <span class="n">0x10</span> + bar_index * <span class="n">4</span>);
+    <span class="k">if</span> bar &amp; <span class="n">0x1</span> == <span class="n">1</span> {                       <span class="c">// I/O BAR</span>
+        (bar &amp; !<span class="n">0x3</span>) <span class="k">as</span> <span class="t">u64</span>
+    } <span class="k">else</span> {
+        <span class="k">let</span> type_bits = (bar &gt;&gt; <span class="n">1</span>) &amp; <span class="n">0x3</span>;
+        <span class="k">let</span> base_low = (bar &amp; !<span class="n">0xF</span>) <span class="k">as</span> <span class="t">u64</span>;
+        <span class="k">if</span> type_bits == <span class="n">0b10</span> {               <span class="c">// 64-bit memory BAR</span>
+            <span class="k">let</span> bar_high = <span class="f">config_read</span>(..., <span class="n">0x10</span> + (bar_index + <span class="n">1</span>) * <span class="n">4</span>);
+            base_low | ((bar_high <span class="k">as</span> <span class="t">u64</span>) &lt;&lt; <span class="n">32</span>)
+        } <span class="k">else</span> {                                <span class="c">// 32-bit memory BAR</span>
+            base_low
+        }
+    }
+}</pre>
+
+    <p>
+      Same decode logic as <code>print_bars()</code> from step 5.4, but
+      returning the address as a number instead of printing it. The
+      64-bit case reads the next BAR slot for the high 32 bits.
+    </p>
+
+    <h3>The VirtioBlk struct and probe()</h3>
+
+    <div class="snippet-meta">
+      <span class="snippet-file">src/virtio.rs</span>
+      <span class="snippet-what">— VirtioBlk with common config mapped</span>
+    </div>
+<pre><span class="k">pub struct</span> <span class="t">VirtioBlk</span> {
+    bus: <span class="t">u8</span>, device: <span class="t">u8</span>, func: <span class="t">u8</span>,
+    common_virt: <span class="t">u64</span>,   <span class="c">// virtual address of common config region</span>
+}
+
+<span class="k">impl</span> <span class="t">VirtioBlk</span> {
+    <span class="k">pub fn</span> <span class="f">probe</span>() -&gt; <span class="t">Option</span>&lt;<span class="t">Self</span>&gt; {
+        <span class="k">let</span> (bus, device, func) = <span class="f">pci::find_virtio_blk</span>()?;
+        <span class="k">let</span> caps = <span class="f">parse_virtio_capabilities</span>(bus, device, func);
+        <span class="k">let</span> common_cap = caps.iter().find(|c| c.cfg_type == <span class="n">1</span>)?;
+        <span class="k">let</span> common_bar_base = <span class="f">pci::bar_base</span>(bus, device, func, common_cap.bar);
+        <span class="k">let</span> common_phys = common_bar_base + common_cap.offset <span class="k">as</span> <span class="t">u64</span>;
+        <span class="k">let</span> common_virt = <span class="k">crate</span>::memory::map_mmio(common_phys, common_cap.length <span class="k">as</span> <span class="t">u64</span>);
+        <span class="t">Some</span>(<span class="t">Self</span> { bus, device, func, common_virt })
+    }
+
+    <span class="c">// Volatile MMIO access</span>
+    <span class="k">fn</span> <span class="f">read_common_u8</span>(&amp;self, offset: <span class="t">u8</span>) -&gt; <span class="t">u8</span> {
+        <span class="k">unsafe</span> { <span class="f">read_volatile</span>((self.common_virt + offset <span class="k">as</span> <span class="t">u64</span>) <span class="k">as</span> *<span class="k">const</span> <span class="t">u8</span>) }
+    }
+    <span class="c">// ...similar write_common_u8, read_common_u32, write_common_u32...</span>
+}</pre>
+
+    <p>
+      Volatile reads/writes are required for MMIO. Without
+      <code>read_volatile</code>, the compiler might elide the load
+      ("we read this byte two lines ago, return the cached value") or
+      reorder it. Device registers have side effects; the access has to
+      happen exactly when we say so.
+    </p>
+
+    <h3>The first handshake phase</h3>
+
+    <div class="snippet-meta">
+      <span class="snippet-file">src/virtio.rs</span>
+      <span class="snippet-what">— reset_and_acknowledge: reset, ACK, DRIVER</span>
+    </div>
+<pre><span class="k">pub fn</span> <span class="f">reset_and_acknowledge</span>(&amp;self) {
+    <span class="f">println!</span>(<span class="s">"[virtio]   device_status before reset: 0x{:02X}"</span>, self.<span class="f">read_status</span>());
+
+    self.<span class="f">write_status</span>(<span class="n">0</span>);                          <span class="c">// reset</span>
+    <span class="f">assert_eq!</span>(self.<span class="f">read_status</span>(), <span class="n">0</span>);
+
+    self.<span class="f">write_status</span>(<span class="t">STATUS_ACKNOWLEDGE</span>);        <span class="c">// 0x01</span>
+    self.<span class="f">write_status</span>(<span class="t">STATUS_ACKNOWLEDGE</span> | <span class="t">STATUS_DRIVER</span>);  <span class="c">// 0x03</span>
+}</pre>
+
+    <h3>Verification</h3>
+
+    <div class="snippet-meta">
+      <span class="snippet-what">— Boot serial output</span>
+    </div>
+<pre class="tour-output"><span class="ann">[virtio]</span> common config: BAR4+0x0 = phys 0xFE000000 = virt 0x180FE000000
+<span class="ann">[virtio]</span>   device_status before reset: <span class="ok">0x0F</span>   <span class="ann">(stale state from SeaBIOS init)</span>
+<span class="ann">[virtio]</span>   device_status after reset:  <span class="ok">0x00</span>
+<span class="ann">[virtio]</span>   device_status after ACK:    <span class="ok">0x01</span>
+<span class="ann">[virtio]</span>   device_status after DRIVER:   <span class="ok">0x03</span></pre>
+
+    <p>
+      The "before reset: 0x0F" is normal &mdash; SeaBIOS (QEMU's
+      firmware) initialized the device to DRIVER_OK state during boot.
+      The reset clears it; we then walk through the handshake cleanly.
+    </p>
+
+    <p class="pull-quote">
+      Commit <code>79e043e</code>. Wall-clock time: ~3 minutes.
+    </p>
+  </section>
+
+  <!-- ============================================================
+       STEP 6.3
+       ============================================================ -->
+  <section class="tour-step">
+    <h2 class="tour-step-h2">
+      <span class="tour-step-num">6.3</span><span class="tour-step-title">Feature negotiation — FEATURES_OK</span>
+    </h2>
+    <div class="tour-files"><strong>Files touched:</strong> <code>src/virtio.rs</code>, <code>src/main.rs</code></div>
+
+    <p>
+      The most interesting phase. Device advertises what it can do;
+      driver picks a subset it can use; both verify they agree.
+    </p>
+
+    <div class="snippet-meta">
+      <span class="snippet-file">src/virtio.rs</span>
+      <span class="snippet-what">— negotiate_features</span>
+    </div>
+<pre><span class="k">pub fn</span> <span class="f">negotiate_features</span>(&amp;self) {
+    <span class="c">// Read both halves of device features</span>
+    self.<span class="f">write_common_u32</span>(<span class="t">COMMON_DEVICE_FEATURE_SELECT</span>, <span class="n">0</span>);
+    <span class="k">let</span> device_features_low = self.<span class="f">read_common_u32</span>(<span class="t">COMMON_DEVICE_FEATURE</span>);
+    self.<span class="f">write_common_u32</span>(<span class="t">COMMON_DEVICE_FEATURE_SELECT</span>, <span class="n">1</span>);
+    <span class="k">let</span> device_features_high = self.<span class="f">read_common_u32</span>(<span class="t">COMMON_DEVICE_FEATURE</span>);
+
+    <span class="c">// Pick what we support: just VIRTIO_F_VERSION_1 (bit 32)</span>
+    <span class="k">let</span> supported_low: <span class="t">u32</span> = <span class="n">0</span>;
+    <span class="k">let</span> supported_high: <span class="t">u32</span> = <span class="k">if</span> device_features_high &amp; <span class="n">0x1</span> != <span class="n">0</span> { <span class="n">0x1</span> } <span class="k">else</span> { <span class="n">0</span> };
+
+    <span class="c">// Write our subset</span>
+    self.<span class="f">write_common_u32</span>(<span class="t">COMMON_DRIVER_FEATURE_SELECT</span>, <span class="n">0</span>);
+    self.<span class="f">write_common_u32</span>(<span class="t">COMMON_DRIVER_FEATURE</span>, supported_low);
+    self.<span class="f">write_common_u32</span>(<span class="t">COMMON_DRIVER_FEATURE_SELECT</span>, <span class="n">1</span>);
+    self.<span class="f">write_common_u32</span>(<span class="t">COMMON_DRIVER_FEATURE</span>, supported_high);
+
+    <span class="c">// Set FEATURES_OK, then re-read to verify the device accepted</span>
+    self.<span class="f">write_status</span>(<span class="t">STATUS_ACK</span> | <span class="t">STATUS_DRIVER</span> | <span class="t">STATUS_FEATURES_OK</span>);
+    <span class="k">let</span> status = self.<span class="f">read_status</span>();
+    <span class="k">assert!</span>(status &amp; <span class="t">STATUS_FEATURES_OK</span> != <span class="n">0</span>,
+        <span class="s">"device rejected our features — FEATURES_OK was cleared"</span>);
+}</pre>
+
+    <p>
+      The two-step "write FEATURES_OK then re-read to verify" is the
+      most spec-mandated subtlety. If the device doesn't accept the
+      proposed subset, it silently clears FEATURES_OK. Without the
+      re-read, you'd proceed assuming features are agreed when they
+      aren't.
+    </p>
+
+    <h3>Verification</h3>
+
+    <div class="snippet-meta">
+      <span class="snippet-what">— Boot serial output</span>
+    </div>
+<pre class="tour-output"><span class="ann">[virtio]</span>   device features low:  <span class="ok">0x30006E54</span>  <span class="ann">(full virtio-blk suite)</span>
+<span class="ann">[virtio]</span>   device features high: <span class="ok">0x00000101</span>  <span class="ann">(VIRTIO_F_VERSION_1 + 1 other)</span>
+<span class="ann">[virtio]</span>   driver features low:  <span class="ok">0x00000000</span>
+<span class="ann">[virtio]</span>   driver features high: <span class="ok">0x00000001</span> (VIRTIO_F_VERSION_1)
+<span class="ann">[virtio]</span>   device_status after FEATURES_OK: <span class="ok">0x0B</span></pre>
+
+    <p>
+      Device advertised a rich feature set (SEG_MAX, GEOMETRY, BLK_SIZE,
+      FLUSH, DISCARD, WRITE_ZEROES, etc.). We accepted only
+      VIRTIO_F_VERSION_1 (the modern-transport-required bit). The device
+      accepted our minimal subset &mdash; <code>0x0B</code> includes
+      FEATURES_OK. Real Linux would claim more (flush for write
+      persistence, discard for SSD TRIM) but for first read we keep it
+      minimal.
+    </p>
+
+    <p class="pull-quote">
+      Commit <code>ab8ff4b</code>. Wall-clock time: ~2 minutes.
+    </p>
+  </section>
+
+  <!-- ============================================================
+       STEP 6.4
+       ============================================================ -->
+  <section class="tour-step">
+    <h2 class="tour-step-h2">
+      <span class="tour-step-num">6.4</span><span class="tour-step-title">DRIVER_OK — device is live</span>
+    </h2>
+    <div class="tour-files"><strong>Files touched:</strong> <code>src/virtio.rs</code>, <code>src/main.rs</code></div>
+
+    <p>
+      The final "go" bit. After DRIVER_OK, the device is in operational
+      state and ready for virtqueue setup.
+    </p>
+
+    <div class="snippet-meta">
+      <span class="snippet-file">src/virtio.rs</span>
+      <span class="snippet-what">— set_driver_ok</span>
+    </div>
+<pre><span class="k">pub fn</span> <span class="f">set_driver_ok</span>(&amp;self) {
+    self.<span class="f">write_status</span>(
+        <span class="t">STATUS_ACKNOWLEDGE</span> | <span class="t">STATUS_DRIVER</span> |
+        <span class="t">STATUS_FEATURES_OK</span> | <span class="t">STATUS_DRIVER_OK</span>
+    );  <span class="c">// 0x0F</span>
+
+    <span class="k">let</span> status = self.<span class="f">read_status</span>();
+    <span class="k">assert!</span>(status &amp; <span class="t">STATUS_FAILED</span> == <span class="n">0</span>, <span class="s">"device FAILED"</span>);
+    <span class="k">assert!</span>(status &amp; <span class="t">STATUS_DEVICE_NEEDS_RESET</span> == <span class="n">0</span>, <span class="s">"device needs reset"</span>);
+    <span class="k">assert!</span>(status &amp; <span class="t">STATUS_DRIVER_OK</span> != <span class="n">0</span>, <span class="s">"DRIVER_OK didn't stick"</span>);
+    <span class="f">println!</span>(<span class="s">"[virtio] device is live — ready for virtqueue setup"</span>);
+}</pre>
+
+    <p>
+      Three assertions catch the failure modes: FAILED (guest gave up
+      somewhere), DEVICE_NEEDS_RESET (device hit an internal error),
+      DRIVER_OK didn't stick (device rejected operational state for
+      some reason).
+    </p>
+
+    <h3>Verification</h3>
+
+    <div class="snippet-meta">
+      <span class="snippet-what">— Boot serial output</span>
+    </div>
+<pre class="tour-output"><span class="ann">[test]</span> virtio handshake phase 3 — DRIVER_OK (6.4)
+<span class="ann">[virtio]</span>   device_status after DRIVER_OK: <span class="ok">0x0F</span>
+<span class="ok">[virtio] device is live — ready for virtqueue setup</span></pre>
+
+    <p>
+      <code>0x0F</code> = ACKNOWLEDGE (0x01) | DRIVER (0x02) |
+      FEATURES_OK (0x08) | DRIVER_OK (0x04). All four handshake bits
+      set, no FAILED. Device is in operational state.
+    </p>
+
+    <p>
+      At this point the device accepts virtqueue configuration
+      (Lesson 7). Doing actual I/O (Lesson 8) requires queues to be
+      set up first &mdash; the device won't accept work requests from
+      an unconfigured queue.
+    </p>
+
+    <p class="pull-quote">
+      Commit <code>d5f03d3</code>. Wall-clock time: ~1 minute. Lesson 6
+      complete &mdash; the device is initialized, ready for virtqueues.
+    </p>
+  </section>
+
+  </div>
+
+  <footer class="lesson-footer">
+    <div class="footer-block">
+      <h4>How to use this page</h4>
+      <p style="margin:0;">
+        Revisit after stepping away from the lesson. The lesson teaches
+        the design (capability list traversal, the handshake sequence,
+        why FEATURES_OK needs a re-read); this page reminds you what
+        the design <em>looks like</em> as code. If you can read the
+        snippets here and explain them without referring back to the
+        lesson, the concept has landed.
+      </p>
+    </div>
+
+    <nav class="lesson-nav">
+      <a href="../lessons/4.03-virtio-init.html">← Lesson 6</a>
+      <a href="../lessons/roadmap-disk-to-exec.html">Roadmap ↑</a>
+    </nav>
+  </footer>
+
+</article>
+</body>
+</html>

@@ -1,0 +1,1266 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Lesson 7 — Virtqueues</title>
+<link rel="stylesheet" href="../assets/lesson.css">
+<script src="../assets/code-highlight.js" defer></script>
+<link rel="stylesheet" href="../assets/byte-layout.css">
+<style>
+  .ring-diagram {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 1rem;
+    margin: 1.5rem 0;
+    font-family: var(--font-mono);
+    font-size: 0.78rem;
+  }
+  .ring-region {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 0.8rem;
+    text-align: center;
+  }
+  .ring-region.kernel-side { border-top: 3px solid var(--accent); }
+  .ring-region.shared { border-top: 3px solid #be185d; background: #fdf2f8; }
+  .ring-region.device-side { border-top: 3px solid #15803d; background: #f0fdf4; }
+  .ring-region-title {
+    font-weight: 600;
+    color: var(--text);
+    margin-bottom: 0.4rem;
+    font-family: var(--font-sans);
+    font-size: 0.85rem;
+  }
+  .ring-region-content {
+    font-size: 0.78rem;
+    color: var(--text-dim);
+    line-height: 1.5;
+  }
+
+  .flow-step {
+    background: var(--surface);
+    border-left: 3px solid var(--accent);
+    padding: 0.6rem 1rem;
+    margin: 0.5rem 0;
+    font-family: var(--font-mono);
+    font-size: 0.85rem;
+  }
+  .flow-step .flow-time {
+    display: inline-block;
+    background: var(--accent-soft);
+    color: var(--accent);
+    font-weight: 600;
+    padding: 1px 6px;
+    border-radius: 3px;
+    margin-right: 0.6rem;
+    font-size: 0.78rem;
+  }
+  .flow-step.kernel { border-left-color: var(--accent); }
+  .flow-step.device { border-left-color: #15803d; background: #f0fdf4; }
+  .flow-step.device .flow-time { background: #dcfce7; color: #15803d; }
+
+  .cap-list {
+    background: var(--code-bg);
+    color: var(--code-fg);
+    padding: 1rem 1.25rem;
+    border-radius: 6px;
+    font-family: var(--font-mono);
+    font-size: 0.82rem;
+    line-height: 1.7;
+    margin: 1rem 0;
+    overflow-x: auto;
+    white-space: pre-wrap;
+  }
+  .cap-list .hdr { color: var(--code-comment); }
+  .cap-list .val { color: var(--code-keyword); }
+  .cap-list .desc { color: #cbd5e1; }
+
+  .pci-concept {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--accent);
+    border-radius: 4px;
+    margin: 1rem 0;
+    position: relative;
+  }
+  .pci-concept > summary {
+    padding: 0.6rem 2.2rem 0.6rem 0.9rem;
+    cursor: pointer;
+    list-style: none;
+    position: relative;
+    font-family: var(--font-sans);
+    font-weight: 600;
+    font-size: 0.95rem;
+    color: var(--text);
+  }
+  .pci-concept > summary::-webkit-details-marker { display: none; }
+  .pci-concept > summary::after {
+    content: "▸";
+    position: absolute;
+    right: 0.9rem;
+    top: 50%;
+    transform: translateY(-50%);
+    color: var(--text-faint);
+    transition: transform 0.15s ease;
+  }
+  .pci-concept[open] > summary::after {
+    transform: translateY(-50%) rotate(90deg);
+  }
+  .pci-concept[open] > summary {
+    border-bottom: 1px dashed var(--border);
+  }
+  .pci-concept-body {
+    padding: 0.7rem 0.9rem 0.8rem;
+    font-family: var(--font-serif);
+    font-size: 0.92rem;
+    line-height: 1.55;
+    color: var(--text);
+  }
+  .pci-concept-body p { margin: 0 0 0.6rem; }
+  .pci-concept-body p:last-child { margin-bottom: 0; }
+  .pci-concept-body strong { color: var(--accent); }
+
+  .step {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1rem 1.25rem;
+    margin: 1.25rem 0;
+  }
+  .step-num {
+    font-family: var(--font-mono);
+    font-size: 0.78rem;
+    font-weight: 600;
+    color: var(--accent);
+    background: var(--accent-soft);
+    padding: 2px 8px;
+    border-radius: 3px;
+    margin-right: 0.5rem;
+  }
+  .step-title {
+    font-family: var(--font-sans);
+    font-weight: 600;
+    font-size: 1rem;
+    margin-bottom: 0.4rem;
+  }
+  .step-detail {
+    font-family: var(--font-serif);
+    font-size: 0.95rem;
+    color: var(--text);
+  }
+  .step-detail p:last-child { margin-bottom: 0; }
+
+  .decision {
+    border-left: 3px solid var(--accent);
+    padding: 0.4rem 0 0.4rem 1rem;
+    margin: 1rem 0;
+  }
+  .decision strong { color: var(--accent); }
+
+  .snippet-meta {
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
+    color: var(--text-dim);
+    margin: 1.5rem 0 0.35rem;
+    display: flex;
+    align-items: baseline;
+    gap: 0.6rem;
+  }
+  .snippet-meta .snippet-file {
+    color: var(--accent);
+    font-weight: 600;
+    background: var(--accent-soft);
+    padding: 1px 6px;
+    border-radius: 3px;
+  }
+  .snippet-meta .snippet-what {
+    color: var(--text-faint);
+    font-style: italic;
+  }
+  .snippet-meta + pre { margin-top: 0; }
+
+  .rw-comparison {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 1rem;
+    margin: 1.5rem 0;
+  }
+  .rw-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 0.9rem 1.1rem;
+    font-family: var(--font-sans);
+    font-size: 0.85rem;
+  }
+  .rw-card.read  { border-top: 3px solid var(--accent); }
+  .rw-card.write { border-top: 3px solid #15803d; }
+  .rw-card-title {
+    font-weight: 600;
+    font-size: 0.95rem;
+    margin: 0 0 0.6rem;
+  }
+  .rw-card.read  .rw-card-title { color: var(--accent); }
+  .rw-card.write .rw-card-title { color: #15803d; }
+  .rw-section { margin: 0.5rem 0; }
+  .rw-section-label {
+    font-family: var(--font-sans);
+    font-size: 0.68rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--text-faint);
+    margin-bottom: 0.25rem;
+    font-weight: 600;
+  }
+  .rw-section-text {
+    font-family: var(--font-serif);
+    font-size: 0.88rem;
+    line-height: 1.5;
+    color: var(--text);
+  }
+  .rw-chain {
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
+    background: var(--code-bg);
+    color: var(--code-fg);
+    padding: 0.55rem 0.75rem;
+    border-radius: 4px;
+    margin: 0.25rem 0 0;
+    line-height: 1.7;
+    white-space: pre;
+    overflow-x: auto;
+  }
+  .rw-chain .c { color: var(--code-comment); }
+  .rw-chain .f { color: var(--code-keyword); }
+</style>
+</head>
+<body>
+<article class="lesson">
+
+  <header class="lesson-header">
+    <div class="lesson-eyebrow">Lesson 7 · M4 · Disk path — set up the request ring</div>
+    <h1 class="lesson-title">Virtqueues</h1>
+    <p class="lesson-subtitle">Shared-memory ring buffers between guest and host. After this lesson, the device has a queue to receive work.</p>
+    <div class="lesson-meta">
+      <span><strong>Read time</strong> ~25 min</span>
+      <span><strong>Build time</strong> ~40–60 min</span>
+      <span><strong>Prereq</strong> <a href="4.03-virtio-init.html">Lesson 6</a></span>
+    </div>
+  </header>
+
+  <div class="content">
+
+  <p class="lead">
+    Lesson 6 left the device in DRIVER_OK state &mdash; live and ready,
+    but with no way to receive work. To submit a disk read or write,
+    we need a <strong>virtqueue</strong>: a shared-memory ring buffer
+    the kernel writes requests into and the device reads from. This
+    lesson covers the split virtqueue format (descriptor table,
+    available ring, used ring), the request flow, memory barriers,
+    and the queue configuration registers in the common config region.
+    Lesson 8 will use what we build here to send the first actual
+    disk request.
+  </p>
+
+  <h2>Why virtqueues</h2>
+
+  <p>
+    The device has MMIO registers (Lesson 6's common config region),
+    but you wouldn't want to use them for the actual data. Every
+    disk read would mean thousands of register writes (one per byte)
+    and thousands of traps from guest to host. Slow, and wasteful of
+    QEMU's time.
+  </p>
+
+  <p>
+    virtio's answer: <strong>shared memory</strong>. The guest
+    allocates ordinary RAM, fills it with request data, and tells the
+    device "go look at this address." The device reads the request
+    via DMA (Direct Memory Access), does the I/O, and writes the
+    response into guest-allocated buffers. The guest and host
+    communicate via ring buffers in this shared memory, not via
+    register writes.
+  </p>
+
+  <p>
+    The ring buffer design lets both sides batch work. The kernel can
+    queue 64 descriptors and kick once; the device processes them all,
+    then writes 64 completions back. Polling register per request
+    would be hundreds of context switches; virtqueues are dozens.
+  </p>
+
+  <div class="decision">
+    <strong>Split vs packed virtqueue.</strong>
+    Two formats exist. <strong>Split</strong> (the original, simpler)
+    uses three separate regions: descriptor table, available ring,
+    used ring. <strong>Packed</strong> (newer, more efficient) uses
+    one ring of descriptor entries that get recycled in place. We'll
+    use split &mdash; it's what the spec's basic examples use and what
+    Linux's <code>virtio_ring.c</code> implements alongside packed.
+    Packed is a future optimization; split is the load-bearing
+    reference design.
+  </div>
+
+  <h2>The split virtqueue: three regions in guest memory</h2>
+
+  <p>
+    A split virtqueue is three arrays the kernel allocates in
+    physically-contiguous, page-aligned RAM. The device accesses them
+    via DMA using guest physical addresses (NOT virtual addresses
+    &mdash; the device doesn't see the kernel's page tables).
+  </p>
+
+  <div class="ring-diagram">
+    <div class="ring-region shared">
+      <div class="ring-region-title">Descriptor Table</div>
+      <div class="ring-region-content">
+        Array of 16-byte entries.<br>
+        Each entry points at a guest buffer (GPA + length + flags).<br>
+        Kernel writes; device reads.
+      </div>
+    </div>
+    <div class="ring-region shared">
+      <div class="ring-region-title">Available Ring</div>
+      <div class="ring-region-content">
+        Array of u16 descriptor indices.<br>
+        Kernel appends indices here to submit work.<br>
+        Kernel writes; device reads.
+      </div>
+    </div>
+    <div class="ring-region shared">
+      <div class="ring-region-title">Used Ring</div>
+      <div class="ring-region-content">
+        Array of (id, len) entries.<br>
+        Device appends entries here on completion.<br>
+        Device writes; kernel reads.
+      </div>
+    </div>
+  </div>
+
+  <p>
+    All three live in guest RAM, allocated by the kernel. The device
+    reaches them via DMA. From the kernel's perspective they're just
+    data structures; from the device's perspective they're a contract
+    for what work needs doing.
+  </p>
+
+  <h3>The descriptor entry (16 bytes)</h3>
+
+  <div class="byte-layout">
+    <div class="byte-layout-header">
+      <span class="byte-layout-name">Descriptor entry</span>
+      <span class="byte-layout-size">16 bytes total</span>
+    </div>
+    <div class="byte-bar">
+      <div class="byte-field type-u64" style="--bytes: 8">
+        <span class="byte-field-name">addr</span>
+        <span class="byte-field-meta">u64 · 8 B</span>
+        <span class="byte-field-range">0x00–0x07</span>
+      </div>
+      <div class="byte-field type-u32" style="--bytes: 4">
+        <span class="byte-field-name">len</span>
+        <span class="byte-field-meta">u32 · 4 B</span>
+        <span class="byte-field-range">0x08–0x0B</span>
+      </div>
+      <div class="byte-field type-u16" style="--bytes: 2">
+        <span class="byte-field-name">flags</span>
+        <span class="byte-field-meta">u16 · 2 B</span>
+        <span class="byte-field-range">0x0C–0x0D</span>
+      </div>
+      <div class="byte-field type-u16" style="--bytes: 2">
+        <span class="byte-field-name">next</span>
+        <span class="byte-field-meta">u16 · 2 B</span>
+        <span class="byte-field-range">0x0E–0x0F</span>
+      </div>
+    </div>
+
+    <div class="field-reference">
+      <dl>
+        <dt>addr <span class="type-tag type-u64">u64</span></dt>
+        <dd>
+          <p>
+            Guest <strong>physical</strong> address of the data buffer
+            this descriptor points at. The device reaches it via DMA
+            (Direct Memory Access) using the physical address bus &mdash;
+            it does <em>not</em> walk your page tables, so a virtual
+            address would be meaningless to it. You allocate a buffer
+            in kernel virtual memory, then translate to physical
+            before writing this field.
+          </p>
+          <div class="example">buffer at kernel virt 0xFFFF_8880_0040_0040
+maps to phys 0x0000_0000_0040_0040  →  addr = 0x0000_0000_0040_0040</div>
+        </dd>
+
+        <dt>len <span class="type-tag type-u32">u32</span></dt>
+        <dd>
+          <p>
+            Size of the buffer in bytes. For a one-sector disk read:
+            512. For a four-sector disk write: 2048. The device may
+            legitimately write <em>fewer</em> bytes than this on
+            completion &mdash; the actual bytes written show up in the
+            used ring's <code>len</code> field. Must be non-zero and
+            bounded by the device's max segment size.
+          </p>
+          <div class="example">read 1 sector (512 B) into a 512 B buffer
+addr = 0x40_0040, len = 0x200 (=512)</div>
+        </dd>
+
+        <dt>flags <span class="type-tag type-u16">u16</span></dt>
+        <dd>
+          <p>
+            Two bits matter for virtio-blk:
+          </p>
+          <p>
+            <code>VIRTQ_DESC_F_NEXT = 0x01</code> &mdash; this
+            descriptor is not standalone; the chain continues at the
+            index stored in <code>next</code>. Use it when a request
+            needs multiple buffers.
+          </p>
+          <p>
+            <code>VIRTQ_DESC_F_WRITE = 0x02</code> &mdash; the device
+            writes <em>to</em> this buffer (read direction). If unset,
+            the device reads <em>from</em> this buffer (write
+            direction). The direction is from the <em>device's</em>
+            point of view.
+          </p>
+          <div class="example">disk-read request = 3 chained descriptors:
+  desc[0] header    flags=0x01        (F_NEXT, device reads it)
+  desc[1] data buf  flags=0x03        (F_NEXT | F_WRITE, device fills it)
+  desc[2] status    flags=0x02        (F_WRITE only, last in chain)</div>
+        </dd>
+
+        <dt>next <span class="type-tag type-u16">u16</span></dt>
+        <dd>
+          <p>
+            Index (0 to queue_size &minus; 1) of the next descriptor
+            in the chain. Only meaningful when F_NEXT is set; ignored
+            otherwise. The chain is a singly-linked list of indices,
+            walked by the device to gather all buffers belonging to
+            one request.
+          </p>
+          <div class="example">descriptors 5, 6, 7 form one request chain:
+  desc[5].flags = F_NEXT,  desc[5].next = 6
+  desc[6].flags = F_NEXT,  desc[6].next = 7
+  desc[7].flags = 0        (tail — no next)</div>
+        </dd>
+      </dl>
+    </div>
+  </div>
+
+  <p>
+    Each descriptor points at one buffer. A request that needs
+    multiple buffers (e.g., a request header + a data buffer + a
+    status byte) chains descriptors together via <code>next</code>.
+    The chain is a singly-linked list of descriptor indices.
+  </p>
+
+  <h3>The available ring</h3>
+
+  <div class="byte-layout">
+    <div class="byte-layout-header">
+      <span class="byte-layout-name">Available ring</span>
+      <span class="byte-layout-size">6 + 2·N bytes (N = queue_size)</span>
+    </div>
+    <div class="byte-bar">
+      <div class="byte-field type-u16" style="--bytes: 2">
+        <span class="byte-field-name">flags</span>
+        <span class="byte-field-meta">u16 · 2 B</span>
+        <span class="byte-field-range">0x00–0x01</span>
+      </div>
+      <div class="byte-field type-u16" style="--bytes: 2">
+        <span class="byte-field-name">idx</span>
+        <span class="byte-field-meta">u16 · 2 B</span>
+        <span class="byte-field-range">0x02–0x03</span>
+      </div>
+      <div class="byte-field type-array" style="--bytes: 16">
+        <span class="byte-field-name">ring[N]</span>
+        <span class="byte-field-meta">u16[] · 2·N B</span>
+        <span class="byte-field-range">0x04–</span>
+      </div>
+      <div class="byte-field type-u16" style="--bytes: 2">
+        <span class="byte-field-name">used_event</span>
+        <span class="byte-field-meta">u16 · 2 B</span>
+        <span class="byte-field-range">end</span>
+      </div>
+    </div>
+
+    <div class="field-reference">
+      <dl>
+        <dt>flags <span class="type-tag type-u16">u16</span></dt>
+        <dd>
+          <p>
+            <code>VRING_AVAIL_F_NO_INTERRUPT = 0x01</code> &mdash; if
+            set, the device will not raise an interrupt each time it
+            consumes a descriptor. Most performance-sensitive drivers
+            set this and rely on polling or batched interrupts
+            instead. mini-os will leave it at 0 (interrupts enabled)
+            but in practice poll the used ring synchronously.
+          </p>
+          <div class="example">flags = 0  →  "interrupt me on each consumption"
+flags = 1  →  "I'll poll, don't interrupt"</div>
+        </dd>
+
+        <dt>idx <span class="type-tag type-u16">u16</span></dt>
+        <dd>
+          <p>
+            Free-running counter the kernel increments each time it
+            adds a new head descriptor index to <code>ring[]</code>.
+            <strong>Wraps at 65536</strong> (u16 max), <em>not</em>
+            at queue_size &mdash; the modulo into <code>ring[]</code>
+            handles indexing. The device remembers "last idx I
+            processed" and works through any new entries it sees.
+          </p>
+          <div class="example">queue_size = 64, kernel submits 3 requests in a row:
+  idx 0 → 1 (write head into ring[0])
+  idx 1 → 2 (write head into ring[1])
+  idx 2 → 3 (write head into ring[2])
+device wakes, sees idx=3, processes ring[0,1,2]</div>
+        </dd>
+
+        <dt>ring[N] <span class="type-tag type-array">u16[]</span></dt>
+        <dd>
+          <p>
+            Array of <strong>head</strong> descriptor indices &mdash;
+            the first descriptor of each chain. The device follows
+            <code>next</code> pointers from there to gather the rest
+            of the chain. Indexed by <code>idx % N</code>. Don't put
+            non-head indices here; that would confuse the device.
+          </p>
+          <div class="example">chain of descriptors 5→6→7 was built
+avail-&gt;ring[idx % N] = 5  (NOT 6 or 7)</div>
+        </dd>
+
+        <dt>used_event <span class="type-tag type-u16">u16</span></dt>
+        <dd>
+          <p>
+            Legacy event-suppression field from the original virtio
+            spec. In modern transport (which we use), event
+            suppression is handled via the <code>avail_event</code>
+            field in the used ring instead. We allocate space for it
+            for layout compatibility but never read or write it.
+          </p>
+        </dd>
+      </dl>
+    </div>
+  </div>
+
+  <p>
+    To submit a chain: kernel writes the chain's head descriptor
+    index into <code>ring[idx % N]</code>, then increments
+    <code>idx</code>. The device polls <code>idx</code> for changes;
+    when it sees <code>idx</code> advance, it processes every entry
+    it hasn't seen yet.
+  </p>
+
+  <h3>The used ring</h3>
+
+  <div class="byte-layout">
+    <div class="byte-layout-header">
+      <span class="byte-layout-name">Used ring</span>
+      <span class="byte-layout-size">6 + 8·N bytes (N = queue_size)</span>
+    </div>
+    <div class="byte-bar">
+      <div class="byte-field type-u16" style="--bytes: 2">
+        <span class="byte-field-name">flags</span>
+        <span class="byte-field-meta">u16 · 2 B</span>
+        <span class="byte-field-range">0x00–0x01</span>
+      </div>
+      <div class="byte-field type-u16" style="--bytes: 2">
+        <span class="byte-field-name">idx</span>
+        <span class="byte-field-meta">u16 · 2 B</span>
+        <span class="byte-field-range">0x02–0x03</span>
+      </div>
+      <div class="byte-field type-array" style="--bytes: 16">
+        <span class="byte-field-name">ring[N]</span>
+        <span class="byte-field-meta">{u32,u32} · 8·N B</span>
+        <span class="byte-field-range">0x04–</span>
+      </div>
+      <div class="byte-field type-u16" style="--bytes: 2">
+        <span class="byte-field-name">avail_event</span>
+        <span class="byte-field-meta">u16 · 2 B</span>
+        <span class="byte-field-range">end</span>
+      </div>
+    </div>
+
+    <div class="field-reference">
+      <dl>
+        <dt>flags <span class="type-tag type-u16">u16</span></dt>
+        <dd>
+          <p>
+            <code>VRING_USED_F_NO_NOTIFY = 0x01</code> &mdash; set by
+            the <em>device</em> to tell the kernel "don't kick me on
+            the next submission; I'm already processing this queue."
+            The kernel checks this before writing the notification
+            register, saving an MMIO store on each submit. Cleared
+            by the device when it goes idle.
+          </p>
+          <div class="example">kernel wants to submit, checks used-&gt;flags:
+  flags = 0  →  write notify register (kick the device)
+  flags = 1  →  skip the kick (device already polling)</div>
+        </dd>
+
+        <dt>idx <span class="type-tag type-u16">u16</span></dt>
+        <dd>
+          <p>
+            Free-running counter the <em>device</em> increments each
+            time it completes a request. Kernel polls this field to
+            detect completions. Wraps at 65536 like
+            <code>avail-&gt;idx</code>. The kernel remembers "last
+            idx I processed" and reads entries
+            <code>ring[last % N .. new % N]</code> on each advance.
+          </p>
+          <div class="example">kernel polls used-&gt;idx:
+  sees 0 → 1  →  read ring[0]   (one completion ready)
+  sees 1 → 3  →  read ring[1], ring[2]   (two completions ready)</div>
+        </dd>
+
+        <dt>ring[N] <span class="type-tag type-array">struct { id, len }</span></dt>
+        <dd>
+          <p>
+            Array of 8-byte completion entries:
+          </p>
+          <p>
+            <code>id: u32</code> &mdash; the head descriptor index
+            the kernel originally submitted. Use this to find the
+            chain to free.
+          </p>
+          <p>
+            <code>len: u32</code> &mdash; number of bytes the device
+            actually wrote. For a read of one sector: 512. For a
+            write: 0 (no data returned). For a read shorter than
+            requested (e.g., last sector of disk): the actual bytes
+            written, which may be less than the buffer length.
+          </p>
+          <div class="example">disk read of sector 0 completes:
+  ring[0].id  = 5       (chain head was descriptor 5)
+  ring[0].len = 512     (device wrote 512 bytes to the data buffer)
+
+kernel frees descriptors 5 → 6 → 7 (the chain)</div>
+        </dd>
+
+        <dt>avail_event <span class="type-tag type-u16">u16</span></dt>
+        <dd>
+          <p>
+            Legacy event-suppression field, twin of the available
+            ring's <code>used_event</code>. Modern transport handles
+            event suppression elsewhere. Allocated for layout
+            compatibility; not read or written by mini-os.
+          </p>
+        </dd>
+      </dl>
+    </div>
+  </div>
+
+  <p>
+    The kernel polls <code>used-&gt;idx</code> for changes. When it
+    advances, the entries in <code>ring[old_idx % N .. new_idx % N]</code>
+    are completed requests. Each entry says "descriptor head X is
+    done; the device wrote <code>len</code> bytes to its buffer."
+  </p>
+
+  <h2>The request flow</h2>
+
+  <p>
+    Trace what happens when the kernel submits a single descriptor
+    chain and waits for completion:
+  </p>
+
+  <div class="flow-step kernel">
+    <span class="flow-time">T0</span>
+    Kernel allocates descriptor(s) from the free list, fills in
+    <code>addr</code>, <code>len</code>, <code>flags</code>.
+  </div>
+  <div class="flow-step kernel">
+    <span class="flow-time">T1</span>
+    Kernel writes <code>avail-&gt;ring[avail-&gt;idx % N] = head_index</code>,
+    then increments <code>avail-&gt;idx</code>.
+  </div>
+  <div class="flow-step kernel">
+    <span class="flow-time">T2</span>
+    <strong>Memory barrier</strong> (<code>core::sync::atomic::fence</code>
+    or <code>compiler_fence</code>) &mdash; forces all writes before this
+    point to be visible before any write after.
+  </div>
+  <div class="flow-step kernel">
+    <span class="flow-time">T3</span>
+    Kernel writes to the <strong>notification register</strong>
+    (kicks the device). One MMIO store to the address from the
+    notifications capability.
+  </div>
+  <div class="flow-step device">
+    <span class="flow-time">T4</span>
+    Device sees <code>avail-&gt;idx</code> advance. Reads descriptor
+    head index from <code>avail-&gt;ring</code>. Follows the chain
+    via <code>desc.next</code> if needed.
+  </div>
+  <div class="flow-step device">
+    <span class="flow-time">T5</span>
+    Device DMAs into the guest buffer(s). For a read: writes the
+    requested sector bytes. For a write: reads the bytes the guest
+    wants persisted.
+  </div>
+  <div class="flow-step device">
+    <span class="flow-time">T6</span>
+    Device writes <code>used-&gt;ring[used-&gt;idx % N] = { id: head_index, len: bytes_written }</code>,
+    then increments <code>used-&gt;idx</code>.
+  </div>
+  <div class="flow-step kernel">
+    <span class="flow-time">T7</span>
+    Kernel polls <code>used-&gt;idx</code> for changes. Sees it
+    advance. Reads the new entry to find the completed descriptor
+    and how many bytes were written.
+  </div>
+  <div class="flow-step kernel">
+    <span class="flow-time">T8</span>
+    Kernel processes the response (read the buffer, check status,
+    free the descriptor back to the free list).
+  </div>
+
+  <p>
+    Steps T0&ndash;T3 are guest-side, T4&ndash;T6 are host-side,
+    T7&ndash;T8 are guest-side again. The kernel doesn't necessarily
+    wait synchronously &mdash; it can submit multiple requests, then
+    poll for completions later. But for our simple case we'll submit
+    one and wait.
+  </p>
+
+  <h3>Read vs write &mdash; what actually differs</h3>
+
+  <p>
+    The T0&ndash;T8 flow is the same shape for both. What changes is
+    the direction the data flows, controlled by the
+    <code>F_WRITE</code> flag on each descriptor (from the
+    <em>device's</em> point of view). Here's the full chain for a
+    one-sector request in each direction:
+  </p>
+
+  <div class="rw-comparison">
+
+    <div class="rw-card read">
+      <div class="rw-card-title">Disk read</div>
+      <div class="rw-section">
+        <div class="rw-section-label">Goal</div>
+        <div class="rw-section-text">
+          Kernel wants sector <em>N</em>'s 512 bytes in memory.
+          Allocates an empty buffer first.
+        </div>
+      </div>
+      <div class="rw-section">
+        <div class="rw-section-label">Descriptor chain</div>
+        <div class="rw-chain"><span class="c">desc[0] header   flags=0x01 (F_NEXT)           </span><span class="c">// device reads</span>
+<span class="f">desc[1] data     flags=0x03 (F_NEXT|F_WRITE)  </span><span class="c">// device fills</span>
+<span class="f">desc[2] status   flags=0x02 (F_WRITE)         </span><span class="c">// device writes 0=ok</span></div>
+      </div>
+      <div class="rw-section">
+        <div class="rw-section-label">What the device does</div>
+        <div class="rw-section-text">
+          Reads sectors from disk &rarr; writes the bytes into
+          desc[1]'s buffer &rarr; writes 0 to desc[2] (success).
+        </div>
+      </div>
+      <div class="rw-section">
+        <div class="rw-section-label">Used ring completion</div>
+        <div class="rw-section-text">
+          <code>id = head_index</code>,
+          <code>len = 512</code> (bytes written to data buffer).
+        </div>
+      </div>
+    </div>
+
+    <div class="rw-card write">
+      <div class="rw-card-title">Disk write</div>
+      <div class="rw-section">
+        <div class="rw-section-label">Goal</div>
+        <div class="rw-section-text">
+          Kernel wants to persist 512 in-memory bytes to sector
+          <em>N</em>. Fills the buffer first.
+        </div>
+      </div>
+      <div class="rw-section">
+        <div class="rw-section-label">Descriptor chain</div>
+        <div class="rw-chain"><span class="c">desc[0] header   flags=0x01 (F_NEXT)           </span><span class="c">// device reads</span>
+<span class="f">desc[1] data     flags=0x01 (F_NEXT)           </span><span class="c">// device reads</span>
+<span class="f">desc[2] status   flags=0x02 (F_WRITE)         </span><span class="c">// device writes 0=ok</span></div>
+      </div>
+      <div class="rw-section">
+        <div class="rw-section-label">What the device does</div>
+        <div class="rw-section-text">
+          Reads bytes from desc[1]'s buffer &rarr; writes them to
+          disk &rarr; writes 0 to desc[2] (success).
+        </div>
+      </div>
+      <div class="rw-section">
+        <div class="rw-section-label">Used ring completion</div>
+        <div class="rw-section-text">
+          <code>id = head_index</code>,
+          <code>len = 0</code> (no data returned to guest).
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <p>
+    Three differences, all in the data descriptor (desc[1]): the
+    <code>F_WRITE</code> bit flips, the device's read-vs-write role
+    flips, and the completion's <code>len</code> reports bytes
+    written to the buffer (read) or zero (write). The header
+    descriptor (carrying the virtio-blk request type field) and the
+    status descriptor are identical in both. Lesson 8 will build the
+    read chain for real.
+  </p>
+
+  <h2>Memory barriers &mdash; why the spec mandates them</h2>
+
+  <p>
+    Between writing the descriptor data (T0) and writing
+    <code>avail-&gt;idx</code> (T1), the spec requires a write memory
+    barrier. Without it, the CPU's store buffer might reorder the
+    writes &mdash; the device could see the new <code>idx</code>
+    before the descriptor's <code>addr</code> field is visible, then
+    DMA from a garbage address.
+  </p>
+
+  <p>
+    On x86 this is mostly automatic (the architecture has strong
+    ordering), but the spec is architecture-neutral and the same
+    code runs on ARM (which has weaker ordering). Using Rust's
+    <code>core::sync::atomic::Ordering::Release</code> on the
+    <code>avail-&gt;idx</code> write, or an explicit
+    <code>compiler_fence(Release)</code>, generates the right
+    barrier on every architecture.
+  </p>
+
+  <details class="pci-concept">
+    <summary>What does Release ordering actually do?</summary>
+    <div class="pci-concept-body">
+      <p>
+        Rust's atomics have orderings that map to CPU memory
+        barriers:
+      </p>
+      <p>
+        &bull; <code>Relaxed</code> &mdash; no ordering guarantees,
+        just atomicity. Fine for counters where you don't care about
+        other writes' visibility.<br>
+        &bull; <code>Release</code> &mdash; all <em>prior</em> writes
+        become visible before this write. Use when publishing data:
+        write the data first, then write a "ready" flag with
+        Release.<br>
+        &bull; <code>Acquire</code> &mdash; all <em>subsequent</em>
+        reads see the latest values. Use when reading a "ready" flag:
+        read it with Acquire, then read the data.<br>
+        &bull; <code>SeqCst</code> &mdash; both Release and Acquire
+        plus a global total order. Slowest, most correct.
+      </p>
+      <p>
+        For virtqueues: writing <code>avail-&gt;idx</code> with
+        Release ensures the descriptor data is visible first. Reading
+        <code>used-&gt;idx</code> with Acquire ensures we see the
+        device's response data after seeing the index advance. The
+        spec mandates this pattern; getting it wrong causes
+        impossible-to-debug races.
+      </p>
+    </div>
+  </details>
+
+  <h2>Queue configuration</h2>
+
+  <p>
+    Before any of the ring mechanism works, the kernel has to tell
+    the device where the rings live. This is done via the queue
+    fields in the common config region (introduced in Lesson 6's
+    layout box, but not used until now):
+  </p>
+
+  <div class="byte-layout">
+    <div class="byte-layout-header">
+      <span class="byte-layout-name">Common config — queue fields</span>
+      <span class="byte-layout-size">34 bytes · offsets 0x16–0x37</span>
+    </div>
+    <div class="byte-bar">
+      <div class="byte-field type-u16" style="--bytes: 2">
+        <span class="byte-field-name">queue_select</span>
+        <span class="byte-field-meta">u16 · 2 B</span>
+        <span class="byte-field-range">0x16–0x17</span>
+      </div>
+      <div class="byte-field type-u16" style="--bytes: 2">
+        <span class="byte-field-name">queue_size</span>
+        <span class="byte-field-meta">u16 · 2 B</span>
+        <span class="byte-field-range">0x18–0x19</span>
+      </div>
+      <div class="byte-field type-u16" style="--bytes: 2">
+        <span class="byte-field-name">queue_msix</span>
+        <span class="byte-field-meta">u16 · 2 B</span>
+        <span class="byte-field-range">0x1A–0x1B</span>
+      </div>
+      <div class="byte-field type-u16" style="--bytes: 2">
+        <span class="byte-field-name">queue_enable</span>
+        <span class="byte-field-meta">u16 · 2 B</span>
+        <span class="byte-field-range">0x1C–0x1D</span>
+      </div>
+      <div class="byte-field type-u16" style="--bytes: 2">
+        <span class="byte-field-name">queue_notify_off</span>
+        <span class="byte-field-meta">u16 · 2 B</span>
+        <span class="byte-field-range">0x1E–0x1F</span>
+      </div>
+      <div class="byte-field type-u64" style="--bytes: 8">
+        <span class="byte-field-name">queue_desc</span>
+        <span class="byte-field-meta">u64 · 8 B</span>
+        <span class="byte-field-range">0x20–0x27</span>
+      </div>
+      <div class="byte-field type-u64" style="--bytes: 8">
+        <span class="byte-field-name">queue_avail</span>
+        <span class="byte-field-meta">u64 · 8 B</span>
+        <span class="byte-field-range">0x28–0x2F</span>
+      </div>
+      <div class="byte-field type-u64" style="--bytes: 8">
+        <span class="byte-field-name">queue_used</span>
+        <span class="byte-field-meta">u64 · 8 B</span>
+        <span class="byte-field-range">0x30–0x37</span>
+      </div>
+    </div>
+
+    <div class="field-reference">
+      <dl>
+        <dt>queue_select <span class="type-tag type-u16">u16 RW</span></dt>
+        <dd>
+          <p>
+            Selector for which queue the following field writes
+            target. virtio-blk has only queue 0 (the request queue
+            we're setting up). Other device types use multiple
+            queues (e.g., virtio-net has separate RX/TX queues) —
+            you configure each by writing its index here, then
+            setting the fields below.
+          </p>
+          <div class="example">write 0 → "the next writes (queue_size, queue_desc, ...)
+                  configure queue 0"</div>
+        </dd>
+
+        <dt>queue_size <span class="type-tag type-u16">u16 RW</span></dt>
+        <dd>
+          <p>
+            Negotiated queue size, must be a power of 2. Read first
+            to learn the device's maximum (commonly 256), then write
+            back the size you actually want. We'll use 64 — small,
+            fits each region in a single 4 KiB page.
+          </p>
+          <div class="example">read  queue_size = 256   (device max)
+write queue_size = 64    (our choice)</div>
+        </dd>
+
+        <dt>queue_msix_vector <span class="type-tag type-u16">u16 RW</span></dt>
+        <dd>
+          <p>
+            Which MSI-X (Message Signaled Interrupts, Extended)
+            vector to fire on completion. We're not using MSI-X (we
+            poll the used ring), so we leave it at 0 (no vector
+            assigned). Real Linux virtio-blk uses MSI-X for
+            performance — interrupts are how it avoids polling.
+          </p>
+        </dd>
+
+        <dt>queue_enable <span class="type-tag type-u16">u16 RW</span></dt>
+        <dd>
+          <p>
+            Write 1 to activate the queue. The device treats this as
+            the "I'm done configuring" signal — before that, it
+            ignores the queue entirely. Write it <em>last</em>;
+            setting it before the addresses are in place is
+            undefined behavior.
+          </p>
+          <div class="example">order: queue_select → queue_size
+     → queue_desc → queue_avail → queue_used
+     → queue_enable = 1   (last!)</div>
+        </dd>
+
+        <dt>queue_notify_off <span class="type-tag type-u16">u16 RO</span></dt>
+        <dd>
+          <p>
+            Read-only multiplier used to compute this queue's
+            notification register address:
+            <code>notify_cap_base + queue_notify_off × notify_off_multiplier</code>.
+            The base and multiplier come from the notifications
+            capability parsed in Lesson 6. Step 7.5 uses this for
+            the kick.
+          </p>
+        </dd>
+
+        <dt>queue_desc <span class="type-tag type-u64">u64 RW</span></dt>
+        <dd>
+          <p>
+            Guest physical address of the descriptor table. Must be
+            page-aligned (4 KiB). The device reads it once at
+            <code>queue_enable</code> time and DMAs from this
+            address forever after. Write the physical address, not
+            virtual — the device doesn't walk your page tables.
+          </p>
+          <div class="example">descriptor table at kernel virt 0xFFFF_8880_0042_0000
+maps to phys                       0x0000_0000_0042_0000
+→ queue_desc = 0x0000_0000_0042_0000</div>
+        </dd>
+
+        <dt>queue_avail <span class="type-tag type-u64">u64 RW</span></dt>
+        <dd>
+          <p>
+            Guest physical address of the available ring. Same
+            rules as <code>queue_desc</code>: page-aligned,
+            physical address.
+          </p>
+        </dd>
+
+        <dt>queue_used <span class="type-tag type-u64">u64 RW</span></dt>
+        <dd>
+          <p>
+            Guest physical address of the used ring. Same rules.
+            The virtio spec recommends (and some implementations
+            require) the used ring to live on a separate 4 KiB page
+            from the descriptor table and available ring — we'll
+            align it that way to be safe.
+          </p>
+        </dd>
+      </dl>
+    </div>
+  </div>
+
+  <p>
+    Note the addresses are <strong>guest physical</strong>, not
+    virtual &mdash; the device does DMA via the physical address
+    space, not through the guest's page tables. The kernel has to
+    translate its virt allocations to physical before writing them
+    here.
+  </p>
+
+  <h2>Build steps &mdash; your turn</h2>
+
+  <p>
+    Five substeps. The first three set up the data structures; the
+    last two implement the ring mechanics. Step 7.5 ends with the
+    device acknowledging the queue is ready.
+  </p>
+
+  <div class="step">
+    <div class="step-title"><span class="step-num">7.1</span>Allocate the three regions</div>
+    <div class="step-detail">
+      <p>
+        Compute the sizes:
+      </p>
+      <ul>
+        <li>Descriptor table: <code>queue_size * 16</code> bytes (16 bytes per entry)</li>
+        <li>Available ring: <code>2 + 2 + (queue_size * 2) + 2</code> bytes (header + queue_size u16 indices + used_event)</li>
+        <li>Used ring: <code>2 + 2 + (queue_size * 8) + 2</code> bytes (header + queue_size 8-byte entries + avail_event)</li>
+      </ul>
+      <p>
+        Use <code>Box::new_zeroed().assume_init()</code> or a similar
+        aligned allocation. Each region needs to be page-aligned (4
+        KiB) and physically contiguous. For our 64-entry queue the
+        sizes are small enough to fit in single pages.
+      </p>
+      <p>
+        Stash the virtual addresses and the physical addresses &mdash;
+        you'll need both (kernel uses virtual, device uses physical).
+      </p>
+    </div>
+  </div>
+
+  <div class="step">
+    <div class="step-title"><span class="step-num">7.2</span>Configure the queue in common config</div>
+    <div class="step-detail">
+      <p>
+        Write the queue fields in order:
+      </p>
+      <ol>
+        <li><code>queue_select = 0</code> (select request queue)</li>
+        <li>Read <code>queue_size</code> &mdash; this is the maximum the device supports; pick the largest power of 2 that fits your allocation</li>
+        <li><code>queue_size = N</code> (write back the negotiated size)</li>
+        <li><code>queue_desc = descriptor_table_phys_addr</code></li>
+        <li><code>queue_avail = available_ring_phys_addr</code></li>
+        <li><code>queue_used = used_ring_phys_addr</code></li>
+        <li><code>queue_enable = 1</code></li>
+      </ol>
+      <p>
+        Read back <code>queue_enable</code> &mdash; if it's still 1,
+        the device accepted the configuration. Print success.
+      </p>
+    </div>
+  </div>
+
+  <div class="step">
+    <div class="step-title"><span class="step-num">7.3</span>Descriptor free list</div>
+    <div class="step-detail">
+      <p>
+        Maintain a stack of free descriptor indices (e.g., a
+        <code>Vec&lt;u16&gt;</code> initialized with <code>[0, 1, 2, ..., N-1]</code>).
+        <code>alloc_descriptor() -&gt; Option&lt;u16&gt;</code> pops the
+        top. <code>free_descriptor(idx)</code> pushes back. Provides
+        O(1) allocation/free with no fragmentation concerns.
+      </p>
+      <p>
+        When a chain completes, free every descriptor in the chain
+        by following <code>next</code> pointers until you hit one
+        without <code>F_NEXT</code>.
+      </p>
+    </div>
+  </div>
+
+  <div class="step">
+    <div class="step-title"><span class="step-num">7.4</span>Available ring submission</div>
+    <div class="step-detail">
+      <p>
+        Implement <code>submit_chain(head_index: u16)</code>:
+      </p>
+      <ol>
+        <li>Read current <code>avail-&gt;idx</code></li>
+        <li>Write <code>avail-&gt;ring[idx % N] = head_index</code></li>
+        <li>Increment <code>avail-&gt;idx</code> with <code>Release</code> ordering (the memory barrier)</li>
+      </ol>
+      <p>
+        The Release ordering ensures the descriptor data and the
+        ring entry are visible to the device before <code>idx</code>
+        advances. Don't skip this.
+      </p>
+    </div>
+  </div>
+
+  <div class="step">
+    <div class="step-title"><span class="step-num">7.5</span>Used ring polling + kick</div>
+    <div class="step-detail">
+      <p>
+        Two functions:
+      </p>
+      <p>
+        <code>poll_completion() -&gt; Option&lt;(u32, u32)&gt;</code>
+        &mdash; read <code>used-&gt;idx</code> with Acquire ordering.
+        If it's advanced past what we last saw, read the new entry
+        from <code>used-&gt;ring</code> and return <code>(id, len)</code>.
+        Otherwise return <code>None</code>.
+      </p>
+      <p>
+        <code>kick()</code> &mdash; write the queue number (0) to the
+        notification register. The address is
+        <code>notify_cap_base + queue_notify_off * notify_off_multiplier</code>
+        (from the notifications capability's offset and a
+        multiplier field in the cap structure). One MMIO store wakes
+        the device.
+      </p>
+      <p>
+        For Lesson 7's verification, you can submit dummy descriptors
+        and verify <code>used-&gt;idx</code> advances. Real reads
+        come in Lesson 8.
+      </p>
+    </div>
+  </div>
+
+  <h2>Verification &mdash; what success looks like</h2>
+
+  <p>
+    Lesson 7's success criterion is narrower than Lesson 8's. We're
+    verifying the queue setup and ring mechanics, not that data
+    flowed. After step 7.5, the boot output should show:
+  </p>
+
+<pre><span class="c">// ... Lesson 6 handshake output ...</span>
+[virtio] setting up virtqueue 0
+[virtio]   negotiated queue size: 64
+[virtio]   descriptor table: virt 0x444444440020 phys 0x420020
+[virtio]   available ring:   virt 0x444444440420 phys 0x420420
+[virtio]   used ring:        virt 0x444444440820 phys 0x420820
+[virtio]   queue_enable accepted
+[virtio] descriptor free list: 64 entries
+[virtio]   alloc_descriptor() = 0
+[virtio]   alloc_descriptor() = 1
+[virtio]   free_descriptor(0)
+[virtio] submit_chain(0): avail-&gt;idx 0 -&gt; 1
+[virtio] kick: wrote queue 0 to notify register
+[virtio]   (no response yet — Lesson 8 sends a valid request that completes)</pre>
+
+  <p>
+    Exact addresses will vary based on allocator state. What matters:
+    queue configuration accepted (queue_enable readback = 1),
+    descriptor allocation works, submit_chain updates avail-&gt;idx,
+    kick doesn't crash. Lesson 8 will turn "no response yet" into
+    "got the bytes back."
+  </p>
+
+  <h2>Primary source</h2>
+
+  <p>
+    The OASIS VIRTIO 1.2 spec,
+    <a href="https://docs.oasis-open.org/virtio/virtio/v1.2/csd01/virtio-v1.2-csd01.html#x1-380002">section
+    2.6 (Virtqueues)</a>, defines the split virtqueue format, the
+    descriptor / available / used layouts, and the memory ordering
+    requirements. Definitive reference.
+  </p>
+
+  <p>
+    For Linux's implementation:
+    <a href="https://elixir.bootlin.com/linux/latest/source/drivers/virtio/virtio_ring.c">drivers/virtio/virtio_ring.c</a>
+    handles both split and packed formats.
+    <a href="https://elixir.bootlin.com/linux/latest/source/drivers/block/virtio_blk.c">drivers/block/virtio_blk.c</a>
+    uses virtqueues to submit disk I/O &mdash; specifically the
+    <code>virtblk_queue_rq</code> function shows how a virtio-blk
+    request becomes a descriptor chain.
+  </p>
+
+  <p>
+    For DMA basics:
+    <a href="https://www.kernel.org/doc/html/latest/core-api/dma-api.html">the
+    Linux DMA API guide</a> covers the kernel's view of device memory
+    access. Our implementation is much simpler (no IOMMU, no bounce
+    buffers) but the concepts are the same.
+  </p>
+
+  <div class="probe">
+    <div class="probe-title">Pause and think</div>
+    <p>
+      The descriptor table, available ring, and used ring are three
+      separate arrays. Why? Why not combine them into one structure
+      &mdash; e.g., a single array where each entry holds the buffer
+      pointer AND the state (free / available / used)?
+    </p>
+  </div>
+
+  </div>
+
+  <footer class="lesson-footer">
+    <div class="footer-block">
+      <h4>Code tour</h4>
+      <p style="margin:0;">
+        Once you start building, the
+        <a href="../tours/tour-4.04-virtqueues.html">tour of changes</a>
+        will be the companion to this lesson &mdash; actual code that
+        landed for each step, with the serial output that proved it.
+      </p>
+    </div>
+
+    <div class="footer-block">
+      <h4>Up next</h4>
+      <p style="margin:0;">
+        Lesson 8 &mdash; First disk read. Build a virtio-blk request
+        (sector number, buffer, status byte), chain three descriptors,
+        submit, kick, poll. Verify the bytes match the
+        <code>MINIOS_DISK_v0</code> signature from step 5.1. This is
+        Keystone 1 &mdash; bytes flow from disk for the first time.
+      </p>
+    </div>
+
+    <div class="footer-block">
+      <h4>If anything was unclear</h4>
+      <p style="margin:0;">
+        Ask. Especially the Release / Acquire memory ordering &mdash;
+        if Rust's atomic orderings don't click, flag it. The pattern
+        repeats everywhere lock-free ring buffers appear, and the
+        spec's correctness depends on getting it right.
+      </p>
+    </div>
+
+    <nav class="lesson-nav">
+      <a href="4.03-virtio-init.html">← Lesson 6: virtio Device Initialization</a>
+      <a href="roadmap-disk-to-exec.html">Roadmap ↑</a>
+    </nav>
+  </footer>
+
+</article>
+</body>
+</html>

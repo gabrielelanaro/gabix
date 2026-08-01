@@ -1,0 +1,426 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Lesson 27 — Nonblocking Sockets and Readiness</title>
+  <link rel="stylesheet" href="../assets/lesson.css">
+  <link rel="stylesheet" href="../assets/stepper.css">
+  <style>
+    .path { padding:1rem 1.15rem; margin:1.25rem 0; overflow-x:auto; border-left:4px solid var(--accent); border-radius:0 7px 7px 0; background:var(--surface); font:.8rem/1.7 var(--font-mono); }
+    .comparison { width:100%; border-collapse:collapse; margin:1.4rem 0; font-size:.9rem; }
+    .comparison th,.comparison td { padding:.65rem; text-align:left; vertical-align:top; border-bottom:1px solid var(--border); }
+    .comparison th { font-family:var(--font-sans); color:var(--text-dim); }
+    .code-window { padding:1rem 1.15rem; margin:1.5rem 0; border:1px solid var(--border); border-radius:8px; background:var(--surface); font:.85rem/1.6 var(--font-mono); overflow-x:auto; }
+    .code-window pre { margin:0; }
+    .socket-row { display:flex; align-items:center; gap:.5rem; padding:.4rem 0; font:.85rem var(--font-mono); }
+    .socket-label { min-width:6rem; color:var(--text-dim); font-family:var(--font-sans); }
+    .quiz { padding:1rem 1.1rem; margin:1.5rem 0; border:1px solid var(--border); border-radius:8px; background:var(--surface-soft); }
+    .quiz-options { display:grid; gap:.5rem; }
+    .quiz button { padding:.55rem .7rem; text-align:left; border:1px solid var(--border-bright); border-radius:5px; color:var(--text); background:var(--surface); font:600 .8rem var(--font-mono); cursor:pointer; }
+    .quiz-result { min-height:1.5em; margin:.7rem 0 0; font-family:var(--font-sans); font-size:.85rem; }
+  </style>
+  <script src="../assets/stepper.js" defer></script>
+</head>
+<body>
+<article class="lesson">
+  <header class="lesson-header">
+    <div class="lesson-eyebrow">Lesson 27 · Networking extension</div>
+    <h1 class="lesson-title">Nonblocking Sockets and Readiness</h1>
+    <p class="lesson-subtitle">Let one event loop serve many UDP sockets without sleeping inside any one receive call.</p>
+    <div class="lesson-meta"><span><strong>Prerequisite</strong> Lesson 26</span><span><strong>Focus</strong> queue state</span><span><strong>Build status</strong> implemented and tested</span></div>
+  </header>
+
+  <div class="content">
+    <p class="lead">Lesson 26’s echo server works well for one socket. A server handling many sockets needs one place to wait for whichever socket has work. Nonblocking calls and readiness APIs provide that structure.</p>
+
+    <h2>The problem: one thread, two sockets</h2>
+    <p>Imagine a server that needs to listen on two UDP ports. Port <code>5555</code> handles time queries. Port <code>7777</code> handles chat messages. Both receive requests unpredictably. How does one server thread handle both?</p>
+
+    <div class="code-window">
+<div class="socket-row"><span class="socket-label">Socket A:</span><span>fd 3, bound to port 5555</span></div>
+<div class="socket-row"><span class="socket-label">Socket B:</span><span>fd 4, bound to port 7777</span></div>
+<div class="socket-row"><span class="socket-label">Server:</span><span>one thread, must serve both</span></div>
+    </div>
+
+    <p>A blocking <code>recvfrom</code> on fd 3 sleeps until port 5555 receives data. While that call sleeps, port 7777’s queue fills with unread messages. The thread never checks fd 4. One socket blocks all others.</p>
+
+    <h2>The wrong approaches</h2>
+    <p>You might try two naive fixes. Both fail for specific reasons.</p>
+
+    <div class="state-grid">
+      <div class="state-card"><strong>Sequential blocking</strong><p>Call <code>recvfrom(3)</code>, then <code>recvfrom(4)</code>, then repeat. Each call sleeps until its socket receives data. The thread spends most of its time asleep on the wrong socket.</p></div>
+      <div class="state-card"><strong>Two threads</strong><p>One thread per socket works, but scales poorly. A thousand concurrent connections means a thousand threads. Each thread consumes a kernel stack and scheduler overhead.</p></div>
+    </div>
+
+    <p>The underlying problem: blocking <code>recvfrom</code> commits the calling thread to one specific socket until data arrives. You need a way to wait on <em>all</em> sockets simultaneously and wake when <em>any</em> of them has work.</p>
+
+    <h2>Nonblocking calls return immediately</h2>
+    <p>A nonblocking socket changes the contract. When the receive queue is empty, the kernel does not put the task to sleep. It returns an error code immediately.</p>
+
+    <table class="comparison">
+      <thead><tr><th>Call</th><th>Queue has a datagram</th><th>Queue is empty</th></tr></thead>
+      <tbody>
+        <tr><td>blocking <code>recvfrom</code></td><td>pop one datagram and return</td><td>put the calling task to sleep until data arrives</td></tr>
+        <tr><td>nonblocking <code>recvfrom</code></td><td>pop one datagram and return</td><td>return immediately with <code>EAGAIN</code> or <code>EWOULDBLOCK</code></td></tr>
+      </tbody>
+    </table>
+
+    <p><code>EAGAIN</code> means “this operation would need to wait; try again later.” POSIX permits either <code>EAGAIN</code> or <code>EWOULDBLOCK</code> for an empty nonblocking socket. Portable code checks for both.</p>
+
+    <p>Nonblocking mode solves the thread commitment problem. A loop can check both sockets without getting stuck on one.</p>
+
+    <pre><code><span class="c">// Busy-wait: check both sockets constantly</span>
+<span class="k">loop</span> {
+    <span class="k">match</span> recvfrom_nonblocking(<span class="n">3</span>, buffer) {
+        Datagram(bytes, client) => handle_time_query(bytes, client),
+        EAGAIN => {},  <span class="c">// Not ready yet, keep going</span>
+        error => handle(error),
+    }
+
+    <span class="k">match</span> recvfrom_nonblocking(<span class="n">4</span>, buffer) {
+        Datagram(bytes, client) => handle_chat_message(bytes, client),
+        EAGAIN => {},
+        error => handle(error),
+    }
+}</code></pre>
+
+    <p>This loop works, but it burns CPU. The thread never sleeps. It spins through both checks even when both queues are empty. You need a way to sleep <em>until</em> at least one socket has data.</p>
+
+    <h2>Readiness tells you when to try</h2>
+    <p>Readiness APIs answer the question “which operations can make progress without blocking?” You register a set of file descriptors with the kernel. The kernel sleeps your thread and wakes it only when one of those descriptors becomes ready.</p>
+
+    <p>The three POSIX readiness facilities are <code>select</code>, <code>poll</code>, and <code>epoll</code>. They solve the same problem with different tradeoffs.</p>
+
+    <h3>select: bitsets modified in-place</h3>
+    <p><code>select</code> uses fixed-size bitsets. You pass a bitset of fds you care about; the kernel clears it and sets only the bits for ready fds.</p>
+
+    <pre><code><span class="c">// Before select: set bits for fds 3 and 4</span>
+fd_set readfds;
+FD_ZERO(&readfds);
+FD_SET(<span class="n">3</span>, &readfds);  <span class="c">// "I care about fd 3"</span>
+FD_SET(<span class="n">4</span>, &readfds);  <span class="c">// "I care about fd 4"</span>
+
+<span class="c">// select() returns with ONLY ready fds set</span>
+<span class="k">int</span> n = select(<span class="n">5</span>, &readfds, NULL, NULL, NULL);  <span class="c">// 5 = max fd + 1</span>
+
+<span class="c">// After select: check which bits are still set</span>
+<span class="k">if</span> (FD_ISSET(<span class="n">3</span>, &readfds)) { <span class="c">/* fd 3 is ready */</span> }
+<span class="k">if</span> (FD_ISSET(<span class="n">4</span>, &readfds)) { <span class="c">/* fd 4 is ready */</span> }</code></pre>
+
+    <p>The bitset is modified in-place. Every call copies the entire bitset to and from the kernel. The bitset size is fixed at compile time: <code>FD_SETSIZE</code>, usually 1024. You cannot monitor fd 1025 with <code>select</code>.</p>
+
+    <h3>poll: array of structs, linear scan</h3>
+    <p><code>poll</code> uses an array of <code>struct pollfd</code>. Each entry has an fd, the events you want, and the events that are ready.</p>
+
+    <pre><code><span class="k">struct</span> pollfd fds[] = {
+    { .fd = <span class="n">3</span>, .events = POLLIN, .revents = <span class="n">0</span> },
+    { .fd = <span class="n">4</span>, .events = POLLIN, .revents = <span class="n">0</span> },
+    { .fd = <span class="n">5</span>, .events = POLLIN, .revents = <span class="n">0</span> },
+};
+
+<span class="c">// poll() returns number of ready fds</span>
+<span class="k">int</span> n = poll(fds, <span class="n">3</span>, -<span class="n">1</span>);  <span class="c">// 3 fds, -1 = wait forever</span>
+
+<span class="c">// After poll: check revents for each fd</span>
+<span class="k">for</span> (<span class="k">int</span> i = <span class="n">0</span>; i < <span class="n">3</span>; i++) {
+    <span class="k">if</span> (fds[i].revents & POLLIN) {
+        <span class="c">/* fds[i].fd is ready */</span>
+    }
+}</code></pre>
+
+    <p>No fixed limit on fd count. But every call copies the entire array to and from the kernel, and the kernel checks every fd in the array. For 10,000 connections, <code>poll</code> checks 10,000 fds even if only 5 are ready.</p>
+
+    <h3>epoll: registration separate from waiting</h3>
+    <p><code>epoll</code> creates a separate epoll file descriptor that maintains state in the kernel. You register interest once with <code>epoll_ctl</code>, then wait with <code>epoll_wait</code>.</p>
+
+    <pre><code><span class="k">int</span> epfd = epoll_create1(<span class="n">0</span>);
+
+<span class="c">// Register fds ONCE</span>
+<span class="k">struct</span> epoll_event ev = { .events = EPOLLIN, .data.fd = <span class="n">3</span> };
+epoll_ctl(epfd, EPOLL_CTL_ADD, <span class="n">3</span>, &ev);
+
+ev.data.fd = <span class="n">4</span>;
+epoll_ctl(epfd, EPOLL_CTL_ADD, <span class="n">4</span>, &ev);
+
+<span class="c">// Wait in a loop - only ready fds are returned</span>
+<span class="k">struct</span> epoll_event events[<span class="n">10</span>];
+<span class="k">while</span> (<span class="n">1</span>) {
+    <span class="k">int</span> n = epoll_wait(epfd, events, <span class="n">10</span>, -<span class="n">1</span>);
+    <span class="k">for</span> (<span class="k">int</span> i = <span class="n">0</span>; i < n; i++) {
+        <span class="k">int</span> fd = events[i].data.fd;  <span class="c">// Only READY fds</span>
+        <span class="c">/* handle fd */</span>
+    }
+}</code></pre>
+
+    <p><code>epoll_wait</code> returns only the fds that are actually ready. For 10,000 connections where 5 are ready, <code>epoll_wait</code> returns 5 entries. The kernel maintains the watch list; you don’t copy it on every call.</p>
+
+    <table class="comparison">
+      <thead><tr><th>API</th><th>Data structure</th><th>Copies per call</th><th>Limit</th></tr></thead>
+      <tbody>
+        <tr><td>select</td><td>Fixed bitset (fd_set)</td><td>Entire bitset</td><td>FD_SETSIZE (~1024)</td></tr>
+        <tr><td>poll</td><td>Array of pollfd</td><td>Entire array</td><td>None practical</td></tr>
+        <tr><td>epoll</td><td>Kernel-managed list</td><td>Only ready fds</td><td>None practical</td></tr>
+      </tbody>
+    </table>
+
+    <h3>Kernel-side cost: why epoll scales</h3>
+    <p>The user-space iteration difference matters, but the kernel-side difference is why <code>epoll</code> handles large connection loads. <code>select</code> and <code>poll</code> do work per <code>poll</code> call. <code>epoll</code> does work per event.</p>
+
+    <p><strong>select and poll: kernel scans all fds on each call</strong></p>
+
+    <pre><code><span class="c">// Kernel-side poll implementation (simplified)</span>
+<span class="k">sys_poll</span>(user_fds, nfds, timeout) {
+    <span class="k">for</span> (i = <span class="n">0</span>; i < nfds; i++) {           <span class="c">// Scan ALL fds</span>
+        <span class="k">struct</span> pollfd *p = &user_fds[i];
+        <span class="k">struct</span> file *f = resolve_fd(p->fd);
+
+        <span class="k">if</span> (f->socket->queue.is_not_empty()) {
+            p->revents = POLLIN;
+            count++;
+        }
+    }
+}</code></pre>
+
+    <p>For 10,000 connections, the kernel checks all 10,000 fds on every <code>poll</code> call, even if only 5 have data. This happens each time your server calls <code>poll</code>.</p>
+
+    <p><strong>epoll: kernel maintains ready state incrementally</strong></p>
+
+    <pre><code><span class="c">// When you register interest with epoll_ctl</span>
+epoll_ctl(epfd, EPOLL_CTL_ADD, fd, &ev) {
+    <span class="k">struct</span> epoll *ep = get_epoll(epfd);
+    ep->watched_fds.insert(fd);        <span class="c">// O(1) add to watch list</span>
+    socket->epoll_watchers.push(ep);   <span class="c">// Link socket → epoll</span>
+}
+
+<span class="c">// When a packet arrives (network delivery path)</span>
+udp_deliver(socket, packet) {
+    socket->queue.push(packet);
+
+    <span class="c">// Check: is anyone watching this socket via epoll?</span>
+    <span class="k">if</span> (socket->epoll_watchers) {
+        <span class="k">for</span> (ep : socket->epoll_watchers) {
+            ep->ready_list.push(socket->fd);  <span class="c">// O(1) add to ready</span>
+            wake_anyone_waiting_on(ep);
+        }
+    }
+}
+
+<span class="c">// When you call epoll_wait</span>
+epoll_wait(epfd, events, max_events, timeout) {
+    <span class="k">struct</span> epoll *ep = get_epoll(epfd);
+
+    <span class="c">// Just copy the ready list - no scanning!</span>
+    n = min(ep->ready_list.len, max_events);
+    memcpy(user_events, ep->ready_list, n);
+    ep->ready_list.clear();
+    <span class="k">return</span> n;
+}</code></pre>
+
+    <p>With <code>epoll</code>, the kernel does O(1) work per packet (add fd to ready list) and O(ready_fds) work per <code>epoll_wait</code> call (copy the ready list). The expensive scan becomes an incremental update as events arrive.</p>
+
+    <table class="comparison">
+      <thead><tr><th>API</th><th>Kernel work per call</th><th>Kernel work per event</th></tr></thead>
+      <tbody>
+        <tr><td>select</td><td>Scan all watched fds</td><td>None</td></tr>
+        <tr><td>poll</td><td>Scan all watched fds</td><td>None</td></tr>
+        <tr><td>epoll</td><td>Copy ready list</td><td>Add fd to ready list</td></tr>
+      </tbody>
+    </table>
+
+    <p>For 10,000 connections with steady traffic: <code>poll</code> scans 10,000 fds on every call. <code>epoll</code> does one O(1) operation per arriving packet and copies only the ready fds on each wait.</p>
+
+    <p>For UDP receive readiness, the kernel resolves each file descriptor through the FD table to its socket object and checks whether the receive queue contains a datagram.</p>
+
+    <div class="path">fd 3 → process FD table → UDP socket → receive queue → nonempty?</div>
+
+    <h2>Putting it together: the event loop</h2>
+    <p>Nonblocking calls plus readiness yield the event loop pattern. Wait for any socket to become ready. Drain each ready socket completely. Repeat.</p>
+
+    <pre><code><span class="c">// Ask for read readiness on both sockets</span>
+pollfds = [
+    { fd: <span class="n">3</span>, events: READABLE },
+    { fd: <span class="n">4</span>, events: READABLE },
+];
+
+<span class="k">loop</span> {
+    <span class="c">// Sleep until ANY socket has data</span>
+    ready = poll(pollfds, timeout);
+
+    <span class="c">// Drain each ready socket completely</span>
+    <span class="k">for</span> fd <span class="k">in</span> ready {
+        <span class="k">loop</span> {
+            <span class="k">match</span> recvfrom_nonblocking(fd, buffer) {
+                Datagram(bytes, client) => sendto(fd, bytes, client),
+                EAGAIN | EWOULDBLOCK => <span class="k">break</span>,  <span class="c">// Queue drained</span>
+                error => handle(error),
+            }
+        }
+    }
+}</code></pre>
+
+    <p>If socket A has an empty queue while socket B receives a message, <code>poll</code> returns B. The event loop serves B without ever sleeping inside A’s <code>recvfrom</code>. One idle socket cannot stop progress on the others.</p>
+
+    <div class="callout"><div class="callout-title">Readiness is a hint, not a promise</div><p style="margin:0">Another task may consume the data between <code>poll</code> and your <code>recvfrom</code>. Keep sockets nonblocking and handle <code>EAGAIN</code> even after a readiness notification. The inner loop that drains until <code>EAGAIN</code> handles this race.</p></div>
+
+    <h2>How poll actually works: the waiter registration trick</h2>
+    <p>The event loop pattern is clear from user space. But what happens inside the kernel when you call <code>poll([3, 4], timeout)</code>? The trick is called <strong>waiter registration</strong>.</p>
+
+    <div class="state-grid">
+      <div class="state-card"><strong>What is “your task”?</strong><p>Your echo server is a process with a Process Identifier (PID). When it calls <code>poll</code>, the kernel looks up which PID is making the call. That PID is “your task.”</p></div>
+      <div class="state-card"><strong>Each socket tracks waiters</strong><p>A socket stores its receive queue <em>and</em> a list of PIDs waiting for that socket to become readable. This is the wait queue.</p></div>
+    </div>
+
+    <p>When your echo server (PID 42) calls <code>poll([3, 4])</code>:</p>
+
+    <pre><code><span class="c">// For each fd you passed</span>
+<span class="k">for</span> fd <span class="k">in</span> [3, 4] {
+    socket = resolve_fd_to_socket(fd);
+
+    <span class="c">// Check if data is already available</span>
+    <span class="k">if</span> socket.queue.is_not_empty() {
+        ready_list.push(fd);
+    }
+}
+
+<span class="c">// If ANY socket had data, return immediately</span>
+<span class="k">if</span> ready_list.is_not_empty() {
+    <span class="k">return</span> ready_list;
+}
+
+<span class="c">// ALL sockets empty: register as waiter on each</span>
+<span class="k">for</span> fd <span class="k">in</span> [3, 4] {
+    socket = resolve_fd_to_socket(fd);
+    socket.waiters.push(<span class="n">42</span>);  <span class="c">// Register PID 42</span>
+}
+
+<span class="c">// Sleep the calling task</span>
+mark_task_blocked(<span class="n">42</span>);
+yield_to_scheduler();</code></pre>
+
+    <p>Your task is now asleep. The kernel will run other tasks. But your PID (42) is registered on both sockets’ waiter lists.</p>
+
+    <h3>Wakeup: delivery notices waiters</h3>
+    <p>Later, when a UDP packet arrives for port 7777:</p>
+
+    <pre><code><span class="c">// Network driver receives frame</span>
+frame = nic.receive_frame();
+packet = parse_udp(frame);
+
+<span class="c">// Find destination socket by port</span>
+socket = port_table.lookup(<span class="n">7777</span>);
+
+<span class="c">// Enqueue the datagram</span>
+socket.queue.push(packet);
+
+<span class="c">// Check: anyone waiting for this socket?</span>
+<span class="k">if</span> socket.waiters.is_not_empty() {
+    <span class="k">for</span> pid <span class="k">in</span> socket.waiters {
+        mark_task_ready(pid);  <span class="c">// Wake them up</span>
+    }
+    socket.waiters.clear();
+}</code></pre>
+
+    <p>PID 42 is marked Ready. The scheduler eventually runs your echo server again. You resume inside <code>poll</code>, which rechecks the sockets and returns fd 4 as ready.</p>
+
+    <div class="callout"><div class="callout-title">The atomicity requirement</div><p style="margin:0">The check-and-register must be one atomic operation. If a packet arrives between the empty check and waiter registration, you would sleep forever while data sits in the queue. On single-CPU mini-os, disabling interrupts around this transition prevents the network worker from observing a half-finished state.</p></div>
+
+    <h3>Two ways the kernel learns about packets</h3>
+    <p>The waiter mechanism works the same regardless of how the kernel discovers packets. There are two approaches:</p>
+
+    <div class="state-grid">
+      <div class="state-card"><strong>Interrupt-driven (real OSes)</strong><p>NIC receives packet → hardware interrupt → CPU jumps to handler → handler processes packet → enqueues → wakes waiters. The interrupt preempts whatever is running and the handler runs immediately.</p></div>
+      <div class="state-card"><strong>Polling worker (mini-os now)</strong><p>A kernel task repeatedly polls the virtio-net device. When it finds a packet, it processes it → enqueues → wakes waiters. No interrupt, just a task that keeps checking.</p></div>
+    </div>
+
+    <p>Your echo server does not care which approach the kernel uses. <code>poll()</code> abstracts it away. User space says “sleep me until fd 4 has data,” and the kernel decides how to detect that data. Lesson 26 built the polling worker. Interrupt-driven receive can replace it later without changing the socket APIs.</p>
+
+    <div class="state-grid">
+      <div class="state-card"><strong>User space</strong><p>Event loop pattern: <code>poll → ready fds → drain → repeat</code></p></div>
+      <div class="state-card"><strong>Kernel space</strong><p>Waiter registration: <code>check queue → register PID → block → wakeup</code></p></div>
+      <div class="state-card"><strong>Device layer</strong><p>Interrupts or polling: how the kernel learns packets arrived</p></div>
+    </div>
+
+    <h2>See it happen: two sockets, one loop</h2>
+    <div class="stepper" data-stepper>
+      <div class="stepper-meter">Event loop · stage <span data-step-index>1</span> of 5</div>
+      <div class="stepper-stage">
+        <section data-step><h3>1 · Register interest</h3><p>The event loop calls <code>poll</code> asking for read readiness on fd 3 and fd 4. Both resolve through the FD table to separate UDP socket queues.</p></section>
+        <section data-step hidden><h3>2 · Both queues are empty</h3><p>The kernel checks each socket’s receive queue. Both are empty, so <code>poll</code> sleeps the event-loop task. Calling blocking <code>recvfrom(3)</code> here would commit the task specifically to socket 3, ignoring socket 4 until port 5555 receives traffic.</p></section>
+        <section data-step hidden><h3>3 · A datagram reaches fd 4</h3><p>The driver receives a frame, UDP selects fd 4’s socket by port lookup, and delivery changes its queue from empty to nonempty.</p></section>
+        <section data-step hidden><h3>4 · Readiness wakes the event loop</h3><p><code>poll</code> reports fd 4 as readable. fd 3 remains absent because its queue is empty. The event loop wakes knowing exactly which socket to check.</p></section>
+        <section data-step hidden><h3>5 · Drain until EAGAIN</h3><p>Nonblocking <code>recvfrom(4)</code> consumes available datagrams. When the socket queue empties, the call returns <code>EAGAIN</code>. The inner loop breaks, the outer loop returns to <code>poll</code>, and the thread sleeps again until another socket becomes ready.</p></section>
+      </div>
+      <div class="stepper-controls"><button type="button" data-step-previous>← Previous</button><button type="button" data-step-next>Next →</button></div>
+    </div>
+
+    <div class="quiz" data-answer="b">
+      <p><strong>Retrieval check.</strong> fd 3 is empty and fd 4 contains one datagram. What should a readiness-driven server do first?</p>
+      <div class="quiz-options"><button data-choice="a">call blocking recvfrom on fd 3</button><button data-choice="b">receive nonblocking from ready fd 4</button><button data-choice="c">poll the NIC from user space directly</button></div>
+      <p class="quiz-result" aria-live="polite"></p>
+    </div>
+
+    <h2>Device arrival and socket readiness are separate layers</h2>
+    <p>Readiness APIs answer “can this user operation make progress?” But the kernel must first learn that a frame arrived from the network. That involves a different mechanism.</p>
+
+    <p>The network interface card (NIC) transfers a frame into a driver receive buffer. The kernel learns about that work by polling the device or receiving an interrupt. The network stack parses Ethernet, IPv4, and UDP, finds the destination socket by port lookup, and enqueues the datagram. That queue transition makes the socket readable and wakes tasks waiting in <code>poll</code>, <code>select</code>, or <code>epoll</code>.</p>
+
+    <div class="path">NIC frame ready<br>
+→ device poll or interrupt<br>
+→ driver receives frame<br>
+→ Ethernet → IPv4 → UDP<br>
+→ port lookup → socket queue becomes nonempty<br>
+→ user-space readiness waiter wakes</div>
+
+    <p>Device polling and interrupts answer “does the hardware have work for the kernel?” Socket readiness answers “can this user operation make progress?” mini-os currently uses a polling network worker from Lesson 26. Readiness can be built above that worker; interrupt-driven receive can arrive later.</p>
+
+    <h2>Two contracts, same path</h2>
+    <p>Blocking and nonblocking <code>recvfrom</code> both reach the same socket object through the same path. The difference appears only when the receive queue is empty.</p>
+
+    <div class="path">fd 3 → process FD table → UDP socket → receive queue</div>
+
+    <p>The queue owns the datagrams. The readiness API inspects that queue from the outside and decides whether a waiter should wake. When the queue has data, both calls return a datagram. When the queue is empty, blocking calls sleep and nonblocking calls return <code>EAGAIN</code>.</p>
+
+    <h2>What to build next in mini-os</h2>
+    <div class="recipe">
+      <div class="recipe-step"><div class="recipe-num">27.1</div><div class="recipe-body"><strong>Nonblocking socket flag.</strong> Add a <code>nonblocking: bool</code> field to <code>UdpSocket</code>. When a socket has this flag set, modify <code>recvfrom</code> to return <code>EAGAIN</code> immediately instead of blocking when the receive queue is empty. All other behavior stays the same: if the queue has data, pop and return one datagram regardless of blocking mode.</div></div>
+
+      <div class="recipe-step"><div class="recipe-num">27.2</div><div class="recipe-body"><strong>Set nonblocking mode.</strong> mini-os accepts Linux's <code>SOCK_NONBLOCK</code> bit in the <code>socket</code> type argument. The socket starts in nonblocking mode, so this slice does not need a separate <code>fcntl</code> syscall.</div></div>
+
+      <div class="recipe-step"><div class="recipe-num">27.3</div><div class="recipe-body"><strong>Poll syscall structure.</strong> Define a <code>struct pollfd</code> with <code>fd: i32</code>, <code>events: u16</code>, and <code>revents: u16</code> fields. Add <code>SYS_POLL</code> to the syscall enum. The syscall accepts a user pointer to an array of <code>pollfd</code>, the array length, and a timeout (ignored for now; return immediately if no fd is ready).</div></div>
+
+      <div class="recipe-step"><div class="recipe-num">27.4</div><div class="recipe-body"><strong>Poll kernel implementation: check all fds first.</strong> Resolve each fd in the array through the calling process’s FD table. Skip any that are not sockets (poll on regular files can wait). For each socket, check whether its receive queue is nonempty. Build a list of ready fds. If any socket has data, copy the <code>revents</code> bits back to user space and return the ready count. No sleep happens.</div></div>
+
+      <div class="recipe-step"><div class="recipe-num">27.5</div><div class="recipe-body"><strong>Poll kernel implementation: register waiters when empty.</strong> If all sockets are empty, you must register the calling task as a waiter on each socket before blocking. For each socket: atomically check that the queue is still empty, then push the current task’s PID onto the socket’s waiter list. This check-and-register must happen with interrupts disabled to prevent a lost wakeup. After registering on all sockets, mark the current task <code>Blocked</code> and yield.</div></div>
+
+      <div class="recipe-step"><div class="recipe-num">27.6</div><div class="recipe-body"><strong>Modify UDP delivery to wake waiters.</strong> When the network worker delivers a datagram to a socket, after pushing to the receive queue, check whether the socket’s waiter list is nonempty. If it is, mark each waiting PID <code>Ready</code> and clear the waiter list. This ensures <code>poll</code> resumes when any watched socket receives data.</div></div>
+
+      <div class="recipe-step"><div class="recipe-num">27.7</div><div class="recipe-body"><strong>Poll return path.</strong> When the task resumes after blocking, recheck all socket queues. Copy <code>POLLIN</code> into <code>revents</code> for each socket that currently has data. Return the count of ready fds. The recheck is necessary because another task might have consumed the data before this task resumed.</div></div>
+
+      <div class="recipe-step"><div class="recipe-num">27.8</div><div class="recipe-body"><strong>Two-port echo program.</strong> Modify the echo server to create two UDP sockets, bind one to port <code>5555</code> and the other to port <code>7777</code>. Set both nonblocking. Enter an event loop: call <code>poll</code> on both fds, then drain whichever is ready with nonblocking <code>recvfrom</code> until <code>EAGAIN</code>, echo each datagram back to its sender. Verify from the Mac that <code>echo 5555</code> and <code>echo 7777</code> both receive prompt replies.</div></div>
+
+      <div class="recipe-step"><div class="recipe-num">27.9</div><div class="recipe-body"><strong>Keep the polling worker.</strong> The network worker from Lesson 26 continues unchanged. It polls virtio-net, parses packets, and delivers to sockets. The new <code>poll</code> syscall builds on top of this worker; interrupt-driven receive is a separate enhancement for later.</div></div>
+    </div>
+    <div class="callout"><div class="callout-title">Current mini-os boundary</div><p style="margin:0">mini-os implements <code>SOCK_NONBLOCK</code>, empty-queue <code>EAGAIN</code>, and syscall 7 <code>poll</code> for UDP <code>POLLIN</code>. Poll timeouts support zero and infinite waits. <code>select</code>, <code>epoll</code>, writable readiness, and finite poll timers remain future work.</p></div>
+    <p>Use the <a href="../reference/nonblocking-sockets.html">nonblocking socket quick reference</a> while tracing the implementation.</p>
+  </div>
+
+  <footer class="lesson-footer">
+    <div class="footer-block"><h4>Primary sources</h4><p style="margin:0"><a href="https://man7.org/linux/man-pages/man2/recvfrom.2.html">Linux recvfrom(2)</a> defines nonblocking receive errors. <a href="https://man7.org/linux/man-pages/man2/poll.2.html">Linux poll(2)</a>, <a href="https://man7.org/linux/man-pages/man2/select.2.html">select(2)</a>, and <a href="https://man7.org/linux/man-pages/man7/epoll.7.html">epoll(7)</a> define readiness interfaces. <a href="https://pubs.opengroup.org/onlinepubs/9799919799/functions/recvfrom.html">POSIX recvfrom</a> defines the portable contract.</p></div>
+    <div class="footer-block"><h4>Keep nearby</h4><p style="margin:0"><a href="6.08-sockets.html">Lesson 26: sockets</a> · <a href="roadmap-networking.html">networking roadmap</a> · <a href="../reference/sockets.html">socket reference</a></p></div>
+    <nav class="lesson-nav" aria-label="Lesson navigation"><a href="6.08-sockets.html">← Lesson 26: sockets</a><a href="roadmap-networking.html">Networking roadmap →</a></nav>
+  </footer>
+</article>
+<script>
+  document.querySelectorAll('.quiz').forEach(function (quiz) {
+    quiz.querySelectorAll('[data-choice]').forEach(function (button) {
+      button.addEventListener('click', function () {
+        quiz.querySelector('.quiz-result').textContent = button.dataset.choice === quiz.dataset.answer
+          ? 'Correct. Readiness identifies fd 4; nonblocking receive keeps the loop safe if its state changes.'
+          : 'Try again. Choose the descriptor whose socket queue can make progress.';
+      });
+    });
+  });
+</script>
+</body>
+</html>

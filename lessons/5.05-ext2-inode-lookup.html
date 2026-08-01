@@ -1,0 +1,1322 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Lesson 12 — ext2 Inode Lookup</title>
+<link rel="stylesheet" href="../assets/lesson.css">
+<script src="../assets/code-highlight.js" defer></script>
+<link rel="stylesheet" href="../assets/byte-layout.css">
+<link rel="stylesheet" href="../assets/explorable.css">
+<style>
+  .lookup-chain {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1.25rem 1.5rem;
+    margin: 1.5rem 0;
+    font-family: var(--font-mono);
+    font-size: 0.85rem;
+    line-height: 1.7;
+  }
+  .lookup-step {
+    display: grid;
+    grid-template-columns: 30px 1fr;
+    gap: 1rem;
+    padding: 0.5rem 0;
+    border-bottom: 1px dashed var(--border);
+  }
+  .lookup-step:last-child { border-bottom: none; }
+  .lookup-num {
+    color: var(--accent);
+    font-weight: 700;
+    text-align: center;
+  }
+  .lookup-body {
+    color: var(--text);
+  }
+  .lookup-body code {
+    color: var(--accent);
+  }
+  .lookup-detail {
+    font-family: var(--font-serif);
+    font-size: 0.88rem;
+    color: var(--text-dim);
+    margin-top: 0.2rem;
+  }
+
+  .mode-decode {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 1rem 1.25rem;
+    margin: 1.5rem 0;
+    font-family: var(--font-mono);
+    font-size: 0.82rem;
+  }
+  .mode-row {
+    display: grid;
+    grid-template-columns: 100px 1fr 2fr;
+    gap: 1rem;
+    padding: 0.3rem 0;
+    border-bottom: 1px dashed var(--border);
+    align-items: baseline;
+  }
+  .mode-row:last-child { border-bottom: none; }
+  .mode-val { color: var(--accent); font-weight: 600; }
+  .mode-name { color: var(--text); }
+  .mode-desc {
+    font-family: var(--font-serif);
+    font-size: 0.85rem;
+    color: var(--text-dim);
+  }
+
+  .step {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1rem 1.25rem;
+    margin: 1.25rem 0;
+  }
+  .step-num {
+    font-family: var(--font-mono);
+    font-size: 0.78rem;
+    font-weight: 600;
+    color: var(--accent);
+    background: var(--accent-soft);
+    padding: 2px 8px;
+    border-radius: 3px;
+    margin-right: 0.5rem;
+  }
+  .step-title {
+    font-family: var(--font-sans);
+    font-weight: 600;
+    font-size: 1rem;
+    margin-bottom: 0.4rem;
+  }
+  .step-detail {
+    font-family: var(--font-serif);
+    font-size: 0.95rem;
+    color: var(--text);
+  }
+  .step-detail p:last-child { margin-bottom: 0; }
+
+  /* ext2 on-disk block grid */
+  .ext2-grid {
+    display: grid;
+    grid-template-columns: repeat(10, 1fr);
+    gap: 0.5rem;
+    margin: 0;
+  }
+
+  /* block-group bracket above the grid */
+  .bg-bracket-row {
+    display: grid;
+    grid-template-columns: repeat(10, 1fr);
+    gap: 0.5rem;
+    margin-bottom: 0.3rem;
+    align-items: end;
+  }
+  .bg-bracket {
+    background: var(--accent-soft);
+    border: 2px dashed var(--accent);
+    border-bottom: none;
+    border-radius: 6px 6px 0 0;
+    padding: 0.4rem 0.5rem;
+    text-align: center;
+    font-family: var(--font-sans);
+    font-size: 0.78rem;
+    color: var(--accent);
+    font-weight: 600;
+    line-height: 1.3;
+  }
+  .bg-bracket small {
+    display: block;
+    font-weight: 400;
+    font-size: 0.7rem;
+    color: var(--text-dim);
+    margin-top: 0.15rem;
+  }
+  .bg-bracket-spacer {
+    /* under boot cell, intentionally empty */
+  }
+
+  /* divider between metadata and data within the grid */
+  .ext2-grid-divider {
+    grid-column: 8 / 9;
+    position: relative;
+  }
+  .ext2-grid-divider::before {
+    content: "metadata │ data";
+    position: absolute;
+    top: 50%;
+    left: -0.4rem;
+    transform: translate(-50%, -50%) rotate(90deg);
+    transform-origin: center;
+    font-family: var(--font-sans);
+    font-size: 0.65rem;
+    color: var(--text-faint);
+    white-space: nowrap;
+    background: var(--bg);
+    padding: 0 0.3rem;
+    letter-spacing: 0.05em;
+  }
+  .ext2-cell {
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 0.5rem 0.4rem;
+    background: var(--surface);
+    text-align: center;
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
+    transition: transform 0.1s ease;
+  }
+  .ext2-cell:hover { transform: translateY(-2px); }
+  .ext2-cell-num {
+    font-weight: 700;
+    color: var(--text-faint);
+    font-size: 0.66rem;
+    letter-spacing: 0.08em;
+    margin-bottom: 0.2rem;
+  }
+  .ext2-cell-name {
+    color: var(--text);
+    font-size: 0.78rem;
+    margin-bottom: 0.2rem;
+    font-weight: 600;
+  }
+  .ext2-cell-note {
+    font-family: var(--font-sans);
+    font-size: 0.65rem;
+    color: var(--text-dim);
+    font-style: italic;
+    line-height: 1.3;
+  }
+  .ext2-cell.boot       { background: #f3f0eb; color: var(--text-faint); border-style: dashed; }
+  .ext2-cell.boot .ext2-cell-name { color: var(--text-faint); }
+  .ext2-cell.done       { border-color: #15803d; border-width: 2px; }
+  .ext2-cell.done .ext2-cell-name { color: #15803d; }
+  .ext2-cell.done .ext2-cell-note { color: #15803d; }
+  .ext2-cell.current    { background: var(--accent-soft); border-color: var(--accent); border-width: 2px; }
+  .ext2-cell.current .ext2-cell-name { color: var(--accent); }
+  .ext2-cell.current .ext2-cell-note { color: var(--accent); font-weight: 600; }
+  .ext2-cell.future     { background: var(--surface-soft); border-style: dashed; }
+  .ext2-cell.inode-table { background: #fef3c7; border-color: var(--accent); }
+
+  .ext2-grid-legend {
+    margin-top: 0.8rem;
+    padding-top: 0.5rem;
+    border-top: 1px solid var(--border);
+    font-family: var(--font-sans);
+    font-size: 0.75rem;
+    color: var(--text-dim);
+    display: flex;
+    gap: 1.2rem;
+    flex-wrap: wrap;
+  }
+  .ext2-grid-legend > span {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+  }
+  .ext2-grid-legend .swatch {
+    width: 14px;
+    height: 14px;
+    border-radius: 3px;
+    display: inline-block;
+  }
+  .ext2-grid-legend .swatch.done    { background: #15803d; }
+  .ext2-grid-legend .swatch.current { background: var(--accent); }
+  .ext2-grid-legend .swatch.inode   { background: #fef3c7; border: 1px solid var(--accent); }
+  .ext2-grid-legend .swatch.future  { background: var(--surface-soft); border: 1px dashed var(--border-bright); }
+  .ext2-grid-legend .swatch.boot    { background: #f3f0eb; border: 1px dashed var(--border-bright); }
+
+  /* lookup flow diagram */
+  .lookup-flow {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1.25rem 1.5rem;
+    margin: 1.5rem 0;
+  }
+  .lookup-flow-step {
+    display: grid;
+    grid-template-columns: 130px 1fr;
+    gap: 1rem;
+    align-items: center;
+    padding: 0.5rem 0;
+  }
+  .lookup-flow-step + .lookup-flow-step::before {
+    content: "↓";
+    color: var(--accent);
+    font-size: 1.5rem;
+    line-height: 1;
+    text-align: center;
+    margin-left: 65px;
+    margin-bottom: 0.5rem;
+    grid-column: 1 / -1;
+  }
+  .lookup-flow-target {
+    background: var(--accent-soft);
+    color: var(--accent);
+    font-family: var(--font-mono);
+    font-size: 0.78rem;
+    padding: 0.5rem 0.7rem;
+    border-radius: 4px;
+    border-left: 3px solid var(--accent);
+    text-align: center;
+    font-weight: 600;
+  }
+  .lookup-flow-yield {
+    font-family: var(--font-serif);
+    font-size: 0.9rem;
+    color: var(--text);
+  }
+  .lookup-flow-yield code {
+    color: var(--accent);
+    font-weight: 600;
+  }
+  .lookup-flow-yield-detail {
+    font-family: var(--font-sans);
+    font-size: 0.78rem;
+    color: var(--text-dim);
+    margin-top: 0.2rem;
+  }
+
+  /* Lesson 12-specific interactive styles (rest comes from explorable.css) */
+  .lookup-flow-step.active .lookup-flow-target {
+    background: var(--accent);
+    color: white;
+  }
+</style>
+</head>
+<body>
+<article class="lesson">
+
+  <header class="lesson-header">
+    <div class="lesson-eyebrow">Lesson 12 · M5 · ext2 phase — find an inode on disk</div>
+    <h1 class="lesson-title">ext2 Inode Lookup</h1>
+    <p class="lesson-subtitle">From inode number to parsed inode struct. Walk the Block Group Descriptor Table, find the inode table, index into it.</p>
+    <div class="lesson-meta">
+      <span><strong>Read time</strong> ~25 min</span>
+      <span><strong>Build time</strong> ~30–40 min</span>
+      <span><strong>Prereq</strong> <a href="5.04-ext2-superblock.html">Lesson 10</a></span>
+    </div>
+  </header>
+
+  <div class="content">
+
+  <p class="lead">
+    Lesson 10 parsed the superblock — the filesystem header. We know
+    the block size (1024), the total inode count (128), where the
+    first data block lives. Lesson 12 follows the chain one level
+    deeper: <em>given an inode number, find that inode on disk and
+    parse its 128-byte struct.</em> The first one we look up is
+    inode 2, the root directory by ext2 convention.
+  </p>
+
+  <p>
+    Lesson 11 (page cache) is still deferred. We're staying on the
+    ext2 critical path.
+  </p>
+
+  <h2>The disk, block by block — what's where</h2>
+
+  <p>
+    One picture worth the next thousand words. For a freshly-mkfs'd
+    1 MB ext2 filesystem with 1024-byte blocks, the first ~10 blocks
+    look like this (then ~1000 more data blocks follow):
+  </p>
+
+  <div class="explorable">
+  <div class="bg-bracket-row">
+    <div class="bg-bracket-spacer"></div>
+    <div class="bg-bracket" data-reveals="block-group-0" style="grid-column: 2 / -1;">
+      block group 0
+      <small>blocks 1–1023 on the real disk · cells below are the first 9</small>
+    </div>
+  </div>
+
+  <div class="ext2-grid">
+    <div class="ext2-cell boot" data-reveals="block-0">
+      <div class="ext2-cell-num">block 0</div>
+      <div class="ext2-cell-name">boot</div>
+      <div class="ext2-cell-note">unused</div>
+    </div>
+    <div class="ext2-cell done" data-reveals="block-1">
+      <div class="ext2-cell-num">block 1</div>
+      <div class="ext2-cell-name">superblock</div>
+      <div class="ext2-cell-note">L10 ✓</div>
+    </div>
+    <div class="ext2-cell current" data-reveals="block-2">
+      <div class="ext2-cell-num">block 2</div>
+      <div class="ext2-cell-name">BGDT</div>
+      <div class="ext2-cell-note">L12.3 ←</div>
+    </div>
+    <div class="ext2-cell future" data-reveals="block-3">
+      <div class="ext2-cell-num">block 3</div>
+      <div class="ext2-cell-name">block bitmap</div>
+      <div class="ext2-cell-note">future</div>
+    </div>
+    <div class="ext2-cell future" data-reveals="block-4">
+      <div class="ext2-cell-num">block 4</div>
+      <div class="ext2-cell-name">inode bitmap</div>
+      <div class="ext2-cell-note">future</div>
+    </div>
+    <div class="ext2-cell inode-table current" data-reveals="block-5">
+      <div class="ext2-cell-num">block 5</div>
+      <div class="ext2-cell-name">inode table</div>
+      <div class="ext2-cell-note">L12.4 ← inodes 1-8</div>
+    </div>
+    <div class="ext2-cell inode-table" data-reveals="block-6">
+      <div class="ext2-cell-num">block 6</div>
+      <div class="ext2-cell-name">inode table</div>
+      <div class="ext2-cell-note">inodes 9-16</div>
+    </div>
+    <div class="ext2-cell inode-table" data-reveals="block-7">
+      <div class="ext2-cell-num">block 7</div>
+      <div class="ext2-cell-name">inode table</div>
+      <div class="ext2-cell-note">inodes 17-24</div>
+    </div>
+    <div class="ext2-cell future" data-reveals="block-8">
+      <div class="ext2-cell-num">block 8</div>
+      <div class="ext2-cell-name">root dir</div>
+      <div class="ext2-cell-note">L13 — dir entries</div>
+    </div>
+    <div class="ext2-cell future" data-reveals="block-9">
+      <div class="ext2-cell-num">block 9+</div>
+      <div class="ext2-cell-name">data</div>
+      <div class="ext2-cell-note">~1000 more</div>
+    </div>
+  </div>
+
+  <p style="font-family: var(--font-sans); font-size: 0.78rem; color: var(--text-dim); margin-top: 0.6rem; text-align: center;">
+    <strong style="color: var(--text);">metadata blocks</strong> (1–20) hold filesystem structure ·
+    <strong style="color: var(--text);">data blocks</strong> (21+) hold file contents
+  </p>
+
+  <div class="detail-panel">
+    <div class="detail-empty">Click any block above (or the block-group bracket) to see what it is and why we read it.</div>
+    <div class="detail-content"></div>
+  </div>
+
+  <div class="ext2-grid-legend">
+    <span><span class="swatch boot"></span> unused</span>
+    <span><span class="swatch done"></span> parsed (green border)</span>
+    <span><span class="swatch current"></span> this lesson (accent fill)</span>
+    <span><span class="swatch inode"></span> inode table</span>
+    <span><span class="swatch future"></span> future lesson</span>
+  </div>
+
+  <p>
+    Numbers above are for mkfs.ext2's default layout on a 1 MB disk.
+    Your <code>bg_inode_table</code> might differ by a block or two;
+    the parser reads it from the BGDT rather than hardcoding. Inode 2
+    (root directory) lives in block 5 at index 1.
+  </p>
+
+  <!-- Templates: detail content for each clickable cell above -->
+  <template id="block-group-0">
+    <h4 class="detail-title">Block group 0 — the whole filesystem (almost)</h4>
+    <div class="detail-body">
+      <p>A <strong>block group</strong> is a contiguous range of blocks that contains everything needed for that section of the filesystem: a superblock copy (sometimes), the BGDT, a block bitmap, an inode bitmap, an inode table, and a chunk of data blocks.</p>
+      <p>For our 1 MB disk, mkfs.ext2 creates exactly <strong>one</strong> block group spanning blocks 1–1023 (boot sector at block 0 is outside). On larger disks the filesystem is divided into multiple groups of ~8192 blocks each — the locality reduces seek time on spinning disks.</p>
+      <p>Within BG0: blocks 1–20 hold filesystem metadata (superblock, BGDT, bitmaps, inode table). Blocks 21–1023 hold file data. The boundary is dynamic based on inode table size.</p>
+    </div>
+  </template>
+
+  <template id="block-0">
+    <h4 class="detail-title">Block 0 — boot sector</h4>
+    <div class="detail-body">
+      <p>Reserved for the bootloader. ext2 itself ignores it. On our disk it's all zeros because mkfs.ext2 doesn't write a boot sector — the kernel image lives in a separate drive that the BIOS/UEFI loads.</p>
+      <p>Spec-wise it's there for compatibility with the original Extended Filesystem design from 1993, which expected a bootloader like GRUB to install itself here.</p>
+    </div>
+  </template>
+
+  <template id="block-1">
+    <h4 class="detail-title">Block 1 — superblock (Lesson 10 ✓)</h4>
+    <div class="detail-body">
+      <p>The filesystem header. 1024 bytes. Parsed in Lesson 10.</p>
+      <p>Holds the magic number (0xEF53), block size, total inode/block counts, and where the first data lives. Every kernel that mounts ext2 reads this first.</p>
+      <p><code>read_sector(2)</code> and <code>read_sector(3)</code> concatenated give us the full 1024 bytes.</p>
+    </div>
+  </template>
+
+  <template id="block-2">
+    <h4 class="detail-title">Block 2 — Block Group Descriptor Table (L12.3)</h4>
+    <div class="detail-body">
+      <p>One 32-byte entry per block group. For our 1 MB disk there's exactly one group, so just one entry we care about (descriptor 0).</p>
+      <p>The load-bearing field is <code>bg_inode_table</code> — the block number where this group's inode table starts. For us: 5.</p>
+      <p>Lesson 12.3 reads this and parses it into a <code>BlockGroupDescriptor</code> struct.</p>
+    </div>
+  </template>
+
+  <template id="block-3">
+    <h4 class="detail-title">Block 3 — block bitmap (future)</h4>
+    <div class="detail-body">
+      <p>One bit per data block in this group. 1 = used, 0 = free. The kernel scans this when allocating new blocks for file writes.</p>
+      <p>For Lesson 12 we don't need it — we're reading existing inodes, not creating new files. The allocator logic comes much later (maybe never, if we stay read-only).</p>
+    </div>
+  </template>
+
+  <template id="block-4">
+    <h4 class="detail-title">Block 4 — inode bitmap (future)</h4>
+    <div class="detail-body">
+      <p>Same idea as the block bitmap, but for inodes. One bit per inode in the table. We know inode 2 exists (it's the root, always there), so we don't need to consult this.</p>
+      <p>Would matter if we were creating files: scan the bitmap for a free inode, claim it, set the bit.</p>
+    </div>
+  </template>
+
+  <template id="block-5">
+    <h4 class="detail-title">Block 5 — inode table, inodes 1–8 (L12.4)</h4>
+    <div class="detail-body">
+      <p>Array of on-disk inodes. Each inode is 128 bytes (default <code>s_inode_size</code>). One 1024-byte block holds 8 inodes.</p>
+      <p>Inode 2 (the root directory) lives at index 1 of this block — byte offset 5 × 1024 + 1 × 128 = 5248.</p>
+      <p>Lesson 12.4 reads this and parses 128 bytes into an <code>Inode</code> struct.</p>
+    </div>
+  </template>
+
+  <template id="block-6">
+    <h4 class="detail-title">Block 6 — inode table, inodes 9–16</h4>
+    <div class="detail-body">
+      <p>Continuation of the inode table. 128 inodes total on our disk, spread across 16 blocks (5–20) at 8 inodes per block.</p>
+      <p>Most are unused — mkfs reserves them for future files. The inode bitmap (block 4) tracks which are allocated.</p>
+    </div>
+  </template>
+
+  <template id="block-7">
+    <h4 class="detail-title">Block 7 — inode table, inodes 17–24</h4>
+    <div class="detail-body">
+      <p>More inode table. Blocks 5 through 20 (16 blocks) hold all 128 inodes. After block 20, the inode table ends and data blocks begin.</p>
+    </div>
+  </template>
+
+  <template id="block-8">
+    <h4 class="detail-title">Block 8 — root directory contents (L13)</h4>
+    <div class="detail-body">
+      <p>The data block pointed to by inode 2's <code>i_block[0]</code>. Holds the root directory's entries.</p>
+      <p>Each entry: inode number (4 bytes), entry length (2 bytes), name length (1 byte), type (1 byte), name (variable, null-padded to 4-byte boundary). Lesson 13 walks these to look up files by name.</p>
+      <p>A fresh mkfs leaves just three entries: <code>.</code>, <code>..</code>, and <code>lost+found</code>.</p>
+    </div>
+  </template>
+
+  <template id="block-9">
+    <h4 class="detail-title">Block 9+ — data blocks</h4>
+    <div class="detail-body">
+      <p>~1000 more blocks of file data. Mostly empty on our 1 MB disk after mkfs (just the lost+found directory).</p>
+      <p>When we add files to the disk image (for Lesson 13+ testing), their contents land here. The ext2 parser reads them via the inode's block pointers — direct, indirect, double-indirect, or triple-indirect depending on file size.</p>
+    </div>
+  </template>
+  </div>
+
+  <h2>The lookup flow — inode number to struct</h2>
+
+  <p>
+    Reading inode 2 walks four structures in order. Each step takes
+    the previous step's output as input:
+  </p>
+
+  <div class="explorable">
+  <div class="lookup-flow">
+    <div class="lookup-flow-step" data-reveals="flow-superblock">
+      <div class="lookup-flow-target">Superblock (block 1)</div>
+      <div class="lookup-flow-yield">
+        gives us <code>s_inodes_per_group = 128</code>,
+        <code>s_inode_size = 128</code>, <code>block_size = 1024</code>
+        <div class="lookup-flow-yield-detail">
+          We have these from Lesson 10 (mostly — Lesson 12.1 adds
+          the two extra fields).
+        </div>
+      </div>
+    </div>
+
+    <div class="lookup-flow-step" data-reveals="flow-bgdt">
+      <div class="lookup-flow-target">BGDT (block 2)</div>
+      <div class="lookup-flow-yield">
+        descriptor 0 says <code>bg_inode_table = 5</code>
+        <div class="lookup-flow-yield-detail">
+          That's the block number where block group 0's inode table
+          starts. For our single-group disk, group 0 is the only
+          group.
+        </div>
+      </div>
+    </div>
+
+    <div class="lookup-flow-step" data-reveals="flow-inode-table">
+      <div class="lookup-flow-target">Inode table (block 5)</div>
+      <div class="lookup-flow-yield">
+        index <code>(2 - 1) % 128 = 1</code>
+        <div class="lookup-flow-yield-detail">
+          Inode numbers are 1-based; index 0 is inode 1 (the
+          reserved "bad blocks" file). Inode 2 is index 1.
+        </div>
+      </div>
+    </div>
+
+    <div class="lookup-flow-step" data-reveals="flow-offset">
+      <div class="lookup-flow-target">byte 5248</div>
+      <div class="lookup-flow-yield">
+        = <code>5 × 1024 + 1 × 128</code>
+        <div class="lookup-flow-yield-detail">
+          Read sectors 10 and 11 (bytes 5120-6143), index at byte
+          160 (= 5248 - 5120), parse 128 bytes.
+        </div>
+      </div>
+    </div>
+
+    <div class="lookup-flow-step" data-reveals="flow-inode-struct">
+      <div class="lookup-flow-target">Inode struct</div>
+      <div class="lookup-flow-yield">
+        <code>i_mode = 0x41ED</code> (S_IFDIR | 0o755),
+        <code>i_size = 1024</code>,
+        <code>i_block[0] = 8</code>
+        <div class="lookup-flow-yield-detail">
+          Confirms inode 2 is a directory. <code>i_block[0]</code>
+          points at block 8 where the directory entries live —
+          Lesson 13 walks them.
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="detail-panel">
+    <div class="detail-empty">Click any step above to dig deeper.</div>
+    <div class="detail-content"></div>
+  </div>
+
+  <!-- Templates: detail content for each lookup-flow step -->
+  <template id="flow-superblock">
+    <h4 class="detail-title">Superblock — what we get from it</h4>
+    <div class="detail-body">
+      <p>Three numbers we need for the inode lookup:</p>
+      <p><strong>s_inodes_per_group</strong> (u32 @ offset 40) — how many inodes per block group. For us: 128. Used to compute which group an inode lives in.</p>
+      <p><strong>s_inode_size</strong> (u16 @ offset 88) — bytes per on-disk inode. For us: 128. Used to compute byte offset within the inode table.</p>
+      <p><strong>block_size</strong> (computed from s_log_block_size @ offset 24) — ext2 block size in bytes. For us: 1024. Used to convert block numbers to byte offsets.</p>
+      <p>Lesson 12.1 extends Lesson 10's Superblock struct to expose the first two.</p>
+    </div>
+  </template>
+
+  <template id="flow-bgdt">
+    <h4 class="detail-title">BGDT — finding the inode table</h4>
+    <div class="detail-body">
+      <p>The Block Group Descriptor Table tells us where each group's structures live. For block group 0 (the only group on our disk), we read descriptor 0 and extract:</p>
+      <p><strong>bg_inode_table</strong> (u32 @ offset 8) — the block number where this group's inode table starts. For us: 5.</p>
+      <p>This is the load-bearing field for Lesson 12. Without it, we'd have to guess where inodes live. The BGDT is the map.</p>
+    </div>
+  </template>
+
+  <template id="flow-inode-table">
+    <h4 class="detail-title">Inode table — index arithmetic</h4>
+    <div class="detail-body">
+      <p>The inode table is a flat array. Inode <em>N</em> is at index <code>(N - 1) % s_inodes_per_group</code> within its group's table.</p>
+      <p>The <code>-1</code> is because inode numbers are 1-indexed but the array is 0-indexed. Inode 1 (reserved "bad blocks" file) is index 0. Inode 2 (root directory) is index 1.</p>
+      <p>The <code>% s_inodes_per_group</code> handles multi-group filesystems — large disks have many block groups, each with its own inode table. For our 1 MB disk with one group, the modulo never wraps.</p>
+    </div>
+  </template>
+
+  <template id="flow-offset">
+    <h4 class="detail-title">Byte offset — translating to sectors</h4>
+    <div class="detail-body">
+      <p>Block number × block size + local index × inode size = byte offset on disk.</p>
+      <p>For inode 2: 5 × 1024 + 1 × 128 = 5248 bytes.</p>
+      <p>Since <code>read_sector</code> takes a sector number (512 B unit), we translate: 5248 / 512 = 10.25. So inode 2 starts at sector 10 byte 160 (5248 - 5120). We read sectors 10 AND 11 to get the full 1024-byte buffer, then index at byte 160 within it for the 128-byte inode.</p>
+      <p>This two-sector read + index pattern will repeat for every inode lookup. A future <code>read_bytes(offset, len)</code> primitive would simplify this.</p>
+    </div>
+  </template>
+
+  <template id="flow-inode-struct">
+    <h4 class="detail-title">Inode struct — what we got back</h4>
+    <div class="detail-body">
+      <p>128 bytes parsed into our <code>Inode</code> struct. The fields that matter for Lesson 12:</p>
+      <p><strong>i_mode</strong> = 0x41ED — top 4 bits 0x4 = S_IFDIR (directory). Bottom 12 bits 0x1ED = 0o755 = rwxr-xr-x. Confirms inode 2 is a directory with default permissions.</p>
+      <p><strong>i_size</strong> = 1024 — the directory is exactly one block (8 dir entries × 128 bytes each, but ext2 dirs use variable-length entries so this varies).</p>
+      <p><strong>i_block[0]</strong> = 8 — the block number where the directory's data lives. Lesson 13 reads this block and parses directory entries.</p>
+      <p><strong>i_block[1..15]</strong> = 0 — no other direct blocks needed (1024 B fits in one block). No indirect/double/triple needed either.</p>
+    </div>
+  </template>
+  </div>
+
+  <p>
+    The math in one line:
+    <code>inode_byte = bg_inode_table × block_size + (N - 1) × s_inode_size</code>.
+    Five steps to go from a number to a parsed struct on disk.
+  </p>
+
+  <h2>The lookup chain — five steps from number to struct</h2>
+
+  <p>
+    To read inode <code>N</code>, the kernel walks four on-disk
+    structures in order:
+  </p>
+
+  <div class="lookup-chain">
+    <div class="lookup-step">
+      <div class="lookup-num">1</div>
+      <div class="lookup-body">
+        <strong>Superblock</strong> &mdash; tells us
+        <code>s_inodes_per_group</code> and <code>s_inode_size</code>.
+        <div class="lookup-detail">
+          From Lesson 10. We parsed most fields but didn't expose these
+          two yet &mdash; Lesson 12 adds them.
+        </div>
+      </div>
+    </div>
+    <div class="lookup-step">
+      <div class="lookup-num">2</div>
+      <div class="lookup-body">
+        <strong>Block Group Descriptor Table (BGDT)</strong> &mdash;
+        right after the superblock. One 32-byte entry per block group.
+        <div class="lookup-detail">
+          Tells us where each group's inode table lives. For our 1 MB
+          disk there's one block group, so just one entry we care
+          about.
+        </div>
+      </div>
+    </div>
+    <div class="lookup-step">
+      <div class="lookup-num">3</div>
+      <div class="lookup-body">
+        <strong>Block group descriptor</strong> &mdash; specifically
+        its <code>bg_inode_table</code> field: the block number where
+        the inode table starts.
+        <div class="lookup-detail">
+          For our disk: <code>bg_inode_table = 5</code> (mkfs puts the
+          inode table at block 5).
+        </div>
+      </div>
+    </div>
+    <div class="lookup-step">
+      <div class="lookup-num">4</div>
+      <div class="lookup-body">
+        <strong>Inode table</strong> &mdash; array of inode structs.
+        Index into it: <code>(N - 1) % s_inodes_per_group</code>.
+        <div class="lookup-detail">
+          Inode numbers are 1-based. Index 0 in the table = inode 1
+          (the reserved "bad blocks" file). Index 1 = inode 2 (root
+          directory).
+        </div>
+      </div>
+    </div>
+    <div class="lookup-step">
+      <div class="lookup-num">5</div>
+      <div class="lookup-body">
+        <strong>Inode struct</strong> &mdash; 128 bytes (default
+        <code>s_inode_size</code>). Parse the fields, return.
+        <div class="lookup-detail">
+          Includes <code>i_mode</code> (file type + permissions),
+          <code>i_size</code>, <code>i_block[15]</code> (data block
+          pointers), etc.
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <p>
+    The arithmetic to compute the byte offset of inode <code>N</code>:
+  </p>
+
+<pre><span class="c">// Block group containing inode N (0-indexed math, but inode numbers are 1-indexed)</span>
+group      = (N - <span class="n">1</span>) / s_inodes_per_group
+
+<span class="c">// Index within that group's inode table</span>
+local_idx  = (N - <span class="n">1</span>) % s_inodes_per_group
+
+<span class="c">// Byte offset on disk</span>
+inode_byte = bg_inode_table[group] * block_size + local_idx * s_inode_size</pre>
+
+  <p>
+    For inode 2 on our disk: group = 0, local_idx = 1,
+    bg_inode_table[0] = 5, block_size = 1024, s_inode_size = 128.
+    Byte offset = 5 × 1024 + 1 × 128 = 5248 = sector 10 byte 160.
+    We'll read sectors 10 and 11 (1024 bytes total), index at byte
+    160, parse 128 bytes.
+  </p>
+
+  <h2>The block group descriptor (32 bytes)</h2>
+
+  <p>
+    One entry per block group. We only need three fields: where the
+    inode table starts, and the free counts (for future
+    allocation-aware logic).
+  </p>
+
+  <div class="byte-layout">
+    <div class="byte-layout-header">
+      <span class="byte-layout-name">Block group descriptor</span>
+      <span class="byte-layout-size">32 bytes total</span>
+    </div>
+    <div class="byte-bar">
+      <div class="byte-field type-u32" style="--bytes: 4">
+        <span class="byte-field-name">bg_block_bitmap</span>
+        <span class="byte-field-meta">u32 · 4 B</span>
+        <span class="byte-field-range">0x00</span>
+      </div>
+      <div class="byte-field type-u32" style="--bytes: 4">
+        <span class="byte-field-name">bg_inode_bitmap</span>
+        <span class="byte-field-meta">u32 · 4 B</span>
+        <span class="byte-field-range">0x04</span>
+      </div>
+      <div class="byte-field type-u32" style="--bytes: 4">
+        <span class="byte-field-name">bg_inode_table</span>
+        <span class="byte-field-meta">u32 · 4 B</span>
+        <span class="byte-field-range">0x08</span>
+      </div>
+      <div class="byte-field type-u16" style="--bytes: 2">
+        <span class="byte-field-name">bg_free_blocks</span>
+        <span class="byte-field-meta">u16 · 2 B</span>
+        <span class="byte-field-range">0x0C</span>
+      </div>
+      <div class="byte-field type-u16" style="--bytes: 2">
+        <span class="byte-field-name">bg_free_inodes</span>
+        <span class="byte-field-meta">u16 · 2 B</span>
+        <span class="byte-field-range">0x0E</span>
+      </div>
+      <div class="byte-field type-u16" style="--bytes: 2">
+        <span class="byte-field-name">bg_used_dirs</span>
+        <span class="byte-field-meta">u16 · 2 B</span>
+        <span class="byte-field-range">0x10</span>
+      </div>
+      <div class="byte-field type-pad" style="--bytes: 14">
+        <span class="byte-field-name">(padding + reserved)</span>
+        <span class="byte-field-meta">14 B</span>
+        <span class="byte-field-range">0x12–0x1F</span>
+      </div>
+    </div>
+
+    <div class="field-reference">
+      <dl>
+        <dt>bg_block_bitmap <span class="type-tag type-u32">u32</span></dt>
+        <dd>
+          <p>
+            Block number where this group's block bitmap lives. The
+            bitmap is one bit per data block in the group &mdash; 1 =
+            used, 0 = free. We don't need this for Lesson 12 (just
+            looking up existing inodes), but it's how the kernel
+            allocates new blocks for file writes.
+          </p>
+        </dd>
+
+        <dt>bg_inode_bitmap <span class="type-tag type-u32">u32</span></dt>
+        <dd>
+          <p>
+            Same idea for inodes. One bit per inode in the table.
+          </p>
+        </dd>
+
+        <dt>bg_inode_table <span class="type-tag type-u32">u32</span></dt>
+        <dd>
+          <p>
+            The load-bearing field for Lesson 12. Block number where
+            this group's inode table starts. For our disk: block 5.
+          </p>
+          <div class="example">inode 2 byte offset:
+  bg_inode_table[0] × block_size + 1 × s_inode_size
+  = 5 × 1024 + 1 × 128
+  = 5248</div>
+        </dd>
+
+        <dt>bg_free_blocks_count / bg_free_inodes_count <span class="type-tag type-u16">u16</span></dt>
+        <dd>
+          <p>
+            Per-group free counts. Should sum to the superblock's
+            global free counts across all groups.
+          </p>
+        </dd>
+
+        <dt>bg_used_dirs_count <span class="type-tag type-u16">u16</span></dt>
+        <dd>
+          <p>
+            Number of directories in this group. Used by the allocator
+            to spread directories across groups (locality
+            optimization).
+          </p>
+        </dd>
+      </dl>
+    </div>
+  </div>
+
+  <p>
+    The BGDT lives right after the superblock. For a 1024-byte block
+    filesystem, that's block 2 (superblock is block 1). For our
+    single-group disk, the table has just one entry &mdash; 32 bytes
+    used of a 1024-byte block.
+  </p>
+
+  <h2>The on-disk inode struct (128 bytes)</h2>
+
+  <p>
+    Every file, directory, symlink, etc. has one. The struct holds
+    the file's metadata plus 15 block pointers (12 direct + 1
+    indirect + 1 double-indirect + 1 triple-indirect). For Lesson 12
+    we parse just the metadata; reading file data via the block
+    pointers comes in Lesson 13.
+  </p>
+
+  <div class="byte-layout explorable">
+    <div class="byte-layout-header">
+      <span class="byte-layout-name">ext2 on-disk inode (128 bytes)</span>
+      <span class="byte-layout-size">click any field for detail · hover for name</span>
+    </div>
+    <div class="byte-bar">
+      <div class="byte-field type-u16" data-reveals="inode-mode" data-tip="i_mode (u16, offset 0x00)" style="--bytes: 2">
+        <span class="byte-field-name">i_mode</span>
+        <span class="byte-field-meta">u16 · 2 B</span>
+        <span class="byte-field-range">0x00</span>
+        <span class="byte-field-mini">2B</span>
+      </div>
+      <div class="byte-field type-u16" data-reveals="inode-uid" data-tip="i_uid (u16, offset 0x02)" style="--bytes: 2">
+        <span class="byte-field-name">i_uid</span>
+        <span class="byte-field-meta">u16 · 2 B</span>
+        <span class="byte-field-range">0x02</span>
+        <span class="byte-field-mini">2B</span>
+      </div>
+      <div class="byte-field type-u32" data-reveals="inode-size" data-tip="i_size (u32, offset 0x04)" style="--bytes: 4">
+        <span class="byte-field-name">i_size</span>
+        <span class="byte-field-meta">u32 · 4 B</span>
+        <span class="byte-field-range">0x04</span>
+        <span class="byte-field-mini">4B</span>
+      </div>
+      <div class="byte-field type-u32" data-reveals="inode-atime" data-tip="i_atime (u32, offset 0x08)" style="--bytes: 4">
+        <span class="byte-field-name">i_atime</span>
+        <span class="byte-field-meta">u32 · 4 B</span>
+        <span class="byte-field-range">0x08</span>
+        <span class="byte-field-mini">4B</span>
+      </div>
+      <div class="byte-field type-u32" data-reveals="inode-ctime" data-tip="i_ctime (u32, offset 0x0C)" style="--bytes: 4">
+        <span class="byte-field-name">i_ctime</span>
+        <span class="byte-field-meta">u32 · 4 B</span>
+        <span class="byte-field-range">0x0C</span>
+        <span class="byte-field-mini">4B</span>
+      </div>
+      <div class="byte-field type-u32" data-reveals="inode-mtime" data-tip="i_mtime (u32, offset 0x10)" style="--bytes: 4">
+        <span class="byte-field-name">i_mtime</span>
+        <span class="byte-field-meta">u32 · 4 B</span>
+        <span class="byte-field-range">0x10</span>
+        <span class="byte-field-mini">4B</span>
+      </div>
+      <div class="byte-field type-u32" data-reveals="inode-dtime" data-tip="i_dtime (u32, offset 0x14)" style="--bytes: 4">
+        <span class="byte-field-name">i_dtime</span>
+        <span class="byte-field-meta">u32 · 4 B</span>
+        <span class="byte-field-range">0x14</span>
+        <span class="byte-field-mini">4B</span>
+      </div>
+      <div class="byte-field type-u16" data-reveals="inode-gid" data-tip="i_gid (u16, offset 0x18)" style="--bytes: 2">
+        <span class="byte-field-name">i_gid</span>
+        <span class="byte-field-meta">u16 · 2 B</span>
+        <span class="byte-field-range">0x18</span>
+        <span class="byte-field-mini">2B</span>
+      </div>
+      <div class="byte-field type-u16" data-reveals="inode-links" data-tip="i_links_count (u16, offset 0x1A)" style="--bytes: 2">
+        <span class="byte-field-name">i_links</span>
+        <span class="byte-field-meta">u16 · 2 B</span>
+        <span class="byte-field-range">0x1A</span>
+        <span class="byte-field-mini">2B</span>
+      </div>
+      <div class="byte-field type-u32" data-reveals="inode-blocks" data-tip="i_blocks (u32, offset 0x1C)" style="--bytes: 4">
+        <span class="byte-field-name">i_blocks</span>
+        <span class="byte-field-meta">u32 · 4 B</span>
+        <span class="byte-field-range">0x1C</span>
+        <span class="byte-field-mini">4B</span>
+      </div>
+      <div class="byte-field type-u32" data-reveals="inode-flags" data-tip="i_flags (u32, offset 0x20)" style="--bytes: 4">
+        <span class="byte-field-name">i_flags</span>
+        <span class="byte-field-meta">u32 · 4 B</span>
+        <span class="byte-field-range">0x20</span>
+        <span class="byte-field-mini">4B</span>
+      </div>
+      <div class="byte-field type-u32" data-reveals="inode-osd1" data-tip="i_osd1 (u32, offset 0x24)" style="--bytes: 4">
+        <span class="byte-field-name">i_osd1</span>
+        <span class="byte-field-meta">u32 · 4 B</span>
+        <span class="byte-field-range">0x24</span>
+        <span class="byte-field-mini">4B</span>
+      </div>
+      <div class="byte-field type-array" data-reveals="inode-block-ptrs" data-tip="i_block[15] — 12 direct + indirect + double + triple (60 B, offset 0x28)" style="--bytes: 60">
+        <span class="byte-field-name">i_block[15]</span>
+        <span class="byte-field-meta">u32 × 15 · 60 B</span>
+        <span class="byte-field-range">0x28–0x63</span>
+        <span class="byte-field-mini">60B</span>
+      </div>
+      <div class="byte-field type-struct" data-reveals="inode-trailer" data-tip="generation / acl / faddr / osd2 (28 B, offset 0x64)" style="--bytes: 28">
+        <span class="byte-field-name">generation / acl / faddr / osd2</span>
+        <span class="byte-field-meta">28 B</span>
+        <span class="byte-field-range">0x64–0x7F</span>
+        <span class="byte-field-mini">28B</span>
+      </div>
+    </div>
+
+    <div class="detail-panel">
+      <div class="detail-empty">Click any field above to see what it stores, its type, and what value inode 2 has there.</div>
+      <div class="detail-content"></div>
+    </div>
+
+    <!-- Templates: detail per inode field -->
+    <template id="inode-mode">
+      <h4 class="detail-title">i_mode · u16 · offset 0x00</h4>
+      <div class="detail-body">
+        <p>Two packed fields: file type (top 4 bits) + Unix permissions (bottom 12 bits).</p>
+        <p>For inode 2 (root directory): type = directory (S_IFDIR = 0x4000), perms = 0o755 (rwxr-xr-x). Combined: <code>0x41ED</code>.</p>
+        <p>Top 4 bits decode: 0x4 → directory. Bottom 12 bits decode: 0x1ED = 0o755.</p>
+      </div>
+    </template>
+    <template id="inode-uid">
+      <h4 class="detail-title">i_uid · u16 · offset 0x02</h4>
+      <div class="detail-body">
+        <p>User ID of the file's owner. Lower 16 bits here; upper 16 bits in <code>i_uid_high</code> (in the trailer field at 0x64+) if the filesystem supports 32-bit UIDs.</p>
+        <p>For inode 2: 0 (root).</p>
+      </div>
+    </template>
+    <template id="inode-size">
+      <h4 class="detail-title">i_size · u32 · offset 0x04</h4>
+      <div class="detail-body">
+        <p>File size in bytes. For directories: the size of the directory's data block (typically one block, 1024 B for us). For regular files: actual byte count.</p>
+        <p>For inode 2: 1024 (one block of directory entries).</p>
+      </div>
+    </template>
+    <template id="inode-atime">
+      <h4 class="detail-title">i_atime · u32 · offset 0x08</h4>
+      <div class="detail-body">
+        <p>Access time — Unix epoch seconds when the file was last read. Updated by the kernel on each read; we don't update it (read-only filesystem).</p>
+      </div>
+    </template>
+    <template id="inode-ctime">
+      <h4 class="detail-title">i_ctime · u32 · offset 0x0C</h4>
+      <div class="detail-body">
+        <p>Change time — when the inode's metadata (mode, owner, link count) last changed. Distinct from mtime (data modification).</p>
+      </div>
+    </template>
+    <template id="inode-mtime">
+      <h4 class="detail-title">i_mtime · u32 · offset 0x10</h4>
+      <div class="detail-body">
+        <p>Modification time — when the file's data was last written. The "last edited" timestamp you see in <code>ls -l</code>.</p>
+      </div>
+    </template>
+    <template id="inode-dtime">
+      <h4 class="detail-title">i_dtime · u32 · offset 0x14</h4>
+      <div class="detail-body">
+        <p>Deletion time — when the inode was last freed (set to 0 when the inode is in use). Used by recovery tools to undelete files; the inode's data blocks may still be intact until overwritten.</p>
+        <p>For inode 2: 0 (not deleted).</p>
+      </div>
+    </template>
+    <template id="inode-gid">
+      <h4 class="detail-title">i_gid · u16 · offset 0x18</h4>
+      <div class="detail-body">
+        <p>Group ID of the file's owning group. Lower 16 bits; upper 16 in <code>i_gid_high</code> in the trailer if 32-bit GIDs are supported.</p>
+        <p>For inode 2: 0 (root group).</p>
+      </div>
+    </template>
+    <template id="inode-links">
+      <h4 class="detail-title">i_links_count · u16 · offset 0x1A</h4>
+      <div class="detail-body">
+        <p>Hard link count — how many directory entries point at this inode. When it reaches 0, the inode can be freed (data blocks returned to the free pool).</p>
+        <p>For a directory: at least 2 (the entry in its parent, plus the <code>.</code> entry inside itself). For inode 2 (root): typically 3 (<code>/</code>, <code>.</code>, and <code>..</code> in any subdirectory).</p>
+      </div>
+    </template>
+    <template id="inode-blocks">
+      <h4 class="detail-title">i_blocks · u32 · offset 0x1C</h4>
+      <div class="detail-body">
+        <p>Number of 512-byte sectors the file occupies — <strong>not</strong> ext2 blocks. Counter-intuitive. A 1024-byte file uses 2 sectors here, even though it's 1 ext2 block.</p>
+        <p>The unit is always 512 B regardless of filesystem block size, for compatibility with the historical Unix stat interface.</p>
+      </div>
+    </template>
+    <template id="inode-flags">
+      <h4 class="detail-title">i_flags · u32 · offset 0x20</h4>
+      <div class="detail-body">
+        <p>Bit flags for advanced behaviors: immutable, append-only, no-atime-update, etc. Usually 0 on a fresh mkfs. We ignore these.</p>
+      </div>
+    </template>
+    <template id="inode-osd1">
+      <h4 class="detail-title">i_osd1 · u32 · offset 0x24</h4>
+      <div class="detail-body">
+        <p>OS-specific data field 1. On Linux: holds an "i_version" hint for NFS but rarely used. We ignore it.</p>
+      </div>
+    </template>
+    <template id="inode-block-ptrs">
+      <h4 class="detail-title">i_block[15] · u32 × 15 · 60 B · offset 0x28</h4>
+      <div class="detail-body">
+        <p>15 block pointers — how the file's data is found on disk:</p>
+        <p><strong>Pointers 0–11 (direct):</strong> each is a block number holding file data. A small file (&lt;12 blocks) uses just these.</p>
+        <p><strong>Pointer 12 (indirect):</strong> points at a block full of 256 more u32 pointers (on a 1024 B block filesystem). Used when direct pointers run out.</p>
+        <p><strong>Pointer 13 (double-indirect):</strong> points at a block of 256 pointers, each pointing at another block of 256 pointers.</p>
+        <p><strong>Pointer 14 (triple-indirect):</strong> three levels deep — 256³ more block addresses.</p>
+        <p>For inode 2 (1024-byte directory): <code>i_block[0] = 8</code>, rest are 0. One direct block is plenty.</p>
+      </div>
+    </template>
+    <template id="inode-trailer">
+      <h4 class="detail-title">generation / acl / faddr / osd2 · 28 B · offset 0x64</h4>
+      <div class="detail-body">
+        <p>Trailing fields we don't touch in Lesson 12:</p>
+        <p><strong>i_generation</strong> (u32) — version number for NFS, incremented when the inode is reused.</p>
+        <p><strong>i_file_acl</strong> (u32) — pointer to extended attributes block (permissions beyond rwx, ACLs).</p>
+        <p><strong>i_dir_acl / i_size_high</strong> (u32) — for directories: ACL; for regular files: upper 32 bits of size (allows files &gt;4 GB).</p>
+        <p><strong>i_faddr</strong> (u32) — fragment address (rarely used; fragments are an ext2 feature for packing small tails).</p>
+        <p><strong>i_osd2</strong> (12 B) — Linux-specific: UID/GID high bits, fragment location, etc.</p>
+      </div>
+    </template>
+  </div>
+
+  <p style="font-family: var(--font-sans); font-size: 0.78rem; color: var(--text-dim); margin-top: -0.5rem;">
+    Fields marked with just a byte count (like <code>2B</code>, <code>4B</code>) are too narrow to label inline.
+    Hover for the field name; click to expand the detail panel above the bar.
+  </p>
+
+  <h2>Decoding i_mode — file type + permissions</h2>
+
+  <p>
+    <code>i_mode</code> packs two things into 16 bits. The top 4
+    bits encode the file type; the bottom 12 bits are standard Unix
+    permissions (the same bits <code>chmod</code> manipulates).
+  </p>
+
+  <div class="mode-decode">
+    <div class="mode-row">
+      <span class="mode-val">0x8000</span>
+      <span class="mode-name">S_IFREG</span>
+      <span class="mode-desc">Regular file</span>
+    </div>
+    <div class="mode-row">
+      <span class="mode-val">0x4000</span>
+      <span class="mode-name">S_IFDIR</span>
+      <span class="mode-desc">Directory &larr; inode 2 is this</span>
+    </div>
+    <div class="mode-row">
+      <span class="mode-val">0xA000</span>
+      <span class="mode-name">S_IFLNK</span>
+      <span class="mode-desc">Symbolic link</span>
+    </div>
+    <div class="mode-row">
+      <span class="mode-val">0x6000</span>
+      <span class="mode-name">S_IFBLK</span>
+      <span class="mode-desc">Block device (e.g., /dev/sda)</span>
+    </div>
+    <div class="mode-row">
+      <span class="mode-val">0x2000</span>
+      <span class="mode-name">S_IFCHR</span>
+      <span class="mode-desc">Character device (e.g., /dev/tty)</span>
+    </div>
+    <div class="mode-row">
+      <span class="mode-val">0x1000</span>
+      <span class="mode-name">S_IFIFO</span>
+      <span class="mode-desc">Named pipe (FIFO)</span>
+    </div>
+    <div class="mode-row">
+      <span class="mode-val">0xC000</span>
+      <span class="mode-name">S_IFSOCK</span>
+      <span class="mode-desc">Socket</span>
+    </div>
+  </div>
+
+  <p>
+    The bottom 12 bits: standard
+    <code>rwxrwxrwx</code> + setuid + setgid + sticky. We mostly
+    ignore permissions in mini-os, but checking the type is essential
+    &mdash; a directory entry's target inode must be S_IFDIR for us
+    to walk into it.
+  </p>
+
+  <h2>Build steps — your turn</h2>
+
+  <p>
+    Five substeps. By the end we'll have looked up inode 2 (root
+    directory) and parsed its 128-byte struct.
+  </p>
+
+  <div class="step">
+    <div class="step-title"><span class="step-num">12.1</span>Extend Superblock with the two extra fields</div>
+    <div class="step-detail">
+      <p>
+        Lesson 10's <code>Superblock</code> is missing two fields
+        we'll need: <code>s_inodes_per_group</code> (u32 @ offset 40)
+        and <code>s_inode_size</code> (u16 @ offset 88). Add them.
+      </p>
+      <p>
+        For our disk: <code>s_inodes_per_group = 128</code> (matches
+        total inodes since we have one group), <code>s_inode_size =
+        128</code> bytes.
+      </p>
+    </div>
+  </div>
+
+  <div class="step">
+    <div class="step-title"><span class="step-num">12.2</span>BlockGroupDescriptor struct + parser</div>
+    <div class="step-detail">
+      <p>
+        Same pattern as Superblock: struct holding the fields we
+        care about (<code>block_bitmap</code>,
+        <code>inode_bitmap</code>, <code>inode_table</code>,
+        <code>free_blocks_count</code>, <code>free_inodes_count</code>,
+        <code>used_dirs_count</code>). Parse from 32 bytes via
+        <code>from_le_bytes</code>.
+      </p>
+    </div>
+  </div>
+
+  <div class="step">
+    <div class="step-title"><span class="step-num">12.3</span>read_block_group_descriptor function</div>
+    <div class="step-detail">
+      <p>
+        Read the BGDT for block group 0. For 1024-byte block
+        filesystems, the BGDT is at block 2 (superblock is block 1).
+        Read sectors 4 and 5, parse the first 32 bytes as a
+        <code>BlockGroupDescriptor</code>.
+      </p>
+      <p>
+        Returns the descriptor. The <code>inode_table</code> field
+        is what we use next.
+      </p>
+    </div>
+  </div>
+
+  <div class="step">
+    <div class="step-title"><span class="step-num">12.4</span>Inode struct + parser + read_inode</div>
+    <div class="step-detail">
+      <p>
+        <code>Inode</code> struct with the fields we care about:
+        <code>mode</code> (u16), <code>size</code> (u32),
+        <code>blocks</code> (u32), <code>block_pointers</code>
+        ([u32; 15]). Parser via from_le_bytes at standard offsets.
+      </p>
+      <p>
+        <code>read_inode(dev, sb, bgd, n)</code> &mdash; the
+        arithmetic: <code>inode_byte = bgd.inode_table × block_size +
+        (n - 1) × sb.inode_size</code>. Read the right sectors,
+        index into them, parse 128 bytes.
+      </p>
+    </div>
+  </div>
+
+  <div class="step">
+    <div class="step-title"><span class="step-num">12.5</span>Verify inode 2 is the root directory</div>
+    <div class="step-detail">
+      <p>
+        In main.rs, after the Lesson 10 superblock test:
+      </p>
+      <ul>
+        <li>Read block group descriptor 0</li>
+        <li>Read inode 2 via the new <code>read_inode</code></li>
+        <li>Assert <code>mode & 0xF000 == 0x4000</code> (S_IFDIR)</li>
+        <li>Print <code>size</code>, <code>blocks</code>, first few <code>block_pointers</code></li>
+        <li>Verify <code>block_pointers[0] != 0</code> &mdash; directory has at least one data block</li>
+      </ul>
+      <p>
+        For our disk: inode 2 should be a directory of size 1024
+        (one block), with <code>block_pointers[0]</code> pointing at
+        the block containing the root directory entries. We'll
+        parse those entries in Lesson 13.
+      </p>
+    </div>
+  </div>
+
+  <h2>Verification — what success looks like</h2>
+
+<pre><span class="c">// ... Lesson 10 superblock verification ...</span>
+[test] ext2 inode lookup (12.1-12.5)
+[ext2] reading block group descriptor 0 (block 2)
+[ext2] parsed BGD:
+[ext2]   block_bitmap   = 3
+[ext2]   inode_bitmap   = 4
+[ext2]   inode_table    = 5    ← load-bearing
+[ext2]   free_blocks    = 970
+[ext2]   free_inodes    = 117
+[ext2]   used_dirs      = 1    ← just root
+[ext2] reading inode 2 (root directory)
+[ext2]   byte offset: 5 * 1024 + 1 * 128 = 5248
+[ext2] parsed inode 2:
+[ext2]   mode           = 0x41ED  (S_IFDIR | 0o755)
+[ext2]   size           = 1024 bytes
+[ext2]   blocks         = 2 sectors (= 1 ext2 block)
+[ext2]   block_pointers = [8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+[ext2] *** inode 2 is the root directory — ready to walk ***</pre>
+
+  <p>
+    Exact <code>block_pointers[0]</code> will depend on mkfs layout
+    &mdash; for a 1 MB disk it's typically 8 (block 8 holds the
+    root directory entries). What matters: mode has S_IFDIR set,
+    size is non-zero, first block pointer is non-zero.
+  </p>
+
+  <h2>Primary source</h2>
+
+  <p>
+    The ext2 documentation at
+    <a href="https://www.nongnu.org/ext2-doc/ext2.html">nongnu.org</a>:
+  </p>
+  <ul>
+    <li>
+      <a href="https://www.nongnu.org/ext2-doc/ext2.html#BLOCK-GROUP-DESCRIPTOR-TABLE">Block Group Descriptor Table</a>
+      &mdash; section 2.3
+    </li>
+    <li>
+      <a href="https://www.nongnu.org/ext2-doc/ext2.html#INODE-TABLE">Inode Table</a>
+      &mdash; section 2.4, including how to compute inode locations
+    </li>
+    <li>
+      <a href="https://www.nongnu.org/ext2-doc/ext2.html#DEF-INODE">struct ext2_inode</a>
+      &mdash; the on-disk inode layout (we parse 10 fields out of ~25)
+    </li>
+  </ul>
+
+  <p>
+    For Linux's implementation:
+    <a href="https://elixir.bootlin.com/linux/latest/source/fs/ext2/inode.c">fs/ext2/inode.c</a>
+    &mdash; specifically <code>ext2_get_inode</code> computes the
+    block-group / offset math we'll write, and
+    <code>ext2_iget</code> parses the on-disk struct into an
+    in-memory <code>struct inode</code>.
+  </p>
+
+  <div class="probe">
+    <div class="probe-title">Pause and think</div>
+    <p>
+      ext2 inodes are 128 bytes by default, but
+      <code>s_inode_size</code> can be larger (256, 512, ...) on
+      filesystems formatted for newer revisions. The first 128 bytes
+      are always the standard struct; bytes 128+ are "extra space"
+      used for things like extended attributes. Why keep the first
+      128 bytes fixed even when there's more space available?
+    </p>
+  </div>
+
+  </div>
+
+  <footer class="lesson-footer">
+    <div class="footer-block">
+      <h4>Code tour</h4>
+      <p style="margin:0;">
+        Once you start building, the
+        <a href="../tours/tour-5.05-ext2-inode-lookup.html">tour of changes</a>
+        will be the companion to this lesson.
+      </p>
+    </div>
+
+    <div class="footer-block">
+      <h4>Up next</h4>
+      <p style="margin:0;">
+        Lesson 13 &mdash; ext2 directory walk. Read the data block
+        pointed at by inode 2's <code>block_pointers[0]</code>,
+        parse the directory entries (each: inode number + name +
+        length). Use this to look up files by name. Then Lesson 14
+        &mdash; mount ext2 as the root filesystem, replacing the
+        hardcoded ROOT_INODE.
+      </p>
+    </div>
+
+    <div class="footer-block">
+      <h4>If anything was unclear</h4>
+      <p style="margin:0;">
+        Ask. Especially the inode-number arithmetic, the i_mode
+        packing, or the direct/indirect block pointer scheme.
+      </p>
+    </div>
+
+    <nav class="lesson-nav">
+      <a href="5.04-ext2-superblock.html">← Lesson 10: ext2 Superblock</a>
+      <a href="roadmap-disk-to-exec.html">Roadmap ↑</a>
+    </nav>
+  </footer>
+
+</article>
+
+<script src="../assets/explorable.js"></script>
+
+</body>
+</html>

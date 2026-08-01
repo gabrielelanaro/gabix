@@ -1,0 +1,694 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Lesson 10 — ext2 Superblock</title>
+<link rel="stylesheet" href="../assets/lesson.css">
+<script src="../assets/code-highlight.js" defer></script>
+<link rel="stylesheet" href="../assets/byte-layout.css">
+<style>
+  .disk-layout {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1.25rem 1.5rem;
+    margin: 1.5rem 0;
+    font-family: var(--font-mono);
+    font-size: 0.82rem;
+    overflow-x: auto;
+  }
+  .disk-block {
+    display: grid;
+    grid-template-columns: 80px 1fr auto;
+    gap: 0.8rem;
+    align-items: baseline;
+    padding: 0.4rem 0;
+    border-bottom: 1px dashed var(--border);
+  }
+  .disk-block:last-child { border-bottom: none; }
+  .disk-block.highlight {
+    background: var(--accent-soft);
+    margin: 0 -0.5rem;
+    padding: 0.4rem 0.5rem;
+    border-radius: 3px;
+    border-bottom: none;
+  }
+  .disk-block-label {
+    color: var(--text-faint);
+    font-size: 0.78rem;
+  }
+  .disk-block-name {
+    color: var(--text);
+    font-weight: 600;
+  }
+  .disk-block-detail {
+    font-family: var(--font-serif);
+    font-size: 0.85rem;
+    color: var(--text-dim);
+  }
+  .disk-block-size {
+    color: var(--text-faint);
+    font-size: 0.75rem;
+  }
+
+  .step {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1rem 1.25rem;
+    margin: 1.25rem 0;
+  }
+  .step-num {
+    font-family: var(--font-mono);
+    font-size: 0.78rem;
+    font-weight: 600;
+    color: var(--accent);
+    background: var(--accent-soft);
+    padding: 2px 8px;
+    border-radius: 3px;
+    margin-right: 0.5rem;
+  }
+  .step-title {
+    font-family: var(--font-sans);
+    font-weight: 600;
+    font-size: 1rem;
+    margin-bottom: 0.4rem;
+  }
+  .step-detail {
+    font-family: var(--font-serif);
+    font-size: 0.95rem;
+    color: var(--text);
+  }
+  .step-detail p:last-child { margin-bottom: 0; }
+</style>
+</head>
+<body>
+<article class="lesson">
+
+  <header class="lesson-header">
+    <div class="lesson-eyebrow">Lesson 10 · M5 · ext2 phase begins</div>
+    <h1 class="lesson-title">ext2 Superblock</h1>
+    <p class="lesson-subtitle">Read the on-disk filesystem's first structure: the superblock. It tells us everything about how the disk is organized — block size, inode count, where things live.</p>
+    <div class="lesson-meta">
+      <span><strong>Read time</strong> ~20 min</span>
+      <span><strong>Build time</strong> ~25–35 min</span>
+      <span><strong>Prereq</strong> <a href="4.06-block-layer.html">Lesson 9</a></span>
+    </div>
+  </header>
+
+  <div class="content">
+
+  <p class="lead">
+    Lessons 5–9 built the disk path: PCI, virtio, virtqueues, block
+    layer. We can read any sector by number and get 512 bytes back.
+    Now we start interpreting those bytes as a filesystem. ext2 is
+    the format we'll use — old, simple, well-documented, the
+    predecessor of ext3 and ext4. The Linux kernel still has ext2
+    support in <code>fs/ext2/</code>; we'll read its source alongside.
+  </p>
+
+  <h2>What "filesystem on disk" means</h2>
+
+  <p>
+    The disk doesn't know it's ext2. Bytes are bytes — a flat array
+    of 512-byte sectors. ext2 is a convention for how to interpret
+    those bytes: where the metadata lives, how to find an inode, how
+    to parse a directory entry, where file data starts. Two programs
+    can look at the same disk and see different things — one sees
+    random bytes, another sees a tree of files. The difference is
+    whether they know the convention.
+  </p>
+
+  <p>
+    We're going to teach the kernel the ext2 convention. The first
+    structure to parse is the <strong>superblock</strong> — the
+    "header" of the filesystem that says "I am ext2, my blocks are
+    this big, I have this many inodes, my data starts here."
+    Everything else we'll do (looking up inodes, walking directories,
+    reading file contents) starts from numbers in the superblock.
+  </p>
+
+  <h2>Historical context — where ext2 fits</h2>
+
+  <p>
+    ext2 (1993, designed by Rémy Card) was Linux's default
+    filesystem for a decade. It succeeded ext (1992), which itself
+    succeeded the MINIX filesystem — the latter limited to 64 MB
+    disks and 14-character filenames because it was built for
+    teaching. Linus needed something production-ready for Linux
+    without licensing MINIX's code.
+  </p>
+
+  <p>
+    The "Extended Filesystem" family that followed kept ext2's basic
+    on-disk structure:
+  </p>
+  <ul>
+    <li>
+      <strong>ext3 (2001, Stephen Tweedie)</strong> — ext2 plus
+      journaling. Mounts ext2 filesystems unchanged. The journal
+      records metadata changes; on crash, the kernel replays the
+      journal instead of running full <code>fsck</code>. Backwards
+      compatible.
+    </li>
+    <li>
+      <strong>ext4 (2008)</strong> — ext3 plus extents, bigger size
+      limits, metadata checksums, persistent preallocation. Extents
+      replace the direct+indirect+double+triple block-pointer scheme
+      with "this file is N MB starting at block X" — much better for
+      large files. Backwards compatible with ext2/ext3.
+    </li>
+  </ul>
+
+  <p>
+    Understanding ext2 mostly gets you the structure of all four.
+    The differences are additions layered on top, not redesigns. ext4
+    is the default on most Linux distributions today; ext2 is now
+    niche (embedded systems, recovery environments, teaching).
+  </p>
+
+  <p>
+    <strong>Why ext2 looks the way it does</strong> — designed for
+    1993-era hardware:
+  </p>
+  <ul>
+    <li>
+      Block-group locality reduces seek time on spinning disks.
+      Keeping a file's inode and its data blocks in the same group
+      means the disk head moves less. QEMU has no seek penalty, but
+      the design survives.
+    </li>
+    <li>
+      Bitmaps for free-space tracking were the obvious choice when
+      RAM was scarce — one bit per block, easy to scan. Modern
+      filesystems (XFS, Btrfs) use B-trees for the same job.
+    </li>
+    <li>
+      Direct + indirect + double-indirect + triple-indirect block
+      pointers (Lesson 12) were a simple way to scale to large files
+      without extents. ext4 replaced this scheme because it gets
+      expensive for huge files.
+    </li>
+  </ul>
+
+  <h3>Comparison to FAT</h3>
+
+  <p>
+    FAT (File Allocation Table, 1977, Microsoft) is the simplest
+    common filesystem. Where ext2 optimizes for Unix semantics on
+    local disks, FAT optimizes for portability across systems:
+  </p>
+  <ul>
+    <li>No journal, no checksums, no permissions, no hard links, no symlinks.</li>
+    <li>Linked-list allocation — each cluster points to the next, so reading a large file means seeking across the disk following pointers.</li>
+    <li>4 GB max file size on FAT32; ext2 supports ~2 TB with 4 KiB blocks.</li>
+    <li>Filenames: 8.3 on FAT16, up to 255 chars on FAT32 (with long-filename extension); ext2 always supported 255 chars.</li>
+  </ul>
+
+  <p>
+    FAT still lives where its simplicity wins: UEFI boot partitions
+    (the EFI System Partition on every modern PC), USB sticks for
+    cross-OS compatibility, SD cards, embedded devices. ext2 lives
+    in embedded Linux, recovery environments, and (for us) as a
+    teaching vehicle.
+  </p>
+
+  <p>
+    <strong>Why we're using ext2 for mini-os:</strong> it has Unix
+    semantics (permissions, hard links, symlinks — which we'll want
+    later for the syscall layer) without ext4's extents complexity or
+    ext3's journal. The parser is small enough to write in one
+    lesson; ext4 would need extent decoding first.
+  </p>
+
+  <h2>Terminology — the words you'll meet</h2>
+
+  <p>
+    Five terms you'll see in the superblock fields. Each one solves
+    a specific problem the filesystem designer faced.
+  </p>
+
+  <p>
+    <strong>Block.</strong> ext2's unit of allocation. Default 1024
+    bytes. A file occupies whole blocks; a 100-byte file wastes 924
+    bytes of its last block. The tradeoff: bigger blocks mean less
+    metadata overhead (fewer block pointers per file) but more waste
+    per file. mkfs.ext2 picks 1024 for small disks. Compare with
+    <em>sector</em>: the device's unit (always 512 B for virtio-blk).
+    Block = filesystem's unit. Two 1024-byte blocks = four 512-byte
+    sectors.
+  </p>
+
+  <p>
+    <strong>Inode (index node).</strong> The metadata for one file.
+    Holds: size, timestamps, permissions, link count, and pointers
+    to the data blocks (we'll meet the pointer structure in Lesson
+    12). Notably does <em>not</em> hold the file name — multiple
+    names (hard links) can point at one inode. ext2 inodes are 128
+    bytes by default. Numbered starting at 1; inode 2 is the root
+    directory by ext2 convention. (You met inodes in Lesson 1's VFS
+    work — same concept, here it's the on-disk representation.)
+  </p>
+
+  <p>
+    <strong>Block group.</strong> The filesystem is divided into
+    chunks of roughly 8192 blocks each. Each group is self-contained:
+    its own inode table, its own inode bitmap, its own block bitmap.
+    Why? Locality — keeping a file's inode and its data blocks in the
+    same group reduces disk seek time on physical drives. Less
+    relevant for virtio/QEMU (no seek penalty), but the design
+    survives from the spinning-disk era. Our 1 MB disk is small
+    enough to have just one block group.
+  </p>
+
+  <p>
+    <strong>Superblock.</strong> The 1024-byte filesystem header at
+    byte offset 1024 (sector 2). Holds the magic number, block size,
+    total inode count, total block count, etc. Every kernel that
+    mounts ext2 reads this first. Has backups in each block group
+    (see the probe question).
+  </p>
+
+  <p>
+    <strong>Magic number.</strong> Two bytes that say "I am ext2."
+    Always <code>0xEF53</code>. If you don't see this value at offset
+    56 of the superblock, either the disk isn't ext2 or you're
+    reading the wrong offset. It's the first thing our parser checks
+    before trusting anything else.
+  </p>
+
+  <p>
+    Terms we'll meet in later lessons, not needed for Lesson 10:
+  </p>
+  <ul>
+    <li><strong>Inode table</strong> — array of on-disk inodes within a block group (Lesson 12)</li>
+    <li><strong>Block Group Descriptor Table (BGDT)</strong> — table describing where each group's structures live (Lesson 13)</li>
+    <li><strong>Inode bitmap</strong> / <strong>block bitmap</strong> — used/free tracking bits (Lesson 13+)</li>
+    <li><strong>Direct / indirect / double-indirect / triple-indirect block pointers</strong> — how an inode points at its data blocks (Lesson 12)</li>
+  </ul>
+
+  <h2>The on-disk layout of an ext2 filesystem</h2>
+
+  <p>
+    mkfs.ext2 (which we'll use to format our disk image) lays out the
+    filesystem in <strong>blocks</strong>. The default block size for
+    small filesystems is 1024 bytes (we'll see this in the superblock).
+    Layout from byte 0:
+  </p>
+
+  <div class="disk-layout">
+    <div class="disk-block">
+      <span class="disk-block-label">bytes 0–1023</span>
+      <span class="disk-block-name">Boot sector</span>
+      <span class="disk-block-size">block 0 · 1024 B</span>
+      <span></span>
+      <span class="disk-block-detail">Reserved for bootloader. ext2 ignores it.</span>
+      <span></span>
+    </div>
+    <div class="disk-block highlight">
+      <span class="disk-block-label">bytes 1024–2047</span>
+      <span class="disk-block-name">Superblock ← Lesson 11</span>
+      <span class="disk-block-size">block 1 · 1024 B</span>
+      <span></span>
+      <span class="disk-block-detail">"I am ext2." Magic number, block size, counts, where everything else lives.</span>
+      <span></span>
+    </div>
+    <div class="disk-block">
+      <span class="disk-block-label">bytes 2048–</span>
+      <span class="disk-block-name">Block Group Descriptor Table</span>
+      <span class="disk-block-size">block 2+ · 32 B per descriptor</span>
+      <span></span>
+      <span class="disk-block-detail">One entry per block group: where the inode bitmap, block bitmap, and inode table live for that group.</span>
+      <span></span>
+    </div>
+    <div class="disk-block">
+      <span class="disk-block-label">...</span>
+      <span class="disk-block-name">Block groups (repeating)</span>
+      <span class="disk-block-size">many blocks</span>
+      <span></span>
+      <span class="disk-block-detail">Each group: superblock copy (sometimes), descriptors, bitmaps, inode table, data blocks.</span>
+      <span></span>
+    </div>
+  </div>
+
+  <p>
+    For our 1 MB disk image, mkfs.ext2 will create one block group.
+    The superblock is at byte offset 1024, which is sector 2 (1024 ÷
+    512). Our <code>read_sector(2)</code> from Lesson 9 returns the
+    first half of the superblock; <code>read_sector(3)</code> returns
+    the second half. Most fields we care about live in the first
+    half, but to be safe we'll read both.
+  </p>
+
+  <h2>The superblock's important fields (first 64 bytes)</h2>
+
+  <div class="byte-layout">
+    <div class="byte-layout-header">
+      <span class="byte-layout-name">ext2 superblock (first 64 bytes of 1024)</span>
+      <span class="byte-layout-size">1024 bytes total</span>
+    </div>
+    <div class="byte-bar">
+      <div class="byte-field type-u32" style="--bytes: 4">
+        <span class="byte-field-name">s_inodes_count</span>
+        <span class="byte-field-meta">u32 · 4 B</span>
+        <span class="byte-field-range">0x00</span>
+      </div>
+      <div class="byte-field type-u32" style="--bytes: 4">
+        <span class="byte-field-name">s_blocks_count</span>
+        <span class="byte-field-meta">u32 · 4 B</span>
+        <span class="byte-field-range">0x04</span>
+      </div>
+      <div class="byte-field type-u32" style="--bytes: 4">
+        <span class="byte-field-name">s_r_blocks_count</span>
+        <span class="byte-field-meta">u32 · 4 B</span>
+        <span class="byte-field-range">0x08</span>
+      </div>
+      <div class="byte-field type-u32" style="--bytes: 4">
+        <span class="byte-field-name">s_free_blocks</span>
+        <span class="byte-field-meta">u32 · 4 B</span>
+        <span class="byte-field-range">0x0C</span>
+      </div>
+      <div class="byte-field type-u32" style="--bytes: 4">
+        <span class="byte-field-name">s_free_inodes</span>
+        <span class="byte-field-meta">u32 · 4 B</span>
+        <span class="byte-field-range">0x10</span>
+      </div>
+      <div class="byte-field type-u32" style="--bytes: 4">
+        <span class="byte-field-name">s_first_data_block</span>
+        <span class="byte-field-meta">u32 · 4 B</span>
+        <span class="byte-field-range">0x14</span>
+      </div>
+      <div class="byte-field type-u32" style="--bytes: 4">
+        <span class="byte-field-name">s_log_block_size</span>
+        <span class="byte-field-meta">u32 · 4 B</span>
+        <span class="byte-field-range">0x18</span>
+      </div>
+      <div class="byte-field type-u32" style="--bytes: 4">
+        <span class="byte-field-name">(other fields)</span>
+        <span class="byte-field-meta">u32 · 28 B</span>
+        <span class="byte-field-range">0x1C–0x37</span>
+      </div>
+      <div class="byte-field type-u16" style="--bytes: 4">
+        <span class="byte-field-name">s_magic</span>
+        <span class="byte-field-meta">u16 · 2 B</span>
+        <span class="byte-field-range">0x38</span>
+      </div>
+    </div>
+
+    <div class="field-reference">
+      <dl>
+        <dt>s_inodes_count <span class="type-tag type-u32">u32</span></dt>
+        <dd>
+          <p>
+            Total inodes in the filesystem. An inode is the metadata
+            for one file (or directory, or symlink, etc.). The count
+            is fixed at mkfs time based on disk size — there's a
+            finite number per filesystem.
+          </p>
+          <div class="example">mkfs.ext2 on a 1 MB disk → s_inodes_count ≈ 128</div>
+        </dd>
+
+        <dt>s_blocks_count <span class="type-tag type-u32">u32</span></dt>
+        <dd>
+          <p>
+            Total blocks in the filesystem. For a 1 MB disk with 1024
+            B blocks, this is ~1000 (some reserved). The unit is
+            <em>ext2 blocks</em>, not sectors — important distinction.
+          </p>
+          <div class="example">1024 KiB / 1 KiB per block = 1024 blocks (minus reserved)</div>
+        </dd>
+
+        <dt>s_free_blocks_count <span class="type-tag type-u32">u32</span></dt>
+        <dd>
+          <p>
+            How many blocks are still unused. Decrements on file
+            writes, increments on deletes. After mkfs, this is close
+            to s_blocks_count (slightly less due to filesystem
+            overhead).
+          </p>
+        </dd>
+
+        <dt>s_free_inodes_count <span class="type-tag type-u32">u32</span></dt>
+        <dd>
+          <p>
+            Same idea for inodes. After mkfs, this is
+            s_inodes_count minus a handful for the root directory and
+            <code>lost+found</code>.
+          </p>
+        </dd>
+
+        <dt>s_first_data_block <span class="type-tag type-u32">u32</span></dt>
+        <dd>
+          <p>
+            The index of the first block usable for data. For 1024 B
+            block filesystems, this is 1 (block 0 is the boot sector).
+            For larger block sizes (2048, 4096), this is 0 because the
+            boot sector and superblock fit inside block 0.
+          </p>
+        </dd>
+
+        <dt>s_log_block_size <span class="type-tag type-u32">u32</span></dt>
+        <dd>
+          <p>
+            Block size <em>as a logarithm</em>: actual block size is
+            <code>1024 &lt;&lt; s_log_block_size</code>. So 0 → 1024 B,
+            1 → 2048 B, 2 → 4096 B. mkfs.ext2 picks 0 for small disks.
+          </p>
+          <div class="example">s_log_block_size = 0  →  block size = 1024 bytes
+s_log_block_size = 2  →  block size = 4096 bytes</div>
+        </dd>
+
+        <dt>s_magic <span class="type-tag type-u16">u16</span></dt>
+        <dd>
+          <p>
+            Magic number identifying the filesystem as ext2. Always
+            <code>0xEF53</code> (decimal 61267). If this isn't right,
+            you're either reading the wrong disk or the disk isn't
+            ext2. This is the first thing our parser checks.
+          </p>
+          <div class="example">read s_magic at offset 56
+expect 0xEF53 (little-endian: bytes 53 EF)</div>
+        </dd>
+      </dl>
+    </div>
+  </div>
+
+  <p>
+    The superblock has another ~960 bytes of fields we won't touch
+    yet: volume label, last-mount time, error-handling policy,
+    reserved-block count, feature flags. They matter for a fully
+    functional filesystem; for our purposes (read inodes, walk
+    directories, load files) the fields above are enough.
+  </p>
+
+  <div class="callout">
+    <div class="callout-title">Little-endian everywhere</div>
+    <p>
+      ext2 fields are little-endian (LE). x86 is also LE, so reading
+      a <code>u32</code> from a properly-aligned ext2 byte slice is
+      free — no byte swap. But we'll use
+      <code>u32::from_le_bytes</code> and
+      <code>u16::from_le_bytes</code> explicitly, which (a) handles
+      alignment (no need for the slice to be 4-byte aligned) and (b)
+      documents the endianness assumption in code. If we ever ported
+      to a big-endian architecture, the same code would work.
+    </p>
+  </div>
+
+  <h2>Build steps — your turn</h2>
+
+  <p>
+    Four substeps. By the end we'll have parsed the superblock and
+    verified it describes a real ext2 filesystem.
+  </p>
+
+  <div class="step">
+    <div class="step-title"><span class="step-num">10.1</span>Format the disk image as ext2</div>
+    <div class="step-detail">
+      <p>
+        Update <code>scripts/make-disk.sh</code> to run
+        <code>mkfs.ext2 -F disk.img</code> after creating the file.
+        The <code>-F</code> flag forces mkfs to proceed despite the
+        "this file isn't a block device" warning. After mkfs, our
+        <code>MINIOS_DISK_v0\n</code> signature gets overwritten —
+        that's fine, we'll verify the ext2 magic instead.
+      </p>
+      <p>
+        Verify by running <code>dumpe2fs disk.img</code> — should
+        print the superblock fields. Or <code>hexdump -C disk.img |
+        head</code> — bytes 1080–1081 (offset 0x438 = 1080) should be
+        <code>53 EF</code> (the magic in LE).
+      </p>
+    </div>
+  </div>
+
+  <div class="step">
+    <div class="step-title"><span class="step-num">10.2</span>Define the Superblock struct + parser</div>
+    <div class="step-detail">
+      <p>
+        New module <code>src/ext2.rs</code>. Define a
+        <code>Superblock</code> struct holding the fields we care
+        about (parsed from raw bytes — not <code>repr(C)</code>
+        transmute, but via <code>from_le_bytes</code>):
+      </p>
+<pre><span class="k">pub struct</span> <span class="t">Superblock</span> {
+    <span class="k">pub</span> inodes_count:       <span class="t">u32</span>,
+    <span class="k">pub</span> blocks_count:       <span class="t">u32</span>,
+    <span class="k">pub</span> free_blocks_count:  <span class="t">u32</span>,
+    <span class="k">pub</span> free_inodes_count:  <span class="t">u32</span>,
+    <span class="k">pub</span> first_data_block:   <span class="t">u32</span>,
+    <span class="k">pub</span> block_size:          <span class="t">u32</span>,  <span class="c">// computed: 1024 &lt;&lt; s_log_block_size</span>
+    <span class="k">pub</span> magic:               <span class="t">u16</span>,
+}
+
+<span class="k">impl</span> <span class="t">Superblock</span> {
+    <span class="k">pub fn</span> parse(bytes: &amp;[<span class="t">u8</span>]) -&gt; <span class="t">Self</span> {
+        <span class="c">// Read each field via from_le_bytes at its spec offset</span>
+        <span class="c">// ...</span>
+    }
+}</pre>
+      <p>
+        Use <code>u32::from_le_bytes(bytes[0..4].try_into().unwrap())</code>
+        for u32 fields, <code>u16::from_le_bytes(bytes[56..58].try_into().unwrap())</code>
+        for the magic.
+      </p>
+    </div>
+  </div>
+
+  <div class="step">
+    <div class="step-title"><span class="step-num">10.3</span>Read the superblock from disk</div>
+    <div class="step-detail">
+      <p>
+        Function <code>read_superblock(dev: &amp;mut impl BlockRead) -&gt; Superblock</code>
+        (or just take <code>&amp;mut VirtioBlk</code> directly for now).
+        Reads sectors 2 and 3, concatenates into a 1024-byte buffer,
+        parses via <code>Superblock::parse</code>.
+      </p>
+      <p>
+        The two-sector read is needed because the superblock is 1024
+        bytes but <code>read_sector</code> returns 512. Future
+        optimization: a <code>read_bytes(offset, len)</code> primitive
+        that handles multi-sector reads internally. For Lesson 11,
+        two <code>read_sector</code> calls + concatenation is fine.
+      </p>
+    </div>
+  </div>
+
+  <div class="step">
+    <div class="step-title"><span class="step-num">10.4</span>Verify magic + sample fields</div>
+    <div class="step-detail">
+      <p>
+        In main.rs, call <code>ext2::read_superblock(&amp;mut virtio_dev)</code>
+        and assert:
+      </p>
+      <ul>
+        <li><code>magic == 0xEF53</code> — confirms we're reading an ext2 filesystem</li>
+        <li><code>block_size == 1024</code> — mkfs default for small disks</li>
+        <li><code>blocks_count</code> is around 1000 — for our 1 MB disk</li>
+        <li><code>inodes_count</code> is around 128 — mkfs default</li>
+        <li><code>first_data_block == 1</code> — true for 1024-byte block filesystems</li>
+      </ul>
+      <p>
+        Print all the parsed fields for visual verification.
+      </p>
+    </div>
+  </div>
+
+  <h2>Verification — what success looks like</h2>
+
+<pre><span class="c">// ... Lesson 9 verification (read_sector working) ...</span>
+[test] ext2 superblock parser (10.1-10.4)
+[ext2] reading superblock (sectors 2 and 3)
+[ext2] parsed superblock:
+[ext2]   magic         = 0xEF53  ✓ ext2
+[ext2]   inodes_count  = 128
+[ext2]   blocks_count  = 1024
+[ext2]   free_inodes   = 117
+[ext2]   free_blocks   = 983
+[ext2]   first_data    = 1
+[ext2]   block_size    = 1024 bytes (s_log_block_size = 0)
+[ext2] *** superblock parsed — ext2 filesystem recognized ***</pre>
+
+  <p>
+    Exact counts will vary slightly based on mkfs version. What
+    matters: magic = 0xEF53, block_size = 1024, first_data_block = 1.
+    Those three together say "I'm a valid ext2 filesystem and I can
+    tell you where my data lives."
+  </p>
+
+  <h2>Primary source</h2>
+
+  <p>
+    The definitive ext2 reference is
+    <a href="https://www.nongnu.org/ext2-doc/ext2.html">the ext2 documentation at nongnu.org</a>
+    — maintained, comprehensive, with every field of every structure
+    explained. The superblock section is at
+    <a href="https://www.nongnu.org/ext2-doc/ext2.html#DEF-SUPERBLOCK">DEF-SUPERBLOCK</a>.
+  </p>
+
+  <p>
+    For Linux's implementation:
+    <a href="https://elixir.bootlin.com/linux/latest/source/fs/ext2/super.c">fs/ext2/super.c</a>
+    — specifically <code>ext2_fill_super</code> reads and validates the
+    superblock at mount time. Our parser is a much-simplified version
+    of the same logic.
+  </p>
+
+  <p>
+    The on-disk struct definition lives in
+    <a href="https://elixir.bootlin.com/linux/latest/source/include/uapi/linux/ext2_fs.h">include/uapi/linux/ext2_fs.h</a>
+    — look for <code>struct ext2_super_block</code>.
+  </p>
+
+  <div class="probe">
+    <div class="probe-title">Pause and think</div>
+    <p>
+      The superblock has backups. By default, ext2 places a copy of
+      the superblock at the start of every block group. Why? What
+      failure mode does this protect against, and what's the cost?
+    </p>
+  </div>
+
+  </div>
+
+  <footer class="lesson-footer">
+    <div class="footer-block">
+      <h4>Code tour</h4>
+      <p style="margin:0;">
+        Once you start building, the
+        <a href="../tours/tour-5.04-ext2-superblock.html">tour of changes</a>
+        will be the companion to this lesson.
+      </p>
+    </div>
+
+    <div class="footer-block">
+      <h4>Up next</h4>
+      <p style="margin:0;">
+        Lesson 11 — page cache (deferred). Will be done after the ext2
+        path is working, so we can see what's actually being cached.
+        <br><br>
+        Or skip ahead: Lesson 12 — ext2 inode lookup. With the
+        superblock parsed, we know where the inode table lives. Use
+        it to look up inode 2 (the root directory by ext2 convention)
+        and parse its 128-byte on-disk structure.
+      </p>
+    </div>
+
+    <div class="footer-block">
+      <h4>If anything was unclear</h4>
+      <p style="margin:0;">
+        Ask. Especially the block-vs-sector distinction, the
+        byte-offset arithmetic, or the from_le_bytes pattern.
+      </p>
+    </div>
+
+    <nav class="lesson-nav">
+      <a href="4.06-block-layer.html">← Lesson 9: Block Layer Abstraction</a>
+      <a href="roadmap-disk-to-exec.html">Roadmap ↑</a>
+    </nav>
+  </footer>
+
+</article>
+</body>
+</html>

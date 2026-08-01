@@ -398,10 +398,10 @@
   <div class="content">
 
     <p class="lead">
-      Five short scenarios pulled from <a href="0001-shape-of-vfs.html">Lesson 1</a>,
-      <a href="0002-file-descriptor-table.html">Lesson 2</a>,
-      <a href="0003-real-inodes-and-paths.html">Lesson 3</a>, and
-      <a href="0004-shape-of-storage-stack.html">Lesson 4</a>. Each one asks you to
+      Five short scenarios pulled from <a href="5.01-vfs-overview.html">Lesson 1</a>,
+      <a href="5.02-file-descriptor-table.html">Lesson 2</a>,
+      <a href="5.03-inodes-and-paths.html">Lesson 3</a>, and
+      <a href="4.01-storage-stack-overview.html">Lesson 4</a>. Each one asks you to
       <em>apply</em> a concept, not recognize it. Wrong answers teach — read the
       explanation that reveals, then move on. The score is a diagnostic: low spots
       tell us what to revisit before going further.
@@ -460,7 +460,7 @@
             <code>File</code> it points at travel together.
           </p>
           <p class="answer-source">
-            From <a href="0002-file-descriptor-table.html">Lesson 2 — File Descriptor Table</a>
+            From <a href="5.02-file-descriptor-table.html">Lesson 2 — File Descriptor Table</a>
             and learning-record 0002 (dup and FD sharing).
           </p>
         </div>
@@ -511,7 +511,7 @@
             naive implementation &mdash; the dentry cache exists to skip them.
           </p>
           <p class="answer-source">
-            From <a href="0003-real-inodes-and-paths.html">Lesson 3 — Real Inodes and Paths</a>.
+            From <a href="5.03-inodes-and-paths.html">Lesson 3 — Real Inodes and Paths</a>.
           </p>
         </div>
       </div>
@@ -566,7 +566,7 @@
             extra byte per entry.
           </p>
           <p class="answer-source">
-            From <a href="0003-real-inodes-and-paths.html">Lesson 3 — Real Inodes and Paths</a>,
+            From <a href="5.03-inodes-and-paths.html">Lesson 3 — Real Inodes and Paths</a>,
             step 3.2 (directory entry encode/decode).
           </p>
         </div>
@@ -618,7 +618,7 @@
             bigger than pointers.
           </p>
           <p class="answer-source">
-            From <a href="0003-real-inodes-and-paths.html">Lesson 3 — Real Inodes and Paths</a>,
+            From <a href="5.03-inodes-and-paths.html">Lesson 3 — Real Inodes and Paths</a>,
             and learning-record 0007.
           </p>
         </div>
@@ -675,7 +675,7 @@
             never notices.
           </p>
           <p class="answer-source">
-            From <a href="0004-shape-of-storage-stack.html">Lesson 4 — Shape of the Storage Stack</a>.
+            From <a href="4.01-storage-stack-overview.html">Lesson 4 — Shape of the Storage Stack</a>.
           </p>
         </div>
       </div>
@@ -726,7 +726,7 @@
     </div>
 
     <nav class="lesson-nav">
-      <a href="0004-shape-of-storage-stack.html">← Lesson 4: Shape of the Storage Stack</a>
+      <a href="4.01-storage-stack-overview.html">← Lesson 4: Shape of the Storage Stack</a>
       <a href="../reference/vfs-glossary.html">Glossary ↑</a>
     </nav>
   </footer>
@@ -743,11 +743,11 @@
   };
 
   const caseTopics = {
-    1: { name: "FD vs File vs Inode (sharing after fork)", link: "0002-file-descriptor-table.html" },
-    2: { name: "Path resolution — inode count", link: "0003-real-inodes-and-paths.html" },
-    3: { name: "Directory entry byte format", link: "0003-real-inodes-and-paths.html" },
-    4: { name: "Inode numbers vs pointers (persistence)", link: "0003-real-inodes-and-paths.html" },
-    5: { name: "Storage stack layer ordering", link: "0004-shape-of-storage-stack.html" }
+    1: { name: "FD vs File vs Inode (sharing after fork)", link: "5.02-file-descriptor-table.html" },
+    2: { name: "Path resolution — inode count", link: "5.03-inodes-and-paths.html" },
+    3: { name: "Directory entry byte format", link: "5.03-inodes-and-paths.html" },
+    4: { name: "Inode numbers vs pointers (persistence)", link: "5.03-inodes-and-paths.html" },
+    5: { name: "Storage stack layer ordering", link: "4.01-storage-stack-overview.html" }
   };
 
   function updateScoreBar() {

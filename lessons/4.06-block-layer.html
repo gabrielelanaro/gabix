@@ -1,0 +1,435 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Lesson 9 — Block Layer Abstraction</title>
+<link rel="stylesheet" href="../assets/lesson.css">
+<script src="../assets/code-highlight.js" defer></script>
+<link rel="stylesheet" href="../assets/byte-layout.css">
+<style>
+  .layer-stack {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1.25rem 1.5rem;
+    margin: 1.5rem 0;
+    font-family: var(--font-mono);
+    font-size: 0.82rem;
+    line-height: 1.7;
+  }
+  .layer-row {
+    display: grid;
+    grid-template-columns: 1fr 2fr;
+    gap: 1rem;
+    padding: 0.4rem 0;
+    border-bottom: 1px dashed var(--border);
+  }
+  .layer-row:last-child { border-bottom: none; }
+  .layer-name {
+    color: var(--accent);
+    font-weight: 600;
+  }
+  .layer-desc {
+    color: var(--text);
+    font-family: var(--font-serif);
+    font-size: 0.88rem;
+  }
+  .layer-row.current {
+    background: var(--accent-soft);
+    margin: 0 -0.5rem;
+    padding: 0.4rem 0.5rem;
+    border-radius: 3px;
+    border-bottom: none;
+  }
+  .layer-row.current .layer-name {
+    color: var(--accent);
+  }
+  .layer-row.current .layer-desc {
+    color: var(--text);
+    font-weight: 500;
+  }
+
+  .step {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1rem 1.25rem;
+    margin: 1.25rem 0;
+  }
+  .step-num {
+    font-family: var(--font-mono);
+    font-size: 0.78rem;
+    font-weight: 600;
+    color: var(--accent);
+    background: var(--accent-soft);
+    padding: 2px 8px;
+    border-radius: 3px;
+    margin-right: 0.5rem;
+  }
+  .step-title {
+    font-family: var(--font-sans);
+    font-weight: 600;
+    font-size: 1rem;
+    margin-bottom: 0.4rem;
+  }
+  .step-detail {
+    font-family: var(--font-serif);
+    font-size: 0.95rem;
+    color: var(--text);
+  }
+  .step-detail p:last-child { margin-bottom: 0; }
+</style>
+</head>
+<body>
+<article class="lesson">
+
+  <header class="lesson-header">
+    <div class="lesson-eyebrow">Lesson 9 · M4 · Disk path — the API ext2 will sit on</div>
+    <h1 class="lesson-title">Block Layer Abstraction</h1>
+    <p class="lesson-subtitle">Wrap "submit a read for sector N" into a clean <code>read_sector(n) -&gt; [u8; 512]</code>. Everything below this point speaks sectors; everything above speaks files.</p>
+    <div class="lesson-meta">
+      <span><strong>Read time</strong> ~15 min</span>
+      <span><strong>Build time</strong> ~20–30 min</span>
+      <span><strong>Prereq</strong> <a href="4.05-first-disk-read.html">Lesson 8</a></span>
+    </div>
+  </header>
+
+  <div class="content">
+
+  <p class="lead">
+    Lesson 8 reads one sector: build descriptor chain, submit, kick,
+    poll, verify. The code is inline in <code>main.rs</code>. That
+    works for a one-off test, but the ext2 parser (Lesson 11) needs to
+    read <em>hundreds</em> of sectors — superblocks, block group
+    descriptors, inode tables, directory entries. Each read goes
+    through the same dance. Lesson 9 wraps the dance into a function.
+  </p>
+
+  <h2>Why a block layer at all</h2>
+
+  <p>
+    "Block layer" sounds like jargon, but the concept is simple:
+    a single function the filesystem calls,
+    <code>read_sector(n) -&gt; [u8; 512]</code>. Filesystem code asks
+    for bytes by sector number. Driver code below the function does
+    the actual I/O.
+  </p>
+
+  <p>
+    This separation lets the filesystem code ignore the device. ext2
+    doesn't care whether the storage is virtio-blk, NVMe, SATA, or a
+    RAM disk — it just calls <code>read_sector(N)</code>. The device
+    driver doesn't care whether the bytes are an inode, a directory
+    entry, or file data — it just reads sector N and hands back bytes.
+  </p>
+
+  <div class="layer-stack">
+    <div class="layer-row">
+      <span class="layer-name">ext2 / VFS</span>
+      <span class="layer-desc">"give me inode 2" / "list this directory"</span>
+    </div>
+    <div class="layer-row current">
+      <span class="layer-name">block layer ← Lesson 9</span>
+      <span class="layer-desc"><code>read_sector(n) -&gt; [u8; 512]</code></span>
+    </div>
+    <div class="layer-row">
+      <span class="layer-name">virtio-blk driver</span>
+      <span class="layer-desc">build chain, submit, kick, poll</span>
+    </div>
+    <div class="layer-row">
+      <span class="layer-name">virtqueue</span>
+      <span class="layer-desc">descriptors, available ring, used ring</span>
+    </div>
+    <div class="layer-row">
+      <span class="layer-name">PCI + MMIO</span>
+      <span class="layer-desc">device discovery, register access</span>
+    </div>
+  </div>
+
+  <p>
+    Linux's analog is <code>submit_bio(bio)</code> — filesystems
+    construct a <code>bio</code> (block I/O) describing what bytes
+    they want, submit it through the block layer, and the block layer
+    routes it to the right device's driver. Ours is much simpler
+    (synchronous, single device, no merging or scheduling) but the
+    boundary is in the same place.
+  </p>
+
+  <h2>The API contract</h2>
+
+  <p>
+    The function we're building:
+  </p>
+
+<pre><span class="k">impl</span> <span class="t">VirtioBlk</span> {
+    <span class="k">pub fn</span> read_sector(&amp;<span class="k">mut self</span>, sector: <span class="t">u64</span>) -&gt; [<span class="t">u8</span>; <span class="n">512</span>] {
+        <span class="c">// ...</span>
+    }
+}</pre>
+
+  <p>
+    The contract:
+  </p>
+  <ul>
+    <li><strong>Input:</strong> a sector number (always 512-byte units for virtio-blk).</li>
+    <li><strong>Output:</strong> a fixed <code>[u8; 512]</code> array, by value. Caller owns it; can read, copy, or drop it freely.</li>
+    <li><strong>Synchronous:</strong> returns when the read completes. No callbacks, no futures.</li>
+    <li><strong>Side effects:</strong> internally submits a virtio-blk request, kicks the device, polls for completion. Allocates and leaks DMA buffers (~12 KB per call).</li>
+  </ul>
+
+  <p>
+    The leak is a known wart. Each call allocates three frames (header,
+    data, status) and never frees them. Real Linux has a slab pool for
+    request structures. We'll do the same in a later lesson; for now,
+    "leak per call" is fine because we won't read that many blocks
+    during boot.
+  </p>
+
+  <div class="callout">
+    <div class="callout-title">Returning <code>[u8; 512]</code> by value</div>
+    <p>
+      512 bytes on the stack sounds big, but it's fine. The array
+      gets returned via Rust's "return value optimization" — the
+      caller's stack slot is the destination, no intermediate copy.
+      Even if there were a copy, 512 bytes is 8 cache lines, sub-100ns
+      on modern CPUs. The alternative (<code>Vec&lt;u8&gt;</code>)
+      would heap-allocate per call, which is worse.
+    </p>
+  </div>
+
+  <h2>Refactor: VirtioBlk owns the queue</h2>
+
+  <p>
+    Currently <code>virtio_dev</code> and <code>queue</code> are
+    separate locals in <code>main.rs</code>. For <code>read_sector</code>
+    to work, it needs both — the device for kicking, the queue for
+    descriptor allocation and ring access.
+  </p>
+
+  <p>
+    The cleanest fix: <code>VirtioBlk</code> owns the
+    <code>VirtQueue</code>. The boot sequence becomes:
+  </p>
+
+<pre><span class="k">let mut</span> virtio_dev = <span class="t">VirtioBlk</span>::probe()?;
+virtio_dev.reset_and_acknowledge();
+virtio_dev.negotiate_features();
+virtio_dev.set_driver_ok();
+virtio_dev.setup_queue(<span class="n">64</span>);  <span class="c">// ← was: VirtQueue::new + configure_queue</span>
+
+<span class="k">let</span> block0 = virtio_dev.read_sector(<span class="n">0</span>);  <span class="c">// clean API, no queue argument</span></pre>
+
+  <p>
+    The queue sits in a <code>Option&lt;VirtQueue&gt;</code> field,
+    populated by <code>setup_queue</code>. <code>read_sector</code>
+    unwraps it. This hides the descriptor chain from callers
+    entirely — they don't even know there <em>is</em> a queue.
+  </p>
+
+  <h2>Build steps — your turn</h2>
+
+  <p>
+    Three substeps. Step 9.1 is a pure refactor (no behavior change).
+    Step 9.2 adds the new method. Step 9.3 exercises it.
+  </p>
+
+  <div class="step">
+    <div class="step-title"><span class="step-num">9.1</span>Refactor: VirtioBlk owns VirtQueue</div>
+    <div class="step-detail">
+      <p>
+        Add a <code>queue: Option&lt;VirtQueue&gt;</code> field to
+        <code>VirtioBlk</code>. New method:
+      </p>
+<pre><span class="k">pub fn</span> setup_queue(&amp;<span class="k">mut self</span>, queue_size: <span class="t">u16</span>) {
+    <span class="k">let</span> queue = <span class="t">VirtQueue</span>::new(queue_size);
+    <span class="k">self</span>.configure_queue(&amp;queue);
+    <span class="k">self</span>.queue = <span class="t">Some</span>(queue);
+}</pre>
+      <p>
+        Update <code>main.rs</code>: replace the local
+        <code>VirtQueue::new</code> + <code>configure_queue</code> +
+        inline Lesson 7/8 tests with a single
+        <code>virtio_dev.setup_queue(64)</code> call. The Lesson 7/8
+        tests can stay (they verify the underlying methods work) but
+        they need to reach the queue via
+        <code>virtio_dev.queue.as_mut().unwrap()</code> or a similar
+        accessor.
+      </p>
+      <p>
+        Verify: boot still completes the Lesson 8 read end-to-end.
+        No behavior change, just ownership moved.
+      </p>
+    </div>
+  </div>
+
+  <div class="step">
+    <div class="step-title"><span class="step-num">9.2</span>Add <code>read_sector</code></div>
+    <div class="step-detail">
+      <p>
+        New method on <code>VirtioBlk</code>:
+      </p>
+<pre><span class="k">pub fn</span> read_sector(&amp;<span class="k">mut self</span>, sector: <span class="t">u64</span>) -&gt; [<span class="t">u8</span>; <span class="n">512</span>] {
+    <span class="k">let</span> buffers = <span class="t">BlkBuffers</span>::new();
+    <span class="k">let</span> req = <span class="t">VirtioBlkReq</span>::new_read(sector);
+    buffers.write_header(&amp;req);
+
+    <span class="k">let</span> queue = <span class="k">self</span>.queue.as_mut().expect(<span class="s">"queue not set up"</span>);
+    <span class="k">let</span> head = queue.build_read_chain(
+        buffers.header_phys, buffers.data_phys, buffers.status_phys);
+
+    queue.submit_chain(head);
+    <span class="k">self</span>.kick();
+
+    <span class="c">// Poll for completion (sync — block until done)</span>
+    <span class="k">let</span> completion = (<span class="n">0</span>..<span class="n">200_000</span>)
+        .find_map(|_| queue.poll_completion())
+        .expect(<span class="s">"read_sector: no completion"</span>);
+
+    <span class="k">let</span> status = buffers.read_status();
+    <span class="k">assert_eq!</span>(status, <span class="n">VIRTIO_BLK_S_OK</span>, <span class="s">"read failed"</span>);
+
+    <span class="c">// Copy the 512 bytes out of the DMA buffer into a stack array</span>
+    <span class="k">let mut</span> block = [<span class="n">0u8</span>; <span class="n">512</span>];
+    <span class="k">let</span> data_view = buffers.read_data_prefix(<span class="n">512</span>);
+    block.copy_from_slice(&amp;data_view);
+
+    <span class="c">// Free the descriptors (buffers leak — future optimization)</span>
+    queue.free_descriptor(head);
+    <span class="c">// ... also free mid and tail (need to track them or follow chain)</span>
+
+    block
+}</pre>
+      <p>
+        Note: to free all three descriptors, <code>build_read_chain</code>
+        needs to return all three indices (or we walk the
+        <code>next</code> pointers from <code>head</code> to find them).
+        The simplest change: have <code>build_read_chain</code> return
+        <code>(head, mid, tail)</code> instead of just <code>head</code>.
+        Callers that only need the head can use <code>let (head, _, _)</code>.
+      </p>
+    </div>
+  </div>
+
+  <div class="step">
+    <div class="step-title"><span class="step-num">9.3</span>Verify: read multiple sectors</div>
+    <div class="step-detail">
+      <p>
+        Call <code>read_sector</code> on sectors 0, 1, and 2:
+      </p>
+      <ul>
+        <li>Sector 0: first 15 bytes should be <code>b"MINIOS_DISK_v0\n"</code>, rest zero (already verified in Lesson 8 but re-check via the new API).</li>
+        <li>Sector 1: should be all zero (the signature is only 15 bytes, fits in sector 0).</li>
+        <li>Sector 2: should be all zero (we'll learn in Lesson 11 that ext2 puts the superblock here, but our raw disk has no filesystem yet).</li>
+      </ul>
+      <p>
+        Three calls, three arrays. Verify all three match expectations.
+        This confirms <code>read_sector</code> works for arbitrary
+        sector numbers, not just sector 0.
+      </p>
+    </div>
+  </div>
+
+  <h2>Verification — what success looks like</h2>
+
+<pre><span class="c">// ... Lesson 8 verification (already in place) ...</span>
+[test] block layer API (9.2/9.3)
+[virtio] read_sector(0): status=OK
+[virtio]   data[0..15] = "MINIOS_DISK_v0\n"
+[virtio]   data[15..512] all zero
+[virtio] read_sector(1): status=OK
+[virtio]   all 512 bytes zero (expected — disk has no FS yet)
+[virtio] read_sector(2): status=OK
+[virtio]   all 512 bytes zero (ext2 superblock will live here in L11)
+[virtio] *** block layer ready — ext2 can mount on top ***</pre>
+
+  <h2>What this enables</h2>
+
+  <p>
+    After Lesson 9, the kernel has a primitive that the ext2 parser
+    can call. When Lesson 11 wants to read the superblock, it calls
+    <code>read_sector(2)</code> — because the ext2 superblock lives at
+    byte offset 1024, which is sector 2 (1024 / 512). When Lesson 12
+    wants to read inode 2 (the root inode), it computes which block
+    holds that inode, calls <code>read_sector(block_num)</code>, and
+    parses the inode structure out of the returned bytes.
+  </p>
+
+  <p>
+    None of the ext2 code will know about virtio, descriptors, DMA
+    buffers, or the kick/poll dance. That's the win.
+  </p>
+
+  <h2>Primary source</h2>
+
+  <p>
+    Linux's block layer is documented in
+    <a href="https://www.kernel.org/doc/html/latest/block/index.html">the
+    kernel's block documentation</a>. The function
+    <code>submit_bio</code> in
+    <a href="https://elixir.bootlin.com/linux/latest/source/block/bdev.c">block/bdev.c</a>
+    is the entry point — filesystems call it, the block layer routes
+    to the device driver.
+  </p>
+
+  <p>
+    For our reference design: <code>drivers/block/virtio_blk.c</code>
+    shows how a driver registers with the block layer
+    (<code>blk_mq_alloc_tag_set</code> + <code>blk_mq_init_queue</code>).
+    Our <code>read_sector</code> folds both halves — submission and
+    driver-specific execution — into one synchronous call. Linux
+    keeps them separate for async performance.
+  </p>
+
+  <div class="probe">
+    <div class="probe-title">Pause and think</div>
+    <p>
+      <code>read_sector</code> is synchronous: it spins in a poll loop
+      until the device responds, blocking the whole kernel. For
+      single-process mini-os that's tolerable. Why is this design
+      unacceptable for a real OS? What's the smallest change that
+      would let other code run while waiting for a disk read?
+    </p>
+  </div>
+
+  </div>
+
+  <footer class="lesson-footer">
+    <div class="footer-block">
+      <h4>Code tour</h4>
+      <p style="margin:0;">
+        Once you start building, the
+        <a href="../tours/tour-4.06-block-layer.html">tour of changes</a>
+        will be the companion to this lesson — what landed per step,
+        with the serial output that proved it.
+      </p>
+    </div>
+
+    <div class="footer-block">
+      <h4>Up next</h4>
+      <p style="margin:0;">
+        Lesson 10 — Page cache (deferred to keep Lesson 11 unblocked).
+        Or jump straight to Lesson 11 — ext2 superblock parser. The
+        superblock lives at byte offset 1024 = sector 2; we'll call
+        <code>read_sector(2)</code> and parse the on-disk structure.
+      </p>
+    </div>
+
+    <div class="footer-block">
+      <h4>If anything was unclear</h4>
+      <p style="margin:0;">
+        Ask. Especially the refactor (why <code>VirtioBlk</code> owns
+        the queue, what changes in main), the buffer-leak tradeoff,
+        or anything about the API contract.
+      </p>
+    </div>
+
+    <nav class="lesson-nav">
+      <a href="4.05-first-disk-read.html">← Lesson 8: First Disk Read</a>
+      <a href="roadmap-disk-to-exec.html">Roadmap ↑</a>
+    </nav>
+  </footer>
+
+</article>
+</body>
+</html>

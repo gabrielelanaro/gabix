@@ -1,0 +1,499 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Lesson 3 — Real Inodes and Paths</title>
+<link rel="stylesheet" href="../assets/lesson.css">
+<script src="../assets/code-highlight.js" defer></script>
+<style>
+  .step {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1rem 1.25rem;
+    margin: 1.25rem 0;
+  }
+  .step-num {
+    font-family: var(--font-mono);
+    font-size: 0.78rem;
+    font-weight: 600;
+    color: var(--accent);
+    background: var(--accent-soft);
+    padding: 2px 8px;
+    border-radius: 3px;
+    margin-right: 0.5rem;
+  }
+  .step-title {
+    font-family: var(--font-sans);
+    font-weight: 600;
+    font-size: 1rem;
+    margin-bottom: 0.4rem;
+  }
+  .step-detail {
+    font-family: var(--font-serif);
+    font-size: 0.95rem;
+    color: var(--text);
+  }
+  .step-detail p:last-child { margin-bottom: 0; }
+
+  .decision {
+    border-left: 3px solid var(--accent);
+    padding: 0.4rem 0 0.4rem 1rem;
+    margin: 1rem 0;
+  }
+  .decision strong { color: var(--accent); }
+
+  .hexdump {
+    background: var(--code-bg);
+    color: var(--code-fg);
+    padding: 1.25rem 1.5rem;
+    border-radius: 8px;
+    overflow-x: auto;
+    font-family: var(--font-mono);
+    font-size: 0.82rem;
+    line-height: 1.6;
+    margin: 1.5rem 0;
+  }
+  .hexdump .ann {
+    color: var(--code-comment);
+    font-style: italic;
+  }
+  .hexdump .len {
+    color: var(--code-keyword);
+    font-weight: 600;
+  }
+  .hexdump .name {
+    color: var(--code-string);
+  }
+  .hexdump .ino {
+    color: var(--code-number);
+  }
+</style>
+</head>
+<body>
+<article class="lesson">
+
+  <header class="lesson-header">
+    <div class="lesson-eyebrow">Lesson 3 · M4 · 4.4 VFS layer</div>
+    <h1 class="lesson-title">Real Inodes and Paths</h1>
+    <p class="lesson-subtitle">Replace the single hardcoded inode with a directory tree you can walk by path.</p>
+    <div class="lesson-meta">
+      <span><strong>Read time</strong> ~15 min</span>
+      <span><strong>Build time</strong> ~30–45 min</span>
+      <span><strong>Prereq</strong> <a href="5.02-file-descriptor-table.html">Lesson 2</a></span>
+    </div>
+  </header>
+
+  <div class="content">
+
+  <p class="lead">
+    Goal of this lesson: a user program calls <code>open("/hello.txt")</code>, the kernel
+    parses the path, walks a directory, finds the right inode, and returns a file descriptor
+    pointing at <em>that specific file's bytes</em> — not the one global file from Lesson 2.
+    A second file at a different path returns different bytes. We earn real directories,
+    real inode numbers, and real path resolution.
+  </p>
+
+  <h2>The big idea — directories are bytes</h2>
+
+  <p>
+    Lesson 2 left us with <code>HARDCODED_INODE</code>: one global file, every
+    <code>open()</code> returns it, the path argument is ignored. To support more than one
+    file we need <em>directories</em> — name-to-inode mappings the kernel can search.
+  </p>
+
+  <p>
+    The faithful-to-Linux design: a directory is just an inode whose bytes are formatted as
+    a sequence of <em>directory entries</em>. Each entry says "this name points at that inode
+    number." A regular file is an inode whose bytes are the file's contents. Same struct,
+    different interpretation of the bytes. This is exactly how Linux does it.
+  </p>
+
+  <div class="decision">
+    <strong>Design choice — byte-format directories.</strong>
+    The alternative was hanging a <code>BTreeMap&lt;String, Arc&lt;Inode&gt;&gt;</code> off
+    each directory inode — simpler in Rust, but a complete departure from how real
+    filesystems work. We picked bytes so the design generalizes when we add a disk-backed
+    filesystem in milestone 4.7 (ext2).
+  </div>
+
+  <h2>The directory entry format</h2>
+
+  <p>
+    Each entry is a self-contained record. The format we'll use:
+  </p>
+
+  <pre><span class="c">+</span><span class="n">--------</span><span class="c">+</span><span class="n">-------------</span><span class="c">+</span><span class="n">----------</span><span class="c">+</span>
+<span class="c">|</span> <span class="k">name_len</span> <span class="c">|</span> <span class="k">name</span> <span class="n">[N bytes]</span> <span class="c">|</span> <span class="k">ino</span> <span class="n">[u64 LE]</span> <span class="c">|</span>
+<span class="c">+</span><span class="n">--------</span><span class="c">+</span><span class="n">-------------</span><span class="c">+</span><span class="n">----------</span><span class="c">+</span>
+   <span class="n">1 byte</span>      <span class="n">name_len</span>       <span class="n">8 bytes</span></pre>
+
+  <p>
+    One byte for the length, then the name bytes (no terminator — the length tells you where
+    they end), then the inode number as a little-endian 8-byte integer. Total entry size is
+    <code>1 + name_len + 8</code> bytes.
+  </p>
+
+  <p>
+    A directory with two entries — <code>foo.txt</code> → inode 1, <code>hello</code> →
+    inode 2 — looks like this in memory:
+  </p>
+
+  <div class="hexdump">
+<span class="ann">offset 0:  entry 1</span>
+  <span class="len">07</span> <span class="name">66 6F 6F 2E 74 78 74</span> <span class="ino">01 00 00 00 00 00 00 00</span>
+  <span class="ann">↑ len=7   └── "foo.txt" ──┘    └─── inode 1 ─────┘</span>
+
+<span class="ann">offset 16:  entry 2</span>
+  <span class="len">05</span> <span class="name">68 65 6C 6C 6F</span>          <span class="ino">02 00 00 00 00 00 00 00</span>
+  <span class="ann">↑ len=5   └ "hello" ─┘         └─── inode 2 ─────┘</span>
+  </div>
+
+  <h3>Why length-prefixed names</h3>
+
+  <p>
+    Two alternatives we considered:
+  </p>
+
+  <ul>
+    <li>
+      <strong>Null-terminated</strong> (C-style): scan forward until a <code>\0</code> byte.
+      Parsing requires reading every name byte.
+    </li>
+    <li>
+      <strong>Fixed-width</strong>: reserve say 32 bytes per name, pad short names with
+      zeros. Wastes space; names longer than 32 bytes are illegal.
+    </li>
+  </ul>
+
+  <p>
+    Length-prefix wins because <strong>advancing to the next entry is O(1)</strong>. To skip
+    entry 1 without parsing it: read 1 byte (<code>name_len = 7</code>), compute
+    <code>1 + 7 + 8 = 16</code>, advance the cursor by 16. One byte read, one addition. You
+    never touch the name or the inode field. Linux does the same trick via its
+    <code>d_reclen</code> field, which is the total record length (entry size, including
+    padding).
+  </p>
+
+  <div class="margin-note">
+    <strong>Linux's actual format</strong> is <code>struct linux_dirent64</code>: a 64-bit
+    inode number, a 64-bit offset to the next entry, a 16-bit record length, a single byte
+    for the file type, then the null-terminated name, then padding. More fields than we need
+    (we'll grow into them as permissions and types land).
+  </div>
+
+  <h2>Why inode numbers, not pointers</h2>
+
+  <p>
+    We could store a raw <code>&amp;Inode</code> pointer in each entry. In memory it would
+    work — the pointer would lead straight to the inode struct. We use integers instead.
+    The reason is <strong>persistence</strong>.
+  </p>
+
+  <p>
+    Picture the directory bytes written to a disk, then reboot. Memory gets re-allocated on
+    boot — the old pointer address is garbage. An inode number ("inode 17") is still inode
+    17. The kernel looks up 17 in a fresh registry, finds the cached inode struct or loads
+    it from disk into a new location. Same on every reboot, every machine that mounts the
+    same disk.
+  </p>
+
+  <p>
+    So: the number is the <em>stable identifier</em> (survives reboot, survives eviction
+    from the inode cache, is what <code>stat()</code> returns to userspace, is what hard-link
+    counts are computed against). The pointer is a <em>transient cache location</em>.
+    mini-os has no disk yet, but using numbers means the design generalizes when we add one.
+  </p>
+
+  <h2>The registry</h2>
+
+  <p>
+    Since directory entries reference inodes by number, we need somewhere to look the number
+    up. A global, lazily-initialized map:
+  </p>
+
+  <pre><span class="k">pub static</span> <span class="t">REGISTRY</span>: <span class="t">Lazy</span>&lt;<span class="t">Mutex</span>&lt;<span class="t">BTreeMap</span>&lt;<span class="t">u64</span>, <span class="t">Arc</span>&lt;<span class="t">Inode</span>&gt;&gt;&gt;&gt; =
+    <span class="t">Lazy</span>::new(|| <span class="t">Mutex</span>::new(<span class="t">BTreeMap</span>::new()));</pre>
+
+  <p>
+    Each inode, on creation, registers itself and gets a fresh <code>ino</code> (a monotonic
+    counter is fine — Linux allocates inode numbers per-superblock from a counter too).
+    Lookups go through <code>REGISTRY.lock().get(&amp;ino)</code>. The registry is the
+    mini-os analog of Linux's <code>inode cache</code> (<code>inode_hashtable</code> in
+    older kernels, <code>xarray</code>-indexed in modern ones).
+  </p>
+
+  <h2>Two kinds of inode</h2>
+
+  <p>
+    We need to mark whether an inode's bytes should be interpreted as file contents or as
+    directory entries. Add a discriminant field:
+  </p>
+
+  <pre><span class="k">pub enum</span> <span class="t">InodeKind</span> { <span class="t">File</span>, <span class="t">Dir</span> }
+
+<span class="k">pub struct</span> <span class="t">Inode</span> {
+    <span class="k">pub</span> ino: <span class="t">u64</span>,
+    <span class="k">pub</span> kind: <span class="t">InodeKind</span>,
+    <span class="k">pub</span> data: <span class="t">Mutex</span>&lt;<span class="t">Vec</span>&lt;<span class="t">u8</span>&gt;&gt;,
+}</pre>
+
+  <div class="decision">
+    <strong>Design choice — enum vs mode bitmask.</strong>
+    Linux uses a single <code>mode</code> field — file-type bits OR'd with permission bits.
+    Faithful but heavy: we'd have to define <code>S_IFREG</code>, <code>S_IFDIR</code>,
+    permission constants, and bit-twiddling helpers before writing any logic. An enum is
+    cleaner in Rust, pattern-matches nicely, and we can swap to a bitmask when permissions
+    land (probably Lesson 6 or 7).
+  </div>
+
+  <h2>The path resolution algorithm</h2>
+
+  <p>
+    <code>open("/foo/bar/baz.txt")</code> becomes a walk:
+  </p>
+
+  <ol>
+    <li>Split the path on <code>/</code>: <code>["foo", "bar", "baz.txt"]</code>.</li>
+    <li>Start at the <strong>root inode</strong> (a well-known number — Linux uses inode 2 for the root of an ext4 filesystem; we'll use 1).</li>
+    <li>For each component except the last:
+      <ol type="a">
+        <li>Read the current directory's bytes.</li>
+        <li>Parse entries left to right; find the one whose name matches the component.</li>
+        <li>If not found, return <code>ENOENT</code>.</li>
+        <li>Look up the entry's inode number in the registry.</li>
+        <li>Verify it's <code>InodeKind::Dir</code> (else <code>ENOTDIR</code>).</li>
+        <li>Descend: current = looked-up inode.</li>
+      </ol>
+    </li>
+    <li>For the last component, do steps (a)–(d) but skip the directory check; wrap the resolved inode in a <code>File</code> and return.</li>
+  </ol>
+
+  <div class="diagram">
+    <div class="stack">
+      <div class="stack-row kernel"><strong>open("/foo/bar/baz.txt")</strong></div>
+      <div class="stack-arrow">↓ split on "/"</div>
+      <div class="stack-row"><strong>components:</strong> ["foo", "bar", "baz.txt"]</div>
+      <div class="stack-arrow">↓</div>
+      <div class="stack-row fs"><strong>current = root inode (ino=1, Dir)</strong></div>
+      <div class="stack-arrow">↓ find "foo" in root's entries</div>
+      <div class="stack-row fs"><strong>current = foo inode (ino=5, Dir)</strong></div>
+      <div class="stack-arrow">↓ find "bar" in foo's entries</div>
+      <div class="stack-row fs"><strong>current = bar inode (ino=12, Dir)</strong></div>
+      <div class="stack-arrow">↓ find "baz.txt" in bar's entries</div>
+      <div class="stack-row fs"><strong>resolved = baz.txt inode (ino=47, File)</strong></div>
+      <div class="stack-arrow">↓ wrap in File, add to fd table</div>
+      <div class="stack-row user"><strong>return fd = 3</strong></div>
+    </div>
+    <div class="diagram-caption">
+      Each "find X in entries" step is a linear scan of the directory's bytes. Linux caches
+      resolved paths in the <em>dentry cache</em> so repeated lookups are O(1); we won't
+      bother for mini-os.
+    </div>
+  </div>
+
+  <h2>Build steps — your turn</h2>
+
+  <p>
+    Six slices. Commit each one separately (per the workflow preference recorded after
+    Lesson 2). Each is independently verifiable.
+  </p>
+
+  <div class="step">
+    <div class="step-title"><span class="step-num">3.1</span>Extend <code>Inode</code> with <code>ino</code> and <code>kind</code>; add <code>REGISTRY</code></div>
+    <div class="step-detail">
+      <p>
+        Add the <code>ino: u64</code> and <code>kind: InodeKind</code> fields to
+        <code>Inode</code>. Define the <code>InodeKind</code> enum. Create
+        <code>REGISTRY: Lazy&lt;Mutex&lt;BTreeMap&lt;u64, Arc&lt;Inode&gt;&gt;&gt;&gt;</code>.
+        Write <code>Inode::new_file(bytes)</code> and <code>Inode::new_dir()</code> constructors
+        that allocate a fresh <code>ino</code> from a counter, insert into the registry, and
+        return the <code>Arc&lt;Inode&gt;</code>.
+      </p>
+      <p>
+        Compile should succeed. <code>HARDCODED_INODE</code> still exists, still works.
+        We'll remove it in step 3.3.
+      </p>
+    </div>
+  </div>
+
+  <div class="step">
+    <div class="step-title"><span class="step-num">3.2</span>Dirent encode/decode helpers</div>
+    <div class="step-detail">
+      <p>
+        Write two functions:
+      </p>
+      <p>
+        <code>fn encode_dirent(name: &amp;str, ino: u64) -&gt; Vec&lt;u8&gt;</code> — produces
+        the <code>[name_len][name][ino]</code> byte sequence.
+      </p>
+      <p>
+        <code>fn lookup_in_dir(dir_bytes: &amp;[u8], name: &amp;str) -&gt; Option&lt;u64&gt;</code> —
+        walks the directory bytes, returns the <code>ino</code> for the matching name, or
+        <code>None</code>.
+      </p>
+      <p>
+        Add a tiny unit test (or a <code>println!</code>-driven check at boot) that encodes
+        two entries into a <code>Vec</code>, then looks up both names, then looks up a
+        missing name. Verify before moving on.
+      </p>
+    </div>
+  </div>
+
+  <div class="step">
+    <div class="step-title"><span class="step-num">3.3</span>Build the root directory and a file inside it</div>
+    <div class="step-detail">
+      <p>
+        At boot (or in a <code>lazy_static</code> initializer), create the root inode:
+        <code>Inode::new_dir()</code>, remember its <code>ino</code> as
+        <code>ROOT_INO</code>. Then create a file inode with the bytes
+        <code>b"hello vfs\n"</code>. Then <em>mutate the root directory's bytes</em> to
+        append an entry mapping <code>"hello.txt"</code> → the file's <code>ino</code>.
+      </p>
+      <p>
+        Replace <code>HARDCODED_INODE</code> references with the new file inode. Compile and
+        boot — existing test program should still print <code>hello vfs</code> via the old
+        <code>sys_open</code> path that ignores the path (we'll fix that next).
+      </p>
+    </div>
+  </div>
+
+  <div class="step">
+    <div class="step-title"><span class="step-num">3.4</span>Implement path resolution in <code>sys_open</code></div>
+    <div class="step-detail">
+      <p>
+        Replace the "ignore path, return hardcoded inode" stub. New behavior:
+      </p>
+      <ol>
+        <li>Read the path string from the user pointer (null-terminated, max length 256).</li>
+        <li>Validate it starts with <code>/</code> (we only support absolute paths for now).</li>
+        <li>Split on <code>/</code>, drop empty components (handles trailing slash, double slash).</li>
+        <li>Walk per the algorithm above. Use <code>ROOT_INO</code> as the starting point.</li>
+        <li>On success, wrap the resolved <code>Arc&lt;Inode&gt;</code> in a <code>File</code>, insert into the FD table, return the fd number.</li>
+        <li>On any failure (component not found, intermediate isn't a directory, path doesn't start with /), return <code>u64::MAX</code> (our sentinel for errors — Linux returns <code>-ENOENT</code> etc.).</li>
+      </ol>
+    </div>
+  </div>
+
+  <div class="step">
+    <div class="step-title"><span class="step-num">3.5</span>Update <code>USER_PROGRAM</code> and verify single-file case</div>
+    <div class="step-detail">
+      <p>
+        Change the test program's <code>open</code> call from <code>open("ignored")</code> to
+        <code>open("/hello.txt")</code>. Rebuild, run, confirm "hello vfs" still prints. This
+        proves the path parser actually walks the root directory and resolves the entry.
+      </p>
+    </div>
+  </div>
+
+  <div class="step">
+    <div class="step-title"><span class="step-num">3.6</span>Add a second file and verify both resolve correctly</div>
+    <div class="step-detail">
+      <p>
+        In the boot setup, add a second file: <code>"secret.txt"</code> with different bytes
+        (say <code>b"top secret\n"</code>). Append another dirent to the root. Update
+        <code>USER_PROGRAM</code> to <code>open("/hello.txt")</code>, read, print; then
+        <code>open("/secret.txt")</code>, read, print. Two different paths, two different
+        contents. This proves path resolution isn't accidentally always returning the same
+        inode.
+      </p>
+    </div>
+  </div>
+
+  <h2>Verification — what success looks like</h2>
+
+  <p>
+    Serial output of the test program in step 3.6:
+  </p>
+
+  <pre><span class="c">// ... boot stuff ...</span>
+[syscall] sys_open path="/hello.txt" -> fd=3
+[syscall] sys_read fd=3 len=10 -> read 10 bytes
+hello vfs
+[syscall] sys_close fd=3 -> ok
+[syscall] sys_open path="/secret.txt" -> fd=3
+[syscall] sys_read fd=3 len=10 -> read 10 bytes
+top secret
+[syscall] sys_close fd=3 -> ok
+[syscall] sys_exit(0)</pre>
+
+  <p>
+    The win: <strong>two different paths returned two different inodes</strong>. The kernel
+    parsed the path, walked the root directory's bytes, found the matching entry, looked up
+    the inode number in the registry, and wrapped the right one in a file descriptor. That
+    is the load-bearing operation of every filesystem.
+  </p>
+
+  <h2>Primary source</h2>
+
+  <p>
+    Skim <a href="https://elixir.bootlin.com/linux/latest/source/fs/libfs.c">fs/libfs.c</a>
+    — specifically <code>generic_file_llseek</code> and the simple-directory helpers. Linux's
+    <code>struct linux_dirent64</code> is defined in
+    <a href="https://elixir.bootlin.com/linux/latest/source/include/uapi/asm-generic/fcntl.h">include/uapi/linux/dirent.h</a>;
+    the <a href="https://man7.org/linux/man-pages/man2/getdents64.2.html">getdents64 man page</a>
+    has the full layout and field semantics.
+  </p>
+
+  <p>
+    For path resolution, <a href="https://elixir.bootlin.com/linux/latest/source/fs/namei.c">fs/namei.c</a>
+    is the canonical reference — specifically <code>path_lookupat</code> and
+    <code>walk_component</code>. Our six-step algorithm is a drastic simplification of what
+    Linux does (no symlink handling, no mount traversal, no permission checks, no dentry
+    cache) but the shape is the same: walk components left-to-right, look up each in the
+    parent directory.
+  </p>
+
+  <div class="probe">
+    <div class="probe-title">Pause and think</div>
+    <p>
+      Two paths point at the same file: <code>/foo.txt</code> and <code>/bar.txt</code> are
+      both entries in the root directory, both with <code>ino = 17</code>. (This is a hard
+      link — created by <code>ln foo.txt bar.txt</code>.) You <code>open("/foo.txt")</code>,
+      write "hello", close. Then you <code>open("/bar.txt")</code> and read. What bytes come
+      back, and where in the data model does that answer live?
+    </p>
+  </div>
+
+  </div>
+
+  <footer class="lesson-footer">
+    <div class="footer-block">
+      <h4>Code tour</h4>
+      <p style="margin:0;">
+        Once you start building, the <a href="../tours/tour-5.03-inodes-and-paths.html">tour
+        of changes</a> is the companion to this lesson — actual Rust that landed for each
+        step, with the serial output that proved it worked. Revisit it after stepping
+        away to remember how the design translated into code.
+      </p>
+    </div>
+
+    <div class="footer-block">
+      <h4>Up next</h4>
+      <p style="margin:0;">
+        Lesson 4 — Writing and Creating Files. We've been reading pre-populated files so far.
+        Next: <code>creat()</code>, <code>mkdir()</code>, appending to a file via
+        <code>write()</code>, and how the directory's bytes mutate when a new entry is added.
+        This is where the registry <em>grows at runtime</em> for the first time.
+      </p>
+    </div>
+
+    <div class="footer-block">
+      <h4>If anything was unclear</h4>
+      <p style="margin:0;">
+        Ask. Especially the <code>BTreeMap</code> + <code>Arc</code> + <code>Mutex</code>
+        pile — if the type soup in the registry definition is fighting you, flag it. We can
+        spend a sidebar on why each layer is there before continuing.
+      </p>
+    </div>
+
+    <nav class="lesson-nav">
+      <a href="5.02-file-descriptor-table.html">← Lesson 2: File Descriptor Table</a>
+      <a href="../reference/vfs-glossary.html">Glossary ↑</a>
+    </nav>
+  </footer>
+
+</article>
+</body>
+</html>

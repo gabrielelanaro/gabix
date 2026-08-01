@@ -1,0 +1,500 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Lesson 13 — ext2 Directory Walk</title>
+<link rel="stylesheet" href="../assets/lesson.css">
+<script src="../assets/code-highlight.js" defer></script>
+<link rel="stylesheet" href="../assets/byte-layout.css">
+<link rel="stylesheet" href="../assets/explorable.css">
+<style>
+  .walk-flow {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1.25rem 1.5rem;
+    margin: 1.5rem 0;
+    font-family: var(--font-mono);
+    font-size: 0.82rem;
+    line-height: 1.65;
+  }
+  .walk-step {
+    display: grid;
+    grid-template-columns: 24px 60px 1fr;
+    gap: 0.6rem;
+    align-items: baseline;
+    padding: 0.3rem 0;
+  }
+  .walk-num {
+    color: var(--accent);
+    font-weight: 700;
+    text-align: right;
+  }
+  .walk-addr {
+    color: var(--text-faint);
+    font-size: 0.72rem;
+    font-family: var(--font-mono);
+  }
+  .walk-body { color: var(--text); }
+  .walk-body code { color: var(--accent); }
+
+  .block-entries {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 0.5rem;
+    margin: 1.5rem 0;
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 0.5rem;
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+  }
+  .entry-cell {
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 0.5rem;
+    background: var(--surface-soft);
+    text-align: center;
+  }
+  .entry-cell.empty {
+    background: var(--bg);
+    border-style: dashed;
+    color: var(--text-faint);
+  }
+  .entry-cell .entry-inode {
+    color: var(--accent);
+    font-weight: 600;
+    font-size: 0.7rem;
+    letter-spacing: 0.05em;
+  }
+  .entry-cell .entry-name {
+    color: var(--text);
+    font-weight: 600;
+    margin: 0.2rem 0;
+    word-break: break-all;
+  }
+  .entry-cell .entry-type {
+    font-size: 0.65rem;
+    color: var(--text-dim);
+  }
+  .entry-cell .entry-size {
+    font-size: 0.65rem;
+    color: var(--text-faint);
+    font-family: var(--font-sans);
+  }
+
+  .step {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1rem 1.25rem;
+    margin: 1.25rem 0;
+  }
+  .step-num {
+    font-family: var(--font-mono);
+    font-size: 0.78rem;
+    font-weight: 600;
+    color: var(--accent);
+    background: var(--accent-soft);
+    padding: 2px 8px;
+    border-radius: 3px;
+    margin-right: 0.5rem;
+  }
+  .step-title {
+    font-family: var(--font-sans);
+    font-weight: 600;
+    font-size: 1rem;
+    margin-bottom: 0.4rem;
+  }
+  .step-detail {
+    font-family: var(--font-serif);
+    font-size: 0.95rem;
+    color: var(--text);
+  }
+  .step-detail p:last-child { margin-bottom: 0; }
+</style>
+</head>
+<body>
+<article class="lesson">
+
+  <header class="lesson-header">
+    <div class="lesson-eyebrow">Lesson 13 · M5 · ext2 phase — list the root directory</div>
+    <h1 class="lesson-title">ext2 Directory Walk</h1>
+    <p class="lesson-subtitle">Parse the linked-list of directory entries inside an inode's data block. Find <code>.</code>, <code>..</code>, and <code>lost+found</code>.</p>
+    <div class="lesson-meta">
+      <span><strong>Read time</strong> ~20 min</span>
+      <span><strong>Build time</strong> ~25–35 min</span>
+      <span><strong>Prereq</strong> <a href="5.05-ext2-inode-lookup.html">Lesson 12</a></span>
+    </div>
+  </header>
+
+  <div class="content">
+
+  <p class="lead">
+    Lesson 12 found inode 2 (the root directory) and parsed its
+    metadata. The inode says "my data lives in block 40." Lesson 13
+    reads that block and parses the directory entries inside it —
+    a linked list of variable-length records, each linking to the
+    next via <code>rec_len</code>.
+  </p>
+
+  <h2>What a directory is on disk</h2>
+
+  <p>
+    In ext2 (and Unix filesystems generally), a directory is just a
+    file whose data block contains <em>directory entries</em>
+    (dirents). A dirent is a small header + a name. The kernel walks
+    the list, comparing names, to translate "find me
+    <code>foo.txt</code>" into "give me inode N."
+  </p>
+
+  <p>
+    The entries are not fixed-size. Names vary from 1 to 255 bytes.
+    Each entry's <code>rec_len</code> field says how many bytes to
+    skip to reach the next entry — accommodating variable names plus
+    padding for alignment. The last entry's <code>rec_len</code>
+    takes you to the end of the block.
+  </p>
+
+  <h2>The on-disk dirent layout (8-byte header + name)</h2>
+
+  <div class="byte-layout explorable">
+    <div class="byte-layout-header">
+      <span class="byte-layout-name">ext2 directory entry (header + variable name)</span>
+      <span class="byte-layout-size">8 bytes minimum · variable total</span>
+    </div>
+    <div class="byte-bar">
+      <div class="byte-field type-u32" data-reveals="dirent-inode" data-tip="inode (u32, offset 0)" style="--bytes: 4">
+        <span class="byte-field-name">inode</span>
+        <span class="byte-field-meta">u32 · 4 B</span>
+        <span class="byte-field-range">0x00</span>
+        <span class="byte-field-mini">4B</span>
+      </div>
+      <div class="byte-field type-u16" data-reveals="dirent-reclen" data-tip="rec_len (u16, offset 4)" style="--bytes: 2">
+        <span class="byte-field-name">rec_len</span>
+        <span class="byte-field-meta">u16 · 2 B</span>
+        <span class="byte-field-range">0x04</span>
+        <span class="byte-field-mini">2B</span>
+      </div>
+      <div class="byte-field type-u8" data-reveals="dirent-namelen" data-tip="name_len (u8, offset 6)" style="--bytes: 1">
+        <span class="byte-field-name">name_len</span>
+        <span class="byte-field-meta">u8 · 1 B</span>
+        <span class="byte-field-range">0x06</span>
+        <span class="byte-field-mini">1B</span>
+      </div>
+      <div class="byte-field type-u8" data-reveals="dirent-type" data-tip="file_type (u8, offset 7)" style="--bytes: 1">
+        <span class="byte-field-name">file_type</span>
+        <span class="byte-field-meta">u8 · 1 B</span>
+        <span class="byte-field-range">0x07</span>
+        <span class="byte-field-mini">1B</span>
+      </div>
+      <div class="byte-field type-array" data-reveals="dirent-name" data-tip="name (variable length, padded to 4-byte boundary)" style="--bytes: 8">
+        <span class="byte-field-name">name</span>
+        <span class="byte-field-meta">name_len bytes</span>
+        <span class="byte-field-range">0x08+</span>
+        <span class="byte-field-mini">N B</span>
+      </div>
+    </div>
+
+    <div class="detail-panel">
+      <div class="detail-empty">Click any field for what it stores.</div>
+      <div class="detail-content"></div>
+    </div>
+
+    <template id="dirent-inode">
+      <h4 class="detail-title">inode · u32 · offset 0x00</h4>
+      <div class="detail-body">
+        <p>The inode number this name points at. <strong>0 means the entry is unused</strong> — it's a slot that was deleted (or never allocated). The walker still has to skip past it via <code>rec_len</code>.</p>
+        <p>For our root directory's three entries: <code>.</code> → inode 2 (self), <code>..</code> → inode 2 (root's parent is itself), <code>lost+found</code> → inode 11.</p>
+      </div>
+    </template>
+    <template id="dirent-reclen">
+      <h4 class="detail-title">rec_len · u16 · offset 0x04</h4>
+      <div class="detail-body">
+        <p><strong>Bytes to skip to reach the next entry.</strong> Includes this entry's header + name + padding (rounded up to 4-byte boundary).</p>
+        <p>Why variable: when a file is deleted, the entry's inode is set to 0 but the slot remains. The previous entry's <code>rec_len</code> gets bumped to skip over the dead slot. This avoids compacting the whole directory.</p>
+        <p>The last entry's <code>rec_len</code> reaches the end of the block.</p>
+      </div>
+    </template>
+    <template id="dirent-namelen">
+      <h4 class="detail-title">name_len · u8 · offset 0x06</h4>
+      <div class="detail-body">
+        <p>Length of the name in bytes. 1 to 255. The name is <em>not</em> null-terminated on disk — the length is authoritative. (<code>strlen</code> doesn't apply here.)</p>
+      </div>
+    </template>
+    <template id="dirent-type">
+      <h4 class="detail-title">file_type · u8 · offset 0x07</h4>
+      <div class="detail-body">
+        <p>File type hint, so the walker doesn't have to read the inode just to know if it's a directory. Encoded the same way as <code>i_mode</code>'s top 4 bits, shifted right by 12:</p>
+        <p>1 = regular file, 2 = directory, 3 = character device, 4 = block device, 5 = fifo, 6 = socket, 7 = symlink.</p>
+        <p>For our root: <code>.</code> type=2, <code>..</code> type=2, <code>lost+found</code> type=2.</p>
+      </div>
+    </template>
+    <template id="dirent-name">
+      <h4 class="detail-title">name · variable length · offset 0x08+</h4>
+      <div class="detail-body">
+        <p>The actual name bytes (no null terminator). Padded with zeros to a 4-byte boundary so the next entry starts aligned.</p>
+        <p>Example: <code>"foo"</code> is 3 bytes; the entry is padded to 4. <code>"lost+found"</code> is 10 bytes; padded to 12.</p>
+      </div>
+    </template>
+  </div>
+
+  <h2>Block 40 — what we'll actually read</h2>
+
+  <p>
+    When we read inode 2's data block (block 40 on our disk), this
+    is what's inside (after a fresh <code>mkfs.ext2</code>):
+  </p>
+
+  <div class="block-entries">
+    <div class="entry-cell">
+      <div class="entry-inode">inode 2</div>
+      <div class="entry-name">.</div>
+      <div class="entry-type">dir</div>
+      <div class="entry-size">12 B</div>
+    </div>
+    <div class="entry-cell">
+      <div class="entry-inode">inode 2</div>
+      <div class="entry-name">..</div>
+      <div class="entry-type">dir</div>
+      <div class="entry-size">12 B</div>
+    </div>
+    <div class="entry-cell">
+      <div class="entry-inode">inode 11</div>
+      <div class="entry-name">lost+found</div>
+      <div class="entry-type">dir</div>
+      <div class="entry-size">1000 B</div>
+    </div>
+    <div class="entry-cell empty">
+      <div class="entry-inode">—</div>
+      <div class="entry-name">(unused)</div>
+      <div class="entry-type">padding</div>
+      <div class="entry-size">last entry's rec_len reaches end of block</div>
+    </div>
+  </div>
+
+  <p>
+    Each cell shows the entry's inode, name, type, and total size
+    (header + name + padding). The last entry (<code>lost+found</code>)
+    has a large <code>rec_len</code> that consumes the rest of the
+    block — when a new file is added, its rec_len shrinks to make
+    room.
+  </p>
+
+  <h2>The walk — a linked-list traversal</h2>
+
+  <p>
+    Reading a directory is just walking a linked list, where each
+    link is a <code>rec_len</code> instead of a pointer:
+  </p>
+
+  <div class="walk-flow">
+    <div class="walk-step">
+      <div class="walk-num">1</div>
+      <div class="walk-addr">offset 0</div>
+      <div class="walk-body">Read entry header: inode, rec_len, name_len, file_type</div>
+    </div>
+    <div class="walk-step">
+      <div class="walk-num">2</div>
+      <div class="walk-addr">+8</div>
+      <div class="walk-body">Read <code>name_len</code> bytes — that's the name</div>
+    </div>
+    <div class="walk-step">
+      <div class="walk-num">3</div>
+      <div class="walk-addr">—</div>
+      <div class="walk-body">If <code>inode != 0</code>: this is a live entry, record (name, inode, type)</div>
+    </div>
+    <div class="walk-step">
+      <div class="walk-num">4</div>
+      <div class="walk-addr">+rec_len</div>
+      <div class="walk-body">Advance to the next entry: <code>offset += rec_len</code></div>
+    </div>
+    <div class="walk-step">
+      <div class="walk-num">5</div>
+      <div class="walk-addr">—</div>
+      <div class="walk-body">If <code>offset &lt; block_size</code>: go to step 1. Else: done.</div>
+    </div>
+  </div>
+
+  <p>
+    For our disk: three live entries (<code>.</code>, <code>..</code>,
+    <code>lost+found</code>) followed by unused padding consumed by
+    the last entry's rec_len. The walk produces a list of (name,
+    inode, type) tuples.
+  </p>
+
+  <h2>Build steps — your turn</h2>
+
+  <p>
+    Five substeps. By the end we'll list the root directory contents
+    and look up <code>"lost+found"</code> by name.
+  </p>
+
+  <div class="step">
+    <div class="step-title"><span class="step-num">13.1</span>Dirent struct + parse-one-entry helper</div>
+    <div class="step-detail">
+      <p>
+        <code>Dirent</code> struct holding inode (u32), file_type (u8),
+        name (Vec&lt;u8&gt;), and rec_len (u16). The name is owned by
+        the struct (heap-allocated) so callers don't have to deal
+        with byte slices + lengths.
+      </p>
+      <p>
+        <code>Dirent::parse_at(bytes, offset) -&gt; (Dirent, next_offset)</code>
+        — read the 8-byte header + name_len bytes from
+        <code>bytes[offset..]</code>, return the parsed struct and
+        the offset of the next entry (= offset + rec_len).
+      </p>
+    </div>
+  </div>
+
+  <div class="step">
+    <div class="step-title"><span class="step-num">13.2</span>read_block helper (2 sectors)</div>
+    <div class="step-detail">
+      <p>
+        Extract the "read 2 sectors, concat into 1024 bytes" pattern
+        into <code>read_block(dev, block_n) -&gt; [u8; 1024]</code>.
+        Used by Lesson 10's read_superblock and Lesson 12's
+        read_inode; now made a top-level function so Lesson 13 can
+        use it for the directory block.
+      </p>
+      <p>
+        Assumes 1024-byte blocks (our disk's only size). A
+        block-size-aware version is a future refactor.
+      </p>
+    </div>
+  </div>
+
+  <div class="step">
+    <div class="step-title"><span class="step-num">13.3</span>walk_directory function</div>
+    <div class="step-detail">
+      <p>
+        <code>walk_directory(dev, dir_inode) -&gt; Vec&lt;Dirent&gt;</code>:
+      </p>
+      <ol>
+        <li>For each direct block pointer (block_pointers[0..12]) that's non-zero:</li>
+        <li>Read the block via <code>read_block</code></li>
+        <li>Walk the linked list: parse_at offset 0, advance by rec_len, repeat</li>
+        <li>Collect every entry with <code>inode != 0</code></li>
+      </ol>
+      <p>
+        Returns a Vec of live dirents. For our root: 3 entries.
+        Doesn't follow indirect/double/triple pointers — root fits
+        in one direct block.
+      </p>
+    </div>
+  </div>
+
+  <div class="step">
+    <div class="step-title"><span class="step-num">13.4</span>lookup_in_dir — find by name</div>
+    <div class="step-detail">
+      <p>
+        <code>lookup_in_dir(dev, dir_inode, name) -&gt; Option&lt;u32&gt;</code>:
+        walk the directory, return the inode number of the entry whose
+        name matches, or None if not found. Used by path resolution
+        in Lesson 14.
+      </p>
+    </div>
+  </div>
+
+  <div class="step">
+    <div class="step-title"><span class="step-num">13.5</span>Test in main.rs</div>
+    <div class="step-detail">
+      <p>
+        After Lesson 12's inode-2 verification:
+      </p>
+      <ul>
+        <li>Call <code>walk_directory(&amp;mut virtio_dev, &amp;root_inode)</code></li>
+        <li>Print each entry: <code>"."</code>, <code>".."</code>, <code>"lost+found"</code></li>
+        <li>Assert we got exactly 3 entries</li>
+        <li>Assert <code>"."</code> and <code>".."</code> both point at inode 2</li>
+        <li>Assert <code>"lost+found"</code> points at inode 11</li>
+        <li>Call <code>lookup_in_dir(&amp;mut virtio_dev, &amp;root_inode, "lost+found")</code> — expect Some(11)</li>
+        <li>Call lookup for a missing name — expect None</li>
+      </ul>
+    </div>
+  </div>
+
+  <h2>Verification — what success looks like</h2>
+
+<pre><span class="c">// ... Lesson 12 inode-2 verification ...</span>
+[test] ext2 directory walk (13.1-13.5)
+[ext2] walking directory at inode 2 (data block 40)
+[ext2]   entry: inode=2  type=dir  name="."
+[ext2]   entry: inode=2  type=dir  name=".."
+[ext2]   entry: inode=11 type=dir  name="lost+found"
+[ext2] walk complete: 3 live entries
+[ext2] lookup_in_dir("lost+found") = Some(11)
+[ext2] lookup_in_dir("missing")    = None
+[ext2] *** directory walk works — ready to mount (Lesson 14) ***</pre>
+
+  <h2>Primary source</h2>
+
+  <p>
+    The ext2 documentation at
+    <a href="https://www.nongnu.org/ext2-doc/ext2.html">nongnu.org</a>:
+    <a href="https://www.nongnu.org/ext2-doc/ext2.html#DIRECTORY">Directory entries</a>
+    — section 2.4.1.
+  </p>
+
+  <p>
+    For Linux's implementation:
+    <a href="https://elixir.bootlin.com/linux/latest/source/fs/ext2/dir.c">fs/ext2/dir.c</a>
+    — <code>ext2_readdir</code> walks the linked list, <code>ext2_find_entry</code>
+    is what <code>lookup_in_dir</code> implements.
+  </p>
+
+  <div class="probe">
+    <div class="probe-title">Pause and think</div>
+    <p>
+      When a file is deleted from an ext2 directory, the entry's
+      inode is set to 0 but the slot stays. The previous entry's
+      rec_len grows to skip past the dead slot. Why this design
+      instead of compacting the directory by shifting entries left?
+    </p>
+  </div>
+
+  </div>
+
+  <footer class="lesson-footer">
+    <div class="footer-block">
+      <h4>Code tour</h4>
+      <p style="margin:0;">
+        Once you start building, the
+        <a href="../tours/tour-5.06-ext2-directory-walk.html">tour of changes</a>
+        will be the companion to this lesson.
+      </p>
+    </div>
+
+    <div class="footer-block">
+      <h4>Up next</h4>
+      <p style="margin:0;">
+        Lesson 14 — mount ext2 as the root filesystem. Replace the
+        in-memory <code>ROOT_INODE</code> lazy_static with a live
+        ext2 mount. Path resolution (<code>/foo/bar</code>) becomes
+        a tree walk through ext2 directories.
+      </p>
+    </div>
+
+    <div class="footer-block">
+      <h4>If anything was unclear</h4>
+      <p style="margin:0;">
+        Ask. Especially the rec_len mechanics, the file_type encoding,
+        or why the last entry "absorbs" the unused space.
+      </p>
+    </div>
+
+    <nav class="lesson-nav">
+      <a href="5.05-ext2-inode-lookup.html">← Lesson 12: ext2 Inode Lookup</a>
+      <a href="roadmap-disk-to-exec.html">Roadmap ↑</a>
+    </nav>
+  </footer>
+
+</article>
+
+<script src="../assets/explorable.js"></script>
+
+</body>
+</html>
