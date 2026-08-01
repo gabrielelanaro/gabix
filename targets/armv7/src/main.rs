@@ -87,6 +87,13 @@ extern "C" fn arm_kernel_entry() {
         if scheduler::task_resumes() {
             write_line(&mut console, b"gabix arm virt task resumed");
         }
+        if let Some(mut block) = virt::block::VirtioBlock::probe() {
+            if let Some(sector) = block.try_read_sector(1) {
+                if sector.starts_with(b"GABIXARM") {
+                    write_line(&mut console, b"gabix arm virt block read");
+                }
+            }
+        }
         virt::timer::init();
         while virt::timer::ticks() < 2 {
             asm!("wfi");

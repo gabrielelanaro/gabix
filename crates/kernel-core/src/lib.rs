@@ -1,5 +1,6 @@
 #![no_std]
 
+pub mod device;
 pub mod memory;
 
 /// Byte-oriented console supplied by a platform adapter.
