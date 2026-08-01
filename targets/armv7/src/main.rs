@@ -31,6 +31,8 @@ use core::panic::PanicInfo;
 #[cfg(feature = "virt")]
 use gabix_kernel::device::FrameDevice;
 #[cfg(feature = "virt")]
+use gabix_kernel::net::dhcp::{DhcpClient, ACK, CLIENT_PORT, OFFER, SERVER_PORT};
+#[cfg(feature = "virt")]
 use gabix_kernel::net::stack::{NetworkInterface, MAX_FRAME_LEN};
 use platform::{PLATFORM, UART_BASE};
 
@@ -109,13 +111,32 @@ extern "C" fn arm_kernel_entry() {
             }
         }
         if let Some(mut network) = virt::network::VirtioNet::probe() {
-            let interface = NetworkInterface::new(network.mac_address(), [10, 0, 2, 15]);
+            let mut interface = NetworkInterface::new(network.mac_address(), [10, 0, 2, 15]);
+            let dhcp = DhcpClient::new(network.mac_address(), 0x4741_4258);
             let mut frame = [0u8; 29];
             frame[..6].fill(0xff);
             frame[6..12].copy_from_slice(&network.mac_address());
             frame[12..14].copy_from_slice(&0x88b5u16.to_be_bytes());
             frame[14..].copy_from_slice(b"gabix-arm-frame");
             network.transmit(&frame);
+
+            let mut dhcp_payload = [0u8; 300];
+            if let Some(payload_len) = dhcp.write_discover(&mut dhcp_payload) {
+                let mut discover = [0u8; MAX_FRAME_LEN];
+                if let Some(length) = interface.write_udp_from(
+                    [0; 4],
+                    [0xff; 6],
+                    [255; 4],
+                    CLIENT_PORT,
+                    SERVER_PORT,
+                    &dhcp_payload[..payload_len],
+                    &mut discover,
+                ) {
+                    network.transmit(&discover[..length]);
+                }
+            }
+
+            let mut offered_address = None;
             let deadline = virt::timer::ticks() + 10;
             while virt::timer::ticks() < deadline {
                 if let Some(received) = network.receive() {
@@ -126,6 +147,38 @@ extern "C" fn arm_kernel_entry() {
                     let mut reply = [0u8; MAX_FRAME_LEN];
                     if let Some(length) = interface.reply(bytes, &mut reply) {
                         network.transmit(&reply[..length]);
+                    }
+                    if let Some(datagram) = interface.receive_udp(bytes) {
+                        if datagram.source_port == SERVER_PORT
+                            && datagram.destination_port == CLIENT_PORT
+                        {
+                            if let Some(message) = dhcp.parse_reply(datagram.payload) {
+                                if message.message_type == OFFER {
+                                    offered_address = Some(message.address);
+                                    if let Some(payload_len) =
+                                        dhcp.write_request(&mut dhcp_payload, &message)
+                                    {
+                                        let mut request = [0u8; MAX_FRAME_LEN];
+                                        if let Some(length) = interface.write_udp_from(
+                                            [0; 4],
+                                            [0xff; 6],
+                                            [255; 4],
+                                            CLIENT_PORT,
+                                            SERVER_PORT,
+                                            &dhcp_payload[..payload_len],
+                                            &mut request,
+                                        ) {
+                                            network.transmit(&request[..length]);
+                                        }
+                                    }
+                                } else if message.message_type == ACK
+                                    && offered_address == Some(message.address)
+                                {
+                                    interface.configure(message.address);
+                                    write_line(&mut console, b"gabix arm virt dhcp configured");
+                                }
+                            }
+                        }
                     }
                 }
                 asm!("wfi");

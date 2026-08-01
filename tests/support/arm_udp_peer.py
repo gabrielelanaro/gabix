@@ -75,7 +75,11 @@ def run(socket_path: Path) -> None:
             receive_frame(connection)
             request = udp_frame()
             connection.sendall(struct.pack("!I", len(request)) + request)
-            verify_reply(receive_frame(connection))
+            while True:
+                reply = receive_frame(connection)
+                if reply[:6] == HOST_MAC and reply[12:14] == b"\x08\x00":
+                    verify_reply(reply)
+                    break
 
 
 if __name__ == "__main__":

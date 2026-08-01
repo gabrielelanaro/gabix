@@ -139,16 +139,38 @@ impl NetworkInterface {
         payload: &[u8],
         out: &mut [u8],
     ) -> Option<usize> {
+        self.write_udp_from(
+            self.address,
+            destination_mac,
+            destination_ip,
+            source_port,
+            destination_port,
+            payload,
+            out,
+        )
+    }
+
+    pub fn write_udp_from(
+        &self,
+        source_ip: [u8; 4],
+        destination_mac: [u8; 6],
+        destination_ip: [u8; 4],
+        source_port: u16,
+        destination_port: u16,
+        payload: &[u8],
+        out: &mut [u8],
+    ) -> Option<usize> {
         let mut datagram = [0u8; ETHERNET_MTU - IPV4_HEADER_LEN];
         let length = udp::write_datagram(
             &mut datagram,
-            self.address,
+            source_ip,
             destination_ip,
             source_port,
             destination_port,
             payload,
         )?;
-        self.write_ipv4(
+        self.write_ipv4_from(
+            source_ip,
             destination_mac,
             destination_ip,
             ipv4::PROTOCOL_UDP,
@@ -170,10 +192,29 @@ impl NetworkInterface {
         payload: &[u8],
         out: &mut [u8],
     ) -> Option<usize> {
+        self.write_ipv4_from(
+            self.address,
+            destination_mac,
+            destination_ip,
+            protocol,
+            payload,
+            out,
+        )
+    }
+
+    fn write_ipv4_from(
+        &self,
+        source_ip: [u8; 4],
+        destination_mac: [u8; 6],
+        destination_ip: [u8; 4],
+        protocol: u8,
+        payload: &[u8],
+        out: &mut [u8],
+    ) -> Option<usize> {
         if payload.len() > ETHERNET_MTU - IPV4_HEADER_LEN {
             return None;
         }
-        let header = Ipv4Header::build(protocol, self.address, destination_ip, payload.len());
+        let header = Ipv4Header::build(protocol, source_ip, destination_ip, payload.len());
         let mut packet = [0u8; ETHERNET_MTU];
         packet[..IPV4_HEADER_LEN].copy_from_slice(&header);
         packet[IPV4_HEADER_LEN..IPV4_HEADER_LEN + payload.len()].copy_from_slice(payload);
