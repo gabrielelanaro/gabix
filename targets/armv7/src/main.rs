@@ -219,6 +219,11 @@ extern "C" fn arm_kernel_entry() {
                 disk_user_entry = user::load_elf(&image);
             }
         }
+        if let Some(mut usb) = raspi2b::usb::Dwc2::initialize() {
+            if usb.enumerate_root().is_some() {
+                write_line(&mut console, b"gabix raspi2b usb enumerated");
+            }
+        }
         raspi2b::timer::init();
         while raspi2b::timer::ticks() < 2 {
             asm!("wfi");
