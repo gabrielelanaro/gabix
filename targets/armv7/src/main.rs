@@ -228,7 +228,7 @@ extern "C" fn arm_kernel_entry() {
                     Some(device)
                 };
                 if let Some(mut network) = network_device
-                    .and_then(|device| raspi2b::rndis::RndisEthernet::configure(usb, device))
+                    .and_then(|device| raspi2b::ethernet::UsbEthernet::configure(usb, device))
                 {
                     write_line(&mut console, b"gabix raspi2b usb network configured");
                     let interface = NetworkInterface::new(network.mac_address(), [10, 0, 2, 15]);

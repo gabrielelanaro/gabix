@@ -26,21 +26,7 @@ pub struct RndisEthernet {
 
 impl RndisEthernet {
     pub unsafe fn configure(mut host: Dwc2, device: UsbDevice) -> Option<Self> {
-        let mut header = [0u8; 9];
-        host.control_read(device, 0x80, 6, 0x0200, 0, &mut header)?;
-        let total = u16::from_le_bytes([header[2], header[3]]) as usize;
-        if total < header.len() || total > 256 || header[5] == 0 {
-            return None;
-        }
-
-        let mut descriptors = [0u8; 256];
-        if host.control_read(device, 0x80, 6, 0x0200, 0, &mut descriptors[..total])? != total {
-            return None;
-        }
-        let (bulk_in_endpoint, bulk_out_endpoint, bulk_max_packet) =
-            parse_bulk_endpoints(&descriptors[..total])?;
-
-        host.control_write_no_data(device, 0, 9, header[5] as u16, 0)?;
+        let endpoints = host.configure_bulk_device(device)?;
 
         let mut initialize = [0u8; 24];
         put_u32(&mut initialize, 0, RNDIS_INITIALIZE);
@@ -79,9 +65,9 @@ impl RndisEthernet {
         Some(Self {
             host,
             device,
-            bulk_in_endpoint,
-            bulk_out_endpoint,
-            bulk_max_packet,
+            bulk_in_endpoint: endpoints.input,
+            bulk_out_endpoint: endpoints.output,
+            bulk_max_packet: endpoints.max_packet_size,
             mac: [0x52, 0x54, 0x00, 0x12, 0x34, 0x56],
             tx_pid: DATA0,
             rx_pid: DATA0,
@@ -171,30 +157,6 @@ unsafe fn receive_response(
     response: &mut [u8],
 ) -> Option<usize> {
     host.control_read(device, 0xa1, 1, 0, 0, response)
-}
-
-fn parse_bulk_endpoints(descriptors: &[u8]) -> Option<(u8, u8, u16)> {
-    let mut input = None;
-    let mut output = None;
-    let mut max_packet = 0;
-    let mut offset = 0;
-    while offset + 2 <= descriptors.len() {
-        let length = descriptors[offset] as usize;
-        if length < 2 || offset + length > descriptors.len() {
-            return None;
-        }
-        if descriptors[offset + 1] == 5 && length >= 7 && descriptors[offset + 3] & 3 == 2 {
-            let endpoint = descriptors[offset + 2];
-            max_packet = u16::from_le_bytes([descriptors[offset + 4], descriptors[offset + 5]]);
-            if endpoint & 0x80 != 0 {
-                input = Some(endpoint & 0x0f);
-            } else {
-                output = Some(endpoint & 0x0f);
-            }
-        }
-        offset += length;
-    }
-    Some((input?, output?, max_packet.max(1)))
 }
 
 fn put_u32(bytes: &mut [u8], offset: usize, value: u32) {

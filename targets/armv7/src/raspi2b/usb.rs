@@ -54,6 +54,12 @@ pub struct UsbDevice {
     pub product_id: u16,
 }
 
+pub struct BulkEndpoints {
+    pub input: u8,
+    pub output: u8,
+    pub max_packet_size: u16,
+}
+
 pub struct Dwc2;
 
 impl Dwc2 {
@@ -207,6 +213,23 @@ impl Dwc2 {
             SetupPacket::new(request_type, request, value, index, bytes.len() as u16),
             bytes,
         )
+    }
+
+    pub unsafe fn configure_bulk_device(&mut self, device: UsbDevice) -> Option<BulkEndpoints> {
+        let mut header = [0u8; 9];
+        self.control_read(device, 0x80, 6, 0x0200, 0, &mut header)?;
+        let total = u16::from_le_bytes([header[2], header[3]]) as usize;
+        if total < header.len() || total > 256 || header[5] == 0 {
+            return None;
+        }
+
+        let mut descriptors = [0u8; 256];
+        if self.control_read(device, 0x80, 6, 0x0200, 0, &mut descriptors[..total])? != total {
+            return None;
+        }
+        let endpoints = parse_bulk_endpoints(&descriptors[..total])?;
+        self.control_write_no_data(device, 0, 9, header[5] as u16, 0)?;
+        Some(endpoints)
     }
 
     pub unsafe fn bulk_out(
@@ -526,4 +549,33 @@ unsafe fn read32(offset: usize) -> u32 {
 
 unsafe fn write32(offset: usize, value: u32) {
     core::ptr::write_volatile((BASE + offset) as *mut u32, value);
+}
+
+fn parse_bulk_endpoints(descriptors: &[u8]) -> Option<BulkEndpoints> {
+    let mut input = None;
+    let mut output = None;
+    let mut max_packet_size = 0;
+    let mut offset = 0;
+    while offset + 2 <= descriptors.len() {
+        let length = descriptors[offset] as usize;
+        if length < 2 || offset + length > descriptors.len() {
+            return None;
+        }
+        if descriptors[offset + 1] == 5 && length >= 7 && descriptors[offset + 3] & 3 == 2 {
+            let endpoint = descriptors[offset + 2];
+            max_packet_size =
+                u16::from_le_bytes([descriptors[offset + 4], descriptors[offset + 5]]);
+            if endpoint & 0x80 != 0 {
+                input = Some(endpoint & 0x0f);
+            } else {
+                output = Some(endpoint & 0x0f);
+            }
+        }
+        offset += length;
+    }
+    Some(BulkEndpoints {
+        input: input?,
+        output: output?,
+        max_packet_size: max_packet_size.max(1),
+    })
 }
