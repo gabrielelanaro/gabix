@@ -30,6 +30,8 @@ use core::arch::global_asm;
 use core::panic::PanicInfo;
 #[cfg(feature = "virt")]
 use gabix_kernel::device::FrameDevice;
+#[cfg(feature = "virt")]
+use gabix_kernel::net::stack::{NetworkInterface, MAX_FRAME_LEN};
 use platform::{PLATFORM, UART_BASE};
 
 #[cfg(all(feature = "virt", feature = "raspi2b"))]
@@ -107,6 +109,7 @@ extern "C" fn arm_kernel_entry() {
             }
         }
         if let Some(mut network) = virt::network::VirtioNet::probe() {
+            let interface = NetworkInterface::new(network.mac_address(), [10, 0, 2, 15]);
             let mut frame = [0u8; 29];
             frame[..6].fill(0xff);
             frame[6..12].copy_from_slice(&network.mac_address());
@@ -119,7 +122,10 @@ extern "C" fn arm_kernel_entry() {
                     let bytes = received.bytes();
                     if bytes.len() >= 30 && bytes[14..].starts_with(b"gabix-host-frame") {
                         write_line(&mut console, b"gabix arm virt frame received");
-                        break;
+                    }
+                    let mut reply = [0u8; MAX_FRAME_LEN];
+                    if let Some(length) = interface.reply(bytes, &mut reply) {
+                        network.transmit(&reply[..length]);
                     }
                 }
                 asm!("wfi");
