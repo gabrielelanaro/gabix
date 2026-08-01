@@ -12,6 +12,11 @@ repo_root=$(CDPATH= cd -- "$script_dir/.." && pwd)
 platform=$1
 manifest="$repo_root/targets/armv7/Cargo.toml"
 linker_script="$repo_root/targets/armv7/linker.ld"
+if [ "$platform" = "virt" ]; then
+    kernel_base=0x40010000
+else
+    kernel_base=0x00010000
+fi
 rust_sysroot=$(rustc --print sysroot)
 llvm_objcopy="$rust_sysroot/lib/rustlib/x86_64-unknown-linux-gnu/bin/llvm-objcopy"
 elf="$repo_root/targets/armv7/target/armv7a-none-eabihf/debug/gabix-armv7"
@@ -22,7 +27,7 @@ if [ ! -x "$llvm_objcopy" ]; then
     exit 1
 fi
 
-RUSTFLAGS="-C relocation-model=pic -C link-arg=-T$linker_script" \
+RUSTFLAGS="-C relocation-model=static -C link-arg=-T$linker_script -C link-arg=--defsym=KERNEL_BASE=$kernel_base" \
     cargo build \
         --manifest-path "$manifest" \
         --target armv7a-none-eabihf \

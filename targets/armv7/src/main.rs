@@ -93,6 +93,11 @@ extern "C" fn arm_kernel_entry() {
                     write_line(&mut console, b"gabix arm virt block read");
                 }
             }
+            if let Some(file) = gabix_kernel::fs::ext2::read_file(&mut block, b"/known-block.bin") {
+                if file.starts_with(b"gabix-known-disk-data\n") {
+                    write_line(&mut console, b"gabix arm virt file read");
+                }
+            }
         }
         virt::timer::init();
         while virt::timer::ticks() < 2 {

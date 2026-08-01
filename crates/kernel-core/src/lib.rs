@@ -1,6 +1,9 @@
 #![no_std]
 
+extern crate alloc;
+
 pub mod device;
+pub mod fs;
 pub mod memory;
 
 /// Byte-oriented console supplied by a platform adapter.

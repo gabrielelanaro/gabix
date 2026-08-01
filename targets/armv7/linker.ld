@@ -2,7 +2,7 @@ ENTRY(_start)
 
 SECTIONS
 {
-    . = 0;
+    . = KERNEL_BASE;
 
     .text : {
         KEEP(*(.text.boot))
