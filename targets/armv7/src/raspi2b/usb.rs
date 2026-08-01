@@ -2,6 +2,10 @@ const BASE: usize = 0x3f98_0000;
 const SYSTEM_TIMER_LOW: *const u32 = 0x3f00_3004 as *const u32;
 
 const GAHBCFG: usize = 0x008;
+#[cfg(feature = "pi-hardware")]
+const GUSBCFG: usize = 0x00c;
+#[cfg(feature = "pi-hardware")]
+const GRSTCTL: usize = 0x010;
 const GINTSTS: usize = 0x014;
 const HCFG: usize = 0x400;
 const HPRT: usize = 0x440;
@@ -11,8 +15,40 @@ const HCINT: usize = 0x08;
 const HCINTMSK: usize = 0x0c;
 const HCTSIZ: usize = 0x10;
 const HCDMA: usize = 0x14;
+#[cfg(feature = "pi-hardware")]
+const PCGCCTL: usize = 0xe00;
 
 const AHB_DMA_ENABLE: u32 = 1 << 5;
+#[cfg(feature = "pi-hardware")]
+const AHB_WAIT_AXI_WRITES: u32 = 1 << 4;
+#[cfg(feature = "pi-hardware")]
+const AHB_MAX_BURST_MASK: u32 = 3 << 1;
+#[cfg(feature = "pi-hardware")]
+const USB_PHY_INTERFACE_16_BIT: u32 = 1 << 3;
+#[cfg(feature = "pi-hardware")]
+const USB_ULPI_UTMI_SELECT: u32 = 1 << 4;
+#[cfg(feature = "pi-hardware")]
+const USB_ULPI_FSLS: u32 = 1 << 17;
+#[cfg(feature = "pi-hardware")]
+const USB_ULPI_CLOCK_SUSPEND: u32 = 1 << 19;
+#[cfg(feature = "pi-hardware")]
+const USB_ULPI_EXTERNAL_VBUS: u32 = 1 << 20;
+#[cfg(feature = "pi-hardware")]
+const USB_TERM_SELECT_PULSE: u32 = 1 << 22;
+#[cfg(feature = "pi-hardware")]
+const USB_FORCE_HOST_MODE: u32 = 1 << 29;
+#[cfg(feature = "pi-hardware")]
+const USB_FORCE_DEVICE_MODE: u32 = 1 << 30;
+#[cfg(feature = "pi-hardware")]
+const RESET_CORE_SOFT: u32 = 1 << 0;
+#[cfg(feature = "pi-hardware")]
+const RESET_RX_FIFO: u32 = 1 << 4;
+#[cfg(feature = "pi-hardware")]
+const RESET_TX_FIFO: u32 = 1 << 5;
+#[cfg(feature = "pi-hardware")]
+const RESET_TX_FIFO_ALL: u32 = 0x10 << 6;
+#[cfg(feature = "pi-hardware")]
+const RESET_AHB_IDLE: u32 = 1 << 31;
 const CURRENT_MODE_HOST: u32 = 1;
 const PORT_POWER: u32 = 1 << 12;
 const PORT_RESET: u32 = 1 << 8;
@@ -64,19 +100,29 @@ pub struct Dwc2;
 
 impl Dwc2 {
     pub unsafe fn initialize() -> Option<Self> {
+        #[cfg(feature = "pi-hardware")]
+        initialize_hardware()?;
+
         if read32(GINTSTS) & CURRENT_MODE_HOST == 0 {
             return None;
         }
-        write32(GAHBCFG, read32(GAHBCFG) | AHB_DMA_ENABLE);
-        write32(HCFG, 1);
+        #[cfg(not(feature = "pi-hardware"))]
+        {
+            write32(GAHBCFG, read32(GAHBCFG) | AHB_DMA_ENABLE);
+            write32(HCFG, 1);
+        }
 
-        let port = port_value();
-        if port & PORT_CONNECTED == 0 {
+        write32(HPRT, port_value() | PORT_POWER);
+        #[cfg(feature = "pi-hardware")]
+        wait_for_us(1_000_000, || read32(HPRT) & PORT_CONNECTED != 0)?;
+        #[cfg(not(feature = "pi-hardware"))]
+        if port_value() & PORT_CONNECTED == 0 {
             return None;
         }
-        write32(HPRT, port | PORT_POWER | PORT_RESET);
+        delay_us(100_000);
+        write32(HPRT, port_value() | PORT_POWER | PORT_RESET);
         delay_us(50_000);
-        write32(HPRT, (port_value() & !PORT_RESET) | PORT_POWER);
+        write32(HPRT, port_value() & !PORT_RESET | PORT_POWER);
         delay_us(20_000);
         wait_until(|| read32(HPRT) & PORT_ENABLE != 0)?;
         Some(Self)
@@ -479,7 +525,7 @@ unsafe fn transfer(
                 | INTERRUPT_STALL
                 | INTERRUPT_ERRORS,
         );
-        write32(CHANNEL_BASE + HCDMA, buffer as u32);
+        write32(CHANNEL_BASE + HCDMA, dma_address(buffer));
         write32(
             CHANNEL_BASE + HCTSIZ,
             length as u32 | (packet_count as u32) << PACKET_COUNT_SHIFT | pid << PID_SHIFT,
@@ -530,6 +576,65 @@ unsafe fn delay_us(microseconds: u32) {
     let start = core::ptr::read_volatile(SYSTEM_TIMER_LOW);
     while core::ptr::read_volatile(SYSTEM_TIMER_LOW).wrapping_sub(start) < microseconds {
         core::hint::spin_loop();
+    }
+}
+
+#[cfg(feature = "pi-hardware")]
+unsafe fn initialize_hardware() -> Option<()> {
+    super::mailbox::power_on_usb()?;
+
+    let mut usb_config = read32(GUSBCFG);
+    usb_config &= !(USB_ULPI_EXTERNAL_VBUS | USB_TERM_SELECT_PULSE);
+    write32(GUSBCFG, usb_config);
+    wait_until(|| read32(GRSTCTL) & RESET_AHB_IDLE != 0)?;
+    write32(GRSTCTL, read32(GRSTCTL) | RESET_CORE_SOFT);
+    wait_until(|| read32(GRSTCTL) & RESET_CORE_SOFT == 0)?;
+    delay_us(100_000);
+
+    usb_config = read32(GUSBCFG);
+    usb_config &= !(USB_PHY_INTERFACE_16_BIT
+        | USB_ULPI_UTMI_SELECT
+        | USB_ULPI_FSLS
+        | USB_ULPI_CLOCK_SUSPEND
+        | USB_FORCE_DEVICE_MODE);
+    usb_config |= USB_FORCE_HOST_MODE;
+    write32(GUSBCFG, usb_config);
+    delay_us(50_000);
+
+    let ahb_config = (read32(GAHBCFG) | AHB_DMA_ENABLE | AHB_WAIT_AXI_WRITES) & !AHB_MAX_BURST_MASK;
+    write32(GAHBCFG, ahb_config);
+    write32(PCGCCTL, 0);
+    write32(HCFG, 0);
+
+    write32(GRSTCTL, RESET_TX_FIFO | RESET_TX_FIFO_ALL);
+    wait_until(|| read32(GRSTCTL) & RESET_TX_FIFO == 0)?;
+    delay_us(1);
+    write32(GRSTCTL, RESET_RX_FIFO);
+    wait_until(|| read32(GRSTCTL) & RESET_RX_FIFO == 0)?;
+    delay_us(1);
+    Some(())
+}
+
+#[cfg(feature = "pi-hardware")]
+unsafe fn wait_for_us(microseconds: u32, mut condition: impl FnMut() -> bool) -> Option<()> {
+    let start = core::ptr::read_volatile(SYSTEM_TIMER_LOW);
+    while core::ptr::read_volatile(SYSTEM_TIMER_LOW).wrapping_sub(start) < microseconds {
+        if condition() {
+            return Some(());
+        }
+        core::hint::spin_loop();
+    }
+    None
+}
+
+fn dma_address(buffer: *const u8) -> u32 {
+    #[cfg(feature = "pi-hardware")]
+    {
+        (buffer as u32 & 0x3fff_ffff) | 0xc000_0000
+    }
+    #[cfg(not(feature = "pi-hardware"))]
+    {
+        buffer as u32
     }
 }
 

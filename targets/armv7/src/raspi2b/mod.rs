@@ -1,5 +1,7 @@
 pub mod ethernet;
 pub mod lan9512;
+#[cfg(feature = "pi-hardware")]
+pub mod mailbox;
 pub mod rndis;
 pub mod sdhci;
 pub mod timer;
