@@ -14,9 +14,7 @@ mod platform;
 mod raspi2b;
 #[cfg(feature = "virt")]
 mod scheduler;
-#[cfg(feature = "virt")]
 mod syscall;
-#[cfg(feature = "virt")]
 mod user;
 #[cfg(feature = "virt")]
 mod virt;
@@ -197,6 +195,7 @@ extern "C" fn arm_kernel_entry() {
 
     #[cfg(feature = "raspi2b")]
     unsafe {
+        let mut disk_user_entry = None;
         if memory::enable_identity_mapping() {
             write_line(&mut console, b"gabix raspi2b memory mapped");
         }
@@ -216,12 +215,20 @@ extern "C" fn arm_kernel_entry() {
                     write_line(&mut console, b"gabix raspi2b file read");
                 }
             }
+            if let Some(image) = gabix_kernel::fs::ext2::read_file(&mut card, b"/init.elf") {
+                disk_user_entry = user::load_elf(&image);
+            }
         }
         raspi2b::timer::init();
         while raspi2b::timer::ticks() < 2 {
             asm!("wfi");
         }
         write_line(&mut console, b"gabix raspi2b timer advanced");
+        if let Some(entry) = disk_user_entry {
+            memory::allow_user_section(entry);
+            memory::allow_user_section(user::USER_STACK_TOP - 1);
+            user::enter(entry, user::USER_STACK_TOP);
+        }
     }
 }
 
@@ -245,16 +252,11 @@ extern "C" fn arm_irq_entry() {
 }
 
 #[no_mangle]
-#[cfg(feature = "virt")]
 extern "C" fn arm_svc_entry(frame: *mut syscall::UserFrame) {
     unsafe {
         syscall::dispatch(&mut *frame);
     }
 }
-
-#[no_mangle]
-#[cfg(feature = "raspi2b")]
-extern "C" fn arm_svc_entry(_: *mut u32) {}
 
 #[panic_handler]
 fn panic(_: &PanicInfo) -> ! {

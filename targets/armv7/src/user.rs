@@ -1,10 +1,13 @@
 use core::arch::naked_asm;
 use gabix_kernel::elf::Elf32;
 
+#[cfg(feature = "virt")]
 const USER_HEADER: *const u32 = 0x4100_0000 as *const u32;
+#[cfg(feature = "virt")]
 const USER_MAGIC: u32 = 0x5849_4247;
 pub const USER_STACK_TOP: u32 = 0x47df_f000;
 
+#[cfg(feature = "virt")]
 pub fn loaded_entry() -> Option<u32> {
     unsafe {
         if core::ptr::read_volatile(USER_HEADER) == USER_MAGIC {

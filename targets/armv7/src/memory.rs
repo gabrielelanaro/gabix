@@ -6,10 +6,11 @@ const SECTION_COUNT: usize = 4096;
 const SECTION_SIZE: u32 = 1024 * 1024;
 const SECTION_DESCRIPTOR: u32 = 0b10;
 const PRIVILEGED_READ_WRITE: u32 = 0b01 << 10;
-#[cfg(feature = "virt")]
-const ACCESS_PERMISSION_MASK: u32 = 0b11 << 10;
-#[cfg(feature = "virt")]
 const USER_READ_WRITE: u32 = 0b11 << 10;
+#[cfg(feature = "raspi2b")]
+const USER_VIRTUAL_BASE: u32 = 0x4100_0000;
+#[cfg(feature = "raspi2b")]
+const USER_PHYSICAL_BASE: u32 = 0x0100_0000;
 
 #[repr(C, align(16384))]
 struct TranslationTable([u32; SECTION_COUNT]);
@@ -67,11 +68,14 @@ pub unsafe fn enable_identity_mapping() -> bool {
     core::ptr::read_volatile(core::ptr::addr_of!(MMU_PROBE)) == 0x4741_4249
 }
 
-#[cfg(feature = "virt")]
 pub unsafe fn allow_user_section(address: u32) {
     let index = (address / SECTION_SIZE) as usize;
     let table = &mut *core::ptr::addr_of_mut!(BOOT_TABLE);
-    table.0[index] = (table.0[index] & !ACCESS_PERMISSION_MASK) | USER_READ_WRITE;
+    #[cfg(feature = "virt")]
+    let physical = table.0[index] & 0xfff0_0000;
+    #[cfg(feature = "raspi2b")]
+    let physical = USER_PHYSICAL_BASE + (address & 0xfff0_0000) - USER_VIRTUAL_BASE;
+    table.0[index] = physical | USER_READ_WRITE | SECTION_DESCRIPTOR;
 
     let zero = 0u32;
     asm!("dsb");
@@ -80,7 +84,6 @@ pub unsafe fn allow_user_section(address: u32) {
     asm!("isb");
 }
 
-#[cfg(feature = "virt")]
 pub unsafe fn allow_user_range(start: u32, len: u32) {
     let Some(end) = start.checked_add(len) else {
         return;
