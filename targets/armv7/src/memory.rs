@@ -1,4 +1,5 @@
 use core::arch::asm;
+use gabix_kernel::memory::FrameAllocator;
 
 const SECTION_COUNT: usize = 4096;
 const SECTION_SIZE: u32 = 1024 * 1024;
@@ -10,6 +11,20 @@ struct TranslationTable([u32; SECTION_COUNT]);
 
 static mut BOOT_TABLE: TranslationTable = TranslationTable([0; SECTION_COUNT]);
 static mut MMU_PROBE: u32 = 0;
+static mut FRAMES: FrameAllocator = FrameAllocator::empty();
+
+pub unsafe fn frame_is_reused() -> bool {
+    let frames = &mut *core::ptr::addr_of_mut!(FRAMES);
+    frames.reset(0x4000_0000, 0x4800_0000);
+    frames.add_usable_range(0x4010_0000, 0x47f0_0000);
+
+    let first = frames.allocate().expect("ARM virt has usable RAM");
+    let second = frames.allocate().expect("ARM virt has a second frame");
+    frames.deallocate(first);
+    let reused = frames.allocate().expect("released frame is reusable");
+
+    first == reused && first != second
+}
 
 /// Install a bootstrap address space in which every virtual section maps to
 /// the physical section with the same address.
