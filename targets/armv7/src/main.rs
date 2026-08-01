@@ -211,6 +211,11 @@ extern "C" fn arm_kernel_entry() {
                     write_line(&mut console, b"gabix raspi2b block read");
                 }
             }
+            if let Some(file) = gabix_kernel::fs::ext2::read_file(&mut card, b"/known-block.bin") {
+                if file.starts_with(b"gabix-known-disk-data\n") {
+                    write_line(&mut console, b"gabix raspi2b file read");
+                }
+            }
         }
         raspi2b::timer::init();
         while raspi2b::timer::ticks() < 2 {
