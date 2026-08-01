@@ -205,6 +205,13 @@ extern "C" fn arm_kernel_entry() {
         if *boxed + values.iter().sum::<u32>() == 42 {
             write_line(&mut console, b"gabix raspi2b heap allocated");
         }
+        if let Some(mut card) = raspi2b::sdhci::SdCard::initialize() {
+            if let Some(sector) = card.try_read_sector(1) {
+                if sector.starts_with(b"GABIXPI2") {
+                    write_line(&mut console, b"gabix raspi2b block read");
+                }
+            }
+        }
         raspi2b::timer::init();
         while raspi2b::timer::ticks() < 2 {
             asm!("wfi");
