@@ -5,6 +5,8 @@ import struct
 import sys
 from pathlib import Path
 
+from arm_dhcp_peer import receive_dhcp, reply_payload, send_frame
+from arm_dhcp_peer import udp_frame as dhcp_frame
 from arm_udp_peer import HOST_MAC, receive_frame, udp_frame, verify_reply
 
 
@@ -14,7 +16,10 @@ def run(socket_path: Path) -> None:
         listener.bind(str(socket_path))
         listener.listen(1)
         with listener.accept()[0] as connection:
-            receive_frame(connection)
+            discover = receive_dhcp(connection, 1)
+            send_frame(connection, dhcp_frame(reply_payload(discover, 2)))
+            request = receive_dhcp(connection, 3)
+            send_frame(connection, dhcp_frame(reply_payload(request, 5)))
             request = udp_frame()
             connection.sendall(struct.pack("!I", len(request)) + request)
             while True:

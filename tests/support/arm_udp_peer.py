@@ -5,6 +5,9 @@ import struct
 import sys
 from pathlib import Path
 
+from arm_dhcp_peer import receive_dhcp, reply_payload, send_frame
+from arm_dhcp_peer import udp_frame as dhcp_frame
+
 GUEST_MAC = bytes.fromhex("525400123456")
 HOST_MAC = bytes.fromhex("525400123499")
 GUEST_IP = bytes([10, 0, 2, 15])
@@ -73,6 +76,10 @@ def run(socket_path: Path) -> None:
         listener.listen(1)
         with listener.accept()[0] as connection:
             receive_frame(connection)
+            discover = receive_dhcp(connection, 1)
+            send_frame(connection, dhcp_frame(reply_payload(discover, 2)))
+            request = receive_dhcp(connection, 3)
+            send_frame(connection, dhcp_frame(reply_payload(request, 5)))
             request = udp_frame()
             connection.sendall(struct.pack("!I", len(request)) + request)
             while True:
