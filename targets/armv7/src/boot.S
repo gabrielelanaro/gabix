@@ -7,6 +7,7 @@
     .equ GPIO_BASE, {gpio_base}
     .equ CONFIGURE_GPIO, {configure_gpio}
     .equ STACK_TOP, {stack_top}
+    .equ IRQ_STACK_TOP, {irq_stack_top}
 
 _start:
     cpsid if
@@ -16,6 +17,13 @@ _start:
     ands r0, r0, #3
     bne .Lpark
 
+    adr r0, .Lvectors
+    mcr p15, 0, r0, c12, c0, 0
+    isb
+
+    cps #0x12
+    ldr sp, =IRQ_STACK_TOP
+    cps #0x13
     ldr sp, =STACK_TOP
 
     .if CONFIGURE_GPIO
@@ -52,6 +60,24 @@ _start:
 .Lpark:
     wfe
     b .Lpark
+
+    .align 5
+.Lvectors:
+    b .Lpark
+    b .Lpark
+    b .Lpark
+    b .Lpark
+    b .Lpark
+    b .Lpark
+    b .Lirq
+    b .Lpark
+
+.Lirq:
+    sub lr, lr, #4
+    stmdb sp!, {{r0-r12, lr}}
+    bl {irq_entry}
+    ldmia sp!, {{r0-r12, lr}}
+    subs pc, lr, #0
 
     .align 2
 .Lexit_block:
