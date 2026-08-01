@@ -1,11 +1,14 @@
 use core::arch::asm;
+#[cfg(feature = "virt")]
 use gabix_kernel::memory::FrameAllocator;
 
 const SECTION_COUNT: usize = 4096;
 const SECTION_SIZE: u32 = 1024 * 1024;
 const SECTION_DESCRIPTOR: u32 = 0b10;
 const PRIVILEGED_READ_WRITE: u32 = 0b01 << 10;
+#[cfg(feature = "virt")]
 const ACCESS_PERMISSION_MASK: u32 = 0b11 << 10;
+#[cfg(feature = "virt")]
 const USER_READ_WRITE: u32 = 0b11 << 10;
 
 #[repr(C, align(16384))]
@@ -13,8 +16,10 @@ struct TranslationTable([u32; SECTION_COUNT]);
 
 static mut BOOT_TABLE: TranslationTable = TranslationTable([0; SECTION_COUNT]);
 static mut MMU_PROBE: u32 = 0;
+#[cfg(feature = "virt")]
 static mut FRAMES: FrameAllocator = FrameAllocator::empty();
 
+#[cfg(feature = "virt")]
 pub unsafe fn frame_is_reused() -> bool {
     let frames = &mut *core::ptr::addr_of_mut!(FRAMES);
     frames.reset(0x4000_0000, 0x4800_0000);
@@ -62,6 +67,7 @@ pub unsafe fn enable_identity_mapping() -> bool {
     core::ptr::read_volatile(core::ptr::addr_of!(MMU_PROBE)) == 0x4741_4249
 }
 
+#[cfg(feature = "virt")]
 pub unsafe fn allow_user_section(address: u32) {
     let index = (address / SECTION_SIZE) as usize;
     let table = &mut *core::ptr::addr_of_mut!(BOOT_TABLE);
@@ -74,6 +80,7 @@ pub unsafe fn allow_user_section(address: u32) {
     asm!("isb");
 }
 
+#[cfg(feature = "virt")]
 pub unsafe fn allow_user_range(start: u32, len: u32) {
     let Some(end) = start.checked_add(len) else {
         return;

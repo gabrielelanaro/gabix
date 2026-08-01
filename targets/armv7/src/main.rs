@@ -8,7 +8,6 @@ mod allocator;
 mod console;
 #[cfg(feature = "virt")]
 mod context;
-#[cfg(feature = "virt")]
 mod memory;
 mod platform;
 #[cfg(feature = "raspi2b")]
@@ -198,6 +197,14 @@ extern "C" fn arm_kernel_entry() {
 
     #[cfg(feature = "raspi2b")]
     unsafe {
+        if memory::enable_identity_mapping() {
+            write_line(&mut console, b"gabix raspi2b memory mapped");
+        }
+        let boxed = alloc::boxed::Box::new(40u32);
+        let values = alloc::vec![1u32, 1];
+        if *boxed + values.iter().sum::<u32>() == 42 {
+            write_line(&mut console, b"gabix raspi2b heap allocated");
+        }
         raspi2b::timer::init();
         while raspi2b::timer::ticks() < 2 {
             asm!("wfi");
