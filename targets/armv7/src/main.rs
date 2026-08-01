@@ -11,6 +11,8 @@ mod context;
 #[cfg(feature = "virt")]
 mod memory;
 mod platform;
+#[cfg(feature = "raspi2b")]
+mod raspi2b;
 #[cfg(feature = "virt")]
 mod scheduler;
 #[cfg(feature = "virt")]
@@ -20,11 +22,9 @@ mod user;
 #[cfg(feature = "virt")]
 mod virt;
 
-#[cfg(feature = "virt")]
 use console::write_line;
 use console::Pl011;
 use core::alloc::Layout;
-#[cfg(feature = "virt")]
 use core::arch::asm;
 use core::arch::global_asm;
 use core::panic::PanicInfo;
@@ -195,6 +195,15 @@ extern "C" fn arm_kernel_entry() {
             user::enter(entry, user::USER_STACK_TOP);
         }
     }
+
+    #[cfg(feature = "raspi2b")]
+    unsafe {
+        raspi2b::timer::init();
+        while raspi2b::timer::ticks() < 2 {
+            asm!("wfi");
+        }
+        write_line(&mut console, b"gabix raspi2b timer advanced");
+    }
 }
 
 #[alloc_error_handler]
@@ -209,6 +218,10 @@ extern "C" fn arm_irq_entry() {
     #[cfg(feature = "virt")]
     unsafe {
         virt::timer::handle_interrupt();
+    }
+    #[cfg(feature = "raspi2b")]
+    unsafe {
+        raspi2b::timer::handle_interrupt();
     }
 }
 
