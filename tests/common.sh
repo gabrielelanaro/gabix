@@ -2,7 +2,8 @@
 # Shared helpers for test scripts. Sourced by tests/test_*.sh.
 #
 # Provides:
-#   build_kernel <feature-flags>           cargo bootimage with the given features
+#   build_kernel                           build the scenario-independent kernel
+#   prepare_test_disk <fixture-source>     install a fixture as /init.elf
 #   boot_qemu <output-log-path>           run QEMU with UDP host forwarding, capture serial
 #   boot_qemu_no_hostfwd <output-log-path> run QEMU without a host port reservation
 #   qemu_exit_was_success <qemu-exit-code> 0 if exit 33 (PASS), 1 otherwise
@@ -37,16 +38,17 @@ TESTS_DIR=$(cd "$(dirname "$0")" && pwd)
 REPO_ROOT=$(cd "$TESTS_DIR/.." && pwd)
 
 build_kernel() {
-    features=$1
-    echo "[test] building kernel with features: $features"
+    echo "[test] building kernel"
     (
         cd "$REPO_ROOT"
-        # Force a fresh custom-target build. `cargo bootimage` can otherwise
-        # reuse a stale boot image when only the feature set changed between
-        # test scripts.
-        rm -rf target/x86_64-mini-os
-        cargo bootimage --features "$features" 2>&1 | tail -3
+        cargo bootimage --features qemu-exit 2>&1 | tail -3
     )
+}
+
+prepare_test_disk() {
+    fixture=$1
+    echo "[test] installing $fixture as /init.elf"
+    (cd "$REPO_ROOT" && sh scripts/make-disk.sh "$fixture" "$DISK_IMG") >/dev/null
 }
 
 # Boot QEMU with isa-debug-exit. Captures serial + QEMU's own stderr to $1.

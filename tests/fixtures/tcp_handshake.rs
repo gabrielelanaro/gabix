@@ -1,29 +1,80 @@
 #![no_std]
 #![no_main]
 
-const CONNECT: u64 = 905;
-const SEND: u64 = 906;
-const RECV: u64 = 907;
+const AF_INET: u64 = 2;
+const SOCK_STREAM: u64 = 1;
+const SYS_READ: u64 = 0;
+const SYS_WRITE: u64 = 1;
+const SYS_SOCKET: u64 = 41;
+const SYS_CONNECT: u64 = 42;
+
+#[repr(C)]
+struct SockAddrIn {
+    family: u16,
+    port: u16,
+    address: [u8; 4],
+    zero: [u8; 8],
+}
 
 #[no_mangle]
 pub extern "C" fn _start() -> ! {
-    write(b"[tcp-client] connect 10.0.2.3:53\n");
-    if syscall1(CONNECT, 0) != 0 { exit(10); }
-    write(b"[tcp-client] ESTABLISHED\n");
+    let fd = syscall3(SYS_SOCKET, AF_INET, SOCK_STREAM, 0);
+    if fd == u64::MAX {
+        exit(10);
+    }
 
-    // DNS over TCP: a two-byte message length followed by an A query for example.com.
-    let query = [0, 29, 0x31, 0x31, 0x01, 0x00, 0, 1, 0, 0, 0, 0, 0, 0,
-        7, b'e', b'x', b'a', b'm', b'p', b'l', b'e', 3, b'c', b'o', b'm', 0, 0, 1, 0, 1];
-    if syscall3(SEND, query.as_ptr() as u64, query.len() as u64, 0) != query.len() as u64 { exit(11); }
-    write(b"[tcp-client] sent DNS query; sequence advanced by payload length\n");
-    let first = syscall1(RECV, 0);
-    if first > 255 { exit(12); }
-    write(b"[tcp-client] received and ACKed first response byte\n");
+    let peer = SockAddrIn {
+        family: AF_INET as u16,
+        port: 8080u16.to_be(),
+        address: [10, 0, 2, 2],
+        zero: [0; 8],
+    };
+    if syscall3(SYS_CONNECT, fd, &peer as *const _ as u64, 16) != 0 {
+        exit(11);
+    }
+
+    let payload = b"retransmit-me";
+    if syscall3(SYS_WRITE, fd, payload.as_ptr() as u64, payload.len() as u64)
+        != payload.len() as u64
+    {
+        exit(12);
+    }
+
+    let mut reply = [0u8; 1];
+    if syscall3(SYS_READ, fd, reply.as_mut_ptr() as u64, 1) != 1 || reply[0] != b'!' {
+        exit(13);
+    }
+
+    log(b"[tcp-client] response arrived after retransmit\n");
     exit(0)
 }
 
-fn syscall1(n:u64,a:u64)->u64 { let r; unsafe { core::arch::asm!("syscall",in("rax")n,in("rdi")a,lateout("rax")r,lateout("rcx")_,lateout("r11")_) } r }
-fn syscall3(n:u64,a:u64,b:u64,c:u64)->u64 { let r; unsafe { core::arch::asm!("syscall",in("rax")n,in("rdi")a,in("rsi")b,in("rdx")c,lateout("rax")r,lateout("rcx")_,lateout("r11")_) } r }
-fn write(s:&[u8]) { let r:u64; unsafe { core::arch::asm!("syscall",in("rax")1u64,in("rdi")1u64,in("rsi")s.as_ptr() as u64,in("rdx")s.len() as u64,lateout("rax")r,lateout("rcx")_,lateout("r11")_) }; let _=r; }
-fn exit(c:u64)->! { unsafe { core::arch::asm!("syscall",in("rax")60u64,in("rdi")c,options(noreturn)) } }
-#[panic_handler] fn panic(_: &core::panic::PanicInfo)->! { exit(99) }
+fn syscall3(number: u64, arg1: u64, arg2: u64, arg3: u64) -> u64 {
+    let result;
+    unsafe {
+        core::arch::asm!(
+            "syscall",
+            in("rax") number,
+            in("rdi") arg1,
+            in("rsi") arg2,
+            in("rdx") arg3,
+            lateout("rax") result,
+            lateout("rcx") _,
+            lateout("r11") _,
+        );
+    }
+    result
+}
+
+fn log(bytes: &[u8]) {
+    let _ = syscall3(SYS_WRITE, 1, bytes.as_ptr() as u64, bytes.len() as u64);
+}
+
+fn exit(code: u64) -> ! {
+    unsafe { core::arch::asm!("syscall", in("rax") 60, in("rdi") code, options(noreturn)) }
+}
+
+#[panic_handler]
+fn panic(_: &core::panic::PanicInfo) -> ! {
+    exit(99)
+}

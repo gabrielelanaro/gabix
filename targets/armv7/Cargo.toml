@@ -1,0 +1,15 @@
+[package]
+name = "gabix-armv7"
+version = "0.1.0"
+edition = "2021"
+
+[features]
+default = []
+virt = []
+raspi2b = []
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"

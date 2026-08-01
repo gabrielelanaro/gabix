@@ -352,15 +352,6 @@ impl VirtioBlk {
         println!("[virtio] MSI-X queue 0 -> table 0 -> vector 0x21");
     }
 
-    /// Borrow the virtqueue mutably. Panics if `setup_queue` hasn't run.
-    /// Public so test code in main.rs can still poke the queue directly
-    /// when verifying lower-level primitives.
-    pub fn queue_mut(&mut self) -> &mut VirtQueue {
-        self.queue
-            .as_mut()
-            .expect("queue not set up — call setup_queue first")
-    }
-
     /// Step 9.2: read one 512-byte sector from the disk. Synchronous —
     /// returns when the device responds. Allocates DMA buffers per call
     /// (~12 KB leaked; future optimization: buffer pool).
@@ -854,13 +845,8 @@ pub fn install_net_device(device: NetDevice) {
     let mac = device.mac();
     *NET_DEVICE.lock() = Some(device);
     println!(
-        "[net] device installed for syscall-triggered tests mac={:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
-        mac[0],
-        mac[1],
-        mac[2],
-        mac[3],
-        mac[4],
-        mac[5]
+        "[net] device installed mac={:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+        mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]
     );
 }
 
@@ -885,15 +871,26 @@ pub fn try_with_net_device<R>(f: impl FnOnce(&mut NetDevice) -> R) -> Option<R> 
 
 /// PID of the deferred network task, registered at spawn time. The RX
 /// interrupt reads this to know which task to wake. `u64::MAX` means "no
-/// network task exists" — early boot, or test modes where a syscall
-/// drains the RX ring itself. The ISR handles that by skipping the wake.
+/// network task exists". The ISR handles that by skipping the wake.
 static NET_TASK_PID: AtomicU64 = AtomicU64::new(u64::MAX);
+static NET_TASK_ENABLED: AtomicBool = AtomicBool::new(false);
 
 pub fn register_net_task(pid: crate::process::Pid) {
     NET_TASK_PID.store(pid.0, Ordering::Release);
 }
 
+pub fn ensure_network_task() {
+    let raw = NET_TASK_PID.load(Ordering::Acquire);
+    if raw != u64::MAX {
+        NET_TASK_ENABLED.store(true, Ordering::Release);
+        crate::task::wake(crate::process::Pid(raw));
+    }
+}
+
 pub fn net_task_pid() -> Option<crate::process::Pid> {
+    if !NET_TASK_ENABLED.load(Ordering::Acquire) {
+        return None;
+    }
     let raw = NET_TASK_PID.load(Ordering::Acquire);
     if raw == u64::MAX {
         None

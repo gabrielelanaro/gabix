@@ -51,8 +51,7 @@ lazy_static! {
 static PHYS_OFFSET: AtomicU64 = AtomicU64::new(0);
 
 /// Initialize the mapper from the active CR3 and the bootloader's physical
-/// memory offset, populate the global `MAPPER`, run sanity checks, then set
-/// up the heap.
+/// memory offset, populate the global `MAPPER`, then set up the heap.
 pub fn init(boot_info: &'static BootInfo) {
     let phys_offset = VirtAddr::new(boot_info.physical_memory_offset);
     PHYS_OFFSET.store(phys_offset.as_u64(), Ordering::SeqCst);
@@ -72,7 +71,6 @@ pub fn init(boot_info: &'static BootInfo) {
     // can reach it via `with_mapper`.
     *MAPPER.lock() = Some(mapper);
 
-    translate_tests();
     init_heap();
 }
 
@@ -208,14 +206,12 @@ impl AddressSpace {
     /// process's PML4 has identical entries 256–511 pointing at the same
     /// kernel PDPT/PD/PT frames. Entries 0–255 are per-process user memory.
     ///
-    /// **The standalone-test caveat:** a few kernel mappings still live in
+    /// A few kernel mappings still live in
     /// the low half (VGA buffer at `0xb8000`, heap at `0x4444_4444_0000`,
     /// physical-memory offset at `0x180_0000_0000`). These are NOT copied
     /// by `new()` alone — accessing them after `switch_to()` will page-fault.
     /// `deep_clone_from_current()` handles them by walking the low half and
-    /// sharing non-user frames. The `[test] AddressSpace create + switch`
-    /// test only uses serial output (port I/O, no memory mapping needed),
-    /// so it works without those low mappings.
+    /// sharing non-user frames.
     pub fn new() -> Self {
         let pml4_frame = BitmapFrameAllocator
             .allocate_frame()
@@ -590,31 +586,6 @@ pub fn write_to_frame_at(dst_phys: PhysAddr, offset: usize, bytes: &[u8]) {
     // SAFETY: frame is mapped via the direct map; bounds checked above.
     unsafe {
         core::ptr::copy_nonoverlapping(bytes.as_ptr(), dst.add(offset), bytes.len());
-    }
-}
-
-/// Run translate on a handful of known addresses to verify the mapper works.
-fn translate_tests() {
-    // _start's actual link address comes from the kernel image. Since slice
-    // 4.6 we link the kernel at high addresses (--image-base in .cargo/config.toml),
-    // so _start lives at a high canonical address (0xFFFFFFFF80000000 region)
-    // instead of the old low address near 0x200000.
-    extern "C" {
-        fn _start();
-    }
-    let start_addr = _start as u64;
-
-    let tests: [(u64, &str); 4] = [
-        (0x000B_8000, "VGA buffer (low half, identity-mapped)"),
-        (start_addr, "_start (kernel entry, high half)"),
-        (0x0000_0000, "address 0 (frame zero, NULL guard)"),
-        (0x0000_0000_DEAD_BEEF, "(unmapped — expect None)"),
-    ];
-
-    println!("[mem] translate tests:");
-    for (vaddr, label) in tests {
-        let phys = translate(VirtAddr::new(vaddr));
-        println!("[mem]   virt 0x{:>16x}  {:<32} -> {:?}", vaddr, label, phys);
     }
 }
 

@@ -8,8 +8,8 @@ const SYS_WRITE: u64 = 1;
 const SYS_CLOSE: u64 = 3;
 const SYS_SOCKET: u64 = 41;
 const SYS_BIND: u64 = 49;
-const SYS_LISTEN: u64 = 908;
-const SYS_ACCEPT: u64 = 909;
+const SYS_LISTEN: u64 = 50;
+const SYS_ACCEPT: u64 = 43;
 
 #[no_mangle]
 pub extern "C" fn _start() -> ! {

@@ -12,45 +12,5 @@ pic8259 = "0.10"
 linked_list_allocator = "0.10"
 
 [features]
-# When enabled, panics and end-of-kernel call qemu_exit::exit_qemu so the
-# wrapper script (scripts/test.sh) gets a deterministic pass/fail exit code.
-# Build with: cargo bootimage --features test-mode
-test-mode = []
-
-# When enabled, the kernel exec's /fork_smoke.elf instead of /hello.elf.
-# Used together with test-mode by scripts/test-fork.sh to verify sys_fork
-# + sys_wait4 end-to-end. Build with: cargo bootimage --features test-mode,test-fork
-test-fork = []
-
-# When enabled, the kernel exec's /inherit_wait.elf instead of /hello.elf.
-# Used together with test-mode by tests/test_inherit_wait.sh to verify fork
-# FD inheritance, exit-time FD cleanup, and wait-by-PID.
-test-inherit = []
-
-# When enabled, the kernel exec's /net_smoke.elf instead of /hello.elf.
-# The user program asks the kernel-owned virtio-net device to send one IPv4
-# packet and wait for one QEMU-forwarded UDP packet.
-test-net = []
-
-# When enabled, the kernel exec's /icmp_ping.elf. The fixture asks the
-# kernel-owned virtio-net device to ping QEMU's slirp gateway with ICMP.
-test-icmp = []
-
-# When enabled, the kernel exec's /udp_echo.elf for the Lesson 25
-# host-to-QEMU-to-guest-to-host UDP echo proof.
-test-udp = []
-
-# Lesson 27: run the two-socket nonblocking poll fixture.
-test-nonblocking = []
-
-# Lesson 30: acquire the QEMU slirp lease from a ring-3 DHCP client.
-test-dhcp = []
-
-# Lesson 31: active TCP handshake and byte-position proof against slirp DNS.
-test-tcp = []
-
-# Lesson 32: segment a TCP stream and recover one injected loss by timeout.
-test-tcp-reliable = ["test-tcp"]
-
-# Lesson 33: passive open, ring-3 TCP echo, and FIN teardown over hostfwd.
-test-tcp-echo = ["test-tcp"]
+# QEMU target adapter: report panic and init exit through isa-debug-exit.
+qemu-exit = []

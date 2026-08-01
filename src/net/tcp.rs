@@ -19,9 +19,6 @@ pub const FLAG_ACK: u8 = 0x10;
 const CLOCK_GRANULARITY_TICKS: usize = 1;
 const INITIAL_RTO_TICKS: usize = 100;
 const MAX_RTO_TICKS: usize = 6000;
-#[cfg(feature = "test-tcp-reliable")]
-const SEND_MSS: usize = 12;
-#[cfg(not(feature = "test-tcp-reliable"))]
 const SEND_MSS: usize = 1460;
 const CONGESTION_WINDOW_SEGMENTS: usize = 4;
 

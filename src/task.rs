@@ -788,6 +788,19 @@ pub fn wake(pid: Pid) {
     });
 }
 
+pub fn block(pid: Pid) {
+    x86_64::instructions::interrupts::without_interrupts(|| {
+        if let Some(task) = SCHEDULER
+            .lock()
+            .tasks
+            .iter_mut()
+            .find(|task| task.pid == pid)
+        {
+            task.state = TaskState::Blocked;
+        }
+    });
+}
+
 /// Run `f` on the currently-running task's FD (File Descriptor) table.
 ///
 /// Locks SCHEDULER for the duration of `f`, finds the running task, passes
@@ -926,15 +939,13 @@ pub fn yield_now() {
                             current_state
                         );
                         drop(sched);
-                        #[cfg(feature = "test-mode")]
+                        #[cfg(feature = "qemu-exit")]
                         {
-                            // In test mode: terminate QEMU with success.
-                            // The kernel reached a clean shutdown state
-                            // (every task exited or blocked permanently),
-                            // so the test passes.
+                            // Report a clean idle shutdown through the QEMU
+                            // target adapter.
                             crate::qemu_exit::exit_qemu(crate::qemu_exit::EXIT_SUCCESS);
                         }
-                        #[cfg(not(feature = "test-mode"))]
+                        #[cfg(not(feature = "qemu-exit"))]
                         {
                             // Interactive mode: halt forever so the user
                             // can read the serial output before killing

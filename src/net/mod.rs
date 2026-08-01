@@ -11,8 +11,8 @@ pub mod udp;
 
 use crate::irq_mutex::IrqMutex;
 
-// Fixed values used by protocol unit tests and the pre-DHCP test fixtures.
-// Packet transmission reads CONFIG through source_ip() and gateway_ip().
+// Default QEMU user-network addresses. Packet transmission reads CONFIG
+// through source_ip() and gateway_ip().
 pub const OUR_IP: [u8; 4] = [10, 0, 2, 15];
 pub const GATEWAY_IP: [u8; 4] = [10, 0, 2, 2];
 

@@ -1,4 +1,5 @@
 /target
+/targets/armv7/target/
 /qemu.log
 /disk.img
 /serial.log

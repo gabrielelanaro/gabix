@@ -12,11 +12,9 @@
 #
 # To add a new E2E test:
 #   1. Write the user program in tests/fixtures/<name>.rs
-#   2. Add the fixture to scripts/make-disk.sh's FIXTURES list
-#   3. Add a Cargo feature (or reuse an existing one) that makes main.rs
-#      exec /<name>.elf
-#   4. Write tests/test_<name>.sh modeled on test_fork_smoke.sh
-#   5. ./tests/run.sh picks it up automatically.
+#   2. Call prepare_test_disk with that fixture from the test script
+#   3. Drive QEMU and assert an observable result
+#   4. ./tests/run.sh picks it up automatically.
 
 set -u
 

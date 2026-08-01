@@ -532,6 +532,23 @@ A milestone is a "demo-able" checkpoint. Worth a commit + tag + log entry.
 
 ## Progress Log
 
+### 2026-08-01 — External behavioral suite and independent system under test
+- **Boundary:** The kernel has one scenario-independent boot path in `src/boot.rs` and always executes `/init.elf`. External test scripts choose the init program by constructing the disk image. `main.rs` contains only module wiring, panic/allocation handlers, and `_start` delegation.
+- **Cleanup:** Removed inline boot demonstrations and assertions, the unused kernel test runner, scenario Cargo features, test-only network syscalls 900–903, direct TCP test syscalls 905–907, and in-kernel packet-loss injection. Renamed the QEMU status adapter feature to `qemu-exit`.
+- **Public behavior:** Added monotonic `clock_gettime`, standard socket syscall numbers for `connect`, `accept`, and `listen`, and lazy activation of the pre-created network worker. TCP loss is produced by an external Ethernet peer that answers ARP/TCP and discards the first data segment.
+- **Targets:** Added a small position-independent ARMv7 boot target with platform UART configuration for QEMU `virt` and Raspberry Pi 2B.
+- **Verification:** `tests/run.sh` passes 20/20 behavioral tests. The agreed 18 tests are present under the `test_<action>_<observable_result>` convention; DHCP and poll behaviors add two more boundary tests. Repeated the fork-resume test three times after making serial writes atomic.
+- **Status:** No roadmap checkbox changed.
+- **Next:** Use these boundaries while separating additional x86 and ARM platform services behind production interfaces.
+
+### 2026-08-01 — Architecture review for a second QEMU/ARM target
+- **Done:** Reviewed the boot path, architecture-specific modules, device stack, syscall/process coupling, network stack, Cargo feature matrix, and all 18 QEMU shell tests before the Raspberry Pi port. Identified refactor candidates around test/boot separation, architecture and board boundaries, syscall/process separation, device/storage boundaries, and stateful networking.
+- **Testing assessment:** The hello, fork/wait, descriptor-inheritance, UDP echo, and TCP echo tests assert user-visible behavior. Several ARP, IPv4, virtio, MSI-X, and TCP retransmission tests assert exact diagnostic messages or internal state transitions and will break during logging or implementation refactors. Production boot also runs many inline assertions and demonstrations from `main.rs`; `test_runner.rs` is currently unused.
+- **Cleanup assessment:** `main.rs` contains old allocator, address-space, filesystem, protocol, and device demonstrations plus unused scheduler worker counters. `syscall.rs` retains test-only network syscalls 900-903 and unused direct TCP helper syscalls 905-907. `virtio.rs` contains active queue diagnostics and commented-out trace prints.
+- **Test naming:** Added the project convention `test_<action>_<observable_result>` to `AGENTS.md`. Test names stay short; setup and preconditions remain in the test body.
+- **Status:** No roadmap checkbox changed. No kernel source or test was modified. The untracked Pi 2 QEMU runner and UART pinout asset were left untouched.
+- **Next:** Select the first refactor candidate. Recommended order: establish stable behavioral test boundaries and separate test boot from production boot; then introduce the architecture/board boundary before adding ARMv7 `raspi2b` startup code.
+
 ### 2026-07-29 (lesson 33 implementation) — TCP passive open, echo, and passive close
 - **Done:** Added TCP objects to per-process descriptor tables, listener lookup by port, connection lookup by four-tuple, SYN/SYN-ACK/ACK passive open, completed accept queues, blocking `accept` and stream `read`, TCP `write`, EOF after FIN, and the passive-close transitions `ESTABLISHED → CLOSE_WAIT → LAST_ACK → CLOSED`. Added syscalls 908–909, the ring-3 `/tcp_echo.elf` fixture, TCP port-8080 QEMU forwarding test, code tour, quick reference, and learning record.
 - **Checkboxes:** Marked Lesson 33 complete. The three-lesson TCP arc now opens an active connection, retransmits stream bytes, accepts an inbound connection, echoes bytes, and closes the server side cleanly.

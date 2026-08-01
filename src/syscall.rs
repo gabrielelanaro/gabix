@@ -55,20 +55,14 @@ const SYS_EXECVE: u64 = 59;
 const SYS_EXIT: u64 = 60;
 const SYS_WAIT4: u64 = 61;
 const SYS_SOCKET: u64 = 41;
+const SYS_CONNECT: u64 = 42;
+const SYS_ACCEPT: u64 = 43;
 const SYS_SENDTO: u64 = 44;
 const SYS_RECVFROM: u64 = 45;
 const SYS_BIND: u64 = 49;
-const SYS_NET_TX_TEST: u64 = 900;
-const SYS_NET_RX_WAIT: u64 = 901;
-const SYS_NET_ICMP_PING: u64 = 902;
-const SYS_NET_UDP_WAIT: u64 = 903;
+const SYS_LISTEN: u64 = 50;
 const SYS_NET_CONFIGURE: u64 = 904;
-const SYS_NET_TCP_CONNECT: u64 = 905;
-const SYS_NET_TCP_SEND: u64 = 906;
-const SYS_NET_TCP_RECV: u64 = 907;
-const SYS_LISTEN: u64 = 908;
-const SYS_ACCEPT: u64 = 909;
-const ICMP_PING_PAYLOAD_CAPACITY: usize = 64;
+const SYS_CLOCK_GETTIME: u64 = 228;
 
 /// Virtual address where the dedicated syscall stack begins.
 /// Picked to be far from everything else (kernel image, heap, task
@@ -272,17 +266,24 @@ unsafe fn wrmsr(msr: u32, value: u64) {
 #[unsafe(naked)]
 unsafe extern "C" fn syscall_entry() {
     naked_asm!(
-        // Preserve Linux syscall arguments 4-6 before using their registers.
-        "mov [{arg4_save}], r10",
-        "mov [{arg5_save}], r8",
-        "mov [{arg6_save}], r9",
-        // Step 1: Switch to kernel stack. Use r10 as scratch (caller-saved,
-        // we don't care about its entry value).
-        "mov r10, rsp",                    // save user RSP in r10
-        "mov rsp, [{kernel_rsp}]",         // switch to kernel stack
-        "push r10",                        // push user RSP onto kernel stack
+        // Step 1: Save the user stack pointer while interrupts are disabled,
+        // switch to the current task's kernel entry stack, and copy the saved
+        // pointer onto that stack.
+        "mov [{user_rsp_save}], rsp",
+        "mov rsp, [{kernel_rsp}]",
+        "push qword ptr [{user_rsp_save}]",
 
-        // Step 2: Push callee-saved registers (handler might clobber them
+        // Step 2: Preserve every Linux syscall argument register. Linux's
+        // syscall ABI only clobbers RAX, RCX, and R11. User code may reuse
+        // RDI, RSI, RDX, R10, R8, and R9 immediately after `syscall`.
+        "push rdi",
+        "push rsi",
+        "push rdx",
+        "push r10",
+        "push r8",
+        "push r9",
+
+        // Step 3: Push callee-saved registers (handler might clobber them
         // if it doesn't follow the convention, and we want them back).
         "push rbp",
         "push rbx",
@@ -291,19 +292,17 @@ unsafe extern "C" fn syscall_entry() {
         "push r14",
         "push r15",
 
-        // Step 3: Push user state for SYSRET.
+        // Step 4: Push user state for SYSRET.
         "push rcx",                        // user RIP
         "push r11",                        // user RFLAGS
 
-        // Step 3.5: Snapshot user state to globals so sys_fork can read it.
+        // Step 5: Snapshot user state to globals so sys_fork can read it.
         // All the values we need are still in their original registers
         // (we just pushed copies above). We use R8 as scratch — it's
         // caller-saved, not used for syscall args 1-4, and we don't use
         // args 5-6 in our kernel. Doing this BEFORE step 4 is important:
         // step 4 clobbers RCX (writes the user's arg3 there), so we have
         // to grab user RIP from RCX first.
-        "mov r8, r10",
-        "mov [{user_rsp_save}], r8",
         "mov r8, rcx",
         "mov [{user_rip_save}], r8",
         "mov r8, r11",
@@ -321,36 +320,36 @@ unsafe extern "C" fn syscall_entry() {
         "mov r8, r15",
         "mov [{user_r15_save}], r8",
 
-        // Step 4: Set up System V AMD64 calling convention for the Rust
-        // handler. Move args from syscall positions to System V positions.
-        "mov rcx, rdx",                    // System V arg4 = rdx (was syscall arg3)
-        "mov rdx, rsi",                    // System V arg3 = rsi (was syscall arg2)
-        "mov rsi, rdi",                    // System V arg2 = rdi (was syscall arg1)
-        "mov rdi, rax",                    // System V arg1 = rax (was syscall number)
-        // r8, r9 unchanged (args 5, 6 if we ever need them — well, r8 was
-        // scratch above, but we don't use args 5-6 yet so no value lost)
+        // Step 6: Set up the System V AMD64 arguments for
+        // syscall_handler(num, arg1, arg2, arg3, arg4, arg5, arg6). The first
+        // six values use registers. The seventh value goes on the stack.
+        // Offsets refer to the 15 saved words above.
+        "mov rsi, [rsp + 104]",             // arg1: saved RDI
+        "mov rdx, [rsp + 96]",              // arg2: saved RSI
+        "mov rcx, [rsp + 88]",              // arg3: saved RDX
+        "mov r8,  [rsp + 80]",              // arg4: saved R10
+        "mov r9,  [rsp + 72]",              // arg5: saved R8
+        "mov rdi, rax",                     // num: syscall RAX
 
-        // Step 5: Realign the stack to 16 bytes for the call. We pushed
-        // 9 things (1 + 6 + 2) = 72 bytes, which is 8 mod 16. Subtract
-        // 8 more to make it 0 mod 16 for the System V ABI.
+        // Fifteen pushes leave RSP 8 bytes short of call alignment. This slot
+        // both aligns the stack and carries arg6 as the seventh C argument.
         "sub rsp, 8",
+        "mov r10, [rsp + 72]",              // arg6: saved R9
+        "mov [rsp], r10",
 
-        // Step 6: Enable interrupts in the kernel.
+        // Step 7: Enable interrupts in the kernel.
         "sti",
 
-        // Step 7: Call the Rust handler. Return value lands in RAX.
+        // Step 8: Call the Rust handler. Return value lands in RAX.
         "call {handler}",
 
-        // Step 8: Disable interrupts before returning to user.
+        // Step 9: Disable interrupts before returning to user.
         "cli",
 
-        // Step 9: Undo the alignment padding.
+        // Step 10: Remove the stacked seventh argument.
         "add rsp, 8",
 
-        // Step 10: Save the return value in r10 (caller-saved, won't be popped).
-        "mov r10, rax",
-
-        // Step 11: Pop user state.
+        // Step 11: Pop user state. RAX keeps the handler return value.
         "pop r11",                         // user RFLAGS
         "pop rcx",                         // user RIP
 
@@ -362,11 +361,16 @@ unsafe extern "C" fn syscall_entry() {
         "pop rbx",
         "pop rbp",
 
-        // Step 13: Restore user RSP (pop the value we pushed in step 1).
-        "pop rsp",
+        // Step 13: Restore the syscall argument registers.
+        "pop r9",
+        "pop r8",
+        "pop r10",
+        "pop rdx",
+        "pop rsi",
+        "pop rdi",
 
-        // Step 14: Restore the syscall return value.
-        "mov rax, r10",
+        // Step 14: Restore user RSP (pop the value we pushed in step 1).
+        "pop rsp",
 
         // Step 15: Return to user. SYSRET uses RCX=RIP, R11=RFLAGS, RAX=return.
         "sysretq",
@@ -382,28 +386,18 @@ unsafe extern "C" fn syscall_entry() {
         user_r13_save = sym USER_R13_SAVE,
         user_r14_save = sym USER_R14_SAVE,
         user_r15_save = sym USER_R15_SAVE,
-        arg4_save = sym SYSCALL_ARG4,
-        arg5_save = sym SYSCALL_ARG5,
-        arg6_save = sym SYSCALL_ARG6,
     );
 }
 
-static SYSCALL_ARG4: AtomicU64 = AtomicU64::new(0);
-static SYSCALL_ARG5: AtomicU64 = AtomicU64::new(0);
-static SYSCALL_ARG6: AtomicU64 = AtomicU64::new(0);
-
-extern "C" fn syscall_handler(num: u64, arg1: u64, arg2: u64, arg3: u64) -> u64 {
-    let arg4 = SYSCALL_ARG4.load(Ordering::Relaxed);
-    let arg5 = SYSCALL_ARG5.load(Ordering::Relaxed);
-    let arg6 = SYSCALL_ARG6.load(Ordering::Relaxed);
-    println!(
-        "[syscall] num={} args=({}, {}, {}) pid={}",
-        num,
-        arg1,
-        arg2,
-        arg3,
-        crate::task::current_pid()
-    );
+extern "C" fn syscall_handler(
+    num: u64,
+    arg1: u64,
+    arg2: u64,
+    arg3: u64,
+    arg4: u64,
+    arg5: u64,
+    arg6: u64,
+) -> u64 {
     match num {
         SYS_READ => sys_read(arg1, arg2, arg3),
         SYS_WRITE => sys_write(arg1, arg2, arg3),
@@ -412,44 +406,50 @@ extern "C" fn syscall_handler(num: u64, arg1: u64, arg2: u64, arg3: u64) -> u64 
         SYS_POLL => sys_poll(arg1, arg2, arg3),
         SYS_GETPID => sys_getpid(),
         SYS_FORK => sys_fork(),
-        SYS_EXECVE => sys_exec(arg1),
+        SYS_EXECVE => sys_exec_elf(arg1),
         SYS_EXIT => sys_exit(arg1),
         SYS_WAIT4 => sys_wait(arg1, arg2),
         SYS_SOCKET => sys_socket(arg1, arg2, arg3),
+        SYS_CONNECT => sys_connect(arg1, arg2, arg3),
         SYS_BIND => sys_bind(arg1, arg2, arg3),
         SYS_SENDTO => sys_sendto(arg1, arg2, arg3, arg4, arg5, arg6),
         SYS_RECVFROM => sys_recvfrom(arg1, arg2, arg3, arg4, arg5, arg6),
-        SYS_NET_TX_TEST => sys_net_tx_test(),
-        SYS_NET_RX_WAIT => sys_net_rx_wait(),
-        SYS_NET_ICMP_PING => sys_net_icmp_ping(),
-        SYS_NET_UDP_WAIT => sys_net_udp_wait(),
         SYS_NET_CONFIGURE => sys_net_configure(arg1, arg2),
-        SYS_NET_TCP_CONNECT => sys_net_tcp_connect(),
-        SYS_NET_TCP_SEND => sys_net_tcp_send(arg1, arg2),
-        SYS_NET_TCP_RECV => sys_net_tcp_recv(),
         SYS_LISTEN => sys_listen(arg1, arg2),
         SYS_ACCEPT => sys_accept(arg1),
+        SYS_CLOCK_GETTIME => sys_clock_gettime(arg1, arg2),
         _ => u64::MAX,
     }
 }
 
-fn transmit_tcp(outbound: net::tcp::Outbound) -> bool {
-    #[cfg(feature = "test-tcp-reliable")]
+#[repr(C)]
+struct Timespec {
+    seconds: i64,
+    nanoseconds: i64,
+}
+
+fn sys_clock_gettime(clock_id: u64, timespec_ptr: u64) -> u64 {
+    const CLOCK_MONOTONIC: u64 = 1;
+    const TICKS_PER_SECOND: usize = 100;
+
+    if clock_id != CLOCK_MONOTONIC
+        || !is_user_range(timespec_ptr, core::mem::size_of::<Timespec>() as u64)
     {
-        static DROPPED_FIRST_DATA: core::sync::atomic::AtomicBool =
-            core::sync::atomic::AtomicBool::new(false);
-        if outbound.flags & net::tcp::FLAG_PSH != 0
-            && DROPPED_FIRST_DATA
-                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-                .is_ok()
-        {
-            println!(
-                "[tcp-test] injected loss seq={} before virtio TX",
-                outbound.sequence
-            );
-            return true;
-        }
+        return u64::MAX;
     }
+
+    let ticks = crate::interrupts::TICKS.load(Ordering::Relaxed);
+    let value = Timespec {
+        seconds: (ticks / TICKS_PER_SECOND) as i64,
+        nanoseconds: ((ticks % TICKS_PER_SECOND) * 10_000_000) as i64,
+    };
+    unsafe {
+        core::ptr::write(timespec_ptr as *mut Timespec, value);
+    }
+    0
+}
+
+fn transmit_tcp(outbound: net::tcp::Outbound) -> bool {
     if virtio::resolve_next_hop(outbound.dst_ip).is_none() {
         return false;
     }
@@ -463,9 +463,23 @@ fn transmit_tcp(outbound: net::tcp::Outbound) -> bool {
     )
 }
 
-fn sys_net_tcp_connect() -> u64 {
+static ACTIVE_TCP_FD: AtomicU64 = AtomicU64::new(u64::MAX);
+
+fn sys_connect(fd: u64, address: u64, address_len: u64) -> u64 {
+    if crate::task::with_current_fd_table(|table| table.get_tcp_socket(fd)).is_none() {
+        return u64::MAX;
+    }
+    let Some(remote) = read_sockaddr(address, address_len) else {
+        return u64::MAX;
+    };
     let local_ip = net::source_ip();
     if local_ip == [0; 4] {
+        return u64::MAX;
+    }
+    if ACTIVE_TCP_FD
+        .compare_exchange(u64::MAX, fd, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
         return u64::MAX;
     }
     let isn = (crate::interrupts::TICKS.load(Ordering::Relaxed) as u32)
@@ -474,15 +488,17 @@ fn sys_net_tcp_connect() -> u64 {
     let Some(syn) = net::tcp::active_open(
         net::tcp::Endpoints {
             local_ip,
-            remote_ip: [10, 0, 2, 3],
+            remote_ip: remote.ip,
             local_port: 49152,
-            remote_port: 53,
+            remote_port: remote.port,
         },
         isn,
     ) else {
+        ACTIVE_TCP_FD.store(u64::MAX, Ordering::Release);
         return u64::MAX;
     };
     if !transmit_tcp(syn) {
+        ACTIVE_TCP_FD.store(u64::MAX, Ordering::Release);
         return u64::MAX;
     }
     while net::tcp::state() != net::tcp::TcpState::Established {
@@ -492,28 +508,32 @@ fn sys_net_tcp_connect() -> u64 {
     0
 }
 
-fn sys_net_tcp_send(buf: u64, len: u64) -> u64 {
-    if len == 0 || len > 512 || !is_user_range(buf, len) {
-        return u64::MAX;
-    }
-    let payload = unsafe { core::slice::from_raw_parts(buf as *const u8, len as usize) };
+fn active_tcp_send(payload: &[u8]) -> Option<usize> {
     let Some((accepted, segments)) = net::tcp::send_data(payload) else {
-        return u64::MAX;
+        return None;
     };
     for segment in segments {
         if !transmit_tcp(segment) {
-            return u64::MAX;
+            return None;
         }
     }
-    accepted as u64
+    Some(accepted)
 }
 
-fn sys_net_tcp_recv() -> u64 {
+fn active_tcp_recv(output: &mut [u8]) -> usize {
     loop {
-        if let Some(byte) = net::tcp::pop_byte() {
-            return byte as u64;
+        let mut count = 0;
+        while count < output.len() {
+            let Some(byte) = net::tcp::pop_byte() else {
+                break;
+            };
+            output[count] = byte;
+            count += 1;
         }
-        crate::task::block_current_if(|pid| net::tcp::register_recv_waiter(pid));
+        if count != 0 {
+            return count;
+        }
+        crate::task::block_current_if(net::tcp::register_recv_waiter);
         crate::task::yield_now();
     }
 }
@@ -570,6 +590,7 @@ fn write_sockaddr(ptr: u64, len_ptr: u64, endpoint: net::socket::Endpoint) -> bo
 }
 
 fn sys_socket(domain: u64, kind: u64, protocol: u64) -> u64 {
+    virtio::ensure_network_task();
     let base_kind = kind & !SOCK_NONBLOCK;
     if domain != AF_INET {
         return u64::MAX;
@@ -915,9 +936,12 @@ fn sys_read(fd: u64, buffer_ptr: u64, length: u64) -> u64 {
         return u64::MAX; // EFAULT — caller tried to read/write kernel memory
     }
 
+    let output = unsafe { core::slice::from_raw_parts_mut(buffer_ptr as *mut u8, length as usize) };
+    if ACTIVE_TCP_FD.load(Ordering::Acquire) == fd {
+        return active_tcp_recv(output) as u64;
+    }
+
     if let Some(socket) = crate::task::with_current_fd_table(|fdt| fdt.get_tcp_socket(fd)) {
-        let output =
-            unsafe { core::slice::from_raw_parts_mut(buffer_ptr as *mut u8, length as usize) };
         loop {
             if let Some(count) = socket.read(output) {
                 return count as u64;
@@ -996,11 +1020,19 @@ fn sys_write(fd: u64, buffer_ptr: u64, length: u64) -> u64 {
     if fd == 1 || fd == 2 {
         let buffer =
             unsafe { core::slice::from_raw_parts(buffer_ptr as *const u8, length as usize) };
+        let mut serial = serial::SERIAL1.lock();
         for &byte in buffer {
-            serial::SERIAL1.lock().write_byte(byte);
+            serial.write_byte(byte);
         }
-        println!("[syscall] sys_write fd={} -> serial, {} bytes", fd, length);
         return length;
+    }
+
+    if ACTIVE_TCP_FD.load(Ordering::Acquire) == fd {
+        let payload =
+            unsafe { core::slice::from_raw_parts(buffer_ptr as *const u8, length as usize) };
+        return active_tcp_send(payload)
+            .map(|count| count as u64)
+            .unwrap_or(u64::MAX);
     }
 
     if let Some(socket) = crate::task::with_current_fd_table(|fdt| fdt.get_tcp_socket(fd)) {
@@ -1157,17 +1189,14 @@ fn sys_getpid() -> u64 {
 fn sys_exit(exit_code: u64) -> u64 {
     println!("[syscall] sys_exit({})", exit_code);
     crate::task::mark_current_zombie(exit_code as i64);
-    #[cfg(any(
-        feature = "test-udp",
-        feature = "test-nonblocking",
-        feature = "test-dhcp",
-        feature = "test-tcp"
-    ))]
-    crate::qemu_exit::exit_qemu(if exit_code == 0 {
-        crate::qemu_exit::EXIT_SUCCESS
-    } else {
-        crate::qemu_exit::EXIT_FAILURE
-    });
+    #[cfg(feature = "qemu-exit")]
+    if crate::task::current_pid() == crate::process::Pid(0) {
+        crate::qemu_exit::exit_qemu(if exit_code == 0 {
+            crate::qemu_exit::EXIT_SUCCESS
+        } else {
+            crate::qemu_exit::EXIT_FAILURE
+        });
+    }
     crate::task::yield_now();
     panic!("sys_exit: zombie task was rescheduled (this should never happen)");
 }
@@ -1245,221 +1274,6 @@ fn sys_wait(target_pid_raw: u64, exit_status_ptr: u64) -> u64 {
             }
         }
     }
-}
-
-/// SYS_NET_TX_TEST: ask the kernel-owned virtio-net device to send one IPv4
-/// packet. This gives user fixtures a direct way to trigger Lesson 23 TX.
-fn sys_net_tx_test() -> u64 {
-    let payload = [0xde, 0xad, 0xbe, 0xef];
-    println!(
-        "[net-sys] user pid={} requested IPv4 TX test",
-        crate::task::current_pid()
-    );
-
-    match virtio::with_net_device(|device| {
-        device.send_ipv4_packet(net::ipv4::PROTOCOL_UDP, net::GATEWAY_IP, &payload)
-    }) {
-        Some(Some(())) => {
-            println!("[ip] *** user-triggered IPv4 packet transmitted through QEMU ***");
-            0
-        }
-        Some(None) => {
-            println!("[net-sys] IPv4 TX test failed before transmit");
-            u64::MAX
-        }
-        None => {
-            println!("[net-sys] IPv4 TX test failed: no net device installed");
-            u64::MAX
-        }
-    }
-}
-
-/// SYS_NET_RX_WAIT: wait until QEMU user networking forwards one IPv4 UDP
-/// packet to the guest. The host side sends to 127.0.0.1:5555.
-fn sys_net_rx_wait() -> u64 {
-    println!(
-        "[net-sys] user pid={} requested IPv4 RX wait",
-        crate::task::current_pid()
-    );
-    println!("[ip] rx wait: user requested UDP receive on host 127.0.0.1:5555");
-
-    match virtio::with_net_device(|device| loop {
-        // No network task exists in this test mode, so this loop drains
-        // the RX ring itself and hlt-sleeps between polls.
-        x86_64::instructions::interrupts::disable();
-        let event = device.poll_rx();
-        if event.is_none() {
-            x86_64::instructions::interrupts::enable_and_hlt();
-            continue;
-        }
-        x86_64::instructions::interrupts::enable();
-        if let Some(virtio::NetRxEvent::Udp(packet)) = event {
-            let header = packet.ip_header;
-            if header.dst_ip == net::OUR_IP {
-                println!(
-                    "[ip] *** user-triggered host-forwarded UDP packet received through QEMU: src={}.{}.{}.{}:{} dst={}.{}.{}.{}:{} len={} payload_len={} ***",
-                    header.src_ip[0],
-                    header.src_ip[1],
-                    header.src_ip[2],
-                    header.src_ip[3],
-                    packet.header.src_port,
-                    header.dst_ip[0],
-                    header.dst_ip[1],
-                    header.dst_ip[2],
-                    header.dst_ip[3],
-                    packet.header.dst_port,
-                    header.total_len,
-                    packet.payload().len()
-                );
-                break header.total_len as u64;
-            }
-        }
-    }) {
-        Some(len) => len,
-        None => {
-            println!("[net-sys] IPv4 RX wait failed: no net device installed");
-            u64::MAX
-        }
-    }
-}
-
-/// SYS_NET_UDP_WAIT: wait for one valid datagram delivered to the Lesson 25
-/// echo port. The IPv4/UDP receive path sends the reply before returning the
-/// event to this user-triggered wait.
-fn sys_net_udp_wait() -> u64 {
-    println!(
-        "[udp-sys] user pid={} requested UDP echo receive",
-        crate::task::current_pid()
-    );
-    println!(
-        "[udp] rx wait: user requested UDP echo on guest port {}",
-        net::udp::ECHO_PORT
-    );
-
-    match virtio::with_net_device(|device| loop {
-        // Same shape as sys_net_rx_wait: self-draining poll, hlt between.
-        x86_64::instructions::interrupts::disable();
-        let event = device.poll_rx();
-        if event.is_none() {
-            x86_64::instructions::interrupts::enable_and_hlt();
-            continue;
-        }
-        x86_64::instructions::interrupts::enable();
-        if let Some(virtio::NetRxEvent::Udp(packet)) = event {
-            if packet.header.dst_port == net::udp::ECHO_PORT {
-                println!(
-                    "[udp] *** user-triggered UDP datagram received and echoed: src_port={} payload_len={} ***",
-                    packet.header.src_port,
-                    packet.payload().len()
-                );
-                break packet.payload().len() as u64;
-            }
-        }
-    }) {
-        Some(payload_len) => payload_len,
-        None => {
-            println!("[udp-sys] UDP echo wait failed: no net device installed");
-            u64::MAX
-        }
-    }
-}
-
-/// SYS_NET_ICMP_PING: have ring 3 request one complete echo round trip.
-///
-/// The user fixture triggers this syscall; the kernel owns packet assembly,
-/// virtio queues, and the receive poll because those are kernel resources.
-fn sys_net_icmp_ping() -> u64 {
-    const IDENTIFIER: u16 = 0x2400;
-    const FIRST_SEQUENCE: u16 = 7;
-    const REQUEST_COUNT: u16 = 4;
-    const PAYLOAD: &[u8] = b"mini-os";
-
-    println!(
-        "[icmp] user pid={} requested {} echoes id=0x{:04x} first_seq={} payload_len={}",
-        crate::task::current_pid(),
-        REQUEST_COUNT,
-        IDENTIFIER,
-        FIRST_SEQUENCE,
-        PAYLOAD.len()
-    );
-
-    match virtio::with_net_device(|device| {
-        for sequence in FIRST_SEQUENCE..FIRST_SEQUENCE + REQUEST_COUNT {
-            let ttl = ping_gateway_once(device, IDENTIFIER, sequence, PAYLOAD)?;
-            println!(
-                "[icmp] reply id=0x{:04x} seq={} payload_len={} ttl={}",
-                IDENTIFIER,
-                sequence,
-                PAYLOAD.len(),
-                ttl
-            );
-        }
-
-        Some(())
-    }) {
-        Some(Some(())) => {
-            println!("[icmp] *** four user-triggered echo round trips verified ***");
-            0
-        }
-        Some(None) => {
-            println!("[icmp] echo reply timed out or did not match");
-            u64::MAX
-        }
-        None => {
-            println!("[icmp] ping failed: no net device installed");
-            u64::MAX
-        }
-    }
-}
-
-/// Send one request and wait for the exact reply before allowing the next one.
-fn ping_gateway_once(
-    device: &mut virtio::NetDevice,
-    identifier: u16,
-    sequence: u16,
-    payload: &[u8],
-) -> Option<u8> {
-    let mut request = [0u8; net::icmp::ECHO_HEADER_LEN + ICMP_PING_PAYLOAD_CAPACITY];
-    let request_len = net::icmp::write_echo_request(&mut request, identifier, sequence, payload)?;
-    device.send_ipv4_packet(
-        net::ipv4::PROTOCOL_ICMP,
-        net::GATEWAY_IP,
-        &request[..request_len],
-    )?;
-
-    for _ in 0..500u32 {
-        // hlt between polls: the RX interrupt (or timer tick) wakes us.
-        // This path runs in modes with no network task, so it drains the
-        // RX ring itself after every wake.
-        x86_64::instructions::interrupts::disable();
-        let Some(virtio::NetRxEvent::Ipv4(packet)) = device.poll_rx() else {
-            x86_64::instructions::interrupts::enable_and_hlt();
-            continue;
-        };
-        x86_64::instructions::interrupts::enable();
-
-        if packet.header.protocol != net::ipv4::PROTOCOL_ICMP
-            || packet.header.src_ip != net::GATEWAY_IP
-        {
-            continue;
-        }
-
-        let Some(reply) = net::icmp::EchoMessage::parse(packet.payload()) else {
-            println!("[icmp] dropped malformed ICMP payload");
-            continue;
-        };
-
-        if reply.is_reply_to(identifier, sequence, payload) {
-            return Some(packet.header.ttl);
-        }
-
-        println!(
-            "[icmp] ignored reply type={} code={} id=0x{:04x} seq={}",
-            reply.message_type, reply.code, reply.identifier, reply.sequence
-        );
-    }
-
-    None
 }
 
 /// SYS_FORK: clone the calling process.
@@ -1548,132 +1362,25 @@ fn sys_fork() -> u64 {
 }
 
 /// SYS_EXECVE: replace the calling process's program with a new one.
-///
-/// Args:
-///   - arg1 (rdi): pointer to a null-terminated program name in user memory.
-///
-/// The name is looked up against `PROGRAMS` in `user.rs` (currently a tiny
-/// static registry of two hand-assembled programs: "hello" and "goodbye").
-///
-/// On success: never returns. The old user code/stack are gone; control
-/// transfers to the new program's entry point (start of the loaded bytes).
-///
-/// On failure (unknown program): panic. We don't have a syscall error
-/// convention yet; can be refined later.
-fn sys_exec(program_name_ptr: u64) -> u64 {
-    use crate::user::{
-        PROGRAMS, USER_CODE_ADDR, USER_RFLAGS_INIT, USER_STACK_BOTTOM, USER_STACK_TOP,
+fn sys_exec_elf(path_ptr: u64) -> u64 {
+    let path = match read_user_path(path_ptr) {
+        Some(path) => path,
+        None => return u64::MAX,
     };
-    use x86_64::structures::paging::PageTableFlags;
 
-    println!("[syscall] sys_exec (name_ptr=0x{:x})", program_name_ptr);
-
-    // Disable interrupts for the whole operation — touches SCHEDULER and
-    // allocates frames; the timer firing mid-exec would deadlock on the lock.
-    let was_enabled = x86_64::instructions::interrupts::are_enabled();
-    if was_enabled {
-        x86_64::instructions::interrupts::disable();
-    }
-
-    // Step 1: Read program name from user memory (null-terminated, max 32 bytes).
-    let mut name_buf = [0u8; 32];
-    let mut name_len = 0;
-    for i in 0..32 {
-        // SAFETY: user pointer from syscall arg. We trust it points to a
-        // readable byte in user memory.
-        let byte = unsafe { core::ptr::read_volatile((program_name_ptr + i as u64) as *const u8) };
-        if byte == 0 {
-            break;
+    let context = match crate::exec::exec_elf_replace(&path) {
+        Ok(context) => context,
+        Err(error) => {
+            println!("[exec] failed to load {}: {}", path, error);
+            return u64::MAX;
         }
-        name_buf[i] = byte;
-        name_len = i + 1;
-    }
-    let name =
-        core::str::from_utf8(&name_buf[..name_len]).expect("sys_exec: program name not utf-8");
-    println!("[exec] looking up program {:?}", name);
+    };
 
-    // Step 2: Look up program in PROGRAMS registry.
-    let program_bytes: &[u8] = PROGRAMS
-        .iter()
-        .find(|(n, _)| *n == name)
-        .map(|(_, b)| *b)
-        .unwrap_or_else(|| panic!("sys_exec: program {:?} not in PROGRAMS registry", name));
-    println!(
-        "[exec] found program {:?} ({} bytes)",
-        name,
-        program_bytes.len()
-    );
-
-    // Step 3: Allocate fresh AddressSpace with INDEPENDENT page tables.
-    // AddressSpace::new() copies kernel-half entries 256–511 (shares the
-    // kernel subtree verbatim). deep_clone_from_current() then walks the
-    // user half 0–255, allocating fresh PDPT/PD/PT frames so we can
-    // safely unmap inherited user pages without affecting the current AS.
-    let mut new_as = crate::memory::AddressSpace::new();
-    new_as.deep_clone_from_current();
-
-    // Step 3.5: Unmap the existing user code page and 16 user stack pages
-    // from the new AS (inherited from the current AS via deep_clone). We're
-    // about to replace them with fresh mappings for the new program.
-    new_as
-        .unmap(VirtAddr::new(USER_CODE_ADDR))
-        .expect("sys_exec: unmap of inherited code page failed");
-    let mut stack_virt = USER_STACK_BOTTOM;
-    while stack_virt < USER_STACK_TOP {
-        new_as
-            .unmap(VirtAddr::new(stack_virt))
-            .expect("sys_exec: unmap of inherited stack page failed");
-        stack_virt += 4096;
-    }
-
-    // Step 4: Allocate fresh user code page, copy program bytes in.
-    let code_frame = frame_allocator::allocate().expect("sys_exec: out of frames for code page");
-    let code_phys = PhysAddr::new(code_frame * 4096);
-    crate::memory::write_to_frame(code_phys, program_bytes);
-    // SAFETY: virtual address USER_CODE_ADDR was just unmapped above.
-    unsafe {
-        new_as
-            .map_to(
-                VirtAddr::new(USER_CODE_ADDR),
-                code_phys,
-                PageTableFlags::PRESENT
-                    | PageTableFlags::WRITABLE
-                    | PageTableFlags::USER_ACCESSIBLE,
-            )
-            .expect("sys_exec: map_to code failed");
-    }
-
-    // Step 5: Allocate fresh user stack pages (16 pages = 64 KB).
-    let mut stack_virt = USER_STACK_BOTTOM;
-    while stack_virt < USER_STACK_TOP {
-        let frame = frame_allocator::allocate().expect("sys_exec: out of frames for stack page");
-        let phys = PhysAddr::new(frame * 4096);
-        // SAFETY: each page in [USER_STACK_BOTTOM, USER_STACK_TOP) was just
-        // unmapped above.
-        unsafe {
-            new_as
-                .map_to(
-                    VirtAddr::new(stack_virt),
-                    phys,
-                    PageTableFlags::PRESENT
-                        | PageTableFlags::WRITABLE
-                        | PageTableFlags::USER_ACCESSIBLE,
-                )
-                .expect("sys_exec: map_to stack failed");
-        }
-        stack_virt += 4096;
-    }
-
-    // Step 6: Update the current task's address_space (and name, for clarity).
-    // The task struct stays — same PID, same kernel stack, same scheduler entry.
-    crate::task::replace_current_address_space(new_as, name);
-
-    // Step 7: Switch CR3 to the new AS. After this point, the old user
-    // mappings are gone — if we accessed them now we'd page fault. But we
-    // don't need to; everything from here on is kernel-side.
+    let entry = context.entry;
+    let stack_top = context.stack_top;
+    let name = path.rsplit('/').next().unwrap_or(path.as_str());
+    crate::task::replace_current_address_space(context.aspace, name);
     let pml4_frame = crate::task::current_pml4_frame();
-    // SAFETY: the frame is owned by the current task's AddressSpace and was
-    // properly initialized in AddressSpace::new() + map_to calls above.
     unsafe {
         x86_64::registers::control::Cr3::write(
             pml4_frame,
@@ -1681,39 +1388,15 @@ fn sys_exec(program_name_ptr: u64) -> u64 {
         );
     }
 
-    // Step 8: Jump to user mode at the new program's entry. This is the
-    // "exec trampoline" — same idea as fork_trampoline but with values
-    // coming from the new program (entry = USER_CODE_ADDR, RSP = top of
-    // fresh user stack, RFLAGS = IF + reserved bit).
-    //
-    // Done as inline asm with explicit register constraints:
-    //   - in("rcx") user_rip   — sysretq reads RIP from RCX
-    //   - in("r11") user_rflags — sysretq reads RFLAGS from R11
-    //   - in(reg)  user_rsp    — we mov it into RSP just before sysretq
-    //
-    // The "xor rax, rax" happens AFTER the rsp load so any reg the compiler
-    // chose for user_rsp is no longer needed by the time we clobber RAX.
-    let user_rip = USER_CODE_ADDR;
-    let user_rsp = USER_STACK_TOP;
-    let user_rflags = USER_RFLAGS_INIT;
-
-    println!(
-        "[exec] jumping to user mode: rip=0x{:x} rsp=0x{:x} flags=0x{:x}",
-        user_rip, user_rsp, user_rflags,
-    );
-
-    // SAFETY: this never returns. sysretq transfers control to user mode
-    // at USER_CODE_ADDR. We're in cli state (disabled above), and the user
-    // RFLAGS has IF=1, so sysretq will flip interrupts back on.
     unsafe {
         core::arch::asm!(
-            "mov rsp, {rsp}",                // switch to user stack
-            "xor rax, rax",                  // RAX = 0 (convention for exec)
-            "cli",                           // (defensive) ensure IF=0 for sysretq
+            "mov rsp, {rsp}",
+            "xor rax, rax",
+            "cli",
             "sysretq",
-            in("rcx") user_rip,
-            in("r11") user_rflags,
-            rsp = in(reg) user_rsp,
+            in("rcx") entry,
+            in("r11") 0x202u64,
+            rsp = in(reg) stack_top,
             options(noreturn),
         );
     }

@@ -46,6 +46,20 @@ pub struct ExecContext {
 /// and the populated address space. Does NOT switch CR3 or jump —
 /// the caller does that, so this function can return cleanly on error.
 pub fn exec_elf(path: &str) -> Result<ExecContext, &'static str> {
+    exec_elf_with(path, false)
+}
+
+/// Replace an existing user image with the ELF at `path`.
+///
+/// The new address space starts as a clone of the current mappings because
+/// this kernel still has required low-half kernel mappings. Existing pages at
+/// the new ELF segments and fixed user-stack range are removed before the new
+/// image is mapped.
+pub fn exec_elf_replace(path: &str) -> Result<ExecContext, &'static str> {
+    exec_elf_with(path, true)
+}
+
+fn exec_elf_with(path: &str, replace_existing: bool) -> Result<ExecContext, &'static str> {
     println!("[exec] loading {}", path);
 
     // 1. Resolve + read via VFS (Lesson 14 path).
@@ -80,7 +94,7 @@ pub fn exec_elf(path: &str) -> Result<ExecContext, &'static str> {
         let off = header.phoff as usize + i as usize * header.phentsize as usize;
         let ph = elf::ProgramHeader::parse(&bytes[off..]).ok_or("ph parse failed")?;
         if ph.is_load() {
-            map_segment(&aspace, &ph, &bytes)?;
+            map_segment(&aspace, &ph, &bytes, replace_existing)?;
             load_count += 1;
         }
     }
@@ -90,7 +104,7 @@ pub fn exec_elf(path: &str) -> Result<ExecContext, &'static str> {
     println!("[exec]   mapped {} PT_LOAD segment(s)", load_count);
 
     // 5. User stack.
-    let stack_top = setup_user_stack(&aspace)?;
+    let stack_top = setup_user_stack(&aspace, replace_existing)?;
     println!(
         "[exec]   user stack at 0x{:X} ({} pages)",
         stack_top, STACK_PAGES
@@ -114,6 +128,7 @@ fn map_segment(
     aspace: &AddressSpace,
     ph: &elf::ProgramHeader,
     file_bytes: &[u8],
+    replace_existing: bool,
 ) -> Result<(), &'static str> {
     assert!(ph.is_load(), "map_segment called on non-PT_LOAD");
 
@@ -145,6 +160,9 @@ fn map_segment(
 
     for i in 0..num_pages {
         let vaddr = page_start + i * PAGE;
+        if replace_existing {
+            let _ = aspace.unmap(VirtAddr::new(vaddr));
+        }
         let frame_idx = frame_allocator::allocate().ok_or("out of frames during exec")?;
         let phys = PhysAddr::new(frame_idx * PAGE);
 
@@ -184,13 +202,16 @@ fn map_segment(
 
 /// Map `STACK_PAGES` rw- user frames ending at `STACK_TOP`.
 /// Returns the stack-top virtual address (where `rsp` should point).
-fn setup_user_stack(aspace: &AddressSpace) -> Result<u64, &'static str> {
+fn setup_user_stack(aspace: &AddressSpace, replace_existing: bool) -> Result<u64, &'static str> {
     let flags =
         PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE;
 
     for i in 0..STACK_PAGES {
         // i=0 maps the bottom page, i=N-1 maps the top page.
         let vaddr = STACK_TOP - (STACK_PAGES - i) * PAGE;
+        if replace_existing {
+            let _ = aspace.unmap(VirtAddr::new(vaddr));
+        }
         let frame_idx = frame_allocator::allocate().ok_or("out of frames for stack")?;
         let phys = PhysAddr::new(frame_idx * PAGE);
         // SAFETY: fresh virtual range, fresh frame.

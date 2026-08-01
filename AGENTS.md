@@ -22,7 +22,30 @@ This file is the project's spine. It serves three purposes:
 
 ### Other files
 
-(Nothing else yet. As the kernel takes shape, update this section with the layout: `kernel/`, `boot/`, etc.)
+- `src/main.rs` — kernel entry point and panic/allocation handlers.
+- `src/boot.rs` — x86 boot orchestration; always executes `/init.elf`.
+- `src/` — kernel subsystems: memory, processes, syscalls, filesystems, and devices.
+- `targets/armv7/` — position-independent ARMv7 startup shared by QEMU `virt` and Raspberry Pi 2B.
+- `tests/` — external behavioral test drivers and user-space fixture programs.
+- `scripts/make-disk.sh` — builds an ext2 disk and installs a caller-selected program as `/init.elf`.
+
+## Test naming
+
+Name behavioral tests with this pattern:
+
+```text
+test_<action>_<observable_result>
+```
+
+Keep names short. Put setup and preconditions in the test body instead of encoding every `given` clause in the name.
+
+Examples:
+
+- `test_boot_starts_userspace`
+- `test_fork_resumes_both_processes`
+- `test_wait_collects_child_status`
+- `test_udp_echoes_payload`
+- `test_raspi2b_boots_in_qemu`
 
 ## Writing style
 

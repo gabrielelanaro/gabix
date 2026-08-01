@@ -4,18 +4,18 @@
 # Lesson 10: format as ext2 so the kernel can parse a real filesystem.
 # Lesson 14: write hello.txt + secret.txt into the ext2 filesystem via debugfs.
 # Lesson 15: cross-compile a tiny x86-64 ELF and add it as /hello.elf.
-# Lesson 17 (test framework): compile every tests/fixtures/*.rs into a user
-#            ELF and add it to the disk. Each fixture is the user program
-#            behind one E2E test in tests/.
+# The kernel always executes /init.elf. An external test chooses which user
+# program occupies that path without changing the kernel build.
 #
 # Output: disk.img (in the project root)
 #
 # Usage:
-#   ./scripts/make-disk.sh
+#   ./scripts/make-disk.sh [init-source] [output-image]
 
 set -e
 
-DISK_IMG=disk.img
+INIT_SOURCE=${1:-tests/fixtures/hello.rs}
+DISK_IMG=${2:-disk.img}
 SIZE_MB=1
 
 # Find mkfs.ext2 and debugfs — keg-only on macOS (brew install e2fsprogs).
@@ -51,14 +51,16 @@ truncate -s "${SIZE_MB}M" "$DISK_IMG"
 # Lesson 14: write hello.txt and secret.txt into the ext2 filesystem.
 HELLO_SRC=$(mktemp /tmp/mini-os-hello.XXXXXX.txt)
 SECRET_SRC=$(mktemp /tmp/mini-os-secret.XXXXXX.txt)
+KNOWN_SRC=$(mktemp /tmp/mini-os-known.XXXXXX.bin)
 echo "hello from disk" > "$HELLO_SRC"
 echo "top secret" > "$SECRET_SRC"
-printf 'write %s /hello.txt\nwrite %s /secret.txt\nquit\n' "$HELLO_SRC" "$SECRET_SRC" \
+printf 'gabix-known-disk-data\n' > "$KNOWN_SRC"
+printf 'write %s /hello.txt\nwrite %s /secret.txt\nwrite %s /known-block.bin\nquit\n' \
+    "$HELLO_SRC" "$SECRET_SRC" "$KNOWN_SRC" \
     | "$DEBUGFS" -w "$DISK_IMG" 2>&1 | grep -E '(inode|error)' || true
-rm -f "$HELLO_SRC" "$SECRET_SRC"
+rm -f "$HELLO_SRC" "$SECRET_SRC" "$KNOWN_SRC"
 
-# Lesson 15+: cross-compile every tests/fixtures/*.rs into a user ELF and
-# write it to the disk. Two rustc flags matter:
+# Cross-compile a user program and write it to the disk. Two rustc flags matter:
 #   --target x86_64-unknown-none   → bare-metal ELF, no host OS ABI
 #   -C relocation-model=static     → ET_EXEC (fixed addresses), not PIE
 # Without -C relocation-model=static, rustc emits ET_DYN, which would force
@@ -69,20 +71,10 @@ if ! rustup target list --installed 2>/dev/null | grep -q '^x86_64-unknown-none$
     exit 1
 fi
 
-# Each line: <source-relative-to-repo-root> <dest-path-on-disk>
+# /hello.elf is a normal executable used by execve coverage. /init.elf is
+# selected by the caller and is the only program the kernel starts directly.
 FIXTURES="tests/fixtures/hello.rs:/hello.elf
-tests/fixtures/fork_smoke.rs:/fork_smoke.elf
-tests/fixtures/inherit_wait.rs:/inherit_wait.elf
-tests/fixtures/net_smoke.rs:/net_smoke.elf
-tests/fixtures/icmp_ping.rs:/icmp_ping.elf
-tests/fixtures/udp_echo.rs:/udp_echo.elf
-tests/fixtures/nonblocking_echo.rs:/nonblocking_echo.elf"
-FIXTURES="$FIXTURES
-tests/fixtures/dhcp.rs:/dhcp.elf"
-FIXTURES="$FIXTURES
-tests/fixtures/tcp_handshake.rs:/tcp_handshake.elf"
-FIXTURES="$FIXTURES
-tests/fixtures/tcp_echo.rs:/tcp_echo.elf"
+$INIT_SOURCE:/init.elf"
 
 for entry in $FIXTURES; do
     src=${entry%%:*}
