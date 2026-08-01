@@ -209,12 +209,16 @@ extern "C" fn arm_kernel_entry() {
                     write_line(&mut console, b"gabix raspi2b block read");
                 }
             }
-            if let Some(file) = gabix_kernel::fs::ext2::read_file(&mut card, b"/known-block.bin") {
+            let root_start =
+                gabix_kernel::fs::partition::mbr_partition_start(&mut card, 0x83).unwrap_or(0);
+            let mut root =
+                gabix_kernel::fs::partition::OffsetBlockDevice::new(&mut card, root_start);
+            if let Some(file) = gabix_kernel::fs::ext2::read_file(&mut root, b"/known-block.bin") {
                 if file.starts_with(b"gabix-known-disk-data\n") {
                     write_line(&mut console, b"gabix raspi2b file read");
                 }
             }
-            if let Some(image) = gabix_kernel::fs::ext2::read_file(&mut card, b"/init.elf") {
+            if let Some(image) = gabix_kernel::fs::ext2::read_file(&mut root, b"/init.elf") {
                 disk_user_entry = user::load_elf(&image);
             }
         }
