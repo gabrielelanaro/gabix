@@ -8,6 +8,7 @@
     .equ CONFIGURE_GPIO, {configure_gpio}
     .equ STACK_TOP, {stack_top}
     .equ IRQ_STACK_TOP, {irq_stack_top}
+    .equ SEMIHOSTING, {semihosting}
 
 _start:
     cpsid if
@@ -53,9 +54,12 @@ _start:
     bl {rust_entry}
 
 .Lexit:
+    .if SEMIHOSTING
     mov r0, #0x20
     adr r1, .Lexit_block
     svc #0x123456
+    .endif
+    b .Lpark
 
 .Lpark:
     wfe
@@ -88,7 +92,9 @@ _start:
 
     .align 2
 .Lexit_block:
+    .if SEMIHOSTING
     .word 0x20026
     .word 0
+    .endif
 
     .ltorg

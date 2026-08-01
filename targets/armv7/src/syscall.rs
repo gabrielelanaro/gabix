@@ -35,12 +35,20 @@ unsafe fn write(fd: u32, address: u32, len: u32) -> u32 {
 }
 
 unsafe fn exit_success() -> ! {
-    let block = [0x0002_0026u32, 0];
-    asm!(
-        "svc #0x123456",
-        in("r0") 0x20u32,
-        in("r1") block.as_ptr(),
-    );
+    #[cfg(not(feature = "pi-hardware"))]
+    {
+        let block = [0x0002_0026u32, 0];
+        asm!(
+            "svc #0x123456",
+            in("r0") 0x20u32,
+            in("r1") block.as_ptr(),
+        );
+    }
+    #[cfg(feature = "pi-hardware")]
+    loop {
+        asm!("wfi");
+    }
+    #[cfg(not(feature = "pi-hardware"))]
     loop {
         asm!("wfi");
     }

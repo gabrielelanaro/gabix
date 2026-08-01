@@ -32,6 +32,11 @@ use gabix_kernel::net::dhcp::{ACK, OFFER};
 use gabix_kernel::net::stack::{NetworkInterface, MAX_FRAME_LEN};
 use platform::{PLATFORM, UART_BASE};
 
+#[cfg(feature = "pi-hardware")]
+const SEMIHOSTING: u32 = 0;
+#[cfg(not(feature = "pi-hardware"))]
+const SEMIHOSTING: u32 = 1;
+
 #[cfg(all(feature = "virt", feature = "raspi2b"))]
 compile_error!("select one ARM platform");
 
@@ -49,6 +54,7 @@ global_asm!(
     rust_entry = sym arm_kernel_entry,
     irq_entry = sym arm_irq_entry,
     svc_entry = sym arm_svc_entry,
+    semihosting = const SEMIHOSTING,
 );
 
 #[cfg(feature = "raspi2b")]
@@ -62,6 +68,7 @@ global_asm!(
     rust_entry = sym arm_kernel_entry,
     irq_entry = sym arm_irq_entry,
     svc_entry = sym arm_svc_entry,
+    semihosting = const SEMIHOSTING,
 );
 
 #[no_mangle]
