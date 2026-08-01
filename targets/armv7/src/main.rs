@@ -7,8 +7,12 @@ extern crate alloc;
 mod allocator;
 mod console;
 #[cfg(feature = "virt")]
+mod context;
+#[cfg(feature = "virt")]
 mod memory;
 mod platform;
+#[cfg(feature = "virt")]
+mod scheduler;
 #[cfg(feature = "virt")]
 mod virt;
 
@@ -73,6 +77,9 @@ extern "C" fn arm_kernel_entry() {
         values.extend_from_slice(&[1u32, 1]);
         if *boxed + values.iter().sum::<u32>() == 42 {
             write_line(&mut console, b"gabix arm virt heap allocated");
+        }
+        if scheduler::task_resumes() {
+            write_line(&mut console, b"gabix arm virt task resumed");
         }
         virt::timer::init();
         while virt::timer::ticks() < 2 {
