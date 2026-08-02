@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>1.01 Privilege and the syscall door</title><link rel="stylesheet" href="../assets/lesson.css"><style>
+  .snip{margin:1.1rem 0}
+  .snip-meta{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:.82em;color:#666;margin-bottom:.25rem}
+  .snip-meta .what{color:#444;font-family:inherit}
+  .snip pre{margin:0}
+  table.map{border-collapse:collapse;width:100%;margin:1rem 0;font-size:.94em}
+  table.map th,table.map td{border:1px solid #ddd;padding:.5rem .6rem;text-align:left;vertical-align:top}
+  table.map th{background:#f0ede6;font-weight:600}
+  table.map td:first-child{font-weight:600}
+  .callout{background:#f6f4ee;border-left:3px solid #c9b88a;padding:.7rem 1rem;margin:1.2rem 0;font-size:.95em}
+  .win{background:#eef5ee;border-left:3px solid #5a9e5a;padding:.7rem 1rem;margin:1.4rem 0}
+  code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:.9em;background:#f3f1ea;padding:.05em .35em;border-radius:3px}
+</style></head>
+<body><article class="lesson"><header class="lesson-header">
+<div class="lesson-eyebrow">Module 1 · The CPU · Lesson 1.01</div>
+<h1 class="lesson-title">Privilege and the syscall door</h1>
+<p class="lesson-subtitle">How x86 and ARM each let a kernel run an untrusted program — fenced off from the dangerous instructions, yet able to call the kernel for help.</p>
+</header><div class="content">
+
+<p>A kernel has to run programs it does not trust. Those programs must not read the kernel's memory, must not disable interrupts, must not change how memory is mapped, must not talk to the disk or the network card directly. If any program could do these things, no program would be safe from any other.</p>
+
+<p>But isolating the program completely is no use either. The program needs the kernel to act on its behalf — read a file (which means touching the disk), send a packet (the network card), get the time of day. So the same CPU that restricts the program must also give it a controlled way to ask the kernel for help.</p>
+
+<p>This lesson is the two CPU mechanisms that make that possible. The first is a <em>privilege setting</em> the program cannot change on its own. The second is a single instruction — the <em>door</em> — that is the only way to cross from low privilege to high. x86 and ARM each provide both; the vocabulary differs, the security property is the same.</p>
+
+<h2>1. The privilege setting</h2>
+
+<p>x86 calls its levels <em>rings</em>. Four exist in the design (0 through 3) but only two are used in practice: ring 0 for the kernel, with every instruction and every byte of memory available, and ring 3 for user programs, with the dangerous parts blocked. The ring the CPU is currently running in — the Current Privilege Level — is a two-bit field kept inside the code-segment register, a CPU register that describes the code presently executing.</p>
+
+<p>In ring 3 a set of instructions simply refuses to run: <code>cli</code> (turn off interrupts), <code>hlt</code> (halt the CPU), the moves that reprogram the address-translation table, and the <code>in</code>/<code>out</code> that talk straight to devices. Memory carries its own check too: each page is marked kernel-only or not, so a ring-3 program that reaches for the kernel's bytes is stopped before the read happens. When the CPU catches a ring-3 program trying any of this, it does not crash — it <em>traps</em>: it saves where the program was and jumps into the kernel at a prearranged handler, the same mechanism it uses for a divide-by-zero. The kernel then decides what to do, which is usually to kill the program.</p>
+
+<p>ARM uses the word <em>modes</em> instead of rings, and there are more of them, but the idea is identical. One mode — <strong>User mode</strong> — is the only unprivileged one; the program runs there. The rest are privileged and owned by the kernel: <strong>Supervisor mode</strong> for ordinary kernel code, <strong>IRQ mode</strong> for interrupt handlers, and a few others for handling errors. The mode the CPU is in right now is a five-bit field at the bottom of a register called the Current Program Status Register, or <strong>CPSR</strong>.</p>
+
+<p>One ARM detail has no direct x86 parallel and matters when you read the code. Each privileged mode comes with its own private copy of two registers: the stack pointer (<code>sp</code>) and the link register (<code>lr</code>, which holds return addresses). When the CPU enters IRQ mode, it switches to IRQ mode's <code>sp</code> and <code>lr</code> automatically — the interrupt handler gets a fresh stack without having to save the old one. That is why gabix's first code, in <code>targets/armv7/src/boot.S</code>, deliberately switches into IRQ mode just to give it a stack, then switches back:</p>
+
+<div class="snip">
+<div class="snip-meta"><span>targets/armv7/src/boot.S</span> · <span class="what">giving each mode its own stack</span></div>
+<pre><code>    cps   #0x12                <span class="c">@ change to IRQ mode</span>
+    ldr   sp, =IRQ_STACK_TOP   <span class="c">@ give IRQ mode its own stack</span>
+    cps   #0x13                <span class="c">@ change to Supervisor mode</span>
+    ldr   sp, =STACK_TOP       <span class="c">@ give Supervisor mode its stack</span></code></pre>
+</div>
+
+<p>(<code>cps</code> means "change processor state" — an immediate switch to a named mode, allowed only when already privileged.) Whatever sits in User mode's <code>sp</code> and <code>lr</code> is left untouched, waiting for the program.</p>
+
+<h2>2. The door: crossing from low to high</h2>
+
+<p>With the program held in ring 3 (or User mode), it cannot raise its own privilege — the privilege field is not an ordinary register it can write. So how does it ever call the kernel? Through one instruction the CPU treats specially.</p>
+
+<p>On x86 that instruction is <code>syscall</code>. Before any program can use it, the kernel writes the address of its handler into a special register — a model-specific register, or <strong>MSR</strong>, named <code>LSTAR</code> — and tells the CPU how to find a kernel stack. Then, when a ring-3 program runs <code>syscall</code>, the CPU does a controlled jump: it notes where to return, loads the handler address from <code>LSTAR</code> into the program counter, switches to ring 0, and starts running the handler. The program chose to run <code>syscall</code>; the CPU chose everything else. The syscall number rides in one register (<code>rax</code>), the arguments in a fixed set of others. (The x86 side you already built lives in <code>src/arch/x86_64/syscall.rs</code>.)</p>
+
+<p>ARM's instruction is <code>svc</code> (it once stood for "supervisor call"; older assemblers spelled it <code>swi</code>). The setup differs: the kernel has already written the address of a small eight-entry table into a register called <strong>VBAR</strong> (Vector Base Address Register). When a User-mode program runs <code>svc</code>, the CPU saves the program's return address into the link register <code>lr</code>, saves the current mode (User) into a register called <strong>SPSR</strong> (Saved Program Status Register) — saved so the CPU can put itself back into User mode on the way out — switches to Supervisor mode, and jumps to the table entry reserved for <code>svc</code>. The syscall number rides in <code>r7</code> in gabix; the first arguments in <code>r0</code> through <code>r3</code>.</p>
+
+<p>Here is gabix's handler for that jump, with each line explained:</p>
+
+<div class="snip">
+<div class="snip-meta"><span>targets/armv7/src/boot.S</span> · <span class="what">the SVC (syscall) entry</span></div>
+<pre><code>.Lsvc:
+    stmdb sp!, {r0-r12, lr}    <span class="c">@ push the program's registers onto the SVC stack</span>
+    mov   r0,  sp              <span class="c">@ pass the Rust handler a pointer to those saved registers</span>
+    bl    arm_svc_entry        <span class="c">@ call the handler in syscall.rs</span>
+    ldmia sp!, {r0-r12, lr}    <span class="c">@ restore them; r0 now holds the value the handler returned</span>
+    movs  pc,  lr              <span class="c">@ return to the program</span></code></pre>
+</div>
+
+<p>(<code>stmdb</code> is "store multiple, decrement before" — a push. <code>ldmia</code> is "load multiple, increment after" — a pop. <code>bl</code> is "branch with link", a call.) The handler in <code>syscall.rs</code> reads <code>r7</code> to learn which syscall was requested, does the work, writes its result into the saved <code>r0</code>, and returns.</p>
+
+<h2>3. The return: crossing back from high to low</h2>
+
+<p>The program called the kernel; now the kernel has to give control back, and the privilege has to drop again. That drop must happen on the kernel's terms: if the program could choose where to return, or at what privilege, the privilege setting would be meaningless.</p>
+
+<p>x86 has a dedicated partner instruction, <code>sysret</code>: it restores the return spot the CPU saved, drops back to ring 3, and resumes the program. One instruction, one job.</p>
+
+<p>ARM does not give you a dedicated "return from syscall" instruction. Instead it reuses the one trick every exception return uses. There is a <code>mov</code> instruction, and when its destination is the program counter <em>and</em> it carries the <code>s</code> suffix, the CPU does two things in a single step: it loads the program counter from <code>lr</code>, and it loads the CPSR from the SPSR — restoring the mode the CPU was in before the exception, which was User. That combined move-and-restore-mode is the entire return mechanism. The last line of the handler above, <code>movs pc, lr</code>, is it.</p>
+
+<p>The same line does the opposite job — the kernel's first deliberate drop into a fresh program. You can see it in <code>targets/armv7/src/user.rs</code>:</p>
+
+<div class="snip">
+<div class="snip-meta"><span>targets/armv7/src/user.rs</span> · <span class="what">the kernel enters a user program (comments added)</span></div>
+<pre><code>pub unsafe extern "C" fn enter(entry: u32, stack: u32) -> ! {
+    naked_asm!(
+        "cpsid i",            <span class="c">// mask interrupts while we set up</span>
+        "cps #0x1f",          <span class="c">// switch to System mode (privileged, shares User's registers)</span>
+        "mov sp, r1",         <span class="c">// build the program's stack</span>
+        "cps #0x13",          <span class="c">// switch back to Supervisor mode</span>
+        "mov r2, #0x10",      <span class="c">// 0x10 is User mode</span>
+        "msr spsr_cxsf, r2",  <span class="c">// stage User mode into SPSR</span>
+        "mov lr, r0",         <span class="c">// the program's entry address goes into lr</span>
+        "movs pc, lr",        <span class="c">// jump there — and load CPSR from SPSR -> User mode</span>
+    );
+}</code></pre>
+</div>
+
+<p>The kernel cannot just jump to the program: a plain jump would stay in Supervisor mode and the program would run privileged. So the kernel stages "User mode" into the SPSR, points <code>lr</code> at the program's entry, and runs the same <code>movs pc, lr</code>. (<code>msr</code> means "move to a status register" — here, writing the SPSR.) The detour into System mode earlier in the routine is how the kernel sets the program's stack pointer: System mode is privileged, but it uses the same register bank as User mode, so writing <code>sp</code> while in System mode sets the program's <code>sp</code>. One instruction, and the program starts running unprivileged. The same <code>movs pc, lr</code> returns from a syscall and starts a program, because in both cases the job is identical: jump to an address and land in the mode staged in the SPSR.</p>
+
+<h2>4. One round trip</h2>
+
+<p>Put it together with a real call. A program wants to write to the screen. It places the syscall number for <code>write</code> in <code>r7</code> (<code>rax</code> on x86), the file descriptor (1, the screen), the buffer address, and the length in the argument registers, and runs <code>syscall</code> (or <code>svc</code>). The CPU crosses into the kernel. Gabix's handler reads the number, calls the write routine, which checks that the buffer really belongs to the program and copies the bytes to the console. The handler puts the byte count into <code>r0</code> (<code>rax</code> on x86) and runs the return — <code>sysret</code>, or <code>movs pc, lr</code>. The program resumes in User mode (ring 3) with its answer in <code>r0</code>, never having held privilege for an instant.</p>
+
+<h2>The two mechanisms in one table</h2>
+
+<table class="map">
+<thead><tr><th></th><th>x86</th><th>ARM</th></tr></thead>
+<tbody>
+<tr><td>Privilege setting</td><td>Rings — ring 0 kernel, ring 3 programs.</td><td>Modes — Supervisor / IRQ for kernel, User for programs.</td></tr>
+<tr><td>Where it is stored</td><td>A 2-bit field in the code-segment register.</td><td>A 5-bit field at the bottom of the CPSR.</td></tr>
+<tr><td>The door instruction</td><td><code>syscall</code>.</td><td><code>svc</code>.</td></tr>
+<tr><td>Kernel registers the landing spot in</td><td>An MSR (<code>LSTAR</code>).</td><td>The VBAR vector table.</td></tr>
+<tr><td>The return</td><td><code>sysret</code> (a dedicated instruction).</td><td><code>movs pc, lr</code> (loads PC from <code>lr</code> and CPSR from SPSR).</td></tr>
+<tr><td>Syscall number / arguments</td><td><code>rax</code> / <code>rdi, rsi, rdx, r10, r8, r9</code>.</td><td><code>r7</code> / <code>r0&ndash;r3</code>.</td></tr>
+</tbody>
+</table>
+
+<div class="win">
+<strong>What you should be able to do after this lesson.</strong> For either CPU, explain why a user program cannot raise its own privilege; name the single instruction it uses to ask the kernel in; and say where the kernel registered the address that instruction lands at. Then explain why gabix uses the same <code>movs pc, lr</code> both to return from a syscall and to enter a program for the first time.
+</div>
+
+<div class="callout">
+<strong>Primary sources.</strong> The ARMv7-AR Architecture Reference Manual covers the exception model, the CPSR and SPSR, the <code>svc</code> instruction, and the exception-return mechanism (search the ARM ARM for "exception entry" and "exception return"). The Intel Software Developer's Manual, Volume 3, covers privilege levels and the <code>syscall</code>/<code>sysret</code> instructions. You do not need either open to follow this lesson — they are the references behind it.
+</div>
+
+<p style="margin-top:1.6rem;color:#555">If anything here is unclear, ask. The agent can re-explain the privilege field, trace a different gabix syscall through the handler, or show you the x86 counterpart in <code>src/arch/x86_64/syscall.rs</code> line by line.</p>
+
+</div><footer class="lesson-footer">
+<div class="footer-block"><h4>Sources</h4><p style="margin:0"><a href="https://developer.arm.com/documentation/ddi0406/latest">ARMv7-AR Architecture Reference Manual</a> · <a href="https://www.intel.com/sdm">Intel SDM vol. 3</a> · gabix: <code>targets/armv7/src/{boot.S,syscall.rs,user.rs}</code>, <code>src/arch/x86_64/syscall.rs</code></p></div>
+<nav class="lesson-nav"><a href="0.01-the-arm-port.html">← 0.01 ARM port</a><a href="../reference/modules.html#m1">Module 1 ↑</a></nav>
+</footer></article></body></html>

@@ -67,28 +67,11 @@ across Lessons 1–3. The sections below cover *style*; this one covers *method*
   (granular commits = granular rollback = safer to let the user drive).
 
 ### Prose and voice (lessons, explainers, index teasers)
-- **Write for a reader who does not yet know the material.** Lead with the
-  concrete problem the mechanism solves — what the system needs to do that it
-  cannot — then bring the mechanism on stage as the answer. Never open with the
-  mechanism.
-- **Never compress a mechanism into a noun phrase the reader must decode.**
-  "Privilege on x86 is the ring carried in the code-segment selector" is
-  notes-to-self, not teaching. Spell out the component, the action, and the
-  value, or cut the sentence.
-- **Defer all jargon** (register names, protocol acronyms, chip names, ISA
-  terms) to the step where that thing is the topic, and define it there in
-  plain words on first use. An index or module-teaser line stays plain: name
-  the problem and the topic, nothing more. A teaser that tries to be a
-  mini-lesson becomes jargon soup.
-- **Apply the `plainspoken` skill** to every lesson, tour, and explainer,
-  before publishing. Re-read each behavior sentence and check it names a
-  component, an action, and a value.
-- **Banned words (user request): "shape", "boundary", "whole"** — the user
-  reads them as vague or as filler. Use the concrete noun, or cut the word
-  (overview, map, split, line, interface; and "the whole X" → "the X").
-- The user's words on a jargon-dense paragraph: *"this is such a jargon soup
-  … this seems to be your internal monologue."* If a paragraph reads like a
-  summary to yourself, rewrite it. (2026-08-01, after the module-index draft.)
+Universal prose rules — open with the problem; a setup sentence states its point (never withhold for a reveal); define terms at first use; banned words `shape`/`boundary`/`whole` — live in the **`plainspoken`** skill (`~/.agents/skills/plainspoken/SKILL.md`). They were merged in on 2026-08-01 so they apply in every project, not just gabix.
+
+Gabix-specific rules — both architectures first-class; ground every claim in gabix source; code blocks on the course dark theme — are in **`AGENTS.md`** under Writing style.
+
+Origin: the user called a module-index paragraph *"jargon soup … your internal monologue"* (2026-08-01), rejected a lesson lead that withheld its point as a reveal, and asked for the prose rules to live in plainspoken so they apply everywhere.
 
 ## User's learning preferences (from earlier sessions)
 - **Introduce new domains in their own right.** When a phase enters genuinely

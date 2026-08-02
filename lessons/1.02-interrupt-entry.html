@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>1.02 Interrupt entry</title><link rel="stylesheet" href="../assets/lesson.css"><style>
+  .snip{margin:1.1rem 0}
+  .snip-meta{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:.82em;color:#666;margin-bottom:.25rem}
+  .snip-meta .what{color:#444;font-family:inherit}
+  .snip pre{margin:0}
+  table.map{border-collapse:collapse;width:100%;margin:1rem 0;font-size:.94em}
+  table.map th,table.map td{border:1px solid #ddd;padding:.5rem .6rem;text-align:left;vertical-align:top}
+  table.map th{background:#f0ede6;font-weight:600}
+  table.map td:first-child{font-weight:600}
+  .callout{background:#f6f4ee;border-left:3px solid #c9b88a;padding:.7rem 1rem;margin:1.2rem 0;font-size:.95em}
+  .win{background:#eef5ee;border-left:3px solid #5a9e5a;padding:.7rem 1rem;margin:1.4rem 0}
+  code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:.9em;background:#f3f1ea;padding:.05em .35em;border-radius:3px}
+</style></head>
+<body><article class="lesson"><header class="lesson-header">
+<div class="lesson-eyebrow">Module 1 · The CPU · Lesson 1.02</div>
+<h1 class="lesson-title">Interrupt entry</h1>
+<p class="lesson-subtitle">How a timer or a device pulls the CPU out of a running program, runs a handler, and returns as if nothing happened.</p>
+</header><div class="content">
+
+<p>The kernel is running a program. Left to itself, the CPU would keep fetching that program's instructions, one after another, until the program finishes. Two kinds of event need to break that run:</p>
+
+<ul>
+<li>A timer fires, many times a second. Each time, the kernel can stop this program and let another run for a while — which is how one CPU appears to run several programs at once.</li>
+<li>A device finishes a job the kernel gave it. A disk read completes; a network packet arrives. The kernel wants to know the instant it happens, not the next time it happens to check.</li>
+</ul>
+
+<p>The program cannot be trusted to pause itself for either one — a buggy or hostile program would simply never yield. So the hardware has to be able to force the CPU away from the program. That is an <em>interrupt</em>: the hardware makes the CPU leave the program, run a handler in the kernel, then return to the program where it left off.</p>
+
+<p>This lesson is how interrupts work. It reuses the pieces from lesson 1.01 — the exception table, the privileged modes, the CPSR and SPSR — and adds two new ones: a chip that tells the CPU an event has happened (the interrupt controller), and, on ARM, the step where the handler asks that chip which device caused the interrupt.</p>
+
+<h2>1. The two halves</h2>
+
+<p>An interrupt has two halves. The first is a chip that tells the CPU an event has happened — the <strong>interrupt controller</strong>. The second is a table that tells the CPU which handler to run in response. x86 and ARM both have both halves. They differ in one design choice — how many entries the table holds — and that choice changes how the handler is written.</p>
+
+<h2>2. The table: eight shared slots, or 256 numbered ones</h2>
+
+<p>From lesson 1.01: ARM keeps its exception handlers in an eight-entry table at the address held in the <code>VBAR</code> register. Each kind of exception owns one slot. Hardware interrupts get exactly one slot — the <strong>IRQ</strong> slot. So whether the timer fires, or a packet arrives, or a disk read finishes, the CPU jumps to that same slot every time. (A neighboring slot, <strong>FIQ</strong>, is reserved for a faster kind of interrupt that gabix does not use.)</p>
+
+<p>Here is the table, from gabix's boot code:</p>
+
+<div class="snip">
+<div class="snip-meta"><span>targets/armv7/src/boot.S</span> · <span class="what">the eight-entry exception table (effective assembly)</span></div>
+<pre><code>.Lvectors:                        <span class="c">@ the table sits at the address in VBAR</span>
+    b   .Lpark                    <span class="c">@ 0  reset</span>
+    b   .Lpark                    <span class="c">@ 1  undefined instruction</span>
+    b   .Lsvc                     <span class="c">@ 2  SVC — syscalls arrive here (lesson 1.01)</span>
+    b   .Lpark                    <span class="c">@ 3  prefetch abort</span>
+    b   .Lpark                    <span class="c">@ 4  data abort</span>
+    b   .Lpark                    <span class="c">@ 5  reserved</span>
+    b   .Lirq                     <span class="c">@ 6  IRQ — every hardware interrupt arrives here</span>
+    b   .Lpark                    <span class="c">@ 7  FIQ (unused)</span></code></pre>
+</div>
+
+<p>Notice slot 2 — that is the SVC entry from lesson 1.01, where syscalls arrive. Slot 6 is where every hardware interrupt arrives.</p>
+
+<p>x86's table is the <strong>IDT</strong> (Interrupt Descriptor Table), and it is far larger — 256 entries. More importantly, x86's interrupt controller does not just tell the CPU that an event happened — it hands the CPU a number, the entry to use. So on x86 the timer, the disk, and the network card each arrive at their own handler, because each was given its own number.</p>
+
+<p>ARM's table is too small for that. With one slot for every hardware interrupt, the handler that lands there cannot yet know which device caused the interrupt — it has to ask the controller (section 4 names the exact registers). That single difference, eight shared slots against 256 numbered ones, is the reason an ARM interrupt handler is written differently from an x86 one.</p>
+
+<h2>3. On the way in: saving state and raising privilege</h2>
+
+<p>Whatever the table size, the moment an interrupt occurs the CPU has to do three things: save enough state to resume the program later, raise its own privilege, and jump to the handler.</p>
+
+<p>On ARM the privilege raise and the state save are automatic and follow directly from lesson 1.01. The CPU switches to IRQ mode — privileged, and with its own private stack pointer and link register, the ones gabix set up in <code>boot.S</code>. It writes the address to resume at into the link register <code>lr</code>, and it saves the old mode (User) into the SPSR, exactly as it did for a syscall. Then it jumps to the IRQ slot.</p>
+
+<p>Here is the handler that slot points at:</p>
+
+<div class="snip">
+<div class="snip-meta"><span>targets/armv7/src/boot.S</span> · <span class="what">the IRQ entry (effective assembly)</span></div>
+<pre><code>.Lirq:
+    sub   lr,  lr, #4            <span class="c">@ lr points one instruction too far; step back to the interrupted one</span>
+    stmdb sp!, {r0-r12, lr}      <span class="c">@ push the program's registers onto the IRQ stack</span>
+    bl    arm_irq_entry          <span class="c">@ call the Rust handler</span>
+    ldmia sp!, {r0-r12, lr}      <span class="c">@ restore them</span>
+    subs  pc,  lr, #0            <span class="c">@ return: PC &lt;- lr, and (the 's') CPSR &lt;- SPSR -&gt; back to User mode</span></code></pre>
+</div>
+
+<p>Read the first line carefully. When an interrupt arrives, the CPU sets <code>lr</code> to the address of the next instruction — one instruction past the one that was interrupted. (This comes from how the CPU fetches instructions ahead of time.) To resume correctly, the handler must step back one instruction, so it subtracts four — one ARM instruction is four bytes. The syscall handler in 1.01 did not need this, because a syscall is never mid-instruction.</p>
+
+<p>The last line, <code>subs pc, lr, #0</code>, is the return. It sets the program counter to <code>lr</code> — the adjusted address — and, because of the <code>s</code>, it restores the CPSR from the SPSR, dropping the CPU back into User mode. It is the same "jump and restore the mode" trick as the syscall return. (<code>movs pc, lr</code> would do the identical thing here — the address was already fixed at the top — but the author wrote it as a subtract with zero.)</p>
+
+<p>On x86 the CPU instead pushes the program's instruction pointer, its code segment, and its flags onto the kernel stack (and the stack segment and pointer too, if it was running a user program), switches to ring 0, and jumps to the IDT entry the controller named. Returning is one instruction, <code>iretq</code>, which pops all of that back.</p>
+
+<h2>4. "Which device?" — and telling the controller you are done</h2>
+
+<p>On x86 the controller already named the device when it supplied the number, so the handler simply does its work and returns.</p>
+
+<p>On ARM the handler arrives knowing only "some hardware interrupt." It must ask the controller which one, and it must tell the controller when it has finished. This is the part where ARM platforms differ: which controller, and how you talk to it.</p>
+
+<p>One ARM controller that works this way is the <strong>GIC</strong> (Generic Interrupt Controller — ARM's standard interrupt chip). Gabix meets it on the <code>virt</code> target, the QEMU machine used for ARM bring-up. The handler reads one of the GIC's registers — the Interrupt Acknowledge Register — which does two things at once: it returns the interrupt's number, and it tells the GIC the CPU has accepted it. The handler does its work, then writes that same number to a second register — End of Interrupt — to say it is done, which lets the next interrupt through. The GIC is the clean example of the mechanism, so it is the one shown here; it is not what the Pi uses.</p>
+
+<div class="snip">
+<div class="snip-meta"><span>targets/armv7/src/virt/timer.rs</span> · <span class="what">asking the GIC which interrupt, and saying it is done</span></div>
+<pre><code>pub unsafe fn handle_interrupt() {
+    let acknowledge = read32(GIC_CPU_BASE + GICC_IAR);      <span class="c">// which interrupt? (also acknowledges it)</span>
+    if acknowledge & 0x3ff == PHYSICAL_TIMER_INTERRUPT {    <span class="c">// the low 10 bits hold the number; 30 is the timer</span>
+        TICKS.fetch_add(1, Ordering::Release);              <span class="c">// count the tick</span>
+        reload();                                           <span class="c">// re-arm the timer</span>
+    }
+    write32(GIC_CPU_BASE + GICC_EOIR, acknowledge);         <span class="c">// end of interrupt — let the next one through</span>
+}</code></pre>
+</div>
+
+<p>The Raspberry Pi 2B has no GIC. Its interrupt hardware is two controllers Broadcom made, and a signal passes through both on the way to the CPU — a different design that needs its own lesson. Gabix wires only the timer on the Pi today and polls every device. That full picture — the two controllers, the bit-per-device layout, and how to wire a real USB or SD interrupt — is <a href="7.01-pi2b-interrupt-controllers.html">lesson 7.01</a>.</p>
+
+<h2>5. One tick, end to end</h2>
+
+<p>Trace one timer tick on the emulator, all the way through. The kernel has told the ARM generic timer to count down from a chosen value and then signal. The count reaches zero. The timer signals the GIC. The GIC signals the CPU. The CPU leaves the program: it switches to IRQ mode, writes the resume address into <code>lr</code> and the old mode into the SPSR, and jumps to the IRQ slot. The handler there pushes the program's registers and calls the Rust routine. The routine reads the GIC's acknowledge register — interrupt 30, the timer — adds one to the tick counter, reloads the timer, and writes end-of-interrupt. The handler pops the registers and runs <code>subs pc, lr, #0</code>. The program resumes at the exact instruction that was interrupted, as though it had never left.</p>
+
+<h2>x86 and ARM, side by side</h2>
+
+<table class="map">
+<thead><tr><th></th><th>x86</th><th>ARM</th></tr></thead>
+<tbody>
+<tr><td>Reported by</td><td>The Local APIC.</td><td>The GIC (emulator), or a controller Broadcom built (Pi).</td></tr>
+<tr><td>The jump table</td><td>The IDT — 256 entries.</td><td>Eight entries at VBAR; one slot (IRQ) for all hardware interrupts.</td></tr>
+<tr><td>Does the CPU land at a device-specific handler?</td><td>Yes — the controller supplies the entry number.</td><td>No — all hardware interrupts share one slot; the handler asks the controller which one.</td></tr>
+<tr><td>Entry saves</td><td>The instruction pointer, code segment, and flags on the kernel stack; switches to ring 0.</td><td>The resume address in <code>lr</code>, the old mode in the SPSR; switches to IRQ mode (its own banked <code>sp</code>/<code>lr</code>).</td></tr>
+<tr><td>Return</td><td><code>iretq</code>.</td><td><code>subs pc, lr, #0</code> — sets the PC to the already-adjusted <code>lr</code>; the <code>s</code> restores the mode from the SPSR.</td></tr>
+<tr><td>Telling the source you are done</td><td>Implicit — the controller named the device.</td><td>Explicit on the GIC — read the acknowledge register, then write end-of-interrupt (the Pi clears at the device instead; see 7.01).</td></tr>
+</tbody>
+</table>
+
+<div class="win">
+<strong>What you should be able to do after this lesson.</strong> Explain why an ARM interrupt handler has to ask the controller "which device?" while an x86 handler does not. Explain why gabix subtracts four from <code>lr</code> at the start of an IRQ handler but does no such adjustment for a syscall. And name the two GIC registers a handler uses to acknowledge an interrupt and to say it is finished (the Pi does this differently — lesson 7.01).
+</div>
+
+<div class="callout">
+<strong>Primary sources.</strong> The ARMv7-AR Architecture Reference Manual covers exception entry and return (including the return-address offset for IRQ). The ARM Generic Interrupt Controller Architecture Specification (ARM IHI 0048) covers the acknowledge / end-of-interrupt handshake. The Intel Software Developer's Manual, Volume 3, covers the IDT and hardware interrupts. You do not need any of them open to follow this lesson.
+</div>
+
+<p style="margin-top:1.6rem;color:#555">If anything here is unclear, ask. The agent can re-explain the eight-slots-versus-256 difference, walk a specific device's interrupt on the Pi, or show you the x86 side in <code>src/arch/x86_64/interrupts.rs</code> and <code>apic.rs</code> line by line.</p>
+
+</div><footer class="lesson-footer">
+<div class="footer-block"><h4>Sources</h4><p style="margin:0"><a href="https://developer.arm.com/documentation/ddi0406/latest">ARMv7-AR Architecture Reference Manual</a> · <a href="https://developer.arm.com/documentation/ihi0048/latest">ARM GIC Architecture Spec (IHI 0048)</a> · <a href="https://www.intel.com/sdm">Intel SDM vol. 3</a> · gabix: <code>targets/armv7/src/{boot.S,virt/timer.rs,raspi2b/timer.rs}</code></p></div>
+<nav class="lesson-nav"><a href="1.01-privilege-and-the-syscall-door.html">← 1.01 Privilege &amp; syscall</a><a href="../reference/modules.html#m1">Module 1 ↑</a></nav>
+</footer></article></body></html>

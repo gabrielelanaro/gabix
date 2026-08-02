@@ -69,3 +69,9 @@ State the positive claim directly. If a contrast is genuinely load-bearing (e.g.
 Audit every draft before sending. The user reads these tics as condescension — being told what to think before being given the thought.
 
 For lessons, tours, and explanatory prose, also follow the **`plainspoken`** skill (`~/.config/opencode/skills/plainspoken/SKILL.md`): name the actual component, action, and value; strip metaphor, personification, vague verbs, and compressed phrasing that makes the reader infer what literally happens. The contrastive-opener ban above is the narrow chat-reply rule; plainspoken is the broader technical-prose rule.
+
+For gabix lessons, tours, and explainers, three project-specific rules apply on top of plainspoken:
+
+- **Both architectures are first-class.** x86 and ARM are two answers to one problem; teach the problem, then both. Neither is the default with the other as a footnote.
+- **Ground every behavioral claim in gabix source.** A claim about what the code or hardware does points at the gabix file and line, or the manual section.
+- **Code blocks use the course dark theme.** Do not override the `pre` background or text color — `assets/lesson.css` paints `pre` dark with near-white text and styles `.c` comments grey. Tag every comment `<span class="c">`.
