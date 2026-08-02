@@ -11,23 +11,8 @@
   .callout{background:#f6f4ee;border-left:3px solid #c9b88a;padding:.7rem 1rem;margin:1.2rem 0;font-size:.95em}
   .win{background:#eef5ee;border-left:3px solid #5a9e5a;padding:.7rem 1rem;margin:1.4rem 0}
   code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:.9em;background:#f3f1ea;padding:.05em .35em;border-radius:3px}
-  /* storybook scenes — section 3 transfer topology + section 4 address spaces */
-  .xfer{margin:1.6rem 0}
-  .xfer-scene{display:grid;grid-template-columns:auto auto auto auto auto;align-items:center;justify-items:center;justify-content:center;gap:.35rem .4rem}
-  .chip.mem{background:var(--surface-soft);border-color:var(--border-bright);border-style:dashed}
-  .link .lab2{font-family:var(--font-mono);font-size:.56rem;color:var(--text-dim);white-space:nowrap;margin-top:.18rem}
-  .vlink{display:flex;flex-direction:column;align-items:center;justify-content:center}
-  .vlink .vlab{font-family:var(--font-mono);font-size:.6rem;color:var(--accent);margin-bottom:.1rem;white-space:nowrap}
-  .vlink .varrow{width:0;height:16px;border-left:2px solid var(--accent);position:relative}
-  .vlink .varrow::after{content:"";position:absolute;left:50%;bottom:-1px;transform:translateX(-50%);border-left:4px solid transparent;border-right:4px solid transparent;border-top:6px solid var(--accent)}
-  .addrs{display:grid;grid-template-columns:1fr 1fr;align-items:center;justify-items:center;gap:.35rem 2rem;margin:1.5rem 0}
-  .memblock{grid-column:1/-1;border:2px dashed var(--border-bright);border-radius:8px;background:var(--surface-soft);padding:.5rem 1.1rem;text-align:center;font-family:var(--font-sans);font-size:.8rem;color:var(--text)}
-  .memblock .aformula{display:block;font-family:var(--font-mono);font-size:.66rem;color:var(--accent);margin-top:.2rem}
-  .cap2{font-family:var(--font-sans);font-size:.78rem;color:var(--text-dim);margin:.6rem auto 0;line-height:1.45;text-align:center;max-width:480px}
-  /* storybook diagram — section 5 vignettes (port handshake) */
-  .vignettes{margin:1.6rem 0}
-  .scene{display:flex;align-items:center;justify-content:center;gap:.45rem;flex-wrap:wrap;padding:.7rem .2rem}
-  .stub{width:14px;height:0;border-top:2px solid var(--border-bright);align-self:center}
+
+  /* storybook diagrams — shared primitives */
   .chip{position:relative;display:inline-flex;flex-direction:column;align-items:center;justify-content:center;min-width:56px;min-height:46px;padding:.32rem .5rem;border:2px solid var(--accent);border-radius:7px;background:var(--surface);font-family:var(--font-sans)}
   .chip .nm{font-weight:700;font-size:.76rem;color:var(--text);text-align:center}
   .chip .sub{font-size:.6rem;color:var(--text-dim);text-align:center}
@@ -36,31 +21,51 @@
   .chip.arm{background:var(--accent-soft);border-color:var(--accent)}
   .chip.ctrl{background:var(--surface-soft)}
   .chip.dev{background:var(--surface-soft);border-color:var(--border-bright)}
-  .chip.active{outline:2px solid var(--accent);outline-offset:3px}
+  .chip.mem{background:var(--surface-soft);border-color:var(--border-bright);border-style:dashed}
   .link{display:flex;flex-direction:column;align-items:center;min-width:84px}
   .link .lab{font-family:var(--font-mono);font-size:.64rem;color:var(--accent);white-space:nowrap;margin-bottom:.18rem}
   .link .ln{width:48px;height:0;border-top:2px solid var(--border-bright);position:relative}
   .link.write .ln{border-top-color:var(--accent)}
   .link.write .ln::after{content:"";position:absolute;right:-1px;top:50%;transform:translateY(-50%);border-top:4px solid transparent;border-bottom:4px solid transparent;border-left:7px solid var(--accent)}
+  .link.read .ln{border-top-color:var(--accent)}
+  .link.read .ln::before{content:"";position:absolute;left:-1px;top:50%;transform:translateY(-50%);border-top:4px solid transparent;border-bottom:4px solid transparent;border-right:7px solid var(--accent)}
+  .link .lab2{font-family:var(--font-mono);font-size:.56rem;color:var(--text-dim);white-space:nowrap;margin-top:.18rem}
+  .vlink{display:flex;flex-direction:column;align-items:center;justify-content:center}
+  .vlink .vlab{font-family:var(--font-mono);font-size:.6rem;color:var(--accent);margin-bottom:.1rem;white-space:nowrap}
+  .vlink .varrow{width:0;height:16px;border-left:2px solid var(--accent);position:relative}
+  .vlink .varrow::after{content:"";position:absolute;left:50%;bottom:-1px;transform:translateX(-50%);border-left:4px solid transparent;border-right:4px solid transparent;border-top:6px solid var(--accent)}
+  .cap2{font-family:var(--font-sans);font-size:.78rem;color:var(--text-dim);margin:.6rem auto 0;line-height:1.45;text-align:center;max-width:520px}
+
+  /* pattern 2 — flow scene (section 3) */
+  .xfer{margin:1.6rem 0}
+  .xfer-scene{display:grid;grid-template-columns:auto auto auto auto auto;align-items:center;justify-items:center;justify-content:center;gap:.35rem .4rem}
+  .xfer-readback{display:flex;align-items:center;justify-content:center;gap:.4rem;margin:1rem 0 0}
+
+  /* pattern 4 — mapping scene (section 4) */
+  .addrs{display:grid;grid-template-columns:1fr 1fr;align-items:center;justify-items:center;gap:.35rem 2rem;margin:1.5rem 0}
+  .memblock{grid-column:1/-1;border:2px dashed var(--border-bright);border-radius:8px;background:var(--surface-soft);padding:.5rem 1.1rem;text-align:center;font-family:var(--font-sans);font-size:.8rem;color:var(--text)}
+  .memblock .aformula{display:block;font-family:var(--font-mono);font-size:.66rem;color:var(--accent);margin-top:.2rem}
+
+  /* pattern 1 — vignettes (section 5) */
+  .vignettes{margin:1.6rem 0}
+  .scene{display:flex;align-items:center;justify-content:center;gap:.45rem;flex-wrap:wrap;padding:.7rem .2rem}
+  .stub{width:14px;height:0;border-top:2px solid var(--border-bright);align-self:center}
   .panel{border:1px solid var(--border);border-radius:10px;background:var(--surface);padding:.85rem 1rem .95rem;margin:1rem 0}
   .panel .hd{display:flex;align-items:baseline;gap:.5rem}
   .panel .num{display:inline-flex;align-items:center;justify-content:center;width:1.5rem;height:1.5rem;border-radius:50%;background:var(--accent);color:#fff;font-family:var(--font-sans);font-weight:700;font-size:.76rem;flex:0 0 auto}
   .panel .ttl{font-family:var(--font-sans);font-weight:700;font-size:.92rem;color:var(--text)}
   .panel .src{margin-left:auto;font-family:var(--font-mono);font-size:.64rem;color:var(--text-faint)}
   .panel .cap{font-family:var(--font-sans);font-size:.8rem;color:var(--text-dim);margin:.35rem 0 0;line-height:1.45}
-  .lines{display:flex;flex-direction:column;gap:.18rem;align-items:center}
+  .legend{display:flex;flex-wrap:wrap;gap:.5rem 1.1rem;align-items:center;background:var(--surface-soft);border:1px solid var(--border);border-radius:8px;padding:.6rem .9rem;margin:0 0 1.3rem;font-family:var(--font-sans);font-size:.74rem;color:var(--text-dim)}
+  .lg-item{display:inline-flex;align-items:center;gap:.4rem}
+  .lg-bar{width:22px;border-radius:1px;display:inline-block}
+  .lines{display:flex;flex-direction:column;gap:.14rem;align-items:center}
   .lvl{display:flex;align-items:flex-end;gap:.22rem}
   .lvl .lb{font-family:var(--font-mono);font-size:.56rem;color:var(--text-dim);width:1.5rem;text-align:right}
   .lvl .bar{width:30px;height:8px;background:var(--border-bright);border-radius:1px}
   .lvl.hi .bar{height:22px;background:var(--accent)}
   .lvl.lo .bar{height:8px}
   .lvl.se0 .bar{height:8px;background:repeating-linear-gradient(45deg,var(--text-dim) 0 3px,var(--border) 3px 6px)}
-  .legend{display:flex;flex-wrap:wrap;gap:.5rem 1.1rem;align-items:center;background:var(--surface-soft);border:1px solid var(--border);border-radius:8px;padding:.6rem .9rem;margin:0 0 1.3rem;font-family:var(--font-sans);font-size:.74rem;color:var(--text-dim)}
-  .lg-item{display:inline-flex;align-items:center;gap:.4rem}
-  .lg-bar{width:22px;border-radius:1px;display:inline-block}
-  .lg-chip{display:inline-block;width:18px;height:14px;border:2px solid var(--accent);border-radius:3px;background:var(--accent-soft)}
-  .lg-chip.ctrl{background:var(--surface-soft);border-color:var(--accent)}
-  .lg-chip.dev{background:var(--surface-soft);border-color:var(--border-bright)}
 </style></head>
 <body><article class="lesson"><header class="lesson-header">
 <div class="lesson-eyebrow">Module 7 · Real hardware · Lesson 7.04</div>
@@ -96,14 +101,19 @@
 <div class="xfer">
   <div class="xfer-scene">
     <div class="chip arm" style="grid-column:1;grid-row:1"><div class="nm">ARM</div><div class="sub">CPU</div></div>
-    <div class="link write" style="grid-column:2;grid-row:1"><span class="lab">&#9312;&#9313; describe + GO</span><div class="ln"></div><span class="lab2">HCINT &middot; HCDMA &middot; HCTSIZ &middot; HCCHAR+ENABLE</span></div>
+    <div class="link write" style="grid-column:2;grid-row:1"><span class="lab">① ② describe + GO</span><div class="ln"></div><span class="lab2">HCINT · HCDMA · HCTSIZ · HCCHAR</span></div>
     <div class="chip ctrl" style="grid-column:3;grid-row:1"><div class="nm">DWC2</div><div class="sub">controller</div></div>
-    <div class="link write" style="grid-column:4;grid-row:1"><span class="lab">&#9314; wire</span><div class="ln"></div><span class="lab2">SETUP / IN / OUT</span></div>
+    <div class="link write" style="grid-column:4;grid-row:1"><span class="lab">③ wire</span><div class="ln"></div><span class="lab2">USB tokens</span></div>
     <div class="chip dev" style="grid-column:5;grid-row:1"><div class="nm">device</div><div class="sub">endpoint</div></div>
-    <div class="vlink" style="grid-column:3;grid-row:2"><span class="vlab">&#9314; DMA</span><div class="varrow"></div></div>
-    <div class="chip mem" style="grid-column:3;grid-row:3"><div class="nm">memory</div><div class="sub">DMA buffer</div></div>
+    <div class="vlink" style="grid-column:3;grid-row:2"><span class="vlab">③ DMA</span><div class="varrow"></div></div>
+    <div class="chip mem" style="grid-column:3;grid-row:3"><div class="nm">memory</div><div class="sub">buffer</div></div>
   </div>
-  <p class="cap2">&#9315; The DWC2 writes the result into <code>HCINT</code> and <code>HCTSIZ</code>; the ARM polls and reads them back. Writes at <code>usb.rs:519,528,529,538</code>; poll and read at <code>usb.rs:547,556,565</code>.</p>
+  <div class="xfer-readback">
+    <div class="chip arm"><div class="nm">ARM</div><div class="sub">CPU</div></div>
+    <div class="link read"><span class="lab">④ result</span><div class="ln"></div><span class="lab2">poll HCINT · read HCINT · read HCTSIZ</span></div>
+    <div class="chip ctrl"><div class="nm">DWC2</div><div class="sub">controller</div></div>
+  </div>
+  <p class="cap2">The ARM describes the transfer and fires ENABLE — clearing HCINT (usb.rs:519), writing HCDMA (528), HCTSIZ (529), and HCCHAR with CHANNEL_ENABLE (538, :61). The DWC2 then drives the USB tokens to the device and, through its own DMA, moves bytes between the wire and the buffer in memory. The ARM polls HCINT (547), reads the result (556), and reads HCTSIZ for the byte count left (565).</p>
 </div>
 
 <div class="snip">
@@ -136,13 +146,13 @@ wait_until(|| read32(CHANNEL_BASE + HCINT) &amp; DONE != <span class="n">0</span
 <p>This is the same bus-address problem from lesson 7.03. The CPU reaches the buffer at one address; the DWC2's DMA engine reaches memory over its own bus (the <em>AHB</em>, ARM's AMBA High-performance Bus, the DWC2's path to main memory), at a different address. gabix converts the pointer with a mask and a fixed offset:</p>
 
 <div class="addrs">
-  <div class="chip arm"><div class="nm">ARM</div><div class="sub">CPU address<br>0x0008_1234</div></div>
-  <div class="chip ctrl"><div class="nm">DWC2 &middot; DMA</div><div class="sub">bus address<br>0xc008_1234</div></div>
+  <div class="chip arm"><div class="nm">ARM</div><div class="sub">CPU view<br>0x0008_1234</div></div>
+  <div class="chip ctrl"><div class="nm">DWC2 · DMA</div><div class="sub">bus view<br>0xc008_1234</div></div>
   <div class="vlink"><span class="vlab">reaches</span><div class="varrow"></div></div>
   <div class="vlink"><span class="vlab">reaches</span><div class="varrow"></div></div>
-  <div class="memblock">the buffer in memory &mdash; one place, two addresses<span class="aformula">&amp; 0x3fff_ffff | 0xc000_0000</span></div>
+  <div class="memblock">one buffer, two addresses<span class="aformula">& 0x3fff_ffff | 0xc000_0000</span></div>
 </div>
-<p class="cap2">The low 30 bits are identical; only the top two bits change, set to <code>11</code> &mdash; the <code>0xc000_0000</code> bus alias. In <code>dma_address()</code> at usb.rs:633.</p>
+<p class="cap2">The CPU reaches the buffer at its virtual address; the DWC2's DMA reaches the same bytes over the AHB at a bus address. <code>dma_address</code> converts one to the other by masking the low 30 bits and setting bit 31 (usb.rs:633). The bytes are the same; only the address each party uses differs.</p>
 
 <div class="snip">
 <div class="snip-meta"><span>targets/armv7/src/raspi2b/usb.rs</span> · <span class="what">dma_address</span></div>
@@ -166,82 +176,62 @@ wait_until(|| read32(CHANNEL_BASE + HCINT) &amp; DONE != <span class="n">0</span
 
 <p>The port handshake is where the host initializes a device electrically. The ARM powers the port (turns on the socket's power), waits, then sets the PORT_RESET bit for 50 milliseconds. PORT_RESET drives the USB reset signal (SE0 — both data lines held low), which forces the device to reset and re-initialize. The ARM clears the reset bit and waits for PORT_ENABLE: the device has come back up and is ready. The enumeration that follows — GET_DESCRIPTOR, SET_ADDRESS, GET_DESCRIPTOR again — is exactly the sequence from lesson 7.02, and every step of it is one call to <code>transfer()</code>.</p>
 
-<div class="legend" aria-label="Legend: actor chips and USB wire-level styles.">
-  <span class="lg-item"><span class="lg-chip"></span> ARM &mdash; writes the port register</span>
-  <span class="lg-item"><span class="lg-chip ctrl"></span> DWC2 &mdash; owns the USB port</span>
-  <span class="lg-item"><span class="lg-chip dev"></span> device &mdash; the plugged-in peripheral</span>
-  <span class="lg-item"><span class="lg-bar" style="height:16px;background:var(--accent)"></span> line high</span>
-  <span class="lg-item"><span class="lg-bar" style="height:7px;background:var(--border-bright)"></span> line low &mdash; idle</span>
-  <span class="lg-item"><span class="lg-bar" style="height:7px;background:repeating-linear-gradient(45deg,var(--text-dim) 0 3px,var(--border) 3px 6px)"></span> line low &mdash; driven (SE0)</span>
+<div class="legend">
+  <span class="lg-item"><span class="lg-bar" style="height:22px;background:var(--accent)"></span> high level — VBUS on / D+ pull-up</span>
+  <span class="lg-item"><span class="lg-bar" style="height:8px;background:var(--border-bright)"></span> low — idle</span>
+  <span class="lg-item"><span class="lg-bar" style="height:8px;background:repeating-linear-gradient(45deg,var(--text-dim) 0 3px,var(--border) 3px 6px)"></span> low — driven (SE0)</span>
 </div>
-<div class="vignettes" aria-label="Port handshake: power, settle, reset (SE0), release.">
+<div class="vignettes">
   <div class="panel">
-    <div class="hd"><span class="num">1</span><span class="ttl">Power the port</span><span class="src">usb.rs:115 &middot; PORT_POWER :53</span></div>
+    <div class="hd"><span class="num">1</span><span class="ttl">Power on</span><span class="src">usb.rs:115, 122</span></div>
     <div class="scene">
-      <div class="chip arm active"><div class="nm">ARM</div><div class="sub">CPU</div></div>
+      <div class="chip arm"><div class="nm">ARM</div><div class="sub">CPU</div></div>
       <div class="link write"><span class="lab">PORT_POWER</span><div class="ln"></div></div>
       <div class="chip ctrl"><div class="nm">DWC2</div><div class="sub">controller</div></div>
       <div class="stub"></div>
       <div class="lines">
         <div class="lvl hi"><span class="lb">VBUS</span><span class="bar"></span></div>
         <div class="lvl lo"><span class="lb">D+</span><span class="bar"></span></div>
-        <div class="lvl lo"><span class="lb">D&minus;</span><span class="bar"></span></div>
+        <div class="lvl lo"><span class="lb">D-</span><span class="bar"></span></div>
       </div>
       <div class="stub"></div>
-      <div class="chip dev"><div class="nm">device</div><div class="sub">LAN9512</div></div>
+      <div class="chip dev"><div class="nm">device</div><div class="sub">target</div></div>
     </div>
-    <p class="cap">The ARM writes <code>HPRT | PORT_POWER</code> (line 114). VBUS rises and the socket is energized. The device is not yet signalling, so D+ and D&minus; sit idle low.</p>
+    <p class="cap">The ARM sets PORT_POWER (usb.rs:115); the controller turns on VBUS. D+ and D- sit idle low while the port settles for 100 ms (usb.rs:122).</p>
   </div>
   <div class="panel">
-    <div class="hd"><span class="num">2</span><span class="ttl">Let it settle</span><span class="src">usb.rs:122</span></div>
+    <div class="hd"><span class="num">2</span><span class="ttl">Hold reset — SE0</span><span class="src">usb.rs:123, 124</span></div>
     <div class="scene">
-      <div class="chip arm"><div class="nm">ARM</div><div class="sub">wait</div></div>
-      <div class="link"><span class="lab">delay 100&nbsp;ms</span><div class="ln"></div></div>
-      <div class="chip ctrl"><div class="nm">DWC2</div><div class="sub">controller</div></div>
-      <div class="stub"></div>
-      <div class="lines">
-        <div class="lvl hi"><span class="lb">VBUS</span><span class="bar"></span></div>
-        <div class="lvl lo"><span class="lb">D+</span><span class="bar"></span></div>
-        <div class="lvl lo"><span class="lb">D&minus;</span><span class="bar"></span></div>
-      </div>
-      <div class="stub"></div>
-      <div class="chip dev"><div class="nm">device</div><div class="sub">LAN9512</div></div>
-    </div>
-    <p class="cap"><code>delay_us(100_000)</code> (line 122) lets the freshly powered device come up before the reset signal.</p>
-  </div>
-  <div class="panel">
-    <div class="hd"><span class="num">3</span><span class="ttl">Hold reset (SE0)</span><span class="src">usb.rs:123,124 &middot; PORT_RESET :54</span></div>
-    <div class="scene">
-      <div class="chip arm active"><div class="nm">ARM</div><div class="sub">CPU</div></div>
+      <div class="chip arm"><div class="nm">ARM</div><div class="sub">CPU</div></div>
       <div class="link write"><span class="lab">PORT_RESET</span><div class="ln"></div></div>
       <div class="chip ctrl"><div class="nm">DWC2</div><div class="sub">controller</div></div>
       <div class="stub"></div>
       <div class="lines">
         <div class="lvl hi"><span class="lb">VBUS</span><span class="bar"></span></div>
         <div class="lvl se0"><span class="lb">D+</span><span class="bar"></span></div>
-        <div class="lvl se0"><span class="lb">D&minus;</span><span class="bar"></span></div>
+        <div class="lvl se0"><span class="lb">D-</span><span class="bar"></span></div>
       </div>
       <div class="stub"></div>
-      <div class="chip dev"><div class="nm">device</div><div class="sub">LAN9512</div></div>
+      <div class="chip dev"><div class="nm">device</div><div class="sub">target</div></div>
     </div>
-    <p class="cap">The ARM sets <code>PORT_RESET</code> (line 123). The controller drives both data lines low &mdash; the SE0 reset signal &mdash; held by <code>delay_us(50_000)</code> (line 124). The device resets and re-initializes.</p>
+    <p class="cap">The ARM sets PORT_RESET (usb.rs:123); the controller drives both data lines low — SE0 — for 50 ms (usb.rs:124), forcing the device to reset.</p>
   </div>
   <div class="panel">
-    <div class="hd"><span class="num">4</span><span class="ttl">Release reset; device comes back</span><span class="src">usb.rs:125,126,127 &middot; PORT_ENABLE :56</span></div>
+    <div class="hd"><span class="num">3</span><span class="ttl">Release and enable</span><span class="src">usb.rs:125–127</span></div>
     <div class="scene">
-      <div class="chip arm active"><div class="nm">ARM</div><div class="sub">CPU</div></div>
-      <div class="link write"><span class="lab">!PORT_RESET</span><div class="ln"></div></div>
+      <div class="chip arm"><div class="nm">ARM</div><div class="sub">CPU</div></div>
+      <div class="link read"><span class="lab">PORT_ENABLE</span><div class="ln"></div></div>
       <div class="chip ctrl"><div class="nm">DWC2</div><div class="sub">controller</div></div>
       <div class="stub"></div>
       <div class="lines">
         <div class="lvl hi"><span class="lb">VBUS</span><span class="bar"></span></div>
         <div class="lvl hi"><span class="lb">D+</span><span class="bar"></span></div>
-        <div class="lvl lo"><span class="lb">D&minus;</span><span class="bar"></span></div>
+        <div class="lvl lo"><span class="lb">D-</span><span class="bar"></span></div>
       </div>
       <div class="stub"></div>
-      <div class="chip dev active"><div class="nm">device</div><div class="sub">LAN9512</div></div>
+      <div class="chip dev"><div class="nm">device</div><div class="sub">target</div></div>
     </div>
-    <p class="cap">The ARM clears <code>PORT_RESET</code> (line 125) and waits <code>delay_us(20_000)</code> (line 126). The device pulls D+ high to signal full-speed; <code>wait_until</code> sees <code>PORT_ENABLE</code> (line 127) and the port is ready for enumeration.</p>
+    <p class="cap">The ARM clears PORT_RESET (usb.rs:125), waits 20 ms (usb.rs:126), then polls for PORT_ENABLE (usb.rs:127). The device reasserts its D+ pull-up — D+ high, D- low — the idle J state of a reset full-speed device.</p>
   </div>
 </div>
 
