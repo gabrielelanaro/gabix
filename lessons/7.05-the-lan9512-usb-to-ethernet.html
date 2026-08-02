@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>7.05 The LAN9512: USB to Ethernet</title><link rel="stylesheet" href="../assets/lesson.css"><style>
+  .snip{margin:1.1rem 0}
+  .snip-meta{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:.82em;color:#666;margin-bottom:.25rem}
+  .snip-meta .what{color:#444;font-family:inherit}
+  .snip pre{margin:0}
+  table.map{border-collapse:collapse;width:100%;margin:1rem 0;font-size:.94em}
+  table.map th,table.map td{border:1px solid #ddd;padding:.5rem .6rem;text-align:left;vertical-align:top}
+  table.map th{background:#f0ede6;font-weight:600}
+  table.map td:first-child{font-weight:600}
+  .callout{background:#f6f4ee;border-left:3px solid #c9b88a;padding:.7rem 1rem;margin:1.2rem 0;font-size:.95em}
+  .win{background:#eef5ee;border-left:3px solid #5a9e5a;padding:.7rem 1rem;margin:1.4rem 0}
+  code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:.9em;background:#f3f1ea;padding:.05em .35em;border-radius:3px}
+</style></head>
+<body><article class="lesson"><header class="lesson-header">
+<div class="lesson-eyebrow">Module 7 · Real hardware · Lesson 7.05</div>
+<h1 class="lesson-title">The LAN9512: USB to Ethernet</h1>
+<p class="lesson-subtitle">The chip on the Pi that turns the USB port from lesson 7.04 into an Ethernet link — reached entirely through USB transfers.</p>
+</header><div class="content">
+
+<p>The DWC2 from lesson 7.04 gives the ARM one USB port. On its own that port does nothing useful; it needs a device plugged in. On the Pi 2B the device soldered behind the Ethernet socket is the <strong>LAN9512</strong>, a single chip from SMSC (now Microchip) that holds two things: a USB hub and a 10/100 Ethernet controller. The ARM never touches an Ethernet wire directly. It sends USB transfers to the LAN9512, and the LAN9512 turns those bytes into Ethernet frames on the wire &mdash; and frames on the wire back into USB transfers.</p>
+
+<p>This lesson covers how gabix configures that chip and moves frames through it. Every operation reuses the USB machinery from 7.04: register access is a USB control transfer, and frame I/O is a USB bulk transfer. There is no second driver to learn &mdash; only a new use for <code>transfer()</code>.</p>
+
+<p>One caveat up front. QEMU has no LAN9512, so gabix's QEMU port talks to an RNDIS Ethernet dongle instead. Both chips sit behind the same <code>FrameDevice</code> trait, so the whole network stack above (modules 5 and 6) is unchanged. That abstraction is the last section.</p>
+
+<h2>1. One chip, two functions, behind the USB port</h2>
+
+<p>The LAN9512 is a USB device. Electrically it hangs off the DWC2's port &mdash; the same port the handshake from 7.04 brought up. gabix enumerates it with the routine from 7.02, and it reports vendor <code>0x0424</code>, product <code>0xec00</code> (the part on the Pi 2B). <code>is_lan9512()</code> matches that pair. Inside the chip are a two-port USB hub (so further devices could hang off it) and an Ethernet MAC and PHY. gabix uses only the Ethernet controller.</p>
+
+<p>The ARM's view of the chip is two USB endpoints: a bulk IN and a bulk OUT, which <code>configure_bulk_device()</code> from 7.04 locates. There are no memory-mapped registers and no interrupt line to wire. Configuration and frame I/O both travel as USB transfers over those endpoints (plus a control endpoint for register access).</p>
+
+<h2>2. Registers over USB: the vendor request</h2>
+
+<p>The LAN9512 has dozens of internal registers &mdash; MAC control, hardware config, EEPROM access. The ARM reaches them not by load and store but by USB control transfers carrying <em>vendor requests</em>. <code>read_register()</code> issues a control READ (request type <code>0xc0</code>, request <code>READ_REGISTER</code> = <code>0xa1</code>) naming the register; the chip returns four bytes. <code>write_register()</code> issues a control WRITE (request type <code>0x40</code>, request <code>WRITE_REGISTER</code> = <code>0xa0</code>) carrying the four-byte value.</p>
+
+<div class="snip">
+<div class="snip-meta"><span>targets/armv7/src/raspi2b/lan9512.rs</span> · <span class="what">register access over USB</span></div>
+<pre><code><span class="k">unsafe fn</span> <span class="f">read_register</span>(host: <span class="k">&amp;mut</span> <span class="t">Dwc2</span>, device: <span class="t">UsbDevice</span>, register: <span class="t">u16</span>) -&gt; <span class="t">Option</span>&lt;<span class="t">u32</span>&gt; {
+    <span class="k">let mut</span> bytes = [<span class="n">0u8</span>; <span class="n">4</span>];
+    <span class="k">if</span> host.<span class="f">control_read</span>(device, <span class="n">0xc0</span>, READ_REGISTER, <span class="n">0</span>, register, <span class="k">&amp;mut</span> bytes)? != bytes.len() {
+        <span class="k">return</span> <span class="t">None</span>;
+    }
+    <span class="t">Some</span>(<span class="t">u32</span>::<span class="f">from_le_bytes</span>(bytes))
+}
+
+<span class="k">unsafe fn</span> <span class="f">write_register</span>(
+    host: <span class="k">&amp;mut</span> <span class="t">Dwc2</span>, device: <span class="t">UsbDevice</span>, register: <span class="t">u16</span>, value: <span class="t">u32</span>,
+) -&gt; <span class="t">Option</span>&lt;()&gt; {
+    host.<span class="f">control_write</span>(device, <span class="n">0x40</span>, WRITE_REGISTER, <span class="n">0</span>, register, <span class="k">&amp;</span>value.<span class="f">to_le_bytes</span>())
+}</code></pre>
+</div>
+
+<p>"Write register <code>HW_CFG</code>" is therefore, on the USB wire, a SETUP+DATA+STATUS transaction &mdash; the same control-transfer shape as the <code>GET_DESCRIPTOR</code> from 7.02, addressed to a vendor register instead of a descriptor. The DWC2 performs it; the ARM only fills in the setup packet and reads the four bytes back.</p>
+
+<h2>3. Bring-up: reset, MAC, enable</h2>
+
+<p><code>configure()</code> runs a fixed sequence of register writes that take the chip from reset to "transmit and receive enabled." In order: reset the MAC; read the factory MAC address out of the EEPROM; program it back into the address registers; set the hardware config (burst, offsets, flow control); then enable the MAC's transmitter and receiver and turn TX on. Each step is one <code>write_register</code> or <code>read_register</code> call &mdash; that is, one USB control transfer.</p>
+
+<div class="snip">
+<div class="snip-meta"><span>targets/armv7/src/raspi2b/lan9512.rs</span> · <span class="what">configure, trimmed</span></div>
+<pre><code><span class="f">write_register</span>(<span class="k">&amp;mut</span> host, device, HW_CFG, HW_CFG_LRST)?;            <span class="c">// reset the MAC</span>
+<span class="f">wait_register_clear</span>(<span class="k">&amp;mut</span> host, device, HW_CFG, HW_CFG_LRST)?;
+
+<span class="k">let</span> mac = <span class="f">read_mac_address</span>(<span class="k">&amp;mut</span> host, device)                     <span class="c">// MAC from the EEPROM</span>
+    .<span class="f">filter</span>(valid_mac_address)
+    .<span class="f">unwrap_or</span>([<span class="n">0x02</span>, <span class="n">0x47</span>, <span class="n">0x41</span>, <span class="n">0x42</span>, <span class="n">0x49</span>, <span class="n">0x58</span>]);
+<span class="f">write_register</span>(<span class="k">&amp;mut</span> host, device, ADDRL, <span class="n">...</span>)?;                    <span class="c">// program the MAC low</span>
+<span class="f">write_register</span>(<span class="k">&amp;mut</span> host, device, ADDRH, <span class="n">...</span>)?;                    <span class="c">// program the MAC high</span>
+
+<span class="k">let</span> hardware = <span class="f">read_register</span>(<span class="k">&amp;mut</span> host, device, HW_CFG)?;          <span class="c">// HW_CFG: bursts on, RX offset off</span>
+<span class="f">write_register</span>(<span class="k">&amp;mut</span> host, device, HW_CFG, (hardware | HW_CFG_BIR) &amp; !HW_CFG_RXDOFF)?;
+<span class="f">write_register</span>(<span class="k">&amp;mut</span> host, device, BURST_CAP, <span class="n">0</span>)?;
+<span class="f">write_register</span>(<span class="k">&amp;mut</span> host, device, AFC_CFG, AFC_CFG_DEFAULT)?;
+<span class="f">write_register</span>(<span class="k">&amp;mut</span> host, device, COE_CR, <span class="n">0</span>)?;
+
+<span class="k">let</span> mac_control = <span class="f">read_register</span>(<span class="k">&amp;mut</span> host, device, MAC_CR)?;        <span class="c">// enable MAC: full duplex, TX, RX</span>
+<span class="f">write_register</span>(<span class="k">&amp;mut</span> host, device, MAC_CR,
+    mac_control | MAC_CR_FULL_DUPLEX | MAC_CR_TX_ENABLE | MAC_CR_RX_ENABLE)?;
+<span class="f">write_register</span>(<span class="k">&amp;mut</span> host, device, TX_CFG, TX_CFG_ON)?;               <span class="c">// transmit on</span></code></pre>
+</div>
+
+<p>Read the sequence top to bottom. The reset write sets <code>HW_CFG_LRST</code>; <code>wait_register_clear</code> polls <code>HW_CFG</code> over USB until the chip clears that bit, which means reset finished. The MAC address comes out of the EEPROM one byte at a time through the <code>E2P_CMD</code>/<code>E2P_DATA</code> register pair (<code>read_mac_address</code>); if the EEPROM is absent or the address is the all-zero or broadcast default, gabix falls back to a fixed locally-administered address. The final two writes enable the MAC's transmitter and receiver and switch TX on &mdash; after which the chip will accept frames for sending and deliver received frames to the bulk IN endpoint.</p>
+
+<h2>4. Frames over bulk: TX and RX</h2>
+
+<p>Once configured, frames move over the two bulk endpoints. <code>transmit()</code> prefixes the Ethernet frame with an eight-byte smsc95xx header (a command/length word followed by a length word) and sends the whole thing with <code>bulk_out</code>. <code>receive()</code> pulls bytes with <code>bulk_in</code>, then <code>read_rx_frame</code> strips the four-byte RX status header and the four-byte trailing frame-check sequence and returns the frame. The header layout lives in <code>crates/kernel-core/src/net/smsc95xx.rs</code>, shared so the same framing parses on any target.</p>
+
+<div class="snip">
+<div class="snip-meta"><span>crates/kernel-core/src/net/smsc95xx.rs</span> · <span class="what">TX header</span></div>
+<pre><code><span class="k">let</span> command_a = length <span class="k">as</span> <span class="t">u32</span> | TX_FIRST_SEGMENT | TX_LAST_SEGMENT;
+out[..<span class="n">4</span>].<span class="f">copy_from_slice</span>(<span class="k">&amp;</span>command_a.<span class="f">to_le_bytes</span>());      <span class="c">// command + length</span>
+out[<span class="n">4</span>..<span class="n">8</span>].<span class="f">copy_from_slice</span>(<span class="k">&amp;</span>(length <span class="k">as</span> <span class="t">u32</span>).<span class="f">to_le_bytes</span>());  <span class="c">// frame length</span>
+out[TX_HEADER_LEN..total].<span class="f">copy_from_slice</span>(frame);            <span class="c">// the Ethernet frame</span></code></pre>
+</div>
+
+<p>USB bulk transfers carry a one-bit packet ID that toggles between <code>DATA0</code> and <code>DATA1</code> from packet to packet. <code>update_pid()</code> flips gabix's <code>tx_pid</code>/<code>rx_pid</code> when an odd number of packets crossed the endpoint, so the next transfer uses the opposite PID. A wrong PID makes the device reject every packet with a NAK, so this bookkeeping is not cosmetic.</p>
+
+<div class="snip">
+<div class="snip-meta"><span>targets/armv7/src/raspi2b/lan9512.rs</span> · <span class="what">transmit / receive over bulk</span></div>
+<pre><code><span class="k">fn</span> <span class="f">transmit</span>(<span class="k">&amp;mut</span> self, frame: <span class="k">&amp;</span>[<span class="t">u8</span>]) {
+    <span class="k">let mut</span> bytes = [<span class="n">0u8</span>; TX_HEADER_LEN + MAX_ETHERNET_FRAME_LEN];
+    <span class="k">let</span> <span class="t">Some</span>(length) = <span class="f">write_tx_frame</span>(frame, <span class="k">&amp;mut</span> bytes) <span class="k">else</span> { <span class="k">return</span>; };
+    <span class="k">unsafe</span> {
+        <span class="k">if</span> self.host.<span class="f">bulk_out</span>(self.device, self.bulk_out_endpoint,
+            self.bulk_max_packet, self.tx_pid, <span class="k">&amp;</span>bytes[..length]).<span class="f">is_some</span>() {
+            <span class="t">Self</span>::<span class="f">update_pid</span>(<span class="k">&amp;mut</span> self.tx_pid, length, self.bulk_max_packet <span class="k">as</span> <span class="t">usize</span>);
+        }
+    }
+}</code></pre>
+</div>
+
+<h2>5. One trait, two chips</h2>
+
+<p>The network stack above this point (ARP, IP, UDP &mdash; modules 5 and 6) never names the LAN9512. It holds a <code>FrameDevice</code>: a trait with <code>mac_address()</code>, <code>transmit()</code>, and <code>receive()</code>. On the Pi, <code>UsbEthernet::Lan9512</code> supplies it; in QEMU, <code>UsbEthernet::Rndis</code> supplies it. <code>configure()</code> picks which by reading the vendor and product ID from enumeration.</p>
+
+<div class="snip">
+<div class="snip-meta"><span>targets/armv7/src/raspi2b/ethernet.rs</span> · <span class="what">dispatch by vendor/product ID</span></div>
+<pre><code><span class="k">pub enum</span> <span class="t">UsbEthernet</span> { <span class="t">Lan9512</span>(<span class="t">Lan9512Ethernet</span>), <span class="t">Rndis</span>(<span class="t">RndisEthernet</span>) }
+
+<span class="k">impl</span> <span class="t">UsbEthernet</span> {
+    <span class="k">pub unsafe fn</span> <span class="f">configure</span>(host: <span class="t">Dwc2</span>, device: <span class="t">UsbDevice</span>) -&gt; <span class="t">Option</span>&lt;<span class="t">Self</span>&gt; {
+        <span class="k">if</span> <span class="f">is_lan9512</span>(device.vendor_id, device.product_id) {
+            <span class="t">Lan9512Ethernet</span>::<span class="f">configure</span>(host, device).<span class="f">map</span>(<span class="t">Self</span>::<span class="t">Lan9512</span>)
+        } <span class="k">else if</span> device.vendor_id == <span class="n">0x0525</span> &amp;&amp; device.product_id == <span class="n">0xa4a2</span> {
+            <span class="t">RndisEthernet</span>::<span class="f">configure</span>(host, device).<span class="f">map</span>(<span class="t">Self</span>::<span class="t">Rndis</span>)
+        } <span class="k">else</span> { <span class="t">None</span> }
+    }
+}</code></pre>
+</div>
+
+<p>This is why the Pi port and the QEMU port share every line of the network code. The hardware-specific work &mdash; USB control transfers for registers, USB bulk transfers for frames, smsc95xx or RNDIS framing &mdash; lives below the trait. Above it, the ARP table, the IP route, and the UDP sockets are the same code on both machines.</p>
+
+<h2>The LAN9512, as the ARM sees it</h2>
+
+<table class="map">
+<thead><tr><th>USB endpoint</th><th>What the ARM uses it for</th></tr></thead>
+<tbody>
+<tr><td>Control (EP0)</td><td>Register access &mdash; <code>read_register</code> / <code>write_register</code> vendor requests. Bring-up, MAC, EEPROM.</td></tr>
+<tr><td>Bulk OUT</td><td>Transmit &mdash; <code>bulk_out</code> sends an smsc95xx-framed Ethernet frame.</td></tr>
+<tr><td>Bulk IN</td><td>Receive &mdash; <code>bulk_in</code> pulls a framed frame; the RX header and FCS are stripped.</td></tr>
+</tbody>
+</table>
+
+<div class="win">
+<strong>What you should be able to do after this lesson.</strong> Say what the LAN9512 is and why the ARM reaches it only through USB. Describe register access as a USB control transfer (the vendor request) and frame I/O as USB bulk transfers. Walk the bring-up sequence (reset, MAC, hardware config, enable TX/RX) and explain the smsc95xx TX/RX framing and the DATA0/DATA1 PID toggle. Explain how the <code>FrameDevice</code> trait lets the Pi (LAN9512) and QEMU (RNDIS) share one network stack.
+</div>
+
+<div class="callout">
+<strong>Primary source.</strong> The SMSC/Microchip LAN9512 datasheet documents the register map (HW_CFG, MAC_CR, ADDRL/ADDRH, the E2P_CMD/E2P_DATA EEPROM interface) and the smsc95xx TX/RX header format. gabix's driver is <code>targets/armv7/src/raspi2b/lan9512.rs</code>; the shared framing is <code>crates/kernel-core/src/net/smsc95xx.rs</code>; the trait dispatch is <code>targets/armv7/src/raspi2b/ethernet.rs</code>.
+</div>
+
+<p style="margin-top:1.6rem;color:#555">If anything here is unclear, ask. The agent can re-explain the register-over-USB trick, trace a single Ethernet frame from <code>transmit()</code> onto the wire, or contrast the LAN9512 path with the QEMU RNDIS path.</p>
+
+</div><footer class="lesson-footer">
+<div class="footer-block"><h4>Sources</h4><p style="margin:0">SMSC LAN9512 datasheet · gabix: <code>targets/armv7/src/raspi2b/lan9512.rs</code>, <code>crates/kernel-core/src/net/smsc95xx.rs</code>, <code>targets/armv7/src/raspi2b/ethernet.rs</code></p></div>
+<nav class="lesson-nav"><a href="7.04-dwc2-host-controller.html">&larr; 7.04 The DWC2 host controller</a><a href="../reference/modules.html#m7">Module 7 &uarr;</a></nav>
+</footer></article></body></html>
