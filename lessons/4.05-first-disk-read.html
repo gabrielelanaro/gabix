@@ -79,27 +79,20 @@
     color: var(--text-faint);
   }
 
-  .flow-step {
-    background: var(--surface);
-    border-left: 3px solid var(--accent);
-    padding: 0.6rem 1rem;
-    margin: 0.5rem 0;
-    font-family: var(--font-mono);
-    font-size: 0.82rem;
-  }
-  .flow-step .flow-time {
-    display: inline-block;
-    background: var(--accent-soft);
-    color: var(--accent);
-    font-weight: 600;
-    padding: 1px 6px;
-    border-radius: 3px;
-    margin-right: 0.6rem;
-    font-size: 0.78rem;
-  }
-  .flow-step.kernel { border-left-color: var(--accent); }
-  .flow-step.device { border-left-color: #15803d; background: #f0fdf4; }
-  .flow-step.device .flow-time { background: #dcfce7; color: #15803d; }
+  /* Pattern-3 timeline — one color axis: kernel = accent, device = neutral grey */
+  .tl{margin:1.6rem 0;border-left:2px solid var(--border-bright);padding-left:1rem}
+  .tl-row{position:relative;padding:.5rem .8rem;margin:.4rem 0;border-radius:6px;background:var(--surface);border:1px solid var(--border)}
+  .tl-row::before{content:"";position:absolute;left:-1.32rem;top:.85rem;width:.6rem;height:.6rem;border-radius:50%;background:var(--accent)}
+  .tl-t{font-family:var(--font-mono);font-size:.66rem;color:var(--accent);font-weight:700}
+  .tl-tag{font-family:var(--font-mono);font-size:.62rem;color:var(--accent);float:right}
+  .tl-row p{margin:.2rem 0 0;font-family:var(--font-sans);font-size:.8rem;color:var(--text-dim);line-height:1.45}
+  .tl-row p code{font-family:var(--font-mono);font-size:.74rem;color:var(--text)}
+  /* device lane: same neutral grey for dot, time label, and tag — no second hue */
+  .tl-row.lane-b::before{background:var(--border-bright)}
+  .tl-row.lane-b .tl-t{color:var(--text-dim)}
+  .tl-row.lane-b .tl-tag{color:var(--text-dim)}
+  .tl-legend{display:flex;flex-wrap:wrap;gap:.5rem 1.1rem;align-items:center;background:var(--surface-soft);border:1px solid var(--border);border-radius:8px;padding:.6rem .9rem;margin:0 0 1rem;font-family:var(--font-sans);font-size:.74rem;color:var(--text-dim)}
+  .tl-legend .lg-dot{width:.6rem;height:.6rem;border-radius:50%;display:inline-block;margin-right:.35rem;vertical-align:middle}
 
   .step {
     background: var(--surface);
@@ -383,67 +376,21 @@ read 4 sectors at offset 4096:  sector = 8, len = 2048</div>
     completion:
   </p>
 
-  <div class="flow-step kernel">
-    <span class="flow-time">T0</span>
-    Kernel allocates 3 descriptors from the free list, plus
-    3 DMA-able buffers (header, data, status). Computes physical
-    addresses for each.
+  <div class="tl-legend">
+    <span><span class="lg-dot" style="background:var(--accent)"></span>kernel lane (guest)</span>
+    <span><span class="lg-dot" style="background:var(--border-bright)"></span>device lane (QEMU host)</span>
   </div>
-  <div class="flow-step kernel">
-    <span class="flow-time">T1</span>
-    Kernel writes the header fields:
-    <code>type=0, reserved=0, sector=0</code>. Writes descriptor
-    fields: desc[0] points at header, desc[1] at data buffer with
-    F_WRITE, desc[2] at status with F_WRITE. Chain via F_NEXT.
-  </div>
-  <div class="flow-step kernel">
-    <span class="flow-time">T2</span>
-    Kernel calls <code>submit_chain(head_index)</code>. Writes
-    head into <code>avail-&gt;ring[idx % N]</code>, advances
-    <code>avail-&gt;idx</code> with Release.
-  </div>
-  <div class="flow-step kernel">
-    <span class="flow-time">T3</span>
-    Kernel calls <code>kick()</code> — writes 0 to the notify
-    register. The store exits the guest immediately and signals
-    QEMU's virtio-blk backend.
-  </div>
-  <div class="flow-step device">
-    <span class="flow-time">T4</span>
-    QEMU's virtio-blk thread wakes, sees <code>avail-&gt;idx</code>
-    advanced, reads the head index, follows the chain to find
-    header + data + status buffers.
-  </div>
-  <div class="flow-step device">
-    <span class="flow-time">T5</span>
-    QEMU reads the request header: type=0 (read), sector=0. Issues
-    a host-side <code>pread</code> on the disk image file at byte
-    offset 0, reading 512 bytes into an internal buffer.
-  </div>
-  <div class="flow-step device">
-    <span class="flow-time">T6</span>
-    QEMU DMAs the 512 bytes from its internal buffer into the
-    guest's data buffer (descriptor 1's physical address). Writes
-    0 to the status byte (descriptor 2's address).
-  </div>
-  <div class="flow-step device">
-    <span class="flow-time">T7</span>
-    QEMU writes <code>{id: head_index, len: 512}</code> into
-    <code>used-&gt;ring[used-&gt;idx % N]</code>, advances
-    <code>used-&gt;idx</code> with Release.
-  </div>
-  <div class="flow-step kernel">
-    <span class="flow-time">T8</span>
-    Kernel's <code>poll_completion</code> reads
-    <code>used-&gt;idx</code> with Acquire, sees it advance, reads
-    the new entry. Returns <code>(id, len)</code> to the caller.
-  </div>
-  <div class="flow-step kernel">
-    <span class="flow-time">T9</span>
-    Kernel checks the status byte (= 0, success), reads the data
-    buffer, verifies bytes match <code>MINIOS_DISK_v0\n</code>
-    followed by zeros. Frees the 3 descriptors back to the free
-    list.
+  <div class="tl">
+    <div class="tl-row lane-a"><span class="tl-t">T0</span><span class="tl-tag">kernel</span><p>Allocate three DMA buffers &mdash; one frame each for header, data, status &mdash; and compute each buffer's physical address. <code>BlkBuffers::new()</code> (<code>block.rs:130</code>) allocates the frames and derives <code>header_phys</code>/<code>data_phys</code>/<code>status_phys</code> (<code>block.rs:578&ndash;580</code>).</p></div>
+    <div class="tl-row lane-a"><span class="tl-t">T1</span><span class="tl-tag">kernel</span><p>Write the request header (<code>type=0</code>, <code>reserved=0</code>, <code>sector=0</code>) via <code>new_read</code> (<code>block.rs:131</code>, <code>block.rs:529&ndash;534</code>) and <code>write_header</code> (<code>block.rs:132</code>, <code>block.rs:611</code>). Then build the three-descriptor chain: <code>build_read_chain</code> allocates head/mid/tail via <code>alloc_descriptor</code> (<code>queue.rs:227&ndash;229</code>) and writes each descriptor's addr/len/flags/next with <code>write_descriptor</code> (<code>queue.rs:235&ndash;243</code>, <code>queue.rs:198</code>).</p></div>
+    <div class="tl-row lane-a"><span class="tl-t">T2</span><span class="tl-tag">kernel</span><p>Publish the chain head to the available ring. <code>submit_chain</code> writes <code>head</code> into <code>avail->ring[idx % N]</code> (<code>queue.rs:309&ndash;311</code>) and advances <code>avail->idx</code> with <code>fetch_add(1, Release)</code> (<code>queue.rs:319</code>). Called at <code>block.rs:140</code>.</p></div>
+    <div class="tl-row lane-a"><span class="tl-t">T3</span><span class="tl-tag">kernel</span><p>Kick the device. <code>kick()</code> computes <code>notify_virt + queue_notify_off * multiplier</code> and writes 0 there with <code>write_volatile</code> (<code>block.rs:470</code>, <code>block.rs:481&ndash;483</code>). The store exits the guest and signals QEMU's virtio-blk backend. Called at <code>block.rs:141</code>.</p></div>
+    <div class="tl-row lane-b"><span class="tl-t">T4</span><span class="tl-tag">device</span><p>QEMU's virtio-blk thread wakes, sees <code>avail->idx</code> advanced, reads the head index, and follows the <code>next</code> pointers to gather the header, data, and status buffers. Host-side behavior; not in the gabix driver.</p></div>
+    <div class="tl-row lane-b"><span class="tl-t">T5</span><span class="tl-tag">device</span><p>QEMU reads the request header (type=0 read, sector=0) and issues a host-side <code>pread</code> on the disk image at byte offset 0, reading 512 bytes into an internal buffer. Host-side behavior; not in the gabix driver.</p></div>
+    <div class="tl-row lane-b"><span class="tl-t">T6</span><span class="tl-tag">device</span><p>QEMU DMAs the 512 bytes from its internal buffer into the guest data buffer (descriptor 1's physical address) and writes 0 (<code>VIRTIO_BLK_S_OK</code>) to the status byte (descriptor 2's address). The kernel reads that status byte back in T9 via <code>read_status</code> (<code>block.rs:626</code>). Host-side behavior; not in the gabix driver.</p></div>
+    <div class="tl-row lane-b"><span class="tl-t">T7</span><span class="tl-tag">device</span><p>QEMU writes <code>{id: head, len: 512}</code> into <code>used->ring[used->idx % N]</code> and advances <code>used->idx</code> with Release ordering. The kernel observes the advance in T8. Host-side behavior; not in the gabix driver.</p></div>
+    <div class="tl-row lane-a"><span class="tl-t">T8</span><span class="tl-tag">kernel</span><p>Poll for completion. <code>poll_completion</code> loads <code>used->idx</code> with Acquire (<code>queue.rs:345</code>, <code>queue.rs:352</code>); when it advances past <code>last_used_idx</code>, it reads the used ring entry's <code>id</code> and <code>len</code> (<code>queue.rs:361&ndash;365</code>) and returns <code>(id, len)</code>. Called at <code>block.rs:148</code>.</p></div>
+    <div class="tl-row lane-a"><span class="tl-t">T9</span><span class="tl-tag">kernel</span><p>Verify and clean up. Read the status byte via <code>read_status</code> and assert <code>VIRTIO_BLK_S_OK</code> (<code>block.rs:163</code>, <code>block.rs:626</code>). Read the 512-byte data buffer via <code>read_data_prefix</code> (<code>block.rs:176</code>, <code>block.rs:634</code>). Free the three descriptors back to the free list (<code>block.rs:171&ndash;173</code>, <code>free_descriptor</code> at <code>queue.rs:168</code>).</p></div>
   </div>
 
   <p>
