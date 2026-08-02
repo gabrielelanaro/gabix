@@ -126,7 +126,7 @@
   <div class="stage">
     <div class="sh"><span class="sn">4</span><span class="st">Read the result</span></div>
     <div class="sb">Poll HCINT until a completion bit appears, read which one it is, then read HCTSIZ again for the byte count still remaining.</div>
-    <div class="src">usb.rs:548,556,565</div>
+    <div class="src">usb.rs:547,556,565</div>
     <div class="who arm">ARM</div>
   </div>
 </div>
@@ -202,7 +202,7 @@ wait_until(|| read32(CHANNEL_BASE + HCINT) &amp; DONE != <span class="n">0</span
 </div>
 <div class="vignettes" aria-label="Port handshake: power, settle, reset (SE0), release.">
   <div class="panel">
-    <div class="hd"><span class="num">1</span><span class="ttl">Power the port</span><span class="src">usb.rs:114 &middot; PORT_POWER :53</span></div>
+    <div class="hd"><span class="num">1</span><span class="ttl">Power the port</span><span class="src">usb.rs:115 &middot; PORT_POWER :53</span></div>
     <div class="scene">
       <div class="chip arm active"><div class="nm">ARM</div><div class="sub">CPU</div></div>
       <div class="link write"><span class="lab">PORT_POWER</span><div class="ln"></div></div>
