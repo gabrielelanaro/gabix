@@ -11,6 +11,61 @@
   .callout{background:#f6f4ee;border-left:3px solid #c9b88a;padding:.7rem 1rem;margin:1.2rem 0;font-size:.95em}
   .win{background:#eef5ee;border-left:3px solid #5a9e5a;padding:.7rem 1rem;margin:1.4rem 0}
   code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:.9em;background:#f3f1ea;padding:.05em .35em;border-radius:3px}
+  /* storybook scenes (7.05) — shared primitives */
+  .chip{position:relative;display:inline-flex;flex-direction:column;align-items:center;justify-content:center;min-width:56px;min-height:46px;padding:.32rem .5rem;border:2px solid var(--accent);border-radius:7px;background:var(--surface);font-family:var(--font-sans)}
+  .chip .nm{font-weight:700;font-size:.76rem;color:var(--text);text-align:center}
+  .chip .sub{font-size:.6rem;color:var(--text-dim);text-align:center}
+  .chip::before,.chip::after{content:"";position:absolute;left:5px;right:5px;height:4px;background:repeating-linear-gradient(90deg,var(--border-bright) 0 2px,transparent 2px 6px)}
+  .chip::before{top:-5px}.chip::after{bottom:-5px}
+  .chip.arm{background:var(--accent-soft);border-color:var(--accent)}
+  .chip.ctrl{background:var(--surface-soft)}
+  .chip.dev{background:var(--surface-soft);border-color:var(--border-bright)}
+  .chip.mem{background:var(--surface-soft);border-color:var(--border-bright);border-style:dashed}
+  .chip.lan{background:var(--accent-soft);border-color:var(--accent)}
+  .chip.rndis{background:var(--surface-soft);border-color:var(--border-bright)}
+  .chip.active{outline:2px solid var(--accent);outline-offset:3px}
+  .link{display:flex;flex-direction:column;align-items:center;min-width:84px}
+  .link .lab{font-family:var(--font-mono);font-size:.64rem;color:var(--accent);white-space:nowrap;margin-bottom:.18rem}
+  .link .ln{width:48px;height:0;border-top:2px solid var(--border-bright);position:relative}
+  .link.write .ln{border-top-color:var(--accent)}
+  .link.write .ln::after{content:"";position:absolute;right:-1px;top:50%;transform:translateY(-50%);border-top:4px solid transparent;border-bottom:4px solid transparent;border-left:7px solid var(--accent)}
+  .link.read .ln{border-top-color:var(--accent)}
+  .link.read .ln::before{content:"";position:absolute;left:-1px;top:50%;transform:translateY(-50%);border-top:4px solid transparent;border-bottom:4px solid transparent;border-right:7px solid var(--accent)}
+  .link .lab2{font-family:var(--font-mono);font-size:.56rem;color:var(--text-dim);white-space:nowrap;margin-top:.18rem}
+  .vlink{display:flex;flex-direction:column;align-items:center;justify-content:center}
+  .vlink .vlab{font-family:var(--font-mono);font-size:.6rem;color:var(--accent);margin-bottom:.1rem;white-space:nowrap}
+  .vlink .varrow{width:0;height:16px;border-left:2px solid var(--accent);position:relative}
+  .vlink .varrow::after{content:"";position:absolute;left:50%;bottom:-1px;transform:translateX(-50%);border-left:4px solid transparent;border-right:4px solid transparent;border-top:6px solid var(--accent)}
+  .cap2{font-family:var(--font-sans);font-size:.78rem;color:var(--text-dim);margin:.6rem auto 0;line-height:1.45;text-align:center;max-width:520px}
+  /* flow scene */
+  .xfer-scene{display:grid;grid-template-columns:auto auto auto auto auto;align-items:center;justify-items:center;justify-content:center;gap:.35rem .4rem;margin:1.2rem 0}
+  .xfer-scene.wide{grid-template-columns:auto auto auto auto auto auto auto}
+  .wireblock{border:2px solid var(--accent);border-radius:8px;background:var(--surface-soft);padding:.5rem 1.1rem;text-align:center;font-family:var(--font-sans);font-size:.78rem;color:var(--text);min-width:72px}
+  .wireblock .sub{display:block;font-family:var(--font-mono);font-size:.6rem;color:var(--text-dim);margin-top:.2rem}
+  /* vignettes */
+  .vignettes{margin:1.6rem 0}
+  .scene{display:flex;align-items:center;justify-content:center;gap:.45rem;flex-wrap:wrap;padding:.7rem .2rem}
+  .panel{border:1px solid var(--border);border-radius:10px;background:var(--surface);padding:.85rem 1rem .95rem;margin:1rem 0}
+  .panel .hd{display:flex;align-items:baseline;gap:.5rem}
+  .panel .num{display:inline-flex;align-items:center;justify-content:center;width:1.5rem;height:1.5rem;border-radius:50%;background:var(--accent);color:#fff;font-family:var(--font-sans);font-weight:700;font-size:.76rem;flex:0 0 auto}
+  .panel .ttl{font-family:var(--font-sans);font-weight:700;font-size:.92rem;color:var(--text)}
+  .panel .src{margin-left:auto;font-family:var(--font-mono);font-size:.64rem;color:var(--text-faint)}
+  .panel .cap{font-family:var(--font-sans);font-size:.8rem;color:var(--text-dim);margin:.35rem 0 0;line-height:1.45}
+  /* mapping scene */
+  .addrs{display:grid;grid-template-columns:1fr 1fr;align-items:center;justify-items:center;gap:.35rem 2rem;margin:1.5rem 0 1.2rem}
+  .addrs .memblock{grid-column:1/-1;border:2px dashed var(--border-bright);border-radius:8px;background:var(--surface-soft);padding:.5rem 1.1rem;text-align:center;font-family:var(--font-sans);font-size:.8rem;color:var(--text)}
+  .addrs .memblock .aformula{display:block;font-family:var(--font-mono);font-size:.66rem;color:var(--accent);margin-top:.2rem}
+  /* legends */
+  .legend{display:flex;flex-wrap:wrap;gap:.5rem 1.1rem;align-items:center;background:var(--surface-soft);border:1px solid var(--border);border-radius:8px;padding:.6rem .9rem;margin:0 0 1.3rem;font-family:var(--font-sans);font-size:.74rem;color:var(--text-dim)}
+  .lg-item{display:inline-flex;align-items:center;gap:.4rem}
+  .lg-chip{display:inline-block;width:18px;height:14px;border:2px solid var(--accent);border-radius:3px;background:var(--accent-soft);vertical-align:middle}
+  .lg-chip.ctrl{background:var(--surface-soft);border-color:var(--accent)}
+  .lg-chip.dev{background:var(--surface-soft);border-color:var(--border-bright)}
+  .lg-wire{display:inline-block;width:18px;height:14px;border:2px solid var(--accent);border-radius:3px;background:var(--surface-soft);vertical-align:middle}
+  .lg-trait{display:inline-block;width:18px;height:14px;border:2px dashed var(--border-bright);border-radius:3px;background:var(--surface-soft);vertical-align:middle}
+  .lg-arrow{display:inline-block;width:26px;border-top:2px solid var(--accent);position:relative;vertical-align:middle}
+  .lg-arrow.r::after{content:"";position:absolute;right:-1px;top:50%;transform:translateY(-50%);border-top:4px solid transparent;border-bottom:4px solid transparent;border-left:7px solid var(--accent)}
+  .lg-arrow.l::before{content:"";position:absolute;left:-1px;top:50%;transform:translateY(-50%);border-top:4px solid transparent;border-bottom:4px solid transparent;border-right:7px solid var(--accent)}
 </style></head>
 <body><article class="lesson"><header class="lesson-header">
 <div class="lesson-eyebrow">Module 7 · Real hardware · Lesson 7.05</div>
@@ -34,6 +89,15 @@
 
 <p>The LAN9512 has dozens of internal registers &mdash; MAC control, hardware config, EEPROM access. None is memory-mapped. The ARM reaches each one through a USB control transfer that carries a <em>vendor request</em>. <code>read_register()</code> issues a control READ (request type <code>0xc0</code>, request <code>READ_REGISTER</code> = <code>0xa1</code>) naming the register; the chip returns four bytes. <code>write_register()</code> issues a control WRITE (request type <code>0x40</code>, request <code>WRITE_REGISTER</code> = <code>0xa0</code>) carrying the four-byte value.</p>
 
+<div class="xfer-scene">
+  <div class="chip arm active" style="grid-column:1;grid-row:1"><div class="nm">ARM</div><div class="sub">CPU</div></div>
+  <div class="link write" style="grid-column:2;grid-row:1"><span class="lab">① ② setup + value</span><div class="ln"></div><span class="lab2">type 0x40 · req 0xa0</span></div>
+  <div class="chip ctrl" style="grid-column:3;grid-row:1"><div class="nm">DWC2</div><div class="sub">controller</div></div>
+  <div class="link write" style="grid-column:4;grid-row:1"><span class="lab">③ control WRITE</span><div class="ln"></div><span class="lab2">EP0 vendor request</span></div>
+  <div class="chip dev" style="grid-column:5;grid-row:1"><div class="nm">LAN9512</div><div class="sub">register file</div></div>
+</div>
+<p class="cap2">The ARM fills the setup packet (request type <code>0x40</code>, request <code>WRITE_REGISTER</code>=<code>0xa0</code>, the register index) and the four-byte value; the DWC2 performs the SETUP+DATA+STATUS transaction on EP0; the LAN9512 writes the register. <code>read_register</code> is the reverse &mdash; <code>control_read</code> with type <code>0xc0</code>, request <code>0xa1</code>, four bytes returned (<code>lan9512.rs:159, 173-175</code>).</p>
+
 <div class="snip">
 <div class="snip-meta"><span>targets/armv7/src/raspi2b/lan9512.rs</span> · <span class="what">register access over USB</span></div>
 <pre><code><span class="k">unsafe fn</span> <span class="f">read_register</span>(host: <span class="k">&amp;mut</span> <span class="t">Dwc2</span>, device: <span class="t">UsbDevice</span>, register: <span class="t">u16</span>) -&gt; <span class="t">Option</span>&lt;<span class="t">u32</span>&gt; {
@@ -56,6 +120,71 @@
 <h2>3. Bring-up: reset, MAC, enable</h2>
 
 <p><code>configure()</code> runs a fixed sequence of register writes that take the chip from reset to "transmit and receive enabled." In order: reset the MAC; read the factory MAC address out of the EEPROM; program it back into the address registers; set the hardware config (burst, offsets, flow control); then enable the MAC's transmitter and receiver and turn TX on. Each step is one <code>write_register</code> or <code>read_register</code> call &mdash; that is, one USB control transfer.</p>
+
+<div class="legend">
+  <span class="lg-item"><span class="lg-chip"></span> ARM (acts)</span>
+  <span class="lg-item"><span class="lg-chip ctrl"></span> DWC2 controller</span>
+  <span class="lg-item"><span class="lg-chip dev"></span> LAN9512</span>
+  <span class="lg-item"><span class="lg-arrow r"></span> write (→)</span>
+  <span class="lg-item"><span class="lg-arrow l"></span> read (←)</span>
+</div>
+<div class="vignettes">
+  <div class="panel">
+    <div class="hd"><span class="num">1</span><span class="ttl">Reset the MAC</span><span class="src">lan9512.rs:51</span></div>
+    <div class="scene">
+      <div class="chip arm active"><div class="nm">ARM</div><div class="sub">CPU</div></div>
+      <div class="link write"><span class="lab">HW_CFG | LRST</span><div class="ln"></div><span class="lab2">write 0x14 ← 0x08</span></div>
+      <div class="chip ctrl"><div class="nm">DWC2</div><div class="sub">controller</div></div>
+      <div class="link write"><span class="lab">EP0</span><div class="ln"></div><span class="lab2">control WRITE</span></div>
+      <div class="chip dev"><div class="nm">LAN9512</div><div class="sub">MAC in reset</div></div>
+    </div>
+    <p class="cap">ARM writes <code>HW_CFG</code> with <code>HW_CFG_LRST</code> to reset the MAC, then polls <code>HW_CFG</code> until the chip clears LRST (<code>lan9512.rs:51-52</code>).</p>
+  </div>
+  <div class="panel">
+    <div class="hd"><span class="num">2</span><span class="ttl">Read MAC from EEPROM</span><span class="src">lan9512.rs:54</span></div>
+    <div class="scene">
+      <div class="chip arm active"><div class="nm">ARM</div><div class="sub">CPU</div></div>
+      <div class="link read"><span class="lab">E2P_CMD / E2P_DATA</span><div class="ln"></div><span class="lab2">read 0x30 / 0x34</span></div>
+      <div class="chip ctrl"><div class="nm">DWC2</div><div class="sub">controller</div></div>
+      <div class="link read"><span class="lab">EP0</span><div class="ln"></div><span class="lab2">control READ</span></div>
+      <div class="chip dev"><div class="nm">LAN9512</div><div class="sub">MAC read</div></div>
+    </div>
+    <p class="cap">ARM reads the factory MAC one byte at a time through the <code>E2P_CMD</code>/<code>E2P_DATA</code> register pair, substituting a fixed locally-administered address if the EEPROM is absent (<code>lan9512.rs:54, 195-209</code>).</p>
+  </div>
+  <div class="panel">
+    <div class="hd"><span class="num">3</span><span class="ttl">Program the MAC</span><span class="src">lan9512.rs:60</span></div>
+    <div class="scene">
+      <div class="chip arm active"><div class="nm">ARM</div><div class="sub">CPU</div></div>
+      <div class="link write"><span class="lab">ADDRL / ADDRH</span><div class="ln"></div><span class="lab2">write 0x108 / 0x104</span></div>
+      <div class="chip ctrl"><div class="nm">DWC2</div><div class="sub">controller</div></div>
+      <div class="link write"><span class="lab">EP0</span><div class="ln"></div><span class="lab2">control WRITE</span></div>
+      <div class="chip dev"><div class="nm">LAN9512</div><div class="sub">MAC programmed</div></div>
+    </div>
+    <p class="cap">ARM writes the MAC low word to <code>ADDRL</code> and the high word to <code>ADDRH</code> (<code>lan9512.rs:60, 66</code>).</p>
+  </div>
+  <div class="panel">
+    <div class="hd"><span class="num">4</span><span class="ttl">Configure hardware</span><span class="src">lan9512.rs:75</span></div>
+    <div class="scene">
+      <div class="chip arm active"><div class="nm">ARM</div><div class="sub">CPU</div></div>
+      <div class="link write"><span class="lab">HW_CFG, BURST_CAP,</span><div class="ln"></div><span class="lab2">AFC_CFG, COE_CR</span></div>
+      <div class="chip ctrl"><div class="nm">DWC2</div><div class="sub">controller</div></div>
+      <div class="link write"><span class="lab">EP0</span><div class="ln"></div><span class="lab2">control WRITE</span></div>
+      <div class="chip dev"><div class="nm">LAN9512</div><div class="sub">HW configured</div></div>
+    </div>
+    <p class="cap">ARM sets <code>HW_CFG</code> <code>HW_CFG_BIR</code> and clears <code>HW_CFG_RXDOFF</code>, then writes <code>BURST_CAP</code>=0, <code>AFC_CFG</code>=default, <code>COE_CR</code>=0 (<code>lan9512.rs:75-80</code>).</p>
+  </div>
+  <div class="panel">
+    <div class="hd"><span class="num">5</span><span class="ttl">Enable TX and RX</span><span class="src">lan9512.rs:87</span></div>
+    <div class="scene">
+      <div class="chip arm active"><div class="nm">ARM</div><div class="sub">CPU</div></div>
+      <div class="link write"><span class="lab">MAC_CR | FDX|TX|RX</span><div class="ln"></div><span class="lab2">then TX_CFG_ON</span></div>
+      <div class="chip ctrl"><div class="nm">DWC2</div><div class="sub">controller</div></div>
+      <div class="link write"><span class="lab">EP0</span><div class="ln"></div><span class="lab2">control WRITE</span></div>
+      <div class="chip dev"><div class="nm">LAN9512</div><div class="sub">TX/RX on</div></div>
+    </div>
+    <p class="cap">ARM sets <code>MAC_CR</code> <code>FULL_DUPLEX|TX_ENABLE|RX_ENABLE</code> and writes <code>TX_CFG_ON</code>; the chip now accepts frames for sending and delivers received frames to the bulk IN endpoint (<code>lan9512.rs:87, 89</code>).</p>
+  </div>
+</div>
 
 <div class="snip">
 <div class="snip-meta"><span>targets/armv7/src/raspi2b/lan9512.rs</span> · <span class="what">configure, trimmed</span></div>
@@ -86,6 +215,34 @@
 
 <p>Once configured, frames cross the two bulk endpoints. <code>transmit()</code> prefixes the Ethernet frame with an eight-byte smsc95xx header &mdash; a command/length word followed by a length word &mdash; and sends the result with <code>bulk_out</code>. <code>receive()</code> reads bytes with <code>bulk_in</code>, then <code>read_rx_frame</code> strips the four-byte RX status header and the four-byte trailing frame-check sequence and returns the frame. The header layout is defined in <code>crates/kernel-core/src/net/smsc95xx.rs</code>, shared so the same framing parses on any target.</p>
 
+<div class="legend">
+  <span class="lg-item"><span class="lg-chip"></span> ARM</span>
+  <span class="lg-item"><span class="lg-chip ctrl"></span> DWC2 controller</span>
+  <span class="lg-item"><span class="lg-chip dev"></span> LAN9512</span>
+  <span class="lg-item"><span class="lg-wire"></span> Ethernet wire / network stack</span>
+  <span class="lg-item"><span class="lg-arrow r"></span> TX (→)</span>
+  <span class="lg-item"><span class="lg-arrow l"></span> RX (←)</span>
+</div>
+<div class="xfer-scene wide">
+  <div class="chip arm active" style="grid-column:1;grid-row:1"><div class="nm">ARM</div><div class="sub">CPU</div></div>
+  <div class="link write" style="grid-column:2;grid-row:1"><span class="lab">① ② build + bulk_out</span><div class="ln"></div><span class="lab2">8B hdr + frame</span></div>
+  <div class="chip ctrl" style="grid-column:3;grid-row:1"><div class="nm">DWC2</div><div class="sub">controller</div></div>
+  <div class="link write" style="grid-column:4;grid-row:1"><span class="lab">③ bulk OUT</span><div class="ln"></div><span class="lab2">EP · tx_pid</span></div>
+  <div class="chip dev" style="grid-column:5;grid-row:1"><div class="nm">LAN9512</div><div class="sub">Ethernet MAC</div></div>
+  <div class="link write" style="grid-column:6;grid-row:1"><span class="lab">④ frame</span><div class="ln"></div><span class="lab2">to wire</span></div>
+  <div class="wireblock" style="grid-column:7;grid-row:1">Ethernet wire<span class="sub">network stack</span></div>
+  <div class="vlink" style="grid-column:3;grid-row:2"><span class="vlab">buffer (DMA)</span><div class="varrow"></div></div>
+  <div class="chip mem" style="grid-column:3;grid-row:3"><div class="nm">frame buffer</div><div class="sub">stack array</div></div>
+  <div class="chip arm" style="grid-column:1;grid-row:4"><div class="nm">ARM</div><div class="sub">CPU</div></div>
+  <div class="link read" style="grid-column:2;grid-row:4"><span class="lab">⑦ read_rx_frame</span><div class="ln"></div><span class="lab2">strip 4B hdr + FCS</span></div>
+  <div class="chip ctrl" style="grid-column:3;grid-row:4"><div class="nm">DWC2</div><div class="sub">controller</div></div>
+  <div class="link read" style="grid-column:4;grid-row:4"><span class="lab">⑥ bulk IN</span><div class="ln"></div><span class="lab2">EP · rx_pid</span></div>
+  <div class="chip dev" style="grid-column:5;grid-row:4"><div class="nm">LAN9512</div><div class="sub">Ethernet MAC</div></div>
+  <div class="link read" style="grid-column:6;grid-row:4"><span class="lab">⑤ frame</span><div class="ln"></div><span class="lab2">from wire</span></div>
+  <div class="wireblock" style="grid-column:7;grid-row:4">Ethernet wire<span class="sub">network stack</span></div>
+</div>
+<p class="cap2">TX: the ARM prefixes the frame with the eight-byte smsc95xx TX header (command/length word + length word) and calls <code>bulk_out</code>; the DWC2 sends it to the LAN9512's bulk OUT endpoint, which puts the bytes on the wire. RX reverses: <code>bulk_in</code> reads framed bytes, then <code>read_rx_frame</code> strips the four-byte RX status header and the four-byte FCS. <code>write_tx_frame</code> <code>smsc95xx.rs:25-28</code>; <code>bulk_out</code> <code>lan9512.rs:126</code>; <code>bulk_in</code> <code>lan9512.rs:143</code>; <code>read_rx_frame</code> <code>smsc95xx.rs:32-45</code>.</p>
+
 <div class="snip">
 <div class="snip-meta"><span>crates/kernel-core/src/net/smsc95xx.rs</span> · <span class="what">TX header</span></div>
 <pre><code><span class="k">let</span> command_a = length <span class="k">as</span> <span class="t">u32</span> | TX_FIRST_SEGMENT | TX_LAST_SEGMENT;
@@ -113,6 +270,20 @@ out[TX_HEADER_LEN..total].<span class="f">copy_from_slice</span>(frame);        
 <h2>5. One trait, two chips</h2>
 
 <p>The network stack above this point (ARP, IP, UDP &mdash; modules 5 and 6) never names the LAN9512. It holds a <code>FrameDevice</code>: a trait with <code>mac_address()</code>, <code>transmit()</code>, and <code>receive()</code>. On the Pi, <code>UsbEthernet::Lan9512</code> supplies it; in QEMU, <code>UsbEthernet::Rndis</code> supplies it. <code>configure()</code> picks which by reading the vendor and product ID from enumeration.</p>
+
+<div class="legend">
+  <span class="lg-item"><span class="lg-chip"></span> LAN9512 (Pi 2B)</span>
+  <span class="lg-item"><span class="lg-chip dev"></span> RNDIS (QEMU)</span>
+  <span class="lg-item"><span class="lg-trait"></span> FrameDevice trait (shared)</span>
+</div>
+<div class="addrs">
+  <div class="chip lan"><div class="nm">LAN9512</div><div class="sub">Pi 2B · smsc95xx</div></div>
+  <div class="chip rndis"><div class="nm">RNDIS</div><div class="sub">QEMU dongle</div></div>
+  <div class="vlink"><span class="vlab">impl FrameDevice</span><div class="varrow"></div></div>
+  <div class="vlink"><span class="vlab">impl FrameDevice</span><div class="varrow"></div></div>
+  <div class="memblock">FrameDevice trait<span class="aformula">mac_address() · transmit() · receive()</span></div>
+</div>
+<p class="cap2">On the Pi, <code>UsbEthernet::Lan9512</code> supplies the trait; in QEMU, <code>UsbEthernet::Rndis</code> supplies it (<code>ethernet.rs:7-24</code>). <code>configure()</code> picks which by reading the vendor and product ID from enumeration (<code>ethernet.rs:13-19</code>). The ARP/IP/UDP stack above the trait holds <code>FrameDevice</code> and is the same code on both machines.</p>
 
 <div class="snip">
 <div class="snip-meta"><span>targets/armv7/src/raspi2b/ethernet.rs</span> · <span class="what">dispatch by vendor/product ID</span></div>
