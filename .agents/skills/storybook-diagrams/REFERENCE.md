@@ -22,6 +22,7 @@ Every scene pattern uses these. Paste them once into the lesson's `<style>`.
 .chip.ctrl{background:var(--surface-soft)}
 .chip.dev{background:var(--surface-soft);border-color:var(--border-bright)}
 .chip.mem{background:var(--surface-soft);border-color:var(--border-bright);border-style:dashed}
+.chip.active{outline:2px solid var(--accent);outline-offset:3px}
 .link{display:flex;flex-direction:column;align-items:center;min-width:84px}
 .link .lab{font-family:var(--font-mono);font-size:.64rem;color:var(--accent);white-space:nowrap;margin-bottom:.18rem}
 .link .ln{width:48px;height:0;border-top:2px solid var(--border-bright);position:relative}
@@ -52,7 +53,7 @@ Chip variants give each recurring actor a distinct identity (`.arm` accent-soft,
 
 ## Pattern 1 — Vignettes
 
-Recurring chips; per panel one **state** of the system. Use when the teaching point is *how the state changes between steps*. A legend names the bar/line styles.
+Recurring chips; per panel one **state** of the system. Use when the teaching point is *how the state changes between steps*. Mark the chip that acts in each panel with `.active` (an accent outline) so the reader sees who does what. A legend names the bar/line styles and the chip actors.
 
 **CSS** (shared primitives + this)
 
@@ -69,6 +70,9 @@ Recurring chips; per panel one **state** of the system. Use when the teaching po
 .legend{display:flex;flex-wrap:wrap;gap:.5rem 1.1rem;align-items:center;background:var(--surface-soft);border:1px solid var(--border);border-radius:8px;padding:.6rem .9rem;margin:0 0 1.3rem;font-family:var(--font-sans);font-size:.74rem;color:var(--text-dim)}
 .lg-item{display:inline-flex;align-items:center;gap:.4rem}
 .lg-bar{width:22px;border-radius:1px;display:inline-block}
+.lg-chip{display:inline-block;width:18px;height:14px;border:2px solid var(--accent);border-radius:3px;background:var(--accent-soft);vertical-align:middle}
+.lg-chip.ctrl{background:var(--surface-soft);border-color:var(--accent)}
+.lg-chip.dev{background:var(--surface-soft);border-color:var(--border-bright)}
 ```
 
 The state widget is lesson-specific. Rule: **height = one axis, color/texture = the other** — never color a low line as "active". Example (USB wire levels):
@@ -87,6 +91,9 @@ The state widget is lesson-specific. Rule: **height = one axis, color/texture = 
 
 ```html
 <div class="legend">
+  <span class="lg-item"><span class="lg-chip"></span> ARM</span>
+  <span class="lg-item"><span class="lg-chip ctrl"></span> controller</span>
+  <span class="lg-item"><span class="lg-chip dev"></span> device</span>
   <span class="lg-item"><span class="lg-bar" style="height:16px;background:var(--accent)"></span> high</span>
   <span class="lg-item"><span class="lg-bar" style="height:7px;background:var(--border-bright)"></span> low — idle</span>
   <span class="lg-item"><span class="lg-bar" style="height:7px;background:repeating-linear-gradient(45deg,var(--text-dim) 0 3px,var(--border) 3px 6px)"></span> low — driven</span>
@@ -206,4 +213,5 @@ Two (or more) chips that each represent a **viewpoint**, both reaching the **sam
 - [ ] Every step/flow/panel cites a source line you have opened and confirmed holds the named register/value.
 - [ ] Re-read each caption against its colors: if a caption says "low", no low thing is colored as "active". One color axis, enforced.
 - [ ] A legend is present whenever a bar/line style is not self-evident.
+- [ ] Re-read each caption's technical claims (bit numbers, address semantics, what a constant does) and verify them against the code — a caption that mis-describes a constant is a defect.
 - [ ] The lead-in prose and the code snippet are both still present; the diagram sits between them.
