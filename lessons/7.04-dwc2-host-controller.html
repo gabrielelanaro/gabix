@@ -1,0 +1,316 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>7.04 The DWC2 host controller</title><link rel="stylesheet" href="../assets/lesson.css"><style>
+  .snip{margin:1.1rem 0}
+  .snip-meta{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:.82em;color:#666;margin-bottom:.25rem}
+  .snip-meta .what{color:#444;font-family:inherit}
+  .snip pre{margin:0}
+  table.map{border-collapse:collapse;width:100%;margin:1rem 0;font-size:.94em}
+  table.map th,table.map td{border:1px solid #ddd;padding:.5rem .6rem;text-align:left;vertical-align:top}
+  table.map th{background:#f0ede6;font-weight:600}
+  table.map td:first-child{font-weight:600}
+  .callout{background:#f6f4ee;border-left:3px solid #c9b88a;padding:.7rem 1rem;margin:1.2rem 0;font-size:.95em}
+  .win{background:#eef5ee;border-left:3px solid #5a9e5a;padding:.7rem 1rem;margin:1.4rem 0}
+  code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:.9em;background:#f3f1ea;padding:.05em .35em;border-radius:3px}
+  /* port-handshake vignettes: recurring chips, per-step wire state */
+  .vignettes{margin:1.6rem 0}
+  .scene{display:flex;align-items:center;justify-content:center;gap:.45rem;flex-wrap:wrap;padding:.7rem .2rem}
+  .stub{width:14px;height:0;border-top:2px solid var(--border-bright);align-self:center}
+  .chip{position:relative;display:inline-flex;flex-direction:column;align-items:center;justify-content:center;min-width:56px;min-height:46px;padding:.32rem .5rem;border:2px solid var(--accent);border-radius:7px;background:var(--surface);font-family:var(--font-sans)}
+  .chip .nm{font-weight:700;font-size:.76rem;color:var(--text);line-height:1.1;text-align:center}
+  .chip .sub{font-size:.6rem;color:var(--text-dim);text-align:center;margin-top:.08rem}
+  .chip::before,.chip::after{content:"";position:absolute;left:5px;right:5px;height:4px;background:repeating-linear-gradient(90deg,var(--border-bright) 0 2px,transparent 2px 6px)}
+  .chip::before{top:-5px}.chip::after{bottom:-5px}
+  .chip.arm{background:var(--accent-soft)}
+  .chip.ctrl{background:var(--surface-soft)}
+  .chip.dev{background:var(--surface-soft);border-color:var(--border-bright)}
+  .chip.active{outline:2px solid var(--accent);outline-offset:3px}
+  .regbus{display:flex;flex-direction:column;align-items:center;min-width:80px}
+  .regbus .lab{font-family:var(--font-mono);font-size:.64rem;color:var(--accent);white-space:nowrap;margin-bottom:.18rem}
+  .regbus .ln{width:48px;height:0;border-top:2px solid var(--border-bright);position:relative}
+  .regbus.write .ln{border-top-color:var(--accent)}
+  .regbus.write .ln::after{content:"";position:absolute;right:-1px;top:50%;transform:translateY(-50%);border-top:4px solid transparent;border-bottom:4px solid transparent;border-left:7px solid var(--accent)}
+  .regbus.read .ln{border-top-color:var(--accent)}
+  .regbus.read .ln::before{content:"";position:absolute;left:-1px;top:50%;transform:translateY(-50%);border-top:4px solid transparent;border-bottom:4px solid transparent;border-right:7px solid var(--accent)}
+  .regbus.read .lab{color:var(--accent)}
+  .regbus.idle .ln{border-top-style:dashed}.regbus.idle .lab{color:var(--text-faint)}
+  .lines{display:flex;flex-direction:column;gap:.14rem;align-items:center;padding:0 .2rem}
+  .lvl{display:flex;align-items:flex-end;gap:.22rem}
+  .lvl .lb{font-family:var(--font-mono);font-size:.56rem;color:var(--text-dim);width:1.5rem;text-align:right}
+  .lvl .bar{width:30px;height:8px;background:var(--border-bright);border-radius:1px}
+  .lvl.hi .bar{height:22px;background:var(--accent)}
+  .lvl.se0 .bar{height:8px;background:repeating-linear-gradient(45deg,var(--text-dim) 0 3px,var(--border) 3px 6px)}
+  .panel{border:1px solid var(--border);border-radius:10px;background:var(--surface);padding:.85rem 1rem .95rem;margin:1rem 0}
+  .panel .hd{display:flex;align-items:baseline;gap:.5rem;margin-bottom:.1rem}
+  .panel .num{display:inline-flex;align-items:center;justify-content:center;width:1.5rem;height:1.5rem;border-radius:50%;background:var(--accent);color:#fff;font-family:var(--font-sans);font-weight:700;font-size:.76rem;flex:0 0 auto}
+  .panel .ttl{font-family:var(--font-sans);font-weight:700;font-size:.92rem;color:var(--text)}
+  .panel .src{margin-left:auto;font-family:var(--font-mono);font-size:.64rem;color:var(--text-faint)}
+  .panel .cap{font-family:var(--font-sans);font-size:.8rem;color:var(--text-dim);margin:.35rem 0 0;line-height:1.45}
+  .legend{display:flex;flex-wrap:wrap;gap:.5rem 1.1rem;align-items:center;background:var(--surface-soft);border:1px solid var(--border);border-radius:8px;padding:.6rem .9rem;margin:0 0 1.3rem;font-family:var(--font-sans);font-size:.74rem;color:var(--text-dim)}
+  .lg-item{display:inline-flex;align-items:center;gap:.4rem}
+  .lg-bar{width:22px;border-radius:1px;display:inline-block}
+  .lg-bar.hi{height:16px;background:var(--accent)}
+  .lg-bar.lo{height:7px;background:var(--border-bright)}
+  .lg-bar.se0{height:7px;background:repeating-linear-gradient(45deg,var(--text-dim) 0 3px,var(--border) 3px 6px)}
+  /* transfer pipeline (section 3) */
+  .flow{display:flex;align-items:stretch;gap:0;overflow-x:auto;margin:1.6rem 0}
+  .stage{flex:1 1 0;min-width:150px;border:1px solid var(--border);border-radius:8px;background:var(--surface);padding:.65rem .75rem;display:flex;flex-direction:column;gap:.35rem}
+  .stage .sh{display:flex;align-items:center;gap:.4rem}
+  .stage .sn{display:inline-flex;align-items:center;justify-content:center;width:1.35rem;height:1.35rem;border-radius:50%;background:var(--accent);color:#fff;font-family:var(--font-sans);font-weight:700;font-size:.66rem;flex:0 0 auto}
+  .stage .st{font-family:var(--font-sans);font-weight:700;font-size:.84rem;color:var(--text)}
+  .stage .sb{font-family:var(--font-sans);font-size:.75rem;color:var(--text-dim);line-height:1.45}
+  .stage .who{margin-top:auto;align-self:flex-start;font-family:var(--font-mono);font-size:.6rem;padding:.1rem .4rem;border-radius:3px;background:var(--surface-soft);color:var(--text-dim);border:1px solid var(--border)}
+  .stage .who.arm{color:var(--accent);border-color:var(--accent)}
+  .stage .who.ctrl{color:var(--text);border-color:var(--border-bright)}
+  .farrow{align-self:center;color:var(--accent);font-size:1.25rem;padding:0 .3rem;font-family:var(--font-sans)}
+  /* address-space transform (section 4) */
+  .aspace{margin:1.5rem 0}
+  .atrans{display:flex;align-items:center;justify-content:center;gap:.6rem;flex-wrap:wrap}
+  .abox{border:1px solid var(--border-bright);border-radius:6px;background:var(--surface);padding:.5rem .8rem;text-align:center}
+  .abox .alab{font-family:var(--font-sans);font-size:.68rem;color:var(--text-dim);margin-bottom:.15rem}
+  .abox .aval{font-family:var(--font-mono);font-size:.82rem;color:var(--accent);font-weight:600}
+  .aformula{font-family:var(--font-mono);font-size:.66rem;color:var(--text-dim);text-align:center;line-height:1.5;max-width:120px}
+  .aarrow{color:var(--accent);font-size:1.15rem;font-family:var(--font-sans)}
+  .cap2{font-family:var(--font-sans);font-size:.78rem;color:var(--text-dim);margin:.6rem auto 0;line-height:1.45;text-align:center;max-width:480px}
+</style></head>
+<body><article class="lesson"><header class="lesson-header">
+<div class="lesson-eyebrow">Module 7 · Real hardware · Lesson 7.04</div>
+<h1 class="lesson-title">The DWC2 host controller</h1>
+<p class="lesson-subtitle">The chip on the Pi that drives the USB wire — and the four registers the ARM fills in to make it send a transfer.</p>
+</header><div class="content">
+
+<p>The ARM has no USB pins of its own. It cannot put a SETUP token on the USB wire, read a device's descriptors, or assign that device an address. On the Pi 2B a controller called the DWC2 does all of that — it is built into the Pi's main chip (the BCM2836). In USB terms this role is "the host". This lesson explains that controller: how one transfer turns into four register writes, how the controller moves the bytes itself, and why the result comes back through a poll rather than an interrupt.</p>
+
+<p>Every desktop PC has the equivalent: its own host-controller chip — the <em>xHCI</em>, eXtensible Host Controller Interface — reached through the PCI bus. The names and the register layouts differ; the arrangement is the same. The CPU cannot drive USB pins directly, so it programs a controller that can, and that controller performs each transfer on the wire using its own access to memory (called DMA — defined in section 4). The DWC2 is the Pi's instance of that arrangement.</p>
+
+<h2>1. The controller drives the wire; the ARM decides what to send</h2>
+
+<p>The DWC2's registers occupy a block of memory addresses starting at <code>0x3f98_0000</code>. The ARM reaches them by ordinary load and store instructions — memory-mapped I/O, the same mechanism as the mailbox registers in lesson 7.03 and the interrupt controller in 7.01. The split of labor between the two is fixed: the ARM decides <em>which</em> transfer (which device, which endpoint, how many bytes, in or out); the DWC2 performs that transfer electrically on the USB cable.</p>
+
+<p>A <em>host controller</em> is the chip (or the reusable hardware block, an "IP block") that drives a bus the CPU cannot drive itself. The DWC2 is Synopsys's DesignWare USB 2.0 host controller IP block, embedded inside the BCM2836. The CPU programs it; it owns the USB port.</p>
+
+<h2>2. A channel: four registers that describe one transfer</h2>
+
+<p>The DWC2 exposes <em>host channels</em>. A channel is a set of four registers that together describe one transfer to one endpoint (the endpoint is the device-side target from lesson 7.02). gabix uses a single channel — channel 0 — and runs one transfer at a time. The four registers of a channel are:</p>
+<ul>
+<li><strong>HCCHAR</strong> (channel characteristics) — the target: the device's address, the endpoint number, the direction (in or out), the endpoint type (control or bulk), the max packet size, and a single <em>ENABLE</em> bit.</li>
+<li><strong>HCTSIZ</strong> (transfer size) — the payload: how many bytes to move, how many packets that is, and the <em>PID</em> (the SETUP or DATA1 tag from lesson 7.02's control transfer).</li>
+<li><strong>HCDMA</strong> (DMA address) — where the buffer lives in memory, given as a bus address.</li>
+<li><strong>HCINT</strong> (interrupt status) — the result: TRANSFER_COMPLETE, NAK (the device was not ready), STALL (the device refused), or an error.</li>
+</ul>
+<p>The first three registers describe the transfer. Setting the ENABLE bit in HCCHAR starts it.</p>
+
+<h2>3. The transfer, end to end</h2>
+
+<p>The <code>transfer()</code> function in <code>usb.rs</code> fills those four registers, sets ENABLE, and waits for the result. Trimmed to the essential writes:</p>
+
+<div class="snip">
+<div class="snip-meta"><span>targets/armv7/src/raspi2b/usb.rs</span> · <span class="what">transfer, trimmed</span></div>
+<pre><code>write32(CHANNEL_BASE + HCINT, <span class="t">u32</span>::MAX);            <span class="c">// clear old completion flags</span>
+write32(CHANNEL_BASE + HCDMA, dma_address(buffer)); <span class="c">// the buffer's BUS address (section 4)</span>
+write32(CHANNEL_BASE + HCTSIZ,                      <span class="c">// how much to move</span>
+    length <span class="k">as</span> <span class="t">u32</span> | (packet_count <span class="k">as</span> <span class="t">u32</span>) &lt;&lt; <span class="n">19</span> | pid &lt;&lt; <span class="n">29</span>);
+write32(CHANNEL_BASE + HCCHAR,                      <span class="c">// the target, then GO</span>
+    CHANNEL_ENABLE | (address <span class="k">as</span> <span class="t">u32</span>) &lt;&lt; <span class="n">22</span> | endpoint_type
+    | (endpoint <span class="k">as</span> <span class="t">u32</span>) &lt;&lt; <span class="n">11</span> | max_packet_size <span class="k">as</span> <span class="t">u32</span>);
+
+wait_until(|| read32(CHANNEL_BASE + HCINT) &amp; DONE != <span class="n">0</span>)?; <span class="c">// poll until it finishes</span>
+<span class="k">let</span> interrupt = read32(CHANNEL_BASE + HCINT);
+<span class="k">if</span> interrupt &amp; (STALL | ERRORS) != <span class="n">0</span> || interrupt &amp; TRANSFER_COMPLETE == <span class="n">0</span> {
+    <span class="k">return</span> <span class="t">None</span>;                                           <span class="c">// device refused or errored</span>
+}
+<span class="k">let</span> remaining = read32(CHANNEL_BASE + HCTSIZ) &amp; <span class="n">0x7ffff</span>;  <span class="c">// bytes not moved</span>
+<span class="t">Some</span>(length.saturating_sub(remaining))</code></pre>
+</div>
+
+<p>That code is four phases. The ARM owns the ends &mdash; it describes the transfer, then reads the result &mdash; and the DWC2 owns the middle, the byte-moving on the wire that the ARM never touches:</p>
+
+<div class="flow">
+  <div class="stage">
+    <div class="sh"><span class="sn">1</span><span class="st">Describe</span></div>
+    <div class="sb">Three writes lay out the transfer: <code>HCINT</code> (clear old flags), <code>HCDMA</code> (the buffer's bus address), <code>HCTSIZ</code> (bytes + packet count + PID).</div>
+    <div class="who arm">ARM</div>
+  </div>
+  <div class="farrow">&rarr;</div>
+  <div class="stage">
+    <div class="sh"><span class="sn">2</span><span class="st">Go</span></div>
+    <div class="sb">The fourth write, <code>HCCHAR</code>, holds the target (device, endpoint, max packet size) with the <code>ENABLE</code> bit set &mdash; arming and firing in one write.</div>
+    <div class="who arm">ARM &rarr; DWC2</div>
+  </div>
+  <div class="farrow">&rarr;</div>
+  <div class="stage">
+    <div class="sh"><span class="sn">3</span><span class="st">Execute</span></div>
+    <div class="sb">The DWC2 owns it now. It moves the bytes by DMA between memory and the buffer, and drives the SETUP/IN/OUT transaction on the wire to the device.</div>
+    <div class="who ctrl">DWC2</div>
+  </div>
+  <div class="farrow">&rarr;</div>
+  <div class="stage">
+    <div class="sh"><span class="sn">4</span><span class="st">Report</span></div>
+    <div class="sb">The ARM polls <code>HCINT</code> for the result &mdash; TRANSFER_COMPLETE, NAK, or STALL &mdash; and reads <code>HCTSIZ</code> again for how many bytes remain.</div>
+    <div class="who arm">ARM</div>
+  </div>
+</div>
+
+<p>When a bit appears, the ARM reads HCINT to see which one. TRANSFER_COMPLETE means the transfer moved bytes; the ARM reads HCTSIZ again to learn how many bytes <em>remain</em>, in case the device sent a short packet (fewer bytes than requested). NAK means the device was not ready; the full driver loops and retries. STALL or an error bit means the transfer failed. (This listing drops the NAK-retry loop and the outer retry limit for brevity; the real <code>transfer()</code> has both.)</p>
+
+<h2>4. DMA: the controller moves the bytes itself</h2>
+
+<p>The ARM writes the buffer's <em>address</em> into HCDMA, and the DWC2 fetches or stores the bytes itself — so the CPU never copies USB data through a register. That is DMA — Direct Memory Access, a controller that reads and writes memory on its own, without the CPU moving each byte. For an OUT transfer the DWC2 reads the SETUP or DATA buffer and sends it down the wire; for an IN transfer it writes the received bytes into the buffer for the ARM to read afterward.</p>
+
+<p>This is the same bus-address problem from lesson 7.03. The CPU reaches the buffer at one address; the DWC2's DMA engine reaches memory over its own bus (the <em>AHB</em>, ARM's AMBA High-performance Bus, the DWC2's path to main memory), at a different address. gabix converts the pointer with a mask and a fixed offset:</p>
+
+<div class="snip">
+<div class="snip-meta"><span>targets/armv7/src/raspi2b/usb.rs</span> · <span class="what">dma_address</span></div>
+<pre><code><span class="k">fn</span> dma_address(buffer: *<span class="k">const</span> <span class="t">u8</span>) -&gt; <span class="t">u32</span> {
+    (buffer <span class="k">as</span> <span class="t">u32</span> &amp; <span class="n">0x3fff_ffff</span>) | <span class="n">0xc000_0000</span>   <span class="c">// CPU address → BUS address</span>
+}</code></pre>
+</div>
+
+<div class="aspace">
+  <div class="atrans">
+    <div class="abox"><div class="alab">CPU address (the pointer)</div><div class="aval">0x0008_1234</div></div>
+    <div class="aformula"><code>&amp; 0x3fff_ffff</code><br><code>| 0xc000_0000</code></div>
+    <span class="aarrow">&rarr;</span>
+    <div class="abox"><div class="alab">bus address (DMA)</div><div class="aval">0xc008_1234</div></div>
+  </div>
+  <p class="cap2">The low 30 bits are identical &mdash; only the top two bits change, set to <code>11</code> (the <code>0xc000_0000</code> bus alias). CPU and DWC2 reach the same bytes; the addresses differ because each reaches memory over a different bus.</p>
+</div>
+
+<p>Because DMA bypasses the CPU, the buffers must be aligned to a cache line: the 64-byte-aligned <code>DmaBuffer</code> that holds the SETUP packet and the DATA region. The alignment keeps each transfer buffer inside one cache line. On the Pi the DWC2's DMA bypasses the CPU cache, so a buffer must not straddle two lines or share one with unrelated data — a single cache line is the granularity at which cached and uncached memory diverge.</p>
+
+<h2>5. Initialization: power, reset, the port handshake</h2>
+
+<p>Before any transfer, the controller must be initialized. <code>initialize()</code> does, in order:</p>
+<ol>
+<li><strong>Power it on</strong> — through the property mailbox from lesson 7.03 (<code>mailbox::power_on_usb()</code>). The ARM cannot do this by itself; that was the point of the mailbox lesson.</li>
+<li><strong>Configure the physical interface</strong> — the <em>PHY</em>, the analog circuit that puts bits onto the USB pins — for the Pi's wiring, and force the controller into host mode rather than device mode.</li>
+<li><strong>Soft-reset the core</strong> and reset its internal FIFOs (the small on-chip buffers the controller uses for packet data).</li>
+<li><strong>Enable its DMA access</strong> to main memory.</li>
+<li><strong>The port handshake</strong> — the part that initializes the device that was just plugged in.</li>
+</ol>
+
+<p>The port handshake is where the host initializes a device electrically. The ARM powers the port (turns on the socket's power), waits, then sets the PORT_RESET bit for 50 milliseconds. PORT_RESET drives the USB reset signal (SE0 — both data lines held low), which forces the device to reset and re-initialize. The ARM clears the reset bit and waits for PORT_ENABLE: the device has come back up and is ready. The enumeration that follows — GET_DESCRIPTOR, SET_ADDRESS, GET_DESCRIPTOR again — is exactly the sequence from lesson 7.02, and every step of it is one call to <code>transfer()</code>.</p>
+
+<p>The same three parts recur in every panel below &mdash; the ARM, the DWC2 controller, and the device &mdash; joined by two links: the register (the ARM's only handle on the controller) and the USB wire (which only the controller drives). The small bar group on the wire shows the live level of VBUS, D+, and D&minus; for that step &mdash; the legend below names the bar styles:</p>
+
+<div class="legend">
+  <span class="lg-item"><span class="lg-bar hi"></span> line high</span>
+  <span class="lg-item"><span class="lg-bar lo"></span> line low &mdash; idle</span>
+  <span class="lg-item"><span class="lg-bar se0"></span> line low &mdash; driven (SE0)</span>
+</div>
+
+<div class="vignettes">
+  <div class="panel">
+    <div class="hd"><span class="num">1</span><span class="ttl">Power the port</span><span class="src">usb.rs:115 &middot; steps 1&ndash;2</span></div>
+    <div class="scene">
+      <div class="chip arm active"><div class="nm">ARM</div><div class="sub">CPU</div></div>
+      <div class="regbus write"><span class="lab">PORT_POWER</span><div class="ln"></div></div>
+      <div class="chip ctrl"><div class="nm">DWC2</div><div class="sub">controller</div></div>
+      <div class="stub"></div>
+      <div class="lines">
+        <div class="lvl hi"><span class="lb">VBUS</span><span class="bar"></span></div>
+        <div class="lvl lo"><span class="lb">D+</span><span class="bar"></span></div>
+        <div class="lvl lo"><span class="lb">D&minus;</span><span class="bar"></span></div>
+      </div>
+      <div class="stub"></div>
+      <div class="chip dev"><div class="nm">device</div><div class="sub">LAN9512</div></div>
+    </div>
+    <p class="cap">The ARM writes <code>PORT_POWER</code> into HPRT. The controller switches 5&nbsp;V onto VBUS; the device powers up. The ARM then waits 100&nbsp;ms for the rail to settle.</p>
+  </div>
+
+  <div class="panel">
+    <div class="hd"><span class="num">2</span><span class="ttl">Assert reset &mdash; drive SE0</span><span class="src">usb.rs:123 &middot; steps 3&ndash;4</span></div>
+    <div class="scene">
+      <div class="chip arm active"><div class="nm">ARM</div><div class="sub">CPU</div></div>
+      <div class="regbus write"><span class="lab">PORT_RESET</span><div class="ln"></div></div>
+      <div class="chip ctrl"><div class="nm">DWC2</div><div class="sub">controller</div></div>
+      <div class="stub"></div>
+      <div class="lines">
+        <div class="lvl hi"><span class="lb">VBUS</span><span class="bar"></span></div>
+        <div class="lvl se0"><span class="lb">D+</span><span class="bar"></span></div>
+        <div class="lvl se0"><span class="lb">D&minus;</span><span class="bar"></span></div>
+      </div>
+      <div class="stub"></div>
+      <div class="chip dev"><div class="nm">device</div><div class="sub">LAN9512</div></div>
+    </div>
+    <p class="cap">The ARM writes <code>PORT_RESET</code>. The controller drives both data lines low &mdash; D+ and D&minus; at 0&nbsp;V &mdash; the USB reset signal, SE0. It holds SE0 for 50&nbsp;ms; the device resets its logic.</p>
+  </div>
+
+  <div class="panel">
+    <div class="hd"><span class="num">3</span><span class="ttl">Release reset</span><span class="src">usb.rs:125 &middot; steps 5&ndash;6</span></div>
+    <div class="scene">
+      <div class="chip arm active"><div class="nm">ARM</div><div class="sub">CPU</div></div>
+      <div class="regbus write"><span class="lab">clear RESET</span><div class="ln"></div></div>
+      <div class="chip ctrl"><div class="nm">DWC2</div><div class="sub">controller</div></div>
+      <div class="stub"></div>
+      <div class="lines">
+        <div class="lvl hi"><span class="lb">VBUS</span><span class="bar"></span></div>
+        <div class="lvl lo"><span class="lb">D+</span><span class="bar"></span></div>
+        <div class="lvl lo"><span class="lb">D&minus;</span><span class="bar"></span></div>
+      </div>
+      <div class="stub"></div>
+      <div class="chip dev"><div class="nm">device</div><div class="sub">LAN9512</div></div>
+    </div>
+    <p class="cap">The ARM clears <code>PORT_RESET</code>. The controller stops driving SE0; the data lines go idle. The device re-initializes from a clean state. A 20&nbsp;ms settle follows.</p>
+  </div>
+
+  <div class="panel">
+    <div class="hd"><span class="num">4</span><span class="ttl">Device ready</span><span class="src">usb.rs:127 &middot; step 7</span></div>
+    <div class="scene">
+      <div class="chip arm"><div class="nm">ARM</div><div class="sub">CPU</div></div>
+      <div class="regbus read"><span class="lab">PORT_ENABLE</span><div class="ln"></div></div>
+      <div class="chip ctrl"><div class="nm">DWC2</div><div class="sub">controller</div></div>
+      <div class="stub"></div>
+      <div class="lines">
+        <div class="lvl hi"><span class="lb">VBUS</span><span class="bar"></span></div>
+        <div class="lvl hi"><span class="lb">D+</span><span class="bar"></span></div>
+        <div class="lvl lo"><span class="lb">D&minus;</span><span class="bar"></span></div>
+      </div>
+      <div class="stub"></div>
+      <div class="chip dev active"><div class="nm">device</div><div class="sub">LAN9512</div></div>
+    </div>
+    <p class="cap">The device, back up, pulls D+ high to announce a full-speed device. The controller sets <code>PORT_ENABLE</code>; the ARM reads the bit. The port is enabled and the device now answers transfers.</p>
+  </div>
+</div>
+
+<p>The four panels above are electrical bring-up &mdash; no packet has crossed the wire yet. The enumeration that follows (<code>GET_DESCRIPTOR</code>, <code>SET_ADDRESS</code>, <code>GET_DESCRIPTOR</code> again, from lesson 7.02) sits on top of this foundation, and every request in it is one call to <code>transfer()</code> &mdash; the four-register write sequence from section&nbsp;3.</p>
+
+<div class="snip">
+<div class="snip-meta"><span>targets/armv7/src/raspi2b/usb.rs</span> · <span class="what">initialize, the port handshake</span></div>
+<pre><code>write32(HPRT, port_value() | PORT_POWER);                       <span class="c">// turn the port on</span>
+delay_us(<span class="n">100_000</span>);
+write32(HPRT, port_value() | PORT_POWER | PORT_RESET);          <span class="c">// hold reset (SE0)</span>
+delay_us(<span class="n">50_000</span>);
+write32(HPRT, port_value() &amp; !PORT_RESET | PORT_POWER);         <span class="c">// release reset</span>
+wait_until(|| read32(HPRT) &amp; PORT_ENABLE != <span class="n">0</span>)?;                <span class="c">// device came back up</span></code></pre>
+</div>
+
+<h2>6. Why it polls, again</h2>
+
+<p>The DWC2 can raise an interrupt when a channel completes. gabix spin-polls HCINT in a bounded loop instead of wiring the channel-completion interrupt — the same poll-everything pattern as the mailbox, the SD card, and the timer. For a controller that runs one transfer at a time on a kernel that has no other work yet, polling is enough. Wiring the completion interrupt is the same unfinished piece carried over from lessons 7.01 and 7.02; it returns in the next lessons, when the LAN9512 — the chip that adds a USB hub and an Ethernet controller to the Pi — moves real Ethernet traffic over the USB port.</p>
+
+<h2>One channel, four registers</h2>
+
+<table class="map">
+<thead><tr><th>Register</th><th>What it holds</th></tr></thead>
+<tbody>
+<tr><td>HCCHAR</td><td>The target: device address, endpoint number, direction, endpoint type, max packet size — plus the ENABLE bit that starts the transfer.</td></tr>
+<tr><td>HCTSIZ</td><td>The payload: byte count, packet count, and PID (SETUP or DATA1).</td></tr>
+<tr><td>HCDMA</td><td>The buffer's bus address — where DMA reads from or writes to.</td></tr>
+<tr><td>HCINT</td><td>The result: TRANSFER_COMPLETE, NAK, STALL, or error.</td></tr>
+</tbody>
+</table>
+
+<div class="win">
+<strong>What you should be able to do after this lesson.</strong> Say what the DWC2 is and why the ARM needs it. Describe a transfer as four register writes: HCCHAR (target + ENABLE), HCTSIZ (size + PID), HCDMA (the buffer's bus address), HCINT (the result). Explain how the controller uses DMA to move the bytes without the CPU copying them, why the buffer needs a bus address and cache-line alignment, and how the port-reset handshake initializes a device before enumeration begins.
+</div>
+
+<div class="callout">
+<strong>Primary source.</strong> The <a href="https://www.synopsys.com/dw/docdir/dwc/dwc_hs_otg_databook_3.10a.pdf">Synopsys DWC2 databook</a> is the register reference (host-channel registers, HCFG, HPRT). The BCM2836 ARM Peripherals manual documents the Pi's address mapping and the USB block at <code>0x3f98_0000</code>. gabix's full driver is <code>targets/armv7/src/raspi2b/usb.rs</code>.
+</div>
+
+<p style="margin-top:1.6rem;color:#555">If anything here is unclear, ask. The agent can re-explain the four-write transfer step by step, trace a real control transfer (the GET_DESCRIPTOR that opens enumeration), or go deeper on DMA and the bus-address conversion.</p>
+
+</div><footer class="lesson-footer">
+<div class="footer-block"><h4>Sources</h4><p style="margin:0"><a href="https://www.synopsys.com/dw/docdir/dwc/dwc_hs_otg_databook_3.10a.pdf">Synopsys: DWC2 HS OTG databook</a> · BCM2836 ARM Peripherals manual · gabix: <code>targets/armv7/src/raspi2b/usb.rs</code></p></div>
+<nav class="lesson-nav"><a href="7.03-pi-mailboxes.html">← 7.03 The Pi's two mailboxes</a><a href="../reference/modules.html#m7">Module 7 ↑</a></nav>
+</footer></article></body></html>
