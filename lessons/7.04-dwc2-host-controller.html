@@ -11,6 +11,65 @@
   .callout{background:#f6f4ee;border-left:3px solid #c9b88a;padding:.7rem 1rem;margin:1.2rem 0;font-size:.95em}
   .win{background:#eef5ee;border-left:3px solid #5a9e5a;padding:.7rem 1rem;margin:1.4rem 0}
   code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:.9em;background:#f3f1ea;padding:.05em .35em;border-radius:3px}
+
+  /* Pattern 2 — pipeline (section 3: the transfer handoff) */
+  .flow{display:flex;align-items:stretch;gap:0;overflow-x:auto;margin:1.6rem 0}
+  .flow .stage{flex:1 1 0;min-width:150px;border:1px solid var(--border);border-radius:8px;background:var(--surface);padding:.65rem .75rem;display:flex;flex-direction:column;gap:.35rem}
+  .flow .stage .sh{display:flex;align-items:center;gap:.4rem}
+  .flow .stage .sn{display:inline-flex;align-items:center;justify-content:center;width:1.35rem;height:1.35rem;border-radius:50%;background:var(--accent);color:#fff;font-family:var(--font-sans);font-weight:700;font-size:.66rem;flex:0 0 auto}
+  .flow .stage .st{font-family:var(--font-sans);font-weight:700;font-size:.84rem;color:var(--text)}
+  .flow .stage .sb{font-family:var(--font-sans);font-size:.75rem;color:var(--text-dim);line-height:1.45}
+  .flow .stage .sb code{font-size:.78em}
+  .flow .stage .who{margin-top:auto;align-self:flex-start;font-family:var(--font-mono);font-size:.6rem;padding:.1rem .4rem;border-radius:3px;background:var(--surface-soft);color:var(--text-dim);border:1px solid var(--border)}
+  .flow .farrow{align-self:center;color:var(--accent);font-size:1.25rem;padding:0 .3rem}
+
+  /* Pattern 4 — transform (section 4: CPU -> bus address) */
+  .aspace{margin:1.5rem 0}
+  .aspace .atrans{display:flex;align-items:center;justify-content:center;gap:.6rem;flex-wrap:wrap}
+  .aspace .abox{border:1px solid var(--border-bright);border-radius:6px;background:var(--surface);padding:.5rem .8rem;text-align:center}
+  .aspace .abox .alab{font-family:var(--font-sans);font-size:.68rem;color:var(--text-dim);margin-bottom:.15rem}
+  .aspace .abox .aval{font-family:var(--font-mono);font-size:.82rem;color:var(--accent);font-weight:600}
+  .aspace .aformula{font-family:var(--font-mono);font-size:.66rem;color:var(--text-dim);text-align:center;line-height:1.5;max-width:120px}
+  .aspace .aformula code{background:transparent;padding:0;color:var(--text-dim)}
+  .aspace .aarrow{color:var(--accent);font-size:1.15rem}
+  .aspace .cap2{font-family:var(--font-sans);font-size:.78rem;color:var(--text-dim);margin:.6rem auto 0;line-height:1.45;text-align:center;max-width:520px}
+  .aspace .cap2 code{font-size:.82em}
+
+  /* Pattern 1 — vignettes (section 5: the port handshake wire states) */
+  .vignettes{margin:1.6rem 0}
+  .vignettes .scene{display:flex;align-items:center;justify-content:center;gap:.45rem;flex-wrap:wrap;padding:.7rem .2rem}
+  .vignettes .stub{width:14px;height:0;border-top:2px solid var(--border-bright);align-self:center}
+  .vignettes .chip{position:relative;display:inline-flex;flex-direction:column;align-items:center;justify-content:center;min-width:56px;min-height:46px;padding:.32rem .5rem;border:2px solid var(--accent);border-radius:7px;background:var(--surface);font-family:var(--font-sans)}
+  .vignettes .chip .nm{font-weight:700;font-size:.76rem;color:var(--text);text-align:center}
+  .vignettes .chip .sub{font-size:.6rem;color:var(--text-dim);text-align:center}
+  .vignettes .chip::before,.vignettes .chip::after{content:"";position:absolute;left:5px;right:5px;height:4px;background:repeating-linear-gradient(90deg,var(--border-bright) 0 2px,transparent 2px 6px)}
+  .vignettes .chip::before{top:-5px}.vignettes .chip::after{bottom:-5px}
+  .vignettes .chip.active{outline:2px solid var(--accent);outline-offset:3px}
+  .vignettes .link{display:flex;flex-direction:column;align-items:center;min-width:88px}
+  .vignettes .link .lab{font-family:var(--font-mono);font-size:.62rem;color:var(--accent);white-space:nowrap;margin-bottom:.18rem}
+  .vignettes .link .ln{width:56px;height:0;border-top:2px solid var(--border-bright);position:relative}
+  .vignettes .link.write .ln{border-top-color:var(--accent)}
+  .vignettes .link.write .ln::after{content:"";position:absolute;right:-1px;top:50%;transform:translateY(-50%);border-top:4px solid transparent;border-bottom:4px solid transparent;border-left:7px solid var(--accent)}
+  .vignettes .link.read .ln{border-top-color:var(--accent)}
+  .vignettes .link.read .ln::before{content:"";position:absolute;left:-1px;top:50%;transform:translateY(-50%);border-top:4px solid transparent;border-bottom:4px solid transparent;border-right:7px solid var(--accent)}
+  .vignettes .panel{border:1px solid var(--border);border-radius:10px;background:var(--surface);padding:.85rem 1rem .95rem;margin:1rem 0}
+  .vignettes .panel .hd{display:flex;align-items:baseline;gap:.5rem}
+  .vignettes .panel .num{display:inline-flex;align-items:center;justify-content:center;width:1.5rem;height:1.5rem;border-radius:50%;background:var(--accent);color:#fff;font-family:var(--font-sans);font-weight:700;font-size:.76rem;flex:0 0 auto}
+  .vignettes .panel .ttl{font-family:var(--font-sans);font-weight:700;font-size:.92rem;color:var(--text)}
+  .vignettes .panel .src{margin-left:auto;font-family:var(--font-mono);font-size:.64rem;color:var(--text-faint)}
+  .vignettes .panel .cap{font-family:var(--font-sans);font-size:.8rem;color:var(--text-dim);margin:.35rem 0 0;line-height:1.45}
+  .vignettes .panel .cap code{font-size:.82em}
+  .vignettes .lines{display:flex;flex-direction:column;gap:.18rem;align-items:center}
+  .vignettes .lvl{display:flex;align-items:flex-end;gap:.22rem}
+  .vignettes .lvl .lb{font-family:var(--font-mono);font-size:.56rem;color:var(--text-dim);width:1.7rem;text-align:right}
+  .vignettes .lvl .bar{width:30px;height:8px;background:var(--border-bright);border-radius:1px}
+  .vignettes .lvl.hi .bar{height:24px;background:var(--accent)}
+  .vignettes .lvl.lo .bar{height:8px;background:var(--border-bright)}
+  .vignettes .lvl.se0 .bar{height:8px;background:repeating-linear-gradient(45deg,var(--text-dim) 0 3px,var(--border) 3px 6px)}
+  .vignettes-legend{display:flex;flex-wrap:wrap;gap:.5rem 1.1rem;align-items:center;background:var(--surface-soft);border:1px solid var(--border);border-radius:8px;padding:.6rem .9rem;margin:0 0 1.3rem;font-family:var(--font-sans);font-size:.74rem;color:var(--text-dim)}
+  .vignettes-legend .lg-item{display:inline-flex;align-items:center;gap:.4rem}
+  .vignettes-legend .lg-bar{width:22px;border-radius:1px;display:inline-block}
+  .vignettes-legend .lg-chip{display:inline-block;width:18px;height:14px;border:2px solid var(--accent);border-radius:4px;background:transparent}
 </style></head>
 <body><article class="lesson"><header class="lesson-header">
 <div class="lesson-eyebrow">Module 7 · Real hardware · Lesson 7.04</div>
@@ -43,6 +102,32 @@
 
 <p>The <code>transfer()</code> function in <code>usb.rs</code> fills those four registers, sets ENABLE, and waits for the result. Trimmed to the essential writes:</p>
 
+<div class="flow">
+  <div class="stage">
+    <div class="sh"><span class="sn">1</span><span class="st">Describe</span></div>
+    <div class="sb">Write the channel's three setup registers: clear <code>HCINT</code>, set <code>HCDMA</code> to the buffer's bus address, set <code>HCTSIZ</code> to byte count | packet count | PID.</div>
+    <div class="who">ARM · usb.rs:519,528,529</div>
+  </div>
+  <div class="farrow">&rarr;</div>
+  <div class="stage">
+    <div class="sh"><span class="sn">2</span><span class="st">GO</span></div>
+    <div class="sb">Write <code>HCCHAR</code> with <code>CHANNEL_ENABLE</code> set — the target device, endpoint, direction, and the bit that starts the transfer.</div>
+    <div class="who">ARM · usb.rs:538,61</div>
+  </div>
+  <div class="farrow">&rarr;</div>
+  <div class="stage">
+    <div class="sh"><span class="sn">3</span><span class="st">Execute</span></div>
+    <div class="sb">The DWC2 owns the USB port from here: it runs the transfer on the wire and moves the bytes between the buffer and the device over DMA, with no ARM involvement.</div>
+    <div class="who">DWC2 · triggered usb.rs:538</div>
+  </div>
+  <div class="farrow">&rarr;</div>
+  <div class="stage">
+    <div class="sh"><span class="sn">4</span><span class="st">Read result</span></div>
+    <div class="sb">Poll <code>HCINT</code> until a completion bit appears, read which one it is, then read <code>HCTSIZ</code> again for the bytes that remain (a short packet).</div>
+    <div class="who">ARM · usb.rs:547,556,565</div>
+  </div>
+</div>
+
 <div class="snip">
 <div class="snip-meta"><span>targets/armv7/src/raspi2b/usb.rs</span> · <span class="what">transfer, trimmed</span></div>
 <pre><code>write32(CHANNEL_BASE + HCINT, <span class="t">u32</span>::MAX);            <span class="c">// clear old completion flags</span>
@@ -72,6 +157,16 @@ wait_until(|| read32(CHANNEL_BASE + HCINT) &amp; DONE != <span class="n">0</span
 
 <p>This is the same bus-address problem from lesson 7.03. The CPU reaches the buffer at one address; the DWC2's DMA engine reaches memory over its own bus (the <em>AHB</em>, ARM's AMBA High-performance Bus, the DWC2's path to main memory), at a different address. gabix converts the pointer with a mask and a fixed offset:</p>
 
+<div class="aspace">
+  <div class="atrans">
+    <div class="abox"><div class="alab">CPU address</div><div class="aval">0x0008_1234</div></div>
+    <div class="aformula"><code>& 0x3fff_ffff</code><br><code>| 0xc000_0000</code></div>
+    <span class="aarrow">&rarr;</span>
+    <div class="abox"><div class="alab">bus address</div><div class="aval">0xc008_1234</div></div>
+  </div>
+  <p class="cap2">The mask <code>0x3fff_ffff</code> keeps the low 30 bits — the offset into the Pi's memory. The OR with <code>0xc000_0000</code> replaces the top bits with the bus base the DWC2's DMA engine reaches. The offset is unchanged; only the prefix moves from the CPU's view to the AHB's view. <span style="font-family:var(--font-mono);font-size:.7rem">usb.rs:633</span></p>
+</div>
+
 <div class="snip">
 <div class="snip-meta"><span>targets/armv7/src/raspi2b/usb.rs</span> · <span class="what">dma_address</span></div>
 <pre><code><span class="k">fn</span> dma_address(buffer: *<span class="k">const</span> <span class="t">u8</span>) -&gt; <span class="t">u32</span> {
@@ -93,6 +188,83 @@ wait_until(|| read32(CHANNEL_BASE + HCINT) &amp; DONE != <span class="n">0</span
 </ol>
 
 <p>The port handshake is where the host initializes a device electrically. The ARM powers the port (turns on the socket's power), waits, then sets the PORT_RESET bit for 50 milliseconds. PORT_RESET drives the USB reset signal (SE0 — both data lines held low), which forces the device to reset and re-initialize. The ARM clears the reset bit and waits for PORT_ENABLE: the device has come back up and is ready. The enumeration that follows — GET_DESCRIPTOR, SET_ADDRESS, GET_DESCRIPTOR again — is exactly the sequence from lesson 7.02, and every step of it is one call to <code>transfer()</code>.</p>
+
+<div class="vignettes-legend">
+  <span class="lg-item"><span class="lg-bar" style="height:16px;background:var(--accent)"></span> line high</span>
+  <span class="lg-item"><span class="lg-bar" style="height:7px;background:var(--border-bright)"></span> line low — idle</span>
+  <span class="lg-item"><span class="lg-bar" style="height:7px;background:repeating-linear-gradient(45deg,var(--text-dim) 0 3px,var(--border) 3px 6px)"></span> line low — driven (SE0)</span>
+  <span class="lg-item"><span class="lg-chip"></span> active actor</span>
+</div>
+<div class="vignettes">
+  <div class="panel">
+    <div class="hd"><span class="num">1</span><span class="ttl">Power the port</span><span class="src">usb.rs:115,122</span></div>
+    <div class="scene">
+      <div class="chip active"><div class="nm">ARM</div><div class="sub">CPU</div></div>
+      <div class="link write"><span class="lab">HPRT | PORT_POWER</span><div class="ln"></div></div>
+      <div class="chip"><div class="nm">DWC2</div><div class="sub">controller</div></div>
+      <div class="stub"></div>
+      <div class="lines">
+        <div class="lvl hi"><span class="lb">VBUS</span><span class="bar"></span></div>
+        <div class="lvl lo"><span class="lb">D+</span><span class="bar"></span></div>
+        <div class="lvl lo"><span class="lb">D-</span><span class="bar"></span></div>
+      </div>
+      <div class="stub"></div>
+      <div class="chip"><div class="nm">device</div><div class="sub">LAN9512</div></div>
+    </div>
+    <p class="cap">The ARM sets <code>PORT_POWER</code> in HPRT to turn the socket's power on, then waits 100 ms for it to settle. VBUS rises; the data lines sit idle low.</p>
+  </div>
+  <div class="panel">
+    <div class="hd"><span class="num">2</span><span class="ttl">Hold reset (SE0)</span><span class="src">usb.rs:123,124</span></div>
+    <div class="scene">
+      <div class="chip active"><div class="nm">ARM</div><div class="sub">CPU</div></div>
+      <div class="link write"><span class="lab">HPRT | PORT_RESET</span><div class="ln"></div></div>
+      <div class="chip"><div class="nm">DWC2</div><div class="sub">controller</div></div>
+      <div class="stub"></div>
+      <div class="lines">
+        <div class="lvl hi"><span class="lb">VBUS</span><span class="bar"></span></div>
+        <div class="lvl se0"><span class="lb">D+</span><span class="bar"></span></div>
+        <div class="lvl se0"><span class="lb">D-</span><span class="bar"></span></div>
+      </div>
+      <div class="stub"></div>
+      <div class="chip"><div class="nm">device</div><div class="sub">LAN9512</div></div>
+    </div>
+    <p class="cap">The ARM sets <code>PORT_RESET</code> and holds it for 50 ms. The controller drives both data lines low — the SE0 reset signal — which forces the device to reset.</p>
+  </div>
+  <div class="panel">
+    <div class="hd"><span class="num">3</span><span class="ttl">Release reset</span><span class="src">usb.rs:125,126</span></div>
+    <div class="scene">
+      <div class="chip active"><div class="nm">ARM</div><div class="sub">CPU</div></div>
+      <div class="link write"><span class="lab">HPRT & !PORT_RESET</span><div class="ln"></div></div>
+      <div class="chip"><div class="nm">DWC2</div><div class="sub">controller</div></div>
+      <div class="stub"></div>
+      <div class="lines">
+        <div class="lvl hi"><span class="lb">VBUS</span><span class="bar"></span></div>
+        <div class="lvl lo"><span class="lb">D+</span><span class="bar"></span></div>
+        <div class="lvl lo"><span class="lb">D-</span><span class="bar"></span></div>
+      </div>
+      <div class="stub"></div>
+      <div class="chip"><div class="nm">device</div><div class="sub">LAN9512</div></div>
+    </div>
+    <p class="cap">The ARM clears <code>PORT_RESET</code> and waits 20 ms. The controller stops driving the lines; they fall back to idle low.</p>
+  </div>
+  <div class="panel">
+    <div class="hd"><span class="num">4</span><span class="ttl">Device raises D+ → PORT_ENABLE</span><span class="src">usb.rs:127</span></div>
+    <div class="scene">
+      <div class="chip"><div class="nm">ARM</div><div class="sub">CPU</div></div>
+      <div class="link read"><span class="lab">read PORT_ENABLE</span><div class="ln"></div></div>
+      <div class="chip"><div class="nm">DWC2</div><div class="sub">controller</div></div>
+      <div class="stub"></div>
+      <div class="lines">
+        <div class="lvl hi"><span class="lb">VBUS</span><span class="bar"></span></div>
+        <div class="lvl hi"><span class="lb">D+</span><span class="bar"></span></div>
+        <div class="lvl lo"><span class="lb">D-</span><span class="bar"></span></div>
+      </div>
+      <div class="stub"></div>
+      <div class="chip active"><div class="nm">device</div><div class="sub">LAN9512</div></div>
+    </div>
+    <p class="cap">The device pulls D+ high to signal a full-speed connection. The controller sets <code>PORT_ENABLE</code>; the ARM polls HPRT until that bit appears. The port is ready.</p>
+  </div>
+</div>
 
 <div class="snip">
 <div class="snip-meta"><span>targets/armv7/src/raspi2b/usb.rs</span> · <span class="what">initialize, the port handshake</span></div>
