@@ -2,140 +2,146 @@
 
 Copy-adapt these. Each pattern has ready CSS (paste into the lesson's inline `<style>`, scoped with the given prefix) and an HTML skeleton. All CSS uses the lesson's variables so dark mode just works.
 
-Golden reference: `lessons/7.04-dwc2-host-controller.html` (tag `golden-704-diagrams`) builds all four.
+Golden reference: `lessons/7.04-dwc2-host-controller.html` (tag `golden-704-scenes`) builds the vignette, flow-scene, and mapping-scene patterns.
 
-## Decision aid
+## The one rule
 
-| Content shape | Pattern |
-|---|---|
-| 3–6 steps, each a distinct **state** of the same parts (a line goes high, a signal is asserted) | **Vignettes** |
-| A **handoff** — one actor programs, another executes, first reads back | **Pipeline** |
-| 6+ **time-ordered** steps across 2–3 lanes (kernel/device, T0..Tn) | **Timeline** |
-| One **value mapped to another** (an address transform, an encode) | **Transform** |
+A storybook diagram is a **scene of recurring chips** — the components (CPU, controller, device, memory) drawn as little ICs that stay identical wherever they appear, connected by labeled flow arrows. Text-card lists and bare boxes are not scenes; do not emit them. Put the actors on stage as chips, connect them, and let color carry one axis only.
 
----
+## Shared primitives
 
-## Pattern 1 — Vignettes
-
-Recurring component chips; per panel one **state** of the system (e.g. wire levels). Use when the teaching point is *how the state changes between steps*. A legend names the bar/line styles.
-
-**CSS**
+Every scene pattern uses these. Paste them once into the lesson's `<style>`.
 
 ```css
-.vignettes{margin:1.6rem 0}
-.scene{display:flex;align-items:center;justify-content:center;gap:.45rem;flex-wrap:wrap;padding:.7rem .2rem}
-.stub{width:14px;height:0;border-top:2px solid var(--border-bright);align-self:center}
 .chip{position:relative;display:inline-flex;flex-direction:column;align-items:center;justify-content:center;min-width:56px;min-height:46px;padding:.32rem .5rem;border:2px solid var(--accent);border-radius:7px;background:var(--surface);font-family:var(--font-sans)}
 .chip .nm{font-weight:700;font-size:.76rem;color:var(--text);text-align:center}
 .chip .sub{font-size:.6rem;color:var(--text-dim);text-align:center}
-/* pin ticks above and below the chip body */
 .chip::before,.chip::after{content:"";position:absolute;left:5px;right:5px;height:4px;background:repeating-linear-gradient(90deg,var(--border-bright) 0 2px,transparent 2px 6px)}
 .chip::before{top:-5px}.chip::after{bottom:-5px}
-.chip.active{outline:2px solid var(--accent);outline-offset:3px}
-/* give each recurring actor a distinct fill/border so the reader tracks it across panels */
 .chip.arm{background:var(--accent-soft);border-color:var(--accent)}
 .chip.ctrl{background:var(--surface-soft)}
 .chip.dev{background:var(--surface-soft);border-color:var(--border-bright)}
-/* link between two chips: labeled arrow, direction by class */
-.link{display:flex;flex-direction:column;align-items:center;min-width:80px}
+.chip.mem{background:var(--surface-soft);border-color:var(--border-bright);border-style:dashed}
+.link{display:flex;flex-direction:column;align-items:center;min-width:84px}
 .link .lab{font-family:var(--font-mono);font-size:.64rem;color:var(--accent);white-space:nowrap;margin-bottom:.18rem}
 .link .ln{width:48px;height:0;border-top:2px solid var(--border-bright);position:relative}
 .link.write .ln{border-top-color:var(--accent)}
 .link.write .ln::after{content:"";position:absolute;right:-1px;top:50%;transform:translateY(-50%);border-top:4px solid transparent;border-bottom:4px solid transparent;border-left:7px solid var(--accent)}
 .link.read .ln{border-top-color:var(--accent)}
 .link.read .ln::before{content:"";position:absolute;left:-1px;top:50%;transform:translateY(-50%);border-top:4px solid transparent;border-bottom:4px solid transparent;border-right:7px solid var(--accent)}
+.link .lab2{font-family:var(--font-mono);font-size:.56rem;color:var(--text-dim);white-space:nowrap;margin-top:.18rem}
+.vlink{display:flex;flex-direction:column;align-items:center;justify-content:center}
+.vlink .vlab{font-family:var(--font-mono);font-size:.6rem;color:var(--accent);margin-bottom:.1rem;white-space:nowrap}
+.vlink .varrow{width:0;height:16px;border-left:2px solid var(--accent);position:relative}
+.vlink .varrow::after{content:"";position:absolute;left:50%;bottom:-1px;transform:translateX(-50%);border-left:4px solid transparent;border-right:4px solid transparent;border-top:6px solid var(--accent)}
+.cap2{font-family:var(--font-sans);font-size:.78rem;color:var(--text-dim);margin:.6rem auto 0;line-height:1.45;text-align:center;max-width:480px}
+```
+
+Chip variants give each recurring actor a distinct identity (`.arm` accent-soft, `.ctrl` surface-soft, `.dev` dim border, `.mem` dashed). `.link.write` arrow points right; `.link.read` points left. `.vlink` is a downward branch. `.lab2` is a second, dimmer line under a link.
+
+## Decision aid
+
+| Content shape | Pattern |
+|---|---|
+| 3–6 steps, each a distinct **state** of the same parts (a line goes high, a signal is asserted) | **Vignettes** |
+| A **handoff / topology** — one actor programs, another executes, first reads back; several parts exchange data | **Flow scene** |
+| 6+ **time-ordered** steps across 2–3 lanes (kernel/device, T0..Tn) | **Timeline** |
+| One thing seen **two ways** (two addresses for one buffer, two views of one structure) | **Mapping scene** |
+
+---
+
+## Pattern 1 — Vignettes
+
+Recurring chips; per panel one **state** of the system. Use when the teaching point is *how the state changes between steps*. A legend names the bar/line styles.
+
+**CSS** (shared primitives + this)
+
+```css
+.vignettes{margin:1.6rem 0}
+.scene{display:flex;align-items:center;justify-content:center;gap:.45rem;flex-wrap:wrap;padding:.7rem .2rem}
+.stub{width:14px;height:0;border-top:2px solid var(--border-bright);align-self:center}
 .panel{border:1px solid var(--border);border-radius:10px;background:var(--surface);padding:.85rem 1rem .95rem;margin:1rem 0}
 .panel .hd{display:flex;align-items:baseline;gap:.5rem}
 .panel .num{display:inline-flex;align-items:center;justify-content:center;width:1.5rem;height:1.5rem;border-radius:50%;background:var(--accent);color:#fff;font-family:var(--font-sans);font-weight:700;font-size:.76rem;flex:0 0 auto}
 .panel .ttl{font-family:var(--font-sans);font-weight:700;font-size:.92rem;color:var(--text)}
 .panel .src{margin-left:auto;font-family:var(--font-mono);font-size:.64rem;color:var(--text-faint)}
 .panel .cap{font-family:var(--font-sans);font-size:.8rem;color:var(--text-dim);margin:.35rem 0 0;line-height:1.45}
+.legend{display:flex;flex-wrap:wrap;gap:.5rem 1.1rem;align-items:center;background:var(--surface-soft);border:1px solid var(--border);border-radius:8px;padding:.6rem .9rem;margin:0 0 1.3rem;font-family:var(--font-sans);font-size:.74rem;color:var(--text-dim)}
+.lg-item{display:inline-flex;align-items:center;gap:.4rem}
+.lg-bar{width:22px;border-radius:1px;display:inline-block}
 ```
 
-The "state widget" depends on the lesson (wire levels, register bits, …). The rule: **height = one axis (e.g. level), color/texture = the other (e.g. activity)**. Example for USB wire levels:
+The state widget is lesson-specific. Rule: **height = one axis, color/texture = the other** — never color a low line as "active". Example (USB wire levels):
 
 ```css
 .lines{display:flex;flex-direction:column;gap:.14rem;align-items:center}
 .lvl{display:flex;align-items:flex-end;gap:.22rem}
 .lvl .lb{font-family:var(--font-mono);font-size:.56rem;color:var(--text-dim);width:1.5rem;text-align:right}
 .lvl .bar{width:30px;height:8px;background:var(--border-bright);border-radius:1px}
-.lvl.hi .bar{height:22px;background:var(--accent)}                 /* tall  = high  */
-.lvl.lo .bar{height:8px}                                           /* short = low, idle */
-.lvl.se0 .bar{height:8px;background:repeating-linear-gradient(45deg,var(--text-dim) 0 3px,var(--border) 3px 6px)} /* low but driven */
-.legend{display:flex;flex-wrap:wrap;gap:.5rem 1.1rem;align-items:center;background:var(--surface-soft);border:1px solid var(--border);border-radius:8px;padding:.6rem .9rem;margin:0 0 1.3rem;font-family:var(--font-sans);font-size:.74rem;color:var(--text-dim)}
-.lg-item{display:inline-flex;align-items:center;gap:.4rem}
-.lg-bar{width:22px;border-radius:1px;display:inline-block}
+.lvl.hi .bar{height:22px;background:var(--accent)}
+.lvl.lo .bar{height:8px}
+.lvl.se0 .bar{height:8px;background:repeating-linear-gradient(45deg,var(--text-dim) 0 3px,var(--border) 3px 6px)}
 ```
 
 **Skeleton**
 
 ```html
 <div class="legend">
-  <span class="lg-item"><span class="lg-bar" style="height:16px;background:var(--accent)"></span> line high</span>
-  <span class="lg-item"><span class="lg-bar" style="height:7px;background:var(--border-bright)"></span> line low — idle</span>
-  <span class="lg-item"><span class="lg-bar" style="height:7px;background:repeating-linear-gradient(45deg,var(--text-dim) 0 3px,var(--border) 3px 6px)"></span> line low — driven</span>
+  <span class="lg-item"><span class="lg-bar" style="height:16px;background:var(--accent)"></span> high</span>
+  <span class="lg-item"><span class="lg-bar" style="height:7px;background:var(--border-bright)"></span> low — idle</span>
+  <span class="lg-item"><span class="lg-bar" style="height:7px;background:repeating-linear-gradient(45deg,var(--text-dim) 0 3px,var(--border) 3px 6px)"></span> low — driven</span>
 </div>
 <div class="vignettes">
   <div class="panel">
-    <div class="hd"><span class="num">1</span><span class="ttl">Power the port</span><span class="src">usb.rs:115</span></div>
+    <div class="hd"><span class="num">1</span><span class="ttl">Title</span><span class="src">file.rs:NN</span></div>
     <div class="scene">
       <div class="chip arm active"><div class="nm">ARM</div><div class="sub">CPU</div></div>
-      <div class="link write"><span class="lab">PORT_POWER</span><div class="ln"></div></div>
+      <div class="link write"><span class="lab">VALUE</span><div class="ln"></div></div>
       <div class="chip ctrl"><div class="nm">DWC2</div><div class="sub">controller</div></div>
       <div class="stub"></div>
-      <div class="lines"><!-- one .lvl per line; class hi | lo | se0 -->
-        <div class="lvl hi"><span class="lb">VBUS</span><span class="bar"></span></div>
-      </div>
+      <div class="lines"><div class="lvl hi"><span class="lb">L1</span><span class="bar"></span></div></div>
       <div class="stub"></div>
-      <div class="chip dev"><div class="nm">device</div><div class="sub">LAN9512</div></div>
+      <div class="chip dev"><div class="nm">device</div><div class="sub">target</div></div>
     </div>
-    <p class="cap">One sentence: who acts, what register/value, what changes electrically. Cite the line.</p>
+    <p class="cap">One sentence: who acts, what value, what changes. Cite the line.</p>
   </div>
-  <!-- more .panel per state -->
 </div>
 ```
 
 ---
 
-## Pattern 2 — Pipeline
+## Pattern 2 — Flow scene
 
-A left-to-right row of stages, each showing **who acts**. Use when the point is the handoff (one actor fills registers, another executes, the first reads back).
+The actors as **chips in a spatial scene**, connected by labeled, **numbered** flow arrows. Use for a handoff or a topology (one actor programs, another executes, first reads back; several parts exchange data). Put every actor on stage as a chip; branch secondary actors (memory, a bus) off the spine with vertical links; number the flows in sequence.
 
-**CSS**
+**CSS** (shared primitives + this grid)
 
 ```css
-.flow{display:flex;align-items:stretch;gap:0;overflow-x:auto;margin:1.6rem 0}
-.stage{flex:1 1 0;min-width:150px;border:1px solid var(--border);border-radius:8px;background:var(--surface);padding:.65rem .75rem;display:flex;flex-direction:column;gap:.35rem}
-.stage .sh{display:flex;align-items:center;gap:.4rem}
-.stage .sn{display:inline-flex;align-items:center;justify-content:center;width:1.35rem;height:1.35rem;border-radius:50%;background:var(--accent);color:#fff;font-family:var(--font-sans);font-weight:700;font-size:.66rem;flex:0 0 auto}
-.stage .st{font-family:var(--font-sans);font-weight:700;font-size:.84rem;color:var(--text)}
-.stage .sb{font-family:var(--font-sans);font-size:.75rem;color:var(--text-dim);line-height:1.45}
-.stage .who{margin-top:auto;align-self:flex-start;font-family:var(--font-mono);font-size:.6rem;padding:.1rem .4rem;border-radius:3px;background:var(--surface-soft);color:var(--text-dim);border:1px solid var(--border)}
-/* color the tag by who acts, so the ARM->DWC2 handoff is a visible switch, not just words */
-.stage .who.arm{color:var(--accent);border-color:var(--accent)}
-.stage .who.ctrl{color:var(--text);border-color:var(--border-bright)}
-.farrow{align-self:center;color:var(--accent);font-size:1.25rem;padding:0 .3rem}
+.xfer-scene{display:grid;grid-template-columns:auto auto auto auto auto;align-items:center;justify-items:center;justify-content:center;gap:.35rem .4rem}
 ```
 
-**Skeleton**
+**Skeleton** — ARM describes + fires (①②), DWC2 executes (③ wire to device, ③ DMA to memory), ARM reads back (④):
 
 ```html
-<div class="flow">
-  <div class="stage">
-    <div class="sh"><span class="sn">1</span><span class="st">Describe</span></div>
-    <div class="sb">What the actor does — name the registers/values.</div>
-    <div class="who arm">ARM</div>
-  </div>
-  <div class="farrow">&rarr;</div>
-  <!-- more .stage + .farrow; put the actor name in .who -->
+<div class="xfer-scene">
+  <div class="chip arm" style="grid-column:1;grid-row:1"><div class="nm">ARM</div><div class="sub">CPU</div></div>
+  <div class="link write" style="grid-column:2;grid-row:1"><span class="lab">① ② describe + GO</span><div class="ln"></div><span class="lab2">registers + ENABLE</span></div>
+  <div class="chip ctrl" style="grid-column:3;grid-row:1"><div class="nm">DWC2</div><div class="sub">controller</div></div>
+  <div class="link write" style="grid-column:4;grid-row:1"><span class="lab">③ wire</span><div class="ln"></div><span class="lab2">tokens</span></div>
+  <div class="chip dev" style="grid-column:5;grid-row:1"><div class="nm">device</div><div class="sub">endpoint</div></div>
+  <div class="vlink" style="grid-column:3;grid-row:2"><span class="vlab">③ DMA</span><div class="varrow"></div></div>
+  <div class="chip mem" style="grid-column:3;grid-row:3"><div class="nm">memory</div><div class="sub">buffer</div></div>
 </div>
+<p class="cap2">④ The result returns to the ARM. Cite a source line per numbered flow.</p>
 ```
+
+Place chips with `grid-column`/`grid-row` so secondary actors branch cleanly under their parent. Never collapse this into text cards — the chips on stage are the point.
 
 ---
 
 ## Pattern 3 — Timeline
 
-A vertical list of time-stamped steps, color-banded by **lane** (e.g. kernel vs device). Use for longer flows (6+ steps) where each step is a moment, not a full system state.
+A vertical list of time-stamped steps, color-banded by **lane** (e.g. kernel vs device). Use for longer flows (6+ steps) where each step is a moment, not a full system state. (This pattern is the exception to "chips on stage": a long log of moments reads better as a lane-colored list than as dozens of chips.)
 
 **CSS**
 
@@ -143,13 +149,15 @@ A vertical list of time-stamped steps, color-banded by **lane** (e.g. kernel vs 
 .tl{margin:1.6rem 0;border-left:2px solid var(--border-bright);padding-left:1rem}
 .tl-row{position:relative;padding:.5rem .8rem;margin:.4rem 0;border-radius:6px;background:var(--surface);border:1px solid var(--border)}
 .tl-row::before{content:"";position:absolute;left:-1.32rem;top:.85rem;width:.6rem;height:.6rem;border-radius:50%;background:var(--accent)}
-.tl-row.lane-b .tl-tag{color:var(--text-dim)}                 /* lane B accent via tag color */
+.tl-row.lane-b::before{background:var(--border-bright)}
 .tl-t{font-family:var(--font-mono);font-size:.66rem;color:var(--accent);font-weight:700}
+.tl-row.lane-b .tl-t{color:var(--text-dim)}
 .tl-tag{font-family:var(--font-mono);font-size:.62rem;color:var(--accent);float:right}
+.tl-row.lane-b .tl-tag{color:var(--text-dim)}
 .tl-row p{margin:.2rem 0 0;font-family:var(--font-sans);font-size:.8rem;color:var(--text-dim);line-height:1.45}
 ```
 
-Distinguish lanes with one consistent cue per lane — e.g. lane A steps carry `class="lane-a"` (accent tag), lane B steps `class="lane-b"` (grey tag). One axis, one channel.
+Lanes are the ONE color axis: lane A = accent (dot, time, tag); lane B = neutral grey. No second hue.
 
 **Skeleton**
 
@@ -163,44 +171,39 @@ Distinguish lanes with one consistent cue per lane — e.g. lane A steps carry `
 
 ---
 
-## Pattern 4 — Transform
+## Pattern 4 — Mapping scene
 
-Two boxes (input value, output value) joined by an arrow that carries the formula. Use for a single mapping (an address conversion, an encode).
+Two (or more) chips that each represent a **viewpoint**, both reaching the **same thing**. Use when one thing is seen two ways — two addresses for one buffer, two interpretations of one structure. Do not draw two bare boxes with an arrow; draw the viewpoints as chips converging on the shared object.
 
-**CSS**
+**CSS** (shared primitives + this grid)
 
 ```css
-.aspace{margin:1.5rem 0}
-.atrans{display:flex;align-items:center;justify-content:center;gap:.6rem;flex-wrap:wrap}
-.abox{border:1px solid var(--border-bright);border-radius:6px;background:var(--surface);padding:.5rem .8rem;text-align:center}
-.abox .alab{font-family:var(--font-sans);font-size:.68rem;color:var(--text-dim);margin-bottom:.15rem}
-.abox .aval{font-family:var(--font-mono);font-size:.82rem;color:var(--accent);font-weight:600}
-.aformula{font-family:var(--font-mono);font-size:.66rem;color:var(--text-dim);text-align:center;line-height:1.5;max-width:120px}
-.aarrow{color:var(--accent);font-size:1.15rem}
-.cap2{font-family:var(--font-sans);font-size:.78rem;color:var(--text-dim);margin:.6rem auto 0;line-height:1.45;text-align:center;max-width:480px}
+.addrs{display:grid;grid-template-columns:1fr 1fr;align-items:center;justify-items:center;gap:.35rem 2rem;margin:1.5rem 0}
+.memblock{grid-column:1/-1;border:2px dashed var(--border-bright);border-radius:8px;background:var(--surface-soft);padding:.5rem 1.1rem;text-align:center;font-family:var(--font-sans);font-size:.8rem;color:var(--text)}
+.memblock .aformula{display:block;font-family:var(--font-mono);font-size:.66rem;color:var(--accent);margin-top:.2rem}
 ```
 
-**Skeleton**
+**Skeleton** — CPU and DMA both reach one buffer at different addresses:
 
 ```html
-<div class="aspace">
-  <div class="atrans">
-    <div class="abox"><div class="alab">CPU address</div><div class="aval">0x0008_1234</div></div>
-    <div class="aformula"><code>&amp; 0x3fff_ffff</code><br><code>| 0xc000_0000</code></div>
-    <span class="aarrow">&rarr;</span>
-    <div class="abox"><div class="alab">bus address</div><div class="aval">0xc008_1234</div></div>
-  </div>
-  <p class="cap2">State the invariant (what stays the same, what changes, why). Verify the arithmetic is real.</p>
+<div class="addrs">
+  <div class="chip arm"><div class="nm">ARM</div><div class="sub">view A<br>0x0008_1234</div></div>
+  <div class="chip ctrl"><div class="nm">DWC2 · DMA</div><div class="sub">view B<br>0xc008_1234</div></div>
+  <div class="vlink"><span class="vlab">reaches</span><div class="varrow"></div></div>
+  <div class="vlink"><span class="vlab">reaches</span><div class="varrow"></div></div>
+  <div class="memblock">the shared thing — one place, two views<span class="aformula">&amp; 0x3fff_ffff | 0xc000_0000</span></div>
 </div>
+<p class="cap2">State the invariant (what stays the same, what changes, why). Verify any arithmetic is real.</p>
 ```
 
 ---
 
 ## Checklist before finishing
 
+- [ ] **Chips on stage, not text cards.** Every actor is a `.chip`; no diagram is just a row of cards or two bare boxes.
 - [ ] Tags balance (count `<div>`/`</div>`, `<p>`/`</p>`).
 - [ ] Only CSS variables used — no hardcoded light-only hex that breaks dark mode.
-- [ ] Every panel/stage cites a source line.
-- [ ] Re-read each caption against its colors: if the caption says "low", no low thing is colored as "active". One color axis, enforced.
+- [ ] Every step/flow/panel cites a source line you have opened and confirmed holds the named register/value.
+- [ ] Re-read each caption against its colors: if a caption says "low", no low thing is colored as "active". One color axis, enforced.
 - [ ] A legend is present whenever a bar/line style is not self-evident.
 - [ ] The lead-in prose and the code snippet are both still present; the diagram sits between them.
