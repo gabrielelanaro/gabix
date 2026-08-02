@@ -13,7 +13,7 @@ Do **not** use this for: a reference list of fields (a table is better), a singl
 
 ## Three principles (learned the hard way)
 
-1. **Separate players from interfaces.** Components (CPU, controller, device) are drawn as boxes/chips and **recur unchanged in every panel** — they are the "characters". Interfaces between them (a register, a wire) are drawn as connectors or gates, never as peer boxes. Do not list a register as if it were a component.
+1. **Separate players from interfaces.** Components (CPU, controller, device) are drawn as boxes/chips and **recur unchanged in every panel** — they are the "characters". Give each recurring component a distinct fill or border (an `.arm`, `.ctrl`, `.dev` modifier) so the reader tracks the same part across panels; interchangeable chips defeat the device. Interfaces between them (a register, a wire) are drawn as connectors or gates, never as peer boxes. Do not list a register as if it were a component.
 
 2. **Color encodes exactly one axis.** Pick the single axis the reader most needs (state, level, owner, direction) and let color mean *only* that. If a caption says "drives low", a low line must be the low color — never color a low line as "active". When two things differ on a second axis, use a second visual channel (height, texture, arrowhead direction), not a second color. **Add a legend** whenever an encoding is not self-evident.
 
@@ -30,7 +30,7 @@ Do **not** use this for: a reference list of fields (a table is better), a singl
 3. Choose the single color axis; define the states; add a legend if any state is not obvious.
 4. Emit HTML with a **scoped inline `<style>`** using the lesson's CSS variables (`--accent`, `--border`, `--surface`, `--text-dim`, …). Do **not** override the global `pre` block (the course dark theme styles it). Tag code comments `<span class="c">`.
 5. Keep the lead-in prose and the code snippet; place the diagram between them.
-6. **Verify** before finishing: tags balance; dark mode works because only variables (not hardcoded light hex) are used; every step cites a source line; re-read each caption against its colors — if a caption says "low", no low thing is colored as "active".
+6. **Verify** before finishing: tags balance; dark mode works because only variables (not hardcoded light hex) are used; every step cites a source line **that you have opened and confirmed holds the register or value the caption claims** (a line number pointing at a closing `)` is a defect); re-read each caption against its colors — if a caption says "low", no low thing is colored as "active".
 
 ## Conventions
 

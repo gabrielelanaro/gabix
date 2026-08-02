@@ -32,6 +32,10 @@ Recurring component chips; per panel one **state** of the system (e.g. wire leve
 .chip::before,.chip::after{content:"";position:absolute;left:5px;right:5px;height:4px;background:repeating-linear-gradient(90deg,var(--border-bright) 0 2px,transparent 2px 6px)}
 .chip::before{top:-5px}.chip::after{bottom:-5px}
 .chip.active{outline:2px solid var(--accent);outline-offset:3px}
+/* give each recurring actor a distinct fill/border so the reader tracks it across panels */
+.chip.arm{background:var(--accent-soft);border-color:var(--accent)}
+.chip.ctrl{background:var(--surface-soft)}
+.chip.dev{background:var(--surface-soft);border-color:var(--border-bright)}
 /* link between two chips: labeled arrow, direction by class */
 .link{display:flex;flex-direction:column;align-items:center;min-width:80px}
 .link .lab{font-family:var(--font-mono);font-size:.64rem;color:var(--accent);white-space:nowrap;margin-bottom:.18rem}
@@ -75,15 +79,15 @@ The "state widget" depends on the lesson (wire levels, register bits, …). The 
   <div class="panel">
     <div class="hd"><span class="num">1</span><span class="ttl">Power the port</span><span class="src">usb.rs:115</span></div>
     <div class="scene">
-      <div class="chip active"><div class="nm">ARM</div><div class="sub">CPU</div></div>
+      <div class="chip arm active"><div class="nm">ARM</div><div class="sub">CPU</div></div>
       <div class="link write"><span class="lab">PORT_POWER</span><div class="ln"></div></div>
-      <div class="chip"><div class="nm">DWC2</div><div class="sub">controller</div></div>
+      <div class="chip ctrl"><div class="nm">DWC2</div><div class="sub">controller</div></div>
       <div class="stub"></div>
       <div class="lines"><!-- one .lvl per line; class hi | lo | se0 -->
         <div class="lvl hi"><span class="lb">VBUS</span><span class="bar"></span></div>
       </div>
       <div class="stub"></div>
-      <div class="chip"><div class="nm">device</div><div class="sub">LAN9512</div></div>
+      <div class="chip dev"><div class="nm">device</div><div class="sub">LAN9512</div></div>
     </div>
     <p class="cap">One sentence: who acts, what register/value, what changes electrically. Cite the line.</p>
   </div>
@@ -107,6 +111,9 @@ A left-to-right row of stages, each showing **who acts**. Use when the point is 
 .stage .st{font-family:var(--font-sans);font-weight:700;font-size:.84rem;color:var(--text)}
 .stage .sb{font-family:var(--font-sans);font-size:.75rem;color:var(--text-dim);line-height:1.45}
 .stage .who{margin-top:auto;align-self:flex-start;font-family:var(--font-mono);font-size:.6rem;padding:.1rem .4rem;border-radius:3px;background:var(--surface-soft);color:var(--text-dim);border:1px solid var(--border)}
+/* color the tag by who acts, so the ARM->DWC2 handoff is a visible switch, not just words */
+.stage .who.arm{color:var(--accent);border-color:var(--accent)}
+.stage .who.ctrl{color:var(--text);border-color:var(--border-bright)}
 .farrow{align-self:center;color:var(--accent);font-size:1.25rem;padding:0 .3rem}
 ```
 
@@ -117,7 +124,7 @@ A left-to-right row of stages, each showing **who acts**. Use when the point is 
   <div class="stage">
     <div class="sh"><span class="sn">1</span><span class="st">Describe</span></div>
     <div class="sb">What the actor does — name the registers/values.</div>
-    <div class="who">ARM</div>
+    <div class="who arm">ARM</div>
   </div>
   <div class="farrow">&rarr;</div>
   <!-- more .stage + .farrow; put the actor name in .who -->
