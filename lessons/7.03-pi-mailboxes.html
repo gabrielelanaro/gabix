@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>7.03 The Pi's two mailboxes</title><link rel="stylesheet" href="../assets/lesson.css"><style>
+  .snip{margin:1.1rem 0}
+  .snip-meta{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:.82em;color:#666;margin-bottom:.25rem}
+  .snip-meta .what{color:#444;font-family:inherit}
+  .snip pre{margin:0}
+  table.map{border-collapse:collapse;width:100%;margin:1rem 0;font-size:.94em}
+  table.map th,table.map td{border:1px solid #ddd;padding:.5rem .6rem;text-align:left;vertical-align:top}
+  table.map th{background:#f0ede6;font-weight:600}
+  table.map td:first-child{font-weight:600}
+  .callout{background:#f6f4ee;border-left:3px solid #c9b88a;padding:.7rem 1rem;margin:1.2rem 0;font-size:.95em}
+  .win{background:#eef5ee;border-left:3px solid #5a9e5a;padding:.7rem 1rem;margin:1.4rem 0}
+  code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:.9em;background:#f3f1ea;padding:.05em .35em;border-radius:3px}
+</style></head>
+<body><article class="lesson"><header class="lesson-header">
+<div class="lesson-eyebrow">Module 7 · Real hardware · Lesson 7.03</div>
+<h1 class="lesson-title">The Pi's two mailboxes</h1>
+<p class="lesson-subtitle">Why the ARM cannot power on USB by itself — and the request it sends to the GPU.</p>
+</header><div class="content">
+
+<p>The Pi's USB controller will not run until it is powered on. On most boards the CPU would just flip a bit in a register to power a peripheral. On the Pi it cannot: the USB controller's power is owned by the Pi's <em>other</em> processor, the GPU (the graphics chip that actually booted the board before the ARM started). To get the GPU to power on USB, the ARM must send it a request. The channel for that request is a <em>mailbox</em>.</p>
+
+<p>This lesson explains that mailbox: why two processors that share memory still need a way to signal each other, the Pi's <em>property mailbox</em> (the one gabix uses to power on USB and to read the Ethernet card's hardware address (its MAC)), and the second mailbox the Pi has for its four CPU cores to signal each other (which gabix does not use).</p>
+
+<h2>1. Why a mailbox: the shared-memory problem</h2>
+
+<p>The ARM and the GPU can both read and write the same physical memory. So why can the ARM not just write a request into memory and let the GPU read it? Because the GPU may be running other code — nothing notifies it that a request is waiting. Writing the data is not enough; the ARM has to <em>alert</em> the GPU that there is something to read.</p>
+
+<p>A mailbox solves that. The ARM writes the message into shared memory, then performs one special write — to a register that signals the other processor. That write is the doorbell: it points the GPU at the message and signals it to read. The GPU reads the message, carries out the operation requested, writes the answer back into the same memory, and rings its own doorbell to signal completion. The memory carries the data; the doorbell carries the alert. That is the idea.</p>
+
+<h2>2. The Pi has two of them</h2>
+
+<p>The Pi has two processors and four CPU cores, so it has two different mailboxes for two different message exchanges:</p>
+<ul>
+<li>The <strong>property mailbox</strong> — ARM to GPU. The ARM uses it to request GPU actions: power on the USB controller, report the Ethernet MAC address, set up the display. Anything that needs the GPU's control of power or clocks goes through here. gabix uses this one.</li>
+<li>The <strong>inter-core mailboxes</strong> — one ARM core to another, in the ARM-local region (the per-core registers from lesson 7.01). One core writes to another core's mailbox register, which raises an interrupt on that core to wake it or pass it a task. gabix parks three of the four cores and runs only core 0, so it never sends or receives one.</li>
+</ul>
+<p>Both are called "mailboxes," which is the source of the confusion you hit in lesson 7.01. This lesson covers the property mailbox in detail, because that is the one gabix uses to power on USB; the inter-core mailbox is section 6.</p>
+
+<h2>3. The property mailbox, concretely</h2>
+
+<p>The property mailbox is a set of registers at address <code>0x3f00_b880</code>. Three matter: a WRITE register, a READ register, and a STATUS register. The exchange runs in four steps:</p>
+<ol>
+<li>The ARM builds a message in memory — a small array of words describing the request ("power on device 3, the USB controller").</li>
+<li>The ARM waits until the STATUS register reports the mailbox is not full, then writes the message's address into the WRITE register, combined with a channel number. That single write is the doorbell: it both points the GPU at the message and alerts it.</li>
+<li>The GPU reads the message, carries out the operation, writes the answer back into the <em>same</em> memory buffer, and signals completion by placing the reply on the READ register.</li>
+<li>The ARM polls the READ register until the reply appears, then reads the answer out of the buffer it wrote in step 1.</li>
+</ol>
+
+<h2>4. The message, and the address trick</h2>
+
+<p>gabix's real call requests that the GPU power on the USB controller:</p>
+
+<div class="snip">
+<div class="snip-meta"><span>targets/armv7/src/raspi2b/mailbox.rs</span> · <span class="what">power_on_usb, trimmed</span></div>
+<pre><code>pub unsafe fn power_on_usb() -&gt; Option&lt;()&gt; {
+    let message = &amp;mut *core::ptr::addr_of_mut!(MESSAGE);
+    message.0 = [
+        32,              <span class="c">// total size of this message, in bytes</span>
+        0,               <span class="c">// 0 = this is a request (GPU sets the top bit on success)</span>
+        SET_POWER_STATE, <span class="c">// the tag: "set a device's power state"</span>
+        8,               <span class="c">// size of the tag's payload below, in bytes</span>
+        8,               <span class="c">// the tag's request/response code (GPU sets top bit on success)</span>
+        USB_HCD_DEVICE,  <span class="c">// device 3 = the USB host controller</span>
+        POWER_ON_WAIT,   <span class="c">// turn it on, and wait for it to be stable</span>
+        0,               <span class="c">// end-of-message marker</span>
+    ];
+
+    <span class="c">// The GPU finds the message by its BUS address, with the channel (8 = property)</span>
+    <span class="c">// packed into the low bits. The message is 16-byte aligned, so those bits are free.</span>
+    let request = bus_address(core::ptr::addr_of!(MESSAGE) as u32) | PROPERTY_CHANNEL;
+
+    wait_until(|| read32(STATUS) &amp; STATUS_FULL == 0)?;   <span class="c">// wait for the mailbox to have room</span>
+    write32(WRITE, request);                              <span class="c">// ring the doorbell</span>
+
+    <span class="c">// The GPU writes its answer back into the SAME buffer, then returns the value</span>
+    <span class="c">// on READ. Poll until our own request comes back.</span>
+    loop {
+        if read32(STATUS) &amp; STATUS_EMPTY == 0 &amp;&amp; read32(READ) == request {
+            return (message.0[1] == RESPONSE_SUCCESS      <span class="c">// overall success</span>
+                &amp;&amp; message.0[4] &amp; RESPONSE_SUCCESS != 0  <span class="c">// this tag succeeded</span>
+                &amp;&amp; message.0[6] &amp; 1 != 0)              <span class="c">// the device is now powered on</span>
+                .then_some(());
+        }
+    }
+}</code></pre>
+</div>
+
+<p>Two details in this code matter. First, the message is just a flat array of words with a fixed layout: a size, a request code, then one or more <em>tags</em> (each tag names an operation — here, SET_POWER_STATE — and carries its own small payload), then a zero end-marker. The GPU parses it field by field. Second, the address trick: the ARM writes the message's <em>bus</em> address (a physical address the GPU can reach) into the WRITE register, not the ARM's own virtual address. And because messages are aligned to 16 bytes, the lowest four bits of that address are always zero — so the ARM reuses them to carry the channel number (8). One register write carries both "where the message is" and "which channel."</p>
+
+<h2>5. Why it polls, again</h2>
+
+<p>The GPU's reply does not interrupt the ARM. gabix polls the READ register in a loop until the reply appears. This is the same poll-everything pattern as the SD card, the USB channel, and the Pi's timer — every device gabix drives on the Pi today is polled. The property mailbox can raise an interrupt when the reply arrives; gabix has not wired that interrupt (the unfinished piece carried over from lessons 7.01 and 7.02).</p>
+
+<h2>6. The inter-core mailbox (the one gabix ignores)</h2>
+
+<p>The ARM-local region (<code>0x4000_0000</code>, from lesson 7.01) holds a second set of mailboxes, one per core. Core A writes into core B's mailbox register; that write both leaves a tiny message and raises an interrupt on core B. That is how a multi-core kernel wakes a parked core or dispatches tasks between cores. gabix is single-core — it parked cores 1, 2, and 3 back in lesson 0.01 — so it never sends or receives one. The "mailboxes the four cores use to exchange messages" you saw in 7.01 referred to this hardware: it exists, gabix does not use it.</p>
+
+<h2>The Pi's mailboxes in one table</h2>
+
+<table class="map">
+<thead><tr><th>Concept</th><th>What it is</th></tr></thead>
+<tbody>
+<tr><td>Two processors</td><td>The ARM (your code) and the GPU (the graphics chip that booted the Pi and owns power and clocks).</td></tr>
+<tr><td>Property mailbox</td><td>ARM↔GPU. The ARM requests that the GPU power a device, report the MAC, set up the display. gabix uses it. Address <code>0x3f00_b880</code>, channel 8.</td></tr>
+<tr><td>Inter-core mailbox</td><td>core↔core, in the ARM-local region. One core interrupts another. gabix ignores it (single-core).</td></tr>
+<tr><td>The doorbell</td><td>Writing the message's bus address + channel number into the WRITE register.</td></tr>
+<tr><td>The address trick</td><td>Supply a physical bus address to the GPU; pack the channel number into the free low bits.</td></tr>
+<tr><td>The reply</td><td>The GPU writes the answer into the same buffer; the ARM polls READ until it appears (no interrupt).</td></tr>
+</tbody>
+</table>
+
+<div class="win">
+<strong>What you should be able to do after this lesson.</strong> Explain why the ARM cannot power on the USB controller by itself, and which mailbox it uses instead. Describe the doorbell mechanism end to end: build the message, write the bus address + channel, the GPU writes the reply into the same buffer, the ARM polls READ. And say what the inter-core mailbox is for, and why gabix never uses it.
+</div>
+
+<div class="callout">
+<strong>Primary source.</strong> The Raspberry Pi firmware wiki documents the <a href="https://github.com/raspberrypi/firmware/wiki/Mailboxes">mailboxes</a> and the <a href="https://github.com/raspberrypi/firmware/wiki/Mailbox-property-interface">property interface</a> (the message layout and the list of tags like SET_POWER_STATE). The BCM2836 ARM Peripherals manual covers the register addresses. gabix's full driver is <code>targets/armv7/src/raspi2b/mailbox.rs</code>.
+</div>
+
+<p style="margin-top:1.6rem;color:#555">If anything here is unclear, ask. The agent can re-explain the doorbell handshake step by step, trace a different property request (like reading the MAC address), or explain the address trick in more depth.</p>
+
+</div><footer class="lesson-footer">
+<div class="footer-block"><h4>Sources</h4><p style="margin:0"><a href="https://github.com/raspberrypi/firmware/wiki/Mailbox-property-interface">Raspberry Pi: Mailbox property interface</a> · <a href="https://github.com/raspberrypi/firmware/wiki/Mailboxes">Raspberry Pi: Mailboxes</a> · gabix: <code>targets/armv7/src/raspi2b/mailbox.rs</code></p></div>
+<nav class="lesson-nav"><a href="7.02-usb-bus-host-enumeration.html">← 7.02 USB</a><a href="../reference/modules.html#m7">Module 7 ↑</a></nav>
+</footer></article></body></html>

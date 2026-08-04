@@ -24,13 +24,13 @@
 
 <p>The Pi 2B has no GIC. Broadcom split the job across two pieces of hardware, each with its own list of registers, and a signal passes through both on the way to the CPU. Gabix today talks to only one of those pieces (the timer). This lesson is how the two fit together, so you can read the manual and wire a real device interrupt yourself.</p>
 
-<h2>1. The signal's journey</h2>
+<h2>1. The signal's path</h2>
 
-<p>Follow one signal from a device to the CPU. A network packet arrives. The USB controller wants to tell the CPU (the Pi's Ethernet port is a chip that hangs off the USB bus, so the network's interrupt <em>is</em> the USB interrupt). The signal goes through two controllers before it reaches a core:</p>
+<p>Follow one signal from a device to the CPU. A network packet arrives. The USB controller must signal the CPU (the Pi's Ethernet port is a chip that hangs off the USB bus, so the network's interrupt <em>is</em> the USB interrupt). The signal goes through two controllers before it reaches a core:</p>
 
 <div class="snip">
 <div class="snip-meta"><span>the path of one device interrupt on the Pi 2B</span></div>
-<pre><code>   USB controller   (the device wants attention)
+<pre><code>   USB controller   (device needs service)
         │  sets bit 9
         ▼
    GPU interrupt controller   address 0x3F00_B200
@@ -48,15 +48,15 @@
 <p>Two things to fix in your mind from that picture:</p>
 <ul>
 <li>The <strong>GPU interrupt controller</strong> is where every peripheral's signal shows up as one bit. USB is one bit; the SD controller is another; the UART is another. There are about a hundred bits, grouped into banks of 32.</li>
-<li>The <strong>ARM-local region</strong> decides which of the four CPU cores receives the signal, and it owns a few sources of its own — the timer gabix uses, and the mailboxes the four cores use to talk to each other.</li>
+<li>The <strong>ARM-local region</strong> decides which of the four CPU cores receives the signal, and it owns a few sources of its own — including the local timer, the one interrupt gabix actually uses on the Pi. (The region also holds the inter-core mailboxes, but gabix is single-core and never uses them; lesson 7.03 covers both.)</li>
 </ul>
-<p>So the first controller says "something happened, here is the bit," and the second says "send it to core 0." Your IRQ handler then reads the first controller's pending bits to find which device fired.</p>
+<p>So the first controller reports which device fired (one bit per peripheral), and the second routes that signal to one core. Your IRQ handler reads the first controller's pending bits to find the device.</p>
 
 <h2>2. Why two controllers, and the confusing "GPU" name</h2>
 
 <p>These two pieces exist because of the Pi chip's history. The chip has two halves: a graphics processor (the VideoCore GPU) that boots first and owns most of the peripherals, and the ARM CPU(s) that run your code. The peripherals physically live on the GPU half of the chip, so their interrupts are called "GPU interrupts" even when the device is a USB port or an SD card slot. The name means "forwarded from the GPU side to the ARM," not that the graphics processor itself fired.</p>
 
-<p>The ARM-local region was added for the Pi 2, because the Pi 2 has four CPU cores and something had to decide which core receives each interrupt.</p>
+<p>The ARM-local region was added for the Pi 2, because the Pi 2 has four CPU cores and each interrupt must be routed to one of them.</p>
 
 <p>The name "GPU interrupt controller" applied to a USB or SD signal is the single most confusing thing about the Pi's interrupts. With the history, it makes sense: those controllers live on the GPU half of the chip.</p>
 
@@ -77,13 +77,13 @@
 
 <p>Each device has a fixed bit number in a fixed bank, set by the hardware design. The <em>BCM2836 ARM Peripherals</em> manual lists them in a table called "Interrupts." The one you will care about for networking: the USB controller is <strong>bit 9 in bank 1</strong>. Because the Pi 2B's Ethernet port hangs off the USB bus, the network's interrupt is the USB interrupt.</p>
 
-<p>To turn a device's interrupt on, you write a 1 to its bit in the right Enable register. From then on, when the device wants attention, the controller sets the bit in its Pending register and raises a single output wire — the "GPU IRQ" line — toward the ARM cores.</p>
+<p>To turn a device's interrupt on, you write a 1 to its bit in the right Enable register. From then on, when the device needs servicing, the controller sets the bit in its Pending register and raises a single output wire — the "GPU IRQ" line — toward the ARM cores.</p>
 
 <h2>4. The ARM-local region — the core router</h2>
 
 <p>The second controller is the ARM-local region, at <code>0x4000_0000</code>. Its job is routing: it takes the GPU IRQ wire from the first controller (and the local sources it owns) and delivers it to one of the four cores. It has a set of registers per core — core 0's, core 1's, and so on — so you can choose which core handles which signal. For a single-core kernel like gabix, everything goes to core 0.</p>
 
-<p>This region also owns the local timer — the one interrupt source gabix actually uses on the Pi. The local timer is special: it lives entirely inside this region, so it skips the GPU controller and routes straight to a core. That is why gabix's timer setup is short — three register writes and the CPU's interrupt enable:</p>
+<p>This region also owns the local timer — the one interrupt source gabix actually uses on the Pi. The local timer is special: it is entirely inside this region, so it skips the GPU controller and routes straight to a core. That is why gabix's timer setup is short — three register writes and the CPU's interrupt enable:</p>
 
 <div class="snip">
 <div class="snip-meta"><span>targets/armv7/src/raspi2b/timer.rs</span> · <span class="what">gabix's only real interrupt on the Pi: the local timer</span></div>
@@ -97,15 +97,15 @@
 
 <p>No GPU controller, no pending-register scan — the timer signals the core router directly, and the core router delivers it to core 0.</p>
 
-<h2>5. What gabix does today (honest)</h2>
+<h2>5. What gabix does today</h2>
 
 <p>Gabix enables only the local timer. Every device driver — the SD card, the USB controller — polls its own status register in a loop instead of waiting for an interrupt. The function <code>sdhci.rs</code> calls <code>wait_interrupt</code> is a poll: it reads the SD card's status bit over and over until it changes, up to a limit, then gives up. No signal from the SD card or the USB port ever reaches the CPU.</p>
 
-<p>So on the Pi today, gabix has exactly one real interrupt (the timer) and busy-waits on every device. That works, badly: it wastes the CPU spinning, and it is fragile on real hardware where the timing differs from the emulator. Wiring a real device interrupt is the fix, and the rest of this lesson is the method.</p>
+<p>So on the Pi today, gabix has exactly one real interrupt (the timer) and busy-waits on every device. That works, badly: it wastes the CPU spinning, and it is fragile on real hardware where the timing differs from the emulator. Wiring a real device interrupt fixes both.</p>
 
 <h2>6. Wiring a real device interrupt</h2>
 
-<p>The same five steps work for any source. Here they are for the USB controller (the network):</p>
+<p>The USB interrupt (bit 9) is the example. Wiring it takes five steps:</p>
 
 <ol>
 <li><strong>Find its bit.</strong> The manual's Interrupts table says USB is bit 9 in bank 1.</li>

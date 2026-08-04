@@ -34,7 +34,7 @@
 <code>targets/armv7/</code> — the ARM side: the same jobs, written for the ARM CPU and the Raspberry Pi's chips.
 </div>
 
-<p>This is how Linux is built too. Linux's <code>fs/</code>, <code>net/</code>, and <code>mm/</code> directories are shared by every architecture; <code>arch/x86/</code> and <code>arch/arm/</code> hold only the parts that genuinely differ. So when you ask <em>what did it take to port gabix to ARM</em>, the honest first answer is: less than you would think. The rest of this lesson is the list of the things that did take work.</p>
+<p>This is how Linux is built too. Linux's <code>fs/</code>, <code>net/</code>, and <code>mm/</code> directories are shared by every architecture; <code>arch/x86/</code> and <code>arch/arm/</code> hold only the parts that genuinely differ. So when you ask <em>what did it take to port gabix to ARM</em>, the short answer is: less than you would think.</p>
 
 <h2>Five jobs where the CPU matters</h2>
 
@@ -50,7 +50,7 @@
 
 <section class="job">
 <h3>2. Letting a program run with fewer rights — and giving it a way back to the kernel</h3>
-<p>This is the heart of what makes a kernel a kernel. A user program must not be free to read kernel memory or run the CPU's most dangerous instructions. But it must be able to ask the kernel to do those things on its behalf — read a file, send a packet, get the time of day. So the CPU needs two things built in: a way to run a program with reduced rights, and a controlled door that program can knock on to re-enter the kernel.</p>
+<p>This is the job that defines a kernel. A user program must not be free to read kernel memory or run the CPU's most dangerous instructions. But it must be able to ask the kernel to do those things on its behalf — read a file, send a packet, get the time of day. So the CPU needs two things built in: a way to run a program with reduced rights, and a controlled door that program can knock on to re-enter the kernel.</p>
 <p>x86 calls the privilege levels <em>rings</em>. The kernel runs in ring 0 (full rights); a user program runs in ring 3 (restricted). The current ring is a small field the CPU keeps about the program it is running. To call the kernel, the program runs a single instruction, <code>syscall</code>. The CPU treats that instruction specially: it raises the privilege to ring 0 and jumps to a kernel address the kernel registered in advance. Returning to the program is the reverse instruction, <code>sysret</code>, which drops back to ring 3.</p>
 <p>ARM does the same job with a different vocabulary. Instead of rings it has <em>modes</em>: User mode for programs, Supervisor mode for the kernel, and a few others for handling errors and interrupts. The current mode lives in a field in a CPU status register. To call the kernel, the program runs an instruction called <code>svc</code>. The CPU switches to Supervisor mode and jumps to a fixed entry point the kernel set up. Returning drops the mode back to User.</p>
 <p>Same two problems — restrict the program, then give it a door — solved two ways. This is the single biggest conceptual difference between the two kernels, and Module 1 takes it apart instruction by instruction.</p>
@@ -61,7 +61,7 @@
 <h3>3. Translating memory</h3>
 <p>Every program must see its own memory, and it must not see another program's memory or the kernel's. The CPU enforces this with a table. On every memory access a program makes, the CPU consults the table, which says — for each range of addresses — where the bytes physically live and whether this program is allowed to reach them.</p>
 <p>On x86 the kernel gives each process its own table and swaps it in when that process runs; the blocks are small (4 KB). Gabix on x86 builds a fresh table for every process, which is how two programs can both believe they live at the same address.</p>
-<p>The ARM port so far does the simpler thing: one shared table for everything, with large 1 MB blocks, mapping every address to itself. It does not yet give each process its own memory. Instead it flips the permission bits on the single 1 MB block a user program lives in, so the program can reach its own code and nothing else. That is enough to run a user program. Per-process tables are a later step.</p>
+<p>The ARM port so far does the simpler thing: one shared table for everything, with large 1 MB blocks, mapping every address to itself. To isolate a user program, it flips the permission bits on the single 1 MB block the program occupies, so the program can reach its own code and nothing else. That is enough to run a user program. The port does not yet give each process its own table; that is a later step.</p>
 <p class="godeeper">Go deeper: <a href="../reference/modules.html#m2">Module 2</a>.</p>
 </section>
 
@@ -76,8 +76,8 @@
 <section class="job">
 <h3>5. Finding devices</h3>
 <p>Before the kernel can read a disk or send a packet, it has to find the device. The two architectures make the kernel look in completely different places.</p>
-<p>On x86, devices sit on a shared bus called PCI. The kernel walks the bus — "who is at slot 0? slot 1? slot 2?" — and reads a little identifying information each device reports. It is like knocking on every door in a hallway.</p>
-<p>The ARM emulator has no such bus. Instead it places up to 32 virtual devices at 32 fixed addresses in memory, and the kernel reads each address looking for a magic value that means "I am a virtio device." There is no discovery protocol; the locations are agreed in advance.</p>
+<p>On x86, devices sit on a shared bus called PCI. The kernel walks the bus — "who is at slot 0? slot 1? slot 2?" — and reads a little identifying information each device reports.</p>
+<p>The ARM emulator has no such bus. It places up to 32 virtual devices at 32 fixed addresses in memory, and the kernel reads each address looking for a magic value that means "I am a virtio device." There is no discovery protocol; the locations are agreed in advance.</p>
 <p>The Raspberry Pi is different again, and harder. There are no virtio devices and no PCI bus. The "disk" is the SD card, reached through a controller Broadcom made. The "network card" is a chip that hangs off the Pi's USB port. Each is a separate piece of hardware with its own rulebook, and the kernel drives each one by its own rules. This is the module that matters most for getting gabix running on the actual board.</p>
 <p class="godeeper">Go deeper: <a href="../reference/modules.html#m4">Module 4</a> for the mechanism; <a href="../reference/modules.html#m7">Module 7</a> for the Pi's real chips.</p>
 </section>

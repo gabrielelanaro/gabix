@@ -63,6 +63,7 @@ Banned constructions (LLM-isms the user has called out):
 - "less about X, more about Y"
 - "where X gives way to Y" / "the shift from X to Y" (as a rhetorical frame)
 - "It's worth noting", "Notice that", "In essence", "At its core", "It's important to understand"
+- **False equations / dramatic identity** — equating the lesson, a section, or a component with a label it is not: "This lesson is that mailbox", "the doorbell it rings to ask the GPU". The lesson explains or covers a thing; it is not the thing. Name what the lesson does ("This lesson explains the mailbox") and name a mechanism directly ("the register write that alerts the GPU"), rather than dramatizing it.
 
 State the positive claim directly. If a contrast is genuinely load-bearing (e.g., comparing two approaches the user is choosing between), write it as a clean comparison — both sides stated, no rhetorical switchback.
 

@@ -56,7 +56,7 @@ per-lesson index lives in `reference/modules.html`.
 | 4 — Devices | Finding devices, moving bytes with them, and learning the moment one finishes a job. | 11 lessons (x86); ARM device discovery + keyboard to add |
 | 5 — Storage | The layer that reads a sector, the shared file interface, and ext2 on disk. None of it depends on the CPU. | 7 lessons (complete, arch-neutral) |
 | 6 — Networking | Sending bytes to another computer, one layer at a time, up to a reliable stream. The code is CPU-independent. | 13 lessons (x86); talking to a web server to add |
-| 7 — Real hardware | The Raspberry Pi 2B's real Broadcom chips — SD card, USB, Ethernet — that the ARM manual does not describe. | 7.01 written |
+| 7 — Real hardware | The Raspberry Pi 2B's real Broadcom chips — SD card, USB, Ethernet — that the ARM manual does not describe. | 7.01–7.04 written |
 
 Modules 1, 2, and 7 are where the new ARM learning lives. Modules 3–6 already
 have working x86 lessons; the ARM port reuses 5 and 6 nearly verbatim and

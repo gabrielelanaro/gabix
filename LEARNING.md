@@ -539,6 +539,13 @@ A milestone is a "demo-able" checkpoint. Worth a commit + tag + log entry.
 
 ## Progress Log
 
+### 2026-08-04 — Raspberry Pi hardware lessons and operator notes
+- **Lessons:** Added lesson 7.02 on USB host control, transfer types, descriptors, and enumeration, plus lesson 7.03 on the Pi property mailbox and inter-core mailboxes. Both lessons trace the explanations to the ARMv7 Raspberry Pi drivers and keep the current polling gaps explicit.
+- **Reference material:** Added a Raspberry Pi 2B UART pinout SVG and a `run-pi2-qemu.sh` helper for launching an ARM kernel with the `raspi2b` QEMU machine.
+- **Prose:** Tightened the ARM port, privilege/syscall, interrupt-entry, and Pi interrupt-controller lessons to use direct mechanism-first statements. Added the project rule against false-equation and dramatic-identity phrasing.
+- **Status:** No roadmap checkbox changed. Physical Raspberry Pi verification remains the next hardware milestone.
+- **Next:** Continue Module 7 with the remaining hardware lessons, then verify UART, SD, USB, Ethernet, DHCP, ping, and UDP on the physical Pi 2B.
+
 ### 2026-08-01 — Raspberry Pi 2B QEMU port and physical image
 - **ARM platform:** Added shared ARMv7 boot, memory mapping, heap allocation, timer interrupts, user-mode entry, system calls, and kernel return after user exit. QEMU `virt` and `raspi2b` use position-independent board adapters around the shared kernel code.
 - **Storage:** Added Raspberry Pi SDHCI sector reads, MBR partition lookup, ext2 file reads, and `/init.elf` loading. The image builder creates a FAT16 firmware partition and an ext2 root partition.

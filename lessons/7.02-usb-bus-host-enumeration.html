@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>7.02 USB: the bus, the host, and enumeration</title><link rel="stylesheet" href="../assets/lesson.css"><style>
+  .snip{margin:1.1rem 0}
+  .snip-meta{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:.82em;color:#666;margin-bottom:.25rem}
+  .snip-meta .what{color:#444;font-family:inherit}
+  .snip pre{margin:0}
+  table.map{border-collapse:collapse;width:100%;margin:1rem 0;font-size:.94em}
+  table.map th,table.map td{border:1px solid #ddd;padding:.5rem .6rem;text-align:left;vertical-align:top}
+  table.map th{background:#f0ede6;font-weight:600}
+  table.map td:first-child{font-weight:600}
+  .callout{background:#f6f4ee;border-left:3px solid #c9b88a;padding:.7rem 1rem;margin:1.2rem 0;font-size:.95em}
+  .win{background:#eef5ee;border-left:3px solid #5a9e5a;padding:.7rem 1rem;margin:1.4rem 0}
+  code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:.9em;background:#f3f1ea;padding:.05em .35em;border-radius:3px}
+</style></head>
+<body><article class="lesson"><header class="lesson-header">
+<div class="lesson-eyebrow">Module 7 · Real hardware · Lesson 7.02</div>
+<h1 class="lesson-title">USB: the bus, the host, and enumeration</h1>
+<p class="lesson-subtitle">What USB is — a single host that controls the bus, a tree of devices, and numbered endpoints — and the fixed sequence the Pi runs the moment you plug something in.</p>
+</header><div class="content">
+
+<p>You plug a keyboard into the Pi's USB socket. The CPU cannot just read the keyboard — there is no direct wire between them. Between the CPU and the keyboard sits a protocol called USB, and a chip called the <em>host controller</em> that speaks it. The CPU tells the host controller what to do; the host controller does the actual talking to the keyboard, byte by byte, over the USB wire.</p>
+
+<p>This lesson is the model you need before any of that makes sense: which side controls a USB bus, what a device looks like to the host, and the fixed sequence the host runs every time something gets plugged in — a sequence called <em>enumeration</em>. The Pi's specific controller (the DWC2) and its specific USB chip (the LAN9512, the Ethernet port) come in lessons 7.03 and 7.04. Here we build the model, grounded in gabix's real USB code.</p>
+
+<h2>1. The host starts every transfer</h2>
+
+<p>USB is not symmetrical. One side is the <em>host</em> — the Pi — and it is the only side that ever starts a conversation. A device never sends data on its own; it waits to be asked. The host asks each device, over and over, many times a second, whether it has anything to say, and the device answers in the moment the host gave it.</p>
+
+<p>This is the first thing to fix in your mind: every byte that moves on a USB wire moves because the host asked for it. When someone says "the keyboard sent a keypress," what physically happened is: the host asked the keyboard "anything new?", the keyboard answered "yes, the letter A," and the host took it.</p>
+
+<p>That raises an obvious question: if the device never speaks first, how does the host even know one was plugged in? Three actors are involved. First, the device: a small resistor inside it, the instant it is plugged in, pulls one of the two data lines to a voltage — passive, no packet. Second, the host controller (the DWC2): a separate piece of silicon whose job is to manage the USB bus. It has circuitry that watches the data lines continuously, in hardware, on its own — whether the CPU is busy or idle. When it sees the voltage change, it sets a “connect detected” bit in one of its registers. That is the controller doing the looking, not the CPU. Third, the CPU: that register bit does not interrupt the CPU. gabix’s CPU finds out by polling — reading that register in a loop until the bit is set (in <code>usb.rs</code>, after powering the port). gabix does not use the controller’s hardware interrupt for this, the same poll-everything gap noted in lessons 7.01 and 7.02. So: the controller’s hardware detects the connect electrically and records it; the CPU later reads the record by polling. The device sent nothing.</p>
+
+<h2>2. The host controller: the chip the CPU programs</h2>
+
+<p>The CPU does not speak USB. It speaks to a chip on the board — the host controller — and that chip speaks USB to the devices. On the Pi 2B the host controller is the DWC2 (a Synopsys DesignWare USB 2.0 controller), and gabix reaches it at address <code>0x3f98_0000</code>.</p>
+
+<p>The host controller is a set of registers. The CPU writes those registers to make things happen and reads them to learn what happened. Two parts of the controller matter for the model:</p>
+<ul>
+<li>The <strong>host port</strong> — the physical USB socket. The CPU powers it on, resets it, and reads whether something is plugged in. The DWC2 has one root port. (The Pi's Ethernet hangs off a hub behind that port, but a hub is a device, not another controller port.)</li>
+<li>The <strong>host channels</strong> — the transfer engines. To move bytes to or from a device, the CPU programs a channel: which device, which endpoint, what kind of transfer, which direction, and a buffer holding the bytes. Then it fires the channel and waits for it to finish.</li>
+</ul>
+<p>So the CPU's job is: bring up the port, then run channels. One channel is one transfer.</p>
+
+<h2>3. Devices, addresses, and endpoints</h2>
+
+<p>When you plug a device in, it starts at <em>address 0</em> — every unconfigured device uses address 0, briefly. The host's first job is to give it a real address (1, 2, 3, …) so it can tell devices apart. After that, the device answers only its own address.</p>
+
+<p>Within a device, communication happens at <em>endpoints</em>. An endpoint is one numbered channel into the device, with a direction (in — device to host — or out — host to device) and a type. Endpoint 0 is special: every device has it, it is always a control endpoint, and the host uses it for setup. Other endpoints appear in the device's descriptor (section 7) and carry the real data.</p>
+
+<p>To talk to a device, the host names three things: the device's address, the endpoint number, and the direction. Gabix packs exactly those into one channel register — the device address, the endpoint number, the direction — alongside the endpoint type and the max packet size.</p>
+
+<h2>4. The four transfer types</h2>
+
+<p>USB defines four kinds of transfer, and each endpoint is one of them. The kind decides how the host schedules it:</p>
+<ul>
+<li><strong>Control</strong> — the setup and configuration traffic. Every device has a control endpoint (endpoint 0). A control transfer is a fixed three-part handshake (section 6). This is how the host asks "what are you?" and tells the device "your address is now 1."</li>
+<li><strong>Bulk</strong> — large bursts of data that must arrive intact but have no deadline. Network frames, mass-storage blocks. The Pi's Ethernet uses bulk endpoints.</li>
+<li><strong>Interrupt</strong> — small amounts of data the host fetches on a fixed schedule. A keyboard reports each keypress on an interrupt endpoint; the host polls it every few milliseconds. Despite the name, this is <em>not</em> a hardware interrupt: the host still does the asking. The name means "polled on a schedule," not "the device raised a wire" (the wires from lesson 7.01).</li>
+<li><strong>Isochronous</strong> — a fixed slice of bandwidth every millisecond, for real-time data that can tolerate loss. Audio, video. Gabix does not use it.</li>
+</ul>
+<p>The transfer type is the endpoint's property, set in its descriptor; the host reads it and honors it.</p>
+
+<h2>5. Enumeration — the sequence the host runs on plugin</h2>
+
+<p>Once the host controller's hardware has detected a connect — the electrical pull-up from section 1, not a packet from the device — the host runs a fixed sequence to bring the device online. This is <em>enumeration</em>, and gabix's <code>enumerate_device</code> is a textbook version of it, in three control transfers:</p>
+
+<div class="snip">
+<div class="snip-meta"><span>targets/armv7/src/raspi2b/usb.rs</span> · <span class="what">enumeration, trimmed to its three steps</span></div>
+<pre><code><span class="c">// Step 1: read the first 8 bytes of the device descriptor, at address 0.</span>
+<span class="c">//        Endpoint 0, control transfer, "GET_DESCRIPTOR" (request 6).</span>
+<span class="c">//        The host assumes a 64-byte packet for this first read, because it</span>
+<span class="c">//        does not yet know the device's real size.</span>
+let mut first = [0u8; 8];
+self.control_in(0, 64, SetupPacket::new(0x80, 6, 0x0100, 0, 8), &amp;mut first)?;
+let max_packet_size = first[7];   <span class="c">// byte 7 holds the real packet size for endpoint 0</span>
+
+<span class="c">// Step 2: SET_ADDRESS — "from now on, answer to address 1" (request 5).</span>
+self.control_no_data(0, max_packet_size, SetupPacket::new(0, 5, 1, 0, 0))?;
+
+<span class="c">// Step 3: re-read the full 18-byte device descriptor, at the new address.</span>
+let mut descriptor = [0u8; 18];
+self.control_in(1, max_packet_size, SetupPacket::new(0x80, 6, 0x0100, 0, 18), &amp;mut descriptor)?;
+<span class="c">// byte 4 = device class; bytes 8-9 = vendor id; bytes 10-11 = product id</span></code></pre>
+</div>
+
+<p>Read the sequence in order: a device appears at address 0; the host reads eight bytes to learn its packet size; the host assigns the device a real address; then the host reads the full eighteen-byte descriptor at that new address. After step 3 the device has an address and the host knows its class (is it a hub? a keyboard? a network adapter?), its vendor, and its product.</p>
+
+<p>If the device is a hub (class 9), the host then runs a similar power-and-status sequence on the hub's downstream ports to reach the devices behind it (gabix's <code>enumerate_hub_child</code>). If it is a bulk device like the LAN9512, the host reads its configuration, finds the bulk endpoints, and sends a <code>SET_CONFIGURATION</code> to put it in a working state (gabix's <code>configure_bulk_device</code>).</p>
+
+<h2>6. The control transfer, up close</h2>
+
+<p>Enumeration is all control transfers, so it is worth seeing exactly what one is. A control transfer always has three phases:</p>
+
+<div class="snip">
+<div class="snip-meta"><span>the three phases of a control transfer (an IN, like GET_DESCRIPTOR)</span></div>
+<pre><code>   host                                   device
+     │   1. SETUP  — an 8-byte packet: "I want X"     │
+     │──────────────────────────────────────────────▶ │
+     │   2. DATA   — the bytes the host asked for     │
+     │◀────────────────────────────────────────────── │
+     │   3. STATUS — a zero-length packet: "received" │
+     │──────────────────────────────────────────────▶ │</code></pre>
+</div>
+
+<p>The 8-byte setup packet is fixed by the standard: a request type (in or out), a request number, a value, an index, and a length. The request numbers are shared by every device — <code>6</code> means GET_DESCRIPTOR, <code>5</code> means SET_ADDRESS, <code>9</code> means SET_CONFIGURATION. A device that did not understand these could not be enumerated at all.</p>
+
+<h2>7. Descriptors — the device's self-description</h2>
+
+<p>USB devices describe themselves in nested byte structures called <em>descriptors</em>, which the host reads during enumeration:</p>
+<ul>
+<li>The <strong>device descriptor</strong> (18 bytes): the device class, the vendor and product IDs, and the max packet size of endpoint 0 (that byte 7 from step 1).</li>
+<li>The <strong>configuration descriptor</strong>: a tree of interfaces, each listing its endpoints with their types and directions.</li>
+</ul>
+<p>Gabix walks the configuration descriptor's bytes to find the bulk endpoints (<code>parse_bulk_endpoints</code>): it scans for endpoint descriptors (type 5) whose type field is bulk (2), and records the IN endpoint, the OUT endpoint, and the max packet size. That is how the host learns where to send and receive the device's actual data.</p>
+
+<div class="callout">
+<strong>One open gap, same as lesson 7.01.</strong> Gabix waits for each channel to finish by polling its status register in a loop — the same busy-wait pattern as the SD card driver. A device never raises a hardware interrupt; gabix asks "done yet?" until it is. Wiring the DWC2's own interrupt through the two Pi controllers from lesson 7.01 is the fix, and it is open work.
+</div>
+
+<h2>The USB model in one table</h2>
+
+<table class="map">
+<thead><tr><th>Concept</th><th>What it is</th></tr></thead>
+<tbody>
+<tr><td>Host</td><td>The Pi — the only side that starts a conversation.</td></tr>
+<tr><td>Host controller</td><td>The chip (DWC2) the CPU programs; it speaks USB to devices.</td></tr>
+<tr><td>Host port / channel</td><td>The physical socket / a transfer engine the CPU fires per transfer.</td></tr>
+<tr><td>Device address</td><td>A number the host assigns (0 at first, then 1, 2, …).</td></tr>
+<tr><td>Endpoint</td><td>A numbered, directed, typed channel into a device. Endpoint 0 is control and mandatory.</td></tr>
+<tr><td>Transfer types</td><td>Control (setup, three-phase), bulk (data), interrupt (small, polled), isochronous (real-time).</td></tr>
+<tr><td>Enumeration</td><td>read 8 bytes at address 0 → set address → re-read the full descriptor.</td></tr>
+<tr><td>Descriptors</td><td>The device's byte-structured self-description (device, configuration, endpoint).</td></tr>
+</tbody>
+</table>
+
+<div class="win">
+<strong>What you should be able to do after this lesson.</strong> Explain why a USB device cannot send anything until the host asks. Name the three things the host specifies to reach an endpoint (address, endpoint number, direction). Recite the three phases of a control transfer and the three steps of enumeration. And say why a "USB interrupt transfer" is not a hardware interrupt.
+</div>
+
+<div class="callout">
+<strong>Primary source.</strong> The <a href="https://www.usb.org/document-library/usb-20-specification">USB 2.0 specification</a> defines the transfer types, the standard requests, and the descriptor layouts. Chapter 9 is the device framework (enumeration, descriptors, requests) and is the part you will re-read most. The Pi's controller and Ethernet chip are lessons 7.03 and 7.04.
+</div>
+
+<p style="margin-top:1.6rem;color:#555">If anything here is unclear, ask. The agent can re-draw the control-transfer handshake, walk a real descriptor byte by byte, or explain why the host reads only eight bytes before it knows the packet size.</p>
+
+</div><footer class="lesson-footer">
+<div class="footer-block"><h4>Sources</h4><p style="margin:0"><a href="https://www.usb.org/document-library/usb-20-specification">USB 2.0 Specification (ch. 9)</a> · gabix: <code>targets/armv7/src/raspi2b/usb.rs</code></p></div>
+<nav class="lesson-nav"><a href="7.01-pi2b-interrupt-controllers.html">← 7.01 Pi interrupts</a><a href="../reference/modules.html#m7">Module 7 ↑</a></nav>
+</footer></article></body></html>

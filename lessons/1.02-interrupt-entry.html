@@ -22,7 +22,7 @@
 
 <ul>
 <li>A timer fires, many times a second. Each time, the kernel can stop this program and let another run for a while — which is how one CPU appears to run several programs at once.</li>
-<li>A device finishes a job the kernel gave it. A disk read completes; a network packet arrives. The kernel wants to know the instant it happens, not the next time it happens to check.</li>
+<li>A device finishes a job the kernel gave it. A disk read completes; a network packet arrives. The kernel must learn the instant it happens, not the next time it happens to check.</li>
 </ul>
 
 <p>The program cannot be trusted to pause itself for either one — a buggy or hostile program would simply never yield. So the hardware has to be able to force the CPU away from the program. That is an <em>interrupt</em>: the hardware makes the CPU leave the program, run a handler in the kernel, then return to the program where it left off.</p>
@@ -54,7 +54,7 @@
 
 <p>Notice slot 2 — that is the SVC entry from lesson 1.01, where syscalls arrive. Slot 6 is where every hardware interrupt arrives.</p>
 
-<p>x86's table is the <strong>IDT</strong> (Interrupt Descriptor Table), and it is far larger — 256 entries. More importantly, x86's interrupt controller does not just tell the CPU that an event happened — it hands the CPU a number, the entry to use. So on x86 the timer, the disk, and the network card each arrive at their own handler, because each was given its own number.</p>
+<p>x86's table is the <strong>IDT</strong> (Interrupt Descriptor Table), and it is far larger — 256 entries. More importantly, x86's interrupt controller supplies the CPU a number — the table entry to use — that identifies which source fired. So on x86 the timer, the disk, and the network card each arrive at their own handler, because each was given its own number.</p>
 
 <p>ARM's table is too small for that. With one slot for every hardware interrupt, the handler that lands there cannot yet know which device caused the interrupt — it has to ask the controller (section 4 names the exact registers). That single difference, eight shared slots against 256 numbered ones, is the reason an ARM interrupt handler is written differently from an x86 one.</p>
 
