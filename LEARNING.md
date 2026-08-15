@@ -539,6 +539,20 @@ A milestone is a "demo-able" checkpoint. Worth a commit + tag + log entry.
 
 ## Progress Log
 
+### 2026-08-15 — Physical Pi image registry and protected baseline
+- **Registry:** Added `artifacts/pi2-images.json` as the tracked source of truth
+  for candidate, hardware-passed, and hardware-failed image identities. Every
+  record includes byte size, SHA-256, source, and concrete physical evidence.
+- **Protection:** Preserved the known-working 2.5 GB smoke image under
+  `~/Documents/Gabix-Images`, verified its complete checksum, removed write
+  permissions, and applied macOS's user-immutable flag.
+- **Workflow:** Added `scripts/pi2-image-registry.py` to list, resolve, verify,
+  preserve, and record physical outcomes. A passing candidate is copied and
+  protected before its tracked status changes.
+- **Current state:** The historical full smoke image is `hardware-passed`, the
+  520 MiB intermediate image is `hardware-failed`, and the full loader image is
+  still a `candidate` pending its first physical boot.
+
 ### 2026-08-15 — Reproducible Pi loader-image writing
 - **Baseline correction:** The 520 MiB FAT32-layout experiment was mistakenly
   documented as the physical known-good image. The successful boot used the

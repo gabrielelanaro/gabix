@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "images": [
+    {
+      "id": "pi2-uart-smoke-working-2026-08-09",
+      "filename": "gabix-pi2-uart-smoke-working-2026-08-09.img",
+      "size": 2499805184,
+      "sha256": "66abb107a93d2db17729e7fcc5bedc2c4c6be15c5d2844d0e29d0306e870d5c6",
+      "status": "hardware-passed",
+      "protected": true,
+      "source": "Raspberry Pi OS Legacy Lite 2026-06-18 with KERNEL7.IMG and CONFIG.TXT replaced",
+      "evidence": "Physical Raspberry Pi 2B printed 'gabix uart smoke booted' followed by repeated 'gabix uart smoke alive' on 2026-08-09."
+    },
+    {
+      "id": "pi2-uart-smoke-520m-intermediate",
+      "filename": "pi2-uart-smoke-fat32-official-layout.img",
+      "size": 545259520,
+      "sha256": "d844e1dc13e2f25acb60754f993d4bfd4ac83f19db42e90204c697091a26bbc2",
+      "status": "hardware-failed",
+      "protected": false,
+      "source": "Intermediate single-partition FAT32 layout experiment",
+      "evidence": "Physical Raspberry Pi 2B repeatedly produced four ACT flashes and no UART output on 2026-08-15."
+    },
+    {
+      "id": "pi2-uart-loader-full-2026-08-15",
+      "filename": "gabix-pi2-loader-full.img",
+      "size": 2499805184,
+      "sha256": "cdd2f94825edea97b865dd002a49e8558bcf3dbb43657f6b5074fc02054d7183",
+      "status": "candidate",
+      "protected": false,
+      "source": "pi2-uart-smoke-working-2026-08-09 with the Gabix UART loader as KERNEL7.IMG",
+      "evidence": "Repository image verification passed; physical boot has not been attempted."
+    }
+  ]
+}

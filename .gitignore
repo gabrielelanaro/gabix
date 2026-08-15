@@ -10,6 +10,11 @@
 /target/pi2-uart-smoke.img
 /learning-records/
 
+# Preserved Raspberry Pi images are recorded by checksum in
+# artifacts/pi2-images.json and stored outside disposable build output.
+/artifacts/*.img
+/artifacts/*.xz
+
 # Local agent and browser test state
 /.agents/skills/lavish
 /.claude

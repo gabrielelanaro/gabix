@@ -160,6 +160,58 @@ gabix arm userspace wrote
 gabix raspi2b userspace exited
 ```
 
+## Preserve and classify physical SD images
+
+`artifacts/pi2-images.json` is the tracked source of truth for every physical
+Pi image. Each entry records the exact byte size, SHA-256, test status, source,
+and physical evidence. Use a new image id whenever the bytes change. The three
+statuses have fixed meanings:
+
+- `candidate`: repository checks passed; no physical conclusion exists.
+- `hardware-passed`: the physical Pi produced the recorded expected output.
+- `hardware-failed`: the physical Pi produced the recorded failure.
+
+List the registry before choosing an image:
+
+```sh
+python3 scripts/pi2-image-registry.py list
+```
+
+Hardware-passed images live in `~/Documents/Gabix-Images`, outside disposable
+Cargo `target` directories. The registry verifies the complete checksum before
+use and requires the preserved file to be read-only and user-immutable:
+
+```sh
+python3 scripts/pi2-image-registry.py verify \
+  pi2-uart-smoke-working-2026-08-09
+```
+
+Record the result of every candidate immediately after its physical test. A
+passing result requires the tested image bytes; the command verifies, copies,
+and protects them before changing the tracked status:
+
+```sh
+python3 scripts/pi2-image-registry.py record-result IMAGE_ID \
+  --status hardware-passed \
+  --evidence "exact UART or LED observation" \
+  --image /path/to/tested.img
+
+python3 scripts/pi2-image-registry.py record-result IMAGE_ID \
+  --status hardware-failed \
+  --evidence "exact UART or LED observation"
+```
+
+Never flash an image by an ambiguous build filename. Resolve a registered,
+verified artifact and review its id and checksum first:
+
+```sh
+python3 scripts/pi2-image-registry.py path IMAGE_ID
+```
+
+Removing a protected image requires the deliberate sequence `chflags nouchg`
+followed by restoring write permission. Do this only when retiring an artifact
+whose checksum and replacement are already recorded.
+
 ## Upload development kernels without reflashing
 
 The SD card's development image contains a small UART loader linked at
