@@ -3,7 +3,7 @@
 
 use core::arch::asm;
 use core::panic::PanicInfo;
-use gabix_kernel::loader_protocol::{UploadEvent, UploadReceiver};
+use gabix_kernel::loader_protocol::{UploadEvent, UploadFailure, UploadReceiver};
 
 core::arch::global_asm!(include_str!("pi2_loader.S"));
 
@@ -47,11 +47,17 @@ fn handle_event(uart: &Uart, event: UploadEvent) {
         UploadEvent::Payload { offset, byte } => write_kernel_byte(offset, byte),
         UploadEvent::Complete { offset, byte, .. } => {
             write_kernel_byte(offset, byte);
+            uart.write(b"UPLOAD CRC OK\r\n");
             uart.write(b"UPLOAD OK\r\n");
             uart.flush();
             start_development_kernel();
         }
-        UploadEvent::Failed => {
+        UploadEvent::Failed { reason } => {
+            match reason {
+                UploadFailure::InvalidHeader => uart.write(b"UPLOAD HEADER FAILED\r\n"),
+                UploadFailure::CrcMismatch => uart.write(b"UPLOAD CRC FAILED\r\n"),
+                UploadFailure::Timeout => uart.write(b"UPLOAD TIMEOUT\r\n"),
+            }
             uart.write(b"UPLOAD FAILED\r\n");
             uart.write(b"GABIX LOADER READY\r\n");
         }

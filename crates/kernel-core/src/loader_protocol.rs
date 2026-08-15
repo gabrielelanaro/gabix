@@ -5,11 +5,18 @@ pub const MAX_KERNEL_SIZE: u32 = 16 * 1024 * 1024;
 const HEADER_LEN: usize = 12;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UploadFailure {
+    InvalidHeader,
+    CrcMismatch,
+    Timeout,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum UploadEvent {
     Waiting,
     Payload { offset: u32, byte: u8 },
     Complete { offset: u32, byte: u8, size: u32 },
-    Failed,
+    Failed { reason: UploadFailure },
 }
 
 pub struct UploadReceiver {
@@ -67,7 +74,9 @@ impl UploadReceiver {
                 let expected_crc = u32::from_le_bytes(bytes[8..12].try_into().unwrap());
                 if version != PROTOCOL_VERSION || size == 0 || size > MAX_KERNEL_SIZE {
                     self.reset();
-                    return UploadEvent::Failed;
+                    return UploadEvent::Failed {
+                        reason: UploadFailure::InvalidHeader,
+                    };
                 }
                 self.state = State::Payload {
                     size,
@@ -96,7 +105,9 @@ impl UploadReceiver {
                 if valid {
                     UploadEvent::Complete { offset, byte, size }
                 } else {
-                    UploadEvent::Failed
+                    UploadEvent::Failed {
+                        reason: UploadFailure::CrcMismatch,
+                    }
                 }
             }
         }
@@ -113,7 +124,9 @@ impl UploadReceiver {
     pub fn timeout(&mut self) -> UploadEvent {
         if self.is_upload_active() {
             self.reset();
-            UploadEvent::Failed
+            UploadEvent::Failed {
+                reason: UploadFailure::Timeout,
+            }
         } else {
             UploadEvent::Waiting
         }
@@ -141,7 +154,9 @@ fn crc32_byte(mut crc: u32, byte: u8) -> u32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{UploadEvent, UploadReceiver, PROTOCOL_VERSION, UPLOAD_MARKER};
+    use super::{
+        UploadEvent, UploadFailure, UploadReceiver, PROTOCOL_VERSION, UPLOAD_MARKER,
+    };
     use alloc::vec;
     use alloc::vec::Vec;
 
@@ -224,7 +239,12 @@ mod tests {
             receiver.push(byte);
         }
 
-        assert_eq!(receiver.timeout(), UploadEvent::Failed);
+        assert_eq!(
+            receiver.timeout(),
+            UploadEvent::Failed {
+                reason: UploadFailure::Timeout
+            }
+        );
 
         let payload = b"gabix";
         let mut stream = Vec::new();
@@ -254,7 +274,12 @@ mod tests {
         let mut receiver = UploadReceiver::new();
         let mut upload = upload_for(b"gabix");
         upload[17] ^= 1;
-        assert_eq!(feed(&mut receiver, &upload), UploadEvent::Failed);
+        assert_eq!(
+            feed(&mut receiver, &upload),
+            UploadEvent::Failed {
+                reason: UploadFailure::CrcMismatch
+            }
+        );
         assert!(!receiver.is_upload_active());
     }
 
@@ -263,6 +288,11 @@ mod tests {
         let mut receiver = UploadReceiver::new();
         let mut upload = upload_for(b"gabix");
         upload[9..13].copy_from_slice(&2u32.to_le_bytes());
-        assert_eq!(feed(&mut receiver, &upload[..21]), UploadEvent::Failed);
+        assert_eq!(
+            feed(&mut receiver, &upload[..21]),
+            UploadEvent::Failed {
+                reason: UploadFailure::InvalidHeader
+            }
+        );
     }
 }

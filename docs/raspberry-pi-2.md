@@ -371,6 +371,21 @@ retries the complete image up to three times after a loader rejection. Add
 valid upload starts immediately. A five-second payload inter-byte timeout,
 invalid header, or bad CRC returns the loader to its ready state.
 
+The diagnostic loader emits these lines at transfer-safe points:
+
+```text
+UPLOAD HEADER FAILED
+UPLOAD TIMEOUT
+UPLOAD CRC FAILED
+UPLOAD CRC OK
+UPLOAD OK
+```
+
+It waits until payload reception has ended before printing CRC diagnostics, so
+debug output cannot interrupt the incoming byte stream. `GABIX LOADER READY`
+without a later result means the marker/header did not reach a complete valid
+upload, or the UART owner disappeared before the result was returned.
+
 Gabix system call 169 requests a platform reboot with no arguments. On the Pi,
 the kernel triggers the BCM2836 power-manager watchdog reset. Firmware then
 loads the UART loader from the SD card again. A physical power cycle remains the

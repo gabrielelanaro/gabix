@@ -539,6 +539,21 @@ A milestone is a "demo-able" checkpoint. Worth a commit + tag + log entry.
 
 ## Progress Log
 
+### 2026-08-15 — UART loader diagnostic candidate
+- **Reason:** The first development-kernel upload reached 100% host-side
+  transfer but produced neither `UPLOAD OK` nor kernel output. The deployed
+  loader exposed too little state to distinguish header rejection, timeout,
+  CRC failure, and kernel handoff.
+- **Change:** Added distinct failure reasons in the upload protocol and safe
+  UART diagnostics: `UPLOAD HEADER FAILED`, `UPLOAD TIMEOUT`, `UPLOAD CRC
+  FAILED`, `UPLOAD CRC OK`, and `UPLOAD OK`. Messages are emitted only after
+  payload reception or at safe parser boundaries.
+- **Candidate:** Built and verified
+  `target/official/gabix-pi2-loader-debug.img`, SHA-256
+  `5498918bae0c1795127e8f12d6badcc4217cf778dc2946374726349232554218`.
+  The proven loader backup remains unchanged and protected.
+- **Blocker:** Physical SD reflash is still pending explicit confirmation.
+
 ### 2026-08-15 — Gabix UART loader boots on physical Pi 2B
 - **Result:** The full loader image booted from the SD card and printed
   `GABIX LOADER READY` on the sole 115200-baud UART monitor.
