@@ -106,16 +106,38 @@ def replace_file(image: mmap.mmap, short_name: bytes, replacement: bytes) -> Non
     directory_entry, data_offset, cluster_size, old_size, clusters = locate_file(
         image, short_name
     )
-    if len(replacement) > old_size:
-        raise ValueError(
-            f"replacement for {short_name.decode('ascii', errors='replace')} is "
-            "larger than the official file"
-        )
-    if len(replacement) > len(clusters) * cluster_size:
-        raise ValueError(
-            f"replacement for {short_name.decode('ascii', errors='replace')} does "
-            "not fit its allocated FAT chain"
-        )
+    required_clusters = (len(replacement) + cluster_size - 1) // cluster_size
+    if required_clusters > len(clusters):
+        mbr = image[:SECTOR_SIZE]
+        partition_start = struct.unpack_from("<I", mbr, 446 + 8)[0]
+        boot_offset = partition_start * SECTOR_SIZE
+        boot = image[boot_offset : boot_offset + SECTOR_SIZE]
+        reserved = struct.unpack_from("<H", boot, 14)[0]
+        fat_count = boot[16]
+        fat_sectors = struct.unpack_from("<I", boot, 36)[0]
+        fat_offset = (partition_start + reserved) * SECTOR_SIZE
+        fat_size = fat_sectors * SECTOR_SIZE
+        fat = bytearray(image[fat_offset : fat_offset + fat_size])
+        used = set(clusters)
+        additional = required_clusters - len(clusters)
+        free = []
+        for cluster in range(2, len(fat) // 4):
+            value = struct.unpack_from("<I", fat, cluster * 4)[0] & 0x0FFFFFFF
+            if value == 0 and cluster not in used:
+                free.append(cluster)
+                if len(free) == additional:
+                    break
+        if len(free) != additional:
+            raise ValueError("FAT32 partition has insufficient free clusters")
+
+        extension = [clusters[-1], *free]
+        for index, cluster in enumerate(extension):
+            next_cluster = 0x0FFFFFFF if index == len(extension) - 1 else extension[index + 1]
+            struct.pack_into("<I", fat, cluster * 4, next_cluster)
+        for copy in range(fat_count):
+            start = fat_offset + copy * fat_size
+            image[start : start + fat_size] = fat
+        clusters.extend(free)
 
     remaining = old_size
     for cluster in clusters:
