@@ -9,7 +9,7 @@
       "status": "hardware-passed",
       "protected": true,
       "source": "Raspberry Pi OS Legacy Lite 2026-06-18 with KERNEL7.IMG and CONFIG.TXT replaced",
-      "evidence": "Physical Raspberry Pi 2B printed 'gabix uart smoke booted' followed by repeated 'gabix uart smoke alive' on 2026-08-09."
+      "evidence": "Physical Raspberry Pi 2B printed 'gabix uart smoke booted' followed by repeated 'gabix uart smoke alive' on 2026-08-09 and again after a byte-verified physical flash on 2026-08-15. See artifacts/pi2-uart-smoke-baseline.md."
     },
     {
       "id": "pi2-uart-smoke-520m-intermediate",

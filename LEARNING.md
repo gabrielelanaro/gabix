@@ -552,6 +552,11 @@ A milestone is a "demo-able" checkpoint. Worth a commit + tag + log entry.
 - **Current state:** The historical full smoke image is `hardware-passed`, the
   520 MiB intermediate image is `hardware-failed`, and the full loader image is
   still a `candidate` pending its first physical boot.
+- **Physical reconfirmation:** Reflashed all 2,499,805,184 bytes of the protected
+  baseline, matched all five boot files on the card, and captured
+  `gabix uart smoke booted` plus more than 10,000 heartbeat lines. Recorded the
+  exact evidence and the baseline's known oversized kernel cluster chain in
+  `artifacts/pi2-uart-smoke-baseline.md`.
 
 ### 2026-08-15 — Reproducible Pi loader-image writing
 - **Baseline correction:** The 520 MiB FAT32-layout experiment was mistakenly

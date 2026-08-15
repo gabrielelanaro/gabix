@@ -171,6 +171,10 @@ statuses have fixed meanings:
 - `hardware-passed`: the physical Pi produced the recorded expected output.
 - `hardware-failed`: the physical Pi produced the recorded failure.
 
+The complete control-image identity, reconstruction history, physical write
+result, boot-file comparison, UART evidence, and known FAT warning are recorded
+in `artifacts/pi2-uart-smoke-baseline.md`.
+
 List the registry before choosing an image:
 
 ```sh
