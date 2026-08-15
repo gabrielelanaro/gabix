@@ -4,6 +4,7 @@ use gabix_kernel::BootConsole;
 
 const SYS_WRITE: u32 = 1;
 const SYS_EXIT: u32 = 60;
+const SYS_REBOOT: u32 = 169;
 
 #[repr(C)]
 pub struct UserFrame {
@@ -15,6 +16,7 @@ pub unsafe fn dispatch(frame: &mut UserFrame) {
     let result = match frame.registers[7] {
         SYS_WRITE => write(frame.registers[0], frame.registers[1], frame.registers[2]),
         SYS_EXIT => exit(frame),
+        SYS_REBOOT => crate::platform::reset(),
         _ => u32::MAX,
     };
     frame.registers[0] = result;

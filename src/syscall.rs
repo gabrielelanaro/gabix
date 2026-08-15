@@ -22,6 +22,7 @@ const SYS_LISTEN: u64 = 50;
 const SYS_FORK: u64 = 57;
 const SYS_EXECVE: u64 = 59;
 const SYS_EXIT: u64 = 60;
+const SYS_REBOOT: u64 = 169;
 const SYS_WAIT4: u64 = 61;
 const SYS_CLOCK_GETTIME: u64 = 228;
 const SYS_NET_CONFIGURE: u64 = 904;
@@ -45,6 +46,7 @@ pub(crate) extern "C" fn dispatch(
         SYS_FORK => process::fork(),
         SYS_EXECVE => process::exec_elf(arg1),
         SYS_EXIT => process::exit(arg1),
+        SYS_REBOOT => crate::reboot::reboot(),
         SYS_WAIT4 => process::wait(arg1, arg2),
         SYS_SOCKET => socket::socket(arg1, arg2, arg3),
         SYS_CONNECT => socket::connect(arg1, arg2, arg3),

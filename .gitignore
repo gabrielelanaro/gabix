@@ -1,8 +1,13 @@
 /target
 /targets/armv7/target/
+/crates/kernel-core/target/
+**/__pycache__/
 /qemu.log
 /disk.img
 /serial.log
+/screenlog.0
+/target/pi2-uart-smoke/
+/target/pi2-uart-smoke.img
 /learning-records/
 
 # Local agent and browser test state

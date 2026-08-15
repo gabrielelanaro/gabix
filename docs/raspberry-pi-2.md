@@ -24,6 +24,30 @@ The image contains:
 | FAT16 boot | `bootcode.bin`, `start.elf`, `fixup.dat`, `kernel7.img`, `config.txt` |
 | ext2 root | `/init.elf` and the filesystem test data |
 
+## Isolate UART from Gabix
+
+Build the boot-only UART smoke image when the first question is whether the Pi
+can load a kernel and transmit one line:
+
+```sh
+sh scripts/make-pi2-uart-smoke-image.sh target/pi2-uart-smoke.img
+python3 scripts/verify-pi2-uart-smoke-image.py target/pi2-uart-smoke.img
+```
+
+The image contains the pinned Pi firmware, `kernel7.img`, and `config.txt`.
+The kernel configures GPIO14/15 and the PL011 directly, prints
+`gabix uart smoke booted`, then repeats `gabix uart smoke alive`. It does not
+initialize an SD driver, filesystem, USB stack, network, allocator, or Gabix
+userspace. QEMU tests the same kernel logic with:
+
+```sh
+GABIX_PI2_UART_SMOKE_KERNEL_BASE=0x10000 \
+  sh scripts/build-pi2-uart-smoke.sh target/pi2-uart-smoke/kernel-qemu.img
+```
+
+QEMU's `-kernel` loader uses `0x10000`; the physical image uses the Pi
+firmware's `0x8000` load address from `config.txt`.
+
 The build downloads `bootcode.bin`, `start.elf`, and `fixup.dat` from the pinned
 Raspberry Pi firmware revision on its first run. Set `PI_FIRMWARE_DIR` to a
 directory containing those three files to build without a network request.
@@ -72,7 +96,7 @@ before printing a UDP response; this Python command performs the same check:
 python3 -c 'import socket; s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM); s.settimeout(2); s.sendto(b"hello from mac",("PI_ADDRESS",5555)); print(s.recvfrom(1500)[0].decode())'
 ```
 
-## Optional serial diagnostics
+## UART baseline and serial diagnostics
 
 Use a 3.3 V USB-to-TTL serial adapter. Connect these pins while the Pi is
 powered off:
@@ -83,13 +107,43 @@ powered off:
 | Pin 8, GPIO14 / Pi TX | Adapter RX |
 | Pin 10, GPIO15 / Pi RX | Adapter TX, optional |
 
-Do not connect the adapter's 5 V or 3.3 V power pin. Configure the terminal for
-115200 baud, 8 data bits, no parity, and 1 stop bit. On macOS, a typical command
-is:
+Do not connect the adapter's 5 V or 3.3 V power pin. The repository provides one
+UART monitor command so that only one process can own the serial device and each
+capture has an explicit log path. Close any manually opened `screen`, `cu`, or
+serial-monitor window first, then run:
 
 ```sh
-screen /dev/cu.usbserial-DEVICE 115200
+sh scripts/monitor-pi2-uart.sh status /dev/cu.usbserial-DEVICE
+sh scripts/monitor-pi2-uart.sh start /dev/cu.usbserial-DEVICE
 ```
+
+The start command prints the session, device, baud rate, and log path. Follow
+the printed `screenlog.0` while power-cycling the Pi. Stop the monitor after the
+capture:
+
+```sh
+sh scripts/monitor-pi2-uart.sh stop
+```
+
+The monitor uses 115200 baud, 8 data bits, no parity, and 1 stop bit. The
+`status` command reports the screen session and every process holding the
+device. A second monitor is rejected before it can steal or split the UART
+stream.
+
+Use this order for every physical experiment:
+
+1. Run `python3 scripts/verify-pi2-image.py target/gabix-pi2.img` and record the
+   image checksum with `shasum -a 256 target/gabix-pi2.img`.
+2. Start exactly one UART monitor.
+3. Power-cycle the Pi and keep the complete log.
+4. Classify the boot from the log: old NOOBS/Raspbian text proves the UART and
+   old card work; `gabix raspi2b booted` proves that the Gabix image booted.
+5. Stop the monitor before changing the card or starting another experiment.
+
+This separates the UART baseline, the old-card baseline, and the Gabix boot
+baseline. A silent log with `owners=none` means the monitor was not attached.
+A silent log with one owner means the adapter is open but the Pi has not sent
+data; check Pi power, GPIO14/TX to adapter RX, and shared ground.
 
 The successful boot sequence prints these lines in order:
 
@@ -105,6 +159,54 @@ gabix raspi2b timer advanced
 gabix arm userspace wrote
 gabix raspi2b userspace exited
 ```
+
+## Upload development kernels without reflashing
+
+The SD card's development image contains a small UART loader linked at
+`0x00008000`. It prints `GABIX LOADER READY` and waits for a complete kernel.
+Build the loader once and build each development kernel separately:
+
+```sh
+sh scripts/build-arm.sh pi2-loader
+sh scripts/build-arm.sh pi2-dev
+```
+
+Create the loader SD image from the known-good official Raspberry Pi image.
+This writes a new image file and does not access an SD device:
+
+```sh
+sh scripts/make-pi2-loader-image.sh \
+  /path/to/official-raspberry-pi.img \
+  target/gabix-pi2-loader.img
+```
+
+The development kernel is linked at `0x00100000`, which is the address where
+the loader writes it. The loader accepts at most 16 MiB. It checks the protocol
+version, declared size, and CRC32 before executing any received bytes.
+
+Only one process may own the serial device. Stop the passive monitor, upload,
+then restart the monitor if required:
+
+```sh
+sh scripts/monitor-pi2-uart.sh stop
+python3 scripts/upload-pi2-kernel.py \
+  /dev/cu.usbserial-DEVICE \
+  targets/armv7/target/armv7a-none-eabihf/debug/kernel-pi2-dev.img
+sh scripts/monitor-pi2-uart.sh start /dev/cu.usbserial-DEVICE
+```
+
+The uploader can attach after the loader printed its ready line. It sends the
+marker directly, displays bytes sent, percentage, transfer rate, and ETA, then
+waits for `UPLOAD OK` or `UPLOAD FAILED`. It rejects an already-owned UART and
+retries the complete image up to three times after a loader rejection. Add
+`--wait-ready` when the uploader already owns the UART before the Pi resets. A
+valid upload starts immediately. A five-second payload inter-byte timeout,
+invalid header, or bad CRC returns the loader to its ready state.
+
+Gabix system call 169 requests a platform reboot with no arguments. On the Pi,
+the kernel triggers the BCM2836 power-manager watchdog reset. Firmware then
+loads the UART loader from the SD card again. A physical power cycle remains the
+fallback when a broken development kernel cannot invoke the system call.
 
 The `block read` line appears only when sector 1 contains the QEMU test marker,
 so the physical SD image does not print it.

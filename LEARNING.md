@@ -539,6 +539,60 @@ A milestone is a "demo-able" checkpoint. Worth a commit + tag + log entry.
 
 ## Progress Log
 
+### 2026-08-15 — Raspberry Pi UART development loader
+- **Loader:** Added an allocation-free stage-one Pi 2 loader at `0x00008000`.
+  It receives a versioned `GABIXLOAD` stream, enforces a 16 MiB limit and
+  five-second inter-byte timeout, verifies CRC32, and starts valid kernels at
+  `0x00100000`.
+- **Development loop:** Added separate `pi2-loader` and `pi2-dev` build outputs
+  plus a host UART uploader with explicit progress, transfer rate, and ETA.
+  Build, monitor, upload, and log inspection remain separate commands.
+- **Reset:** Added no-argument system call 169. Raspberry Pi 2 uses the BCM2836
+  watchdog reset; ARM `virt` delegates to its platform termination adapter and
+  x86 uses the i8042 reset command.
+- **Verification:** Protocol unit tests cover valid uploads, CRC failure,
+  unsupported versions, timeout, and retry. Static build tests verify the
+  loader entry at `0x00008000` and development-kernel entry at `0x00100000`.
+- **Next:** Build a loader SD image from the verified official-derived firmware,
+  flash it once, then run the physical upload A → reboot → upload B → corrupt
+  upload/retry acceptance sequence.
+
+### 2026-08-09 — Gabix UART smoke kernel boots on physical Pi 2B
+- **Baseline:** Established a known-good official Bookworm image, one-owner
+  UART monitoring, explicit log paths, confirmed `/dev/rdisk6` targeting, and
+  targeted FAT boot-file read-back.
+- **Diagnosis:** Compared the 260-byte Gabix raw ARM image with the official
+  Linux `KERNEL7.IMG`. The Gabix entry path worked in QEMU and on hardware; the
+  first physical log was garbage because hardcoded PL011 divisors assumed a
+  3 MHz clock while current firmware used 48 MHz.
+- **Fix:** Added the project boot configuration with
+  `init_uart_clock=3000000`, built the corrected official-derived image, and
+  added a self-verifying FAT32 replacement path for `KERNEL7.IMG` and
+  `CONFIG.TXT`.
+- **Verification:** Flashed 149/149 16 MiB blocks with `FAST_DD_STATUS:0`,
+  matched all boot-file hashes after read-back, and captured
+  `gabix uart smoke booted` followed by thousands of
+  `gabix uart smoke alive` lines from the physical Pi.
+- **Status:** Physical UART smoke milestone complete. The full physical SD,
+  USB, Ethernet, DHCP, ping, and UDP checklist remains unchecked.
+- **Next:** Slow the heartbeat to a human-readable interval, then resume the
+  physical Gabix driver checklist from the verified baseline.
+
+### 2026-08-08 — Reproducible Raspberry Pi UART monitoring
+- **Done:** Diagnosed the physical UART capture confusion: the Pi was sending
+  old NOOBS/Raspbian boot output, while `screen` wrote it to its default
+  `screenlog.0` instead of the expected temporary path. Added
+  `scripts/monitor-pi2-uart.sh` with explicit start/status/stop commands, one
+  serial-device owner enforcement, unique log directories, and automatic
+  single-device discovery. Documented a repeatable baseline sequence for image
+  verification, UART capture, power-cycle, boot classification, and monitor
+  cleanup. Ignored the default screen log so it cannot pollute the repository.
+- **Status:** No roadmap checkbox changed. Physical UART is confirmed working;
+  Gabix has not yet been flashed to the SD card.
+- **Next:** Create a verified backup or explicitly approve proceeding without
+  one, flash the verified Gabix image, and capture the first Gabix boot with the
+  single-owner UART monitor.
+
 ### 2026-08-04 — Raspberry Pi hardware lessons and operator notes
 - **Lessons:** Added lesson 7.02 on USB host control, transfer types, descriptors, and enumeration, plus lesson 7.03 on the Pi property mailbox and inter-core mailboxes. Both lessons trace the explanations to the ARMv7 Raspberry Pi drivers and keep the current polling gaps explicit.
 - **Reference material:** Added a Raspberry Pi 2B UART pinout SVG and a `run-pi2-qemu.sh` helper for launching an ARM kernel with the `raspi2b` QEMU machine.

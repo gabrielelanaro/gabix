@@ -16,6 +16,7 @@ mod memory;
 mod net;
 mod process;
 mod qemu_exit;
+mod reboot;
 mod serial;
 mod syscall;
 mod task;

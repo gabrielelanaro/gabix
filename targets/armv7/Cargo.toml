@@ -3,14 +3,22 @@ name = "gabix-armv7"
 version = "0.1.0"
 edition = "2021"
 
+[[bin]]
+name = "gabix-armv7"
+path = "src/main.rs"
+
+[[bin]]
+name = "pi2-loader"
+path = "src/pi2_loader.rs"
+
 [dependencies]
-gabix-kernel = { path = "../../crates/kernel-core" }
+gabix-kernel = { path = "../../crates/kernel-core", default-features = false }
 linked_list_allocator = "0.10"
 
 [features]
 default = []
-virt = []
-raspi2b = []
+virt = ["gabix-kernel/kernel"]
+raspi2b = ["gabix-kernel/kernel"]
 pi-hardware = ["raspi2b"]
 pi-lifecycle = ["raspi2b"]
 
