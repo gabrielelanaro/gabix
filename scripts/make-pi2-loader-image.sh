@@ -16,4 +16,8 @@ python3 "$script_dir/make-pi2-uart-smoke-from-official.py" \
     "$source_image" "$kernel" "$output_image" \
     --config "$repo_root/targets/armv7/boot/config.txt"
 
+python3 "$script_dir/verify-pi2-loader-image.py" \
+    "$output_image" "$kernel" "$repo_root/targets/armv7/boot/config.txt" \
+    --source "$source_image"
+
 printf 'loader_image=%s\n' "$output_image"

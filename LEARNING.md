@@ -539,6 +539,22 @@ A milestone is a "demo-able" checkpoint. Worth a commit + tag + log entry.
 
 ## Progress Log
 
+### 2026-08-15 — Reproducible Pi loader-image writing
+- **Failure:** The first loader image grew the known-good 260-byte smoke kernel
+  into a fragmented FAT32 chain and left the FSInfo free-cluster count stale.
+  The Pi stopped at four ACT flashes before UART output.
+- **Fix:** The image builder now relocates a growing `KERNEL7.IMG` into one
+  contiguous cluster run, updates both FAT copies and primary/backup FSInfo,
+  and compares firmware files against the known-good smoke source.
+- **Guardrail:** Added `scripts/verify-pi2-loader-image.py`. It rejects the
+  broken fragmented image and accepts the corrected `668–683` cluster layout.
+  `fsck_msdos -n` reports a clean corrected FAT32 image.
+- **Runbook:** Documented exact device identification, confirmation, raw write,
+  boot-file comparison, unmount, and the reason post-mount whole-disk hashes are
+  not the acceptance signal.
+- **Next:** Flash `target/gabix-pi2-loader-v2.img`, confirm
+  `GABIX LOADER READY`, then run upload A → reboot → upload B → corrupt/retry.
+
 ### 2026-08-15 — Raspberry Pi UART development loader
 - **Loader:** Added an allocation-free stage-one Pi 2 loader at `0x00008000`.
   It receives a versioned `GABIXLOAD` stream, enforces a 16 MiB limit and

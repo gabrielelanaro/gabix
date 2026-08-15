@@ -171,14 +171,113 @@ sh scripts/build-arm.sh pi2-loader
 sh scripts/build-arm.sh pi2-dev
 ```
 
-Create the loader SD image from the known-good official Raspberry Pi image.
-This writes a new image file and does not access an SD device:
+Create the loader SD image from the known-good UART smoke image. This exact
+source already booted on the physical Pi and keeps firmware, partition layout,
+and UART clock configuration fixed:
 
 ```sh
 sh scripts/make-pi2-loader-image.sh \
-  /path/to/official-raspberry-pi.img \
-  target/gabix-pi2-loader.img
+  target/pi2-uart-smoke-fat32-official-layout.img \
+  target/gabix-pi2-loader-v2.img
 ```
+
+The baseline image is a preserved local test artifact rather than a Git file.
+Its required SHA-256 is:
+
+```text
+d844e1dc13e2f25acb60754f993d4bfd4ac83f19db42e90204c697091a26bbc2
+```
+
+Check it before every derived build:
+
+```sh
+shasum -a 256 target/pi2-uart-smoke-fat32-official-layout.img
+```
+
+If the artifact is missing, recreate it from the pinned official Raspberry Pi
+image used for the physical smoke baseline, the smoke kernel, and the tracked
+boot configuration:
+
+```sh
+sh scripts/build-pi2-uart-smoke.sh target/pi2-uart-smoke/kernel7.img
+python3 scripts/make-pi2-uart-smoke-from-official.py \
+  /path/to/pinned-official-raspberry-pi.img \
+  target/pi2-uart-smoke/kernel7.img \
+  target/pi2-uart-smoke-fat32-official-layout.img \
+  --config targets/armv7/boot/config.txt
+```
+
+Boot this recreated smoke image on the physical Pi and require
+`gabix uart smoke alive` before accepting it as the new baseline. Record its
+source-image checksum and resulting baseline checksum in the progress log.
+
+The builder writes a new image file and does not access an SD device. It checks
+that `bootcode.bin`, `start.elf`, and `fixup.dat` match the known-good source;
+that `kernel7.img` and `config.txt` match the current build; and that the kernel
+occupies one contiguous FAT32 cluster chain. It also updates both FAT copies and
+the FAT32 free-space records.
+
+### Repeatable SD write procedure
+
+Keep image construction, physical writing, and boot testing as three explicit
+steps. Never modify the known-good smoke image in place.
+
+1. Build and verify the image with the command above. Record the printed output
+   SHA-256.
+2. Insert the SD card and identify it every time:
+
+   ```sh
+   diskutil list external physical
+   diskutil info /dev/diskN
+   ```
+
+   Confirm `Device Location: External`, the expected card capacity, and
+   `Media Read-Only: No`. Disk numbers can change after every reconnection.
+3. Report the exact `/dev/diskN` target and obtain confirmation before writing.
+4. Unmount and write through the raw device:
+
+   ```sh
+   diskutil unmountDisk /dev/diskN
+   sudo dd \
+     if=target/gabix-pi2-loader-v2.img \
+     of=/dev/rdiskN \
+     bs=16m conv=sync status=progress
+   sync
+   ```
+
+5. Verify all boot files after macOS mounts `BOOTFS`:
+
+   ```sh
+   python3 scripts/verify-pi2-loader-card.py \
+     target/gabix-pi2-loader-v2.img \
+     /Volumes/BOOTFS
+   ```
+
+   This compares `bootcode.bin`, `start.elf`, `fixup.dat`, `kernel7.img`, and
+   `config.txt` byte-for-byte against the built image.
+6. Unmount and check FAT metadata before removing the card:
+
+   ```sh
+   diskutil unmountDisk /dev/diskN
+   sudo fsck_msdos -n /dev/rdiskNs1
+   ```
+
+   The checker must complete all three phases without a free-space mismatch,
+   differing FAT copies, broken chain, or orphan cluster.
+
+Do not use a whole-device hash after macOS has mounted the FAT partition as the
+acceptance signal. Mounting can update FAT metadata while leaving every boot
+file unchanged. Comparing the five boot files gives the useful, fast post-write
+signal; the image builder and `fsck_msdos` own the structural FAT checks.
+
+The first loader-image attempt broke this rule by growing the 260-byte smoke
+kernel with a fragmented chain (`663 → 3 → 10 → 658 → ...`) and leaving FAT32
+free-space metadata stale. In the corrected image observed on 2026-08-15, the
+61,580-byte loader occupied contiguous clusters `668–683`; future builds only
+require contiguity, not that exact range. The verifier rejects fragmented
+output. Raspberry Pi documents four short ACT LED flashes as `start*.elf` not
+found; treat that as an SD boot-layout failure before debugging UART or kernel
+code. See the [Raspberry Pi LED warning codes](https://www.raspberrypi.com/documentation/configuration/bootfolder.md#led-warning-flash-codes).
 
 The development kernel is linked at `0x00100000`, which is the address where
 the loader writes it. The loader accepts at most 16 MiB. It checks the protocol

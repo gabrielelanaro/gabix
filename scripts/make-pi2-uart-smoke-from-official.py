@@ -118,28 +118,60 @@ def replace_file(image: mmap.mmap, short_name: bytes, replacement: bytes) -> Non
         fat_offset = (partition_start + reserved) * SECTOR_SIZE
         fat_size = fat_sectors * SECTOR_SIZE
         fat = bytearray(image[fat_offset : fat_offset + fat_size])
-        used = set(clusters)
-        additional = required_clusters - len(clusters)
-        free = []
-        for cluster in range(2, len(fat) // 4):
-            value = struct.unpack_from("<I", fat, cluster * 4)[0] & 0x0FFFFFFF
-            if value == 0 and cluster not in used:
-                free.append(cluster)
-                if len(free) == additional:
-                    break
-        if len(free) != additional:
-            raise ValueError("FAT32 partition has insufficient free clusters")
+        total_sectors = struct.unpack_from("<I", boot, 32)[0]
+        data_sectors = total_sectors - reserved - fat_count * fat_sectors
+        data_clusters = data_sectors // boot[13]
+        last_cluster = min(data_clusters + 1, len(fat) // 4 - 1)
+        old_clusters = list(clusters)
+        for cluster in old_clusters:
+            struct.pack_into("<I", fat, cluster * 4, 0)
 
-        extension = [clusters[-1], *free]
-        for index, cluster in enumerate(extension):
-            next_cluster = 0x0FFFFFFF if index == len(extension) - 1 else extension[index + 1]
+        run_start = None
+        run_length = 0
+        for cluster in range(2, last_cluster + 1):
+            value = struct.unpack_from("<I", fat, cluster * 4)[0] & 0x0FFFFFFF
+            if value == 0:
+                run_start = cluster if run_length == 0 else run_start
+                run_length += 1
+                if run_length == required_clusters:
+                    break
+            else:
+                run_start = None
+                run_length = 0
+        if run_start is None or run_length != required_clusters:
+            raise ValueError("FAT32 partition has no contiguous free cluster run")
+
+        clusters = list(range(run_start, run_start + required_clusters))
+        for index, cluster in enumerate(clusters):
+            next_cluster = 0x0FFFFFFF if index == len(clusters) - 1 else cluster + 1
             struct.pack_into("<I", fat, cluster * 4, next_cluster)
         for copy in range(fat_count):
             start = fat_offset + copy * fat_size
             image[start : start + fat_size] = fat
-        clusters.extend(free)
 
-    remaining = old_size
+        struct.pack_into("<H", image, directory_entry + 20, run_start >> 16)
+        struct.pack_into("<H", image, directory_entry + 26, run_start & 0xFFFF)
+
+        free_clusters = [
+            cluster
+            for cluster in range(2, last_cluster + 1)
+            if struct.unpack_from("<I", fat, cluster * 4)[0] & 0x0FFFFFFF == 0
+        ]
+        fsinfo_sector = struct.unpack_from("<H", boot, 48)[0]
+        backup_boot_sector = struct.unpack_from("<H", boot, 50)[0]
+        for relative_sector in (fsinfo_sector, backup_boot_sector + fsinfo_sector):
+            if relative_sector >= reserved:
+                continue
+            fsinfo_offset = (partition_start + relative_sector) * SECTOR_SIZE
+            struct.pack_into("<I", image, fsinfo_offset + 488, len(free_clusters))
+            struct.pack_into(
+                "<I",
+                image,
+                fsinfo_offset + 492,
+                free_clusters[0] if free_clusters else 0xFFFFFFFF,
+            )
+
+    remaining = len(clusters) * cluster_size
     for cluster in clusters:
         length = min(cluster_size, remaining)
         start = data_offset + (cluster - 2) * cluster_size
