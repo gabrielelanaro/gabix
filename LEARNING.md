@@ -539,6 +539,27 @@ A milestone is a "demo-able" checkpoint. Worth a commit + tag + log entry.
 
 ## Progress Log
 
+### 2026-08-15 — UART kernel upload and userspace reboot lifecycle
+- **Done:** Added paced UART uploads with progress/ETA output via
+  `scripts/upload-pi2-kernel.py --inter-byte-delay-us`, plus a
+  `--wait-for-reboot` mode that keeps the same UART open to capture the
+  post-upload loader-ready line; enabled the PL011 receive/transmit FIFOs in
+  the Pi 2 loader; added
+  `tests/fixtures/arm_reboot.rs`, which prints a marker and invokes syscall
+  169; and added `tests/test_raspi2b_reboots_from_userspace.sh`.
+- **Verification:** The uploader tests pass (5/5), the Pi 2 loader build test
+  passes, the Pi 2 lifecycle test passes in QEMU, and the full suite passes
+  47/51 when pointed at the installed Homebrew ARM QEMU. The four remaining
+  failures are environment/toolchain issues: a missing x86 target, missing
+  cross-toolchain utilities, and the dependent LAN9512/MBR checks.
+- **Artifacts:** The debug Pi 2 development kernel is linked at `0x00100000`
+  and rebuilt as `targets/armv7/target/armv7a-none-eabihf/debug/kernel-pi2-dev.img`.
+  The reboot fixture is `target/gabix-arm-reboot.elf`.
+- **Physical boundary:** The SD card is currently absent. The next physical
+  action is to back up the existing ext2 `/init.elf`, install the reboot
+  fixture as `/init.elf`, verify the readback, then upload the development
+  kernel over UART and observe the reboot returning to `GABIX LOADER READY`.
+
 ### 2026-08-15 — UART loader diagnostic candidate
 - **Reason:** The first development-kernel upload reached 100% host-side
   transfer but produced neither `UPLOAD OK` nor kernel output. The deployed

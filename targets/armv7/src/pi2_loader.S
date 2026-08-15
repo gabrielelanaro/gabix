@@ -36,7 +36,9 @@ _start:
     str r0, [r4, #0x24]
     mov r0, #40
     str r0, [r4, #0x28]
-    mov r0, #0x60
+    @ Enable the 16-byte PL011 RX/TX FIFOs so the polling loader can absorb
+    @ short host-side bursts without overrunning the one-byte receive path.
+    mov r0, #0x70
     str r0, [r4, #0x2c]
     ldr r0, =0x301
     str r0, [r4, #0x30]

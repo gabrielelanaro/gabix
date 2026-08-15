@@ -14,13 +14,14 @@ disk=$2
 
 sh "$script_dir/make-disk.sh" tests/fixtures/hello.rs "$disk" >/dev/null
 
-debugfs=$(command -v debugfs || command -v /usr/sbin/debugfs || true)
+debugfs=$(command -v debugfs || command -v /usr/sbin/debugfs ||
+    { command -v brew >/dev/null 2>&1 && brew --prefix e2fsprogs 2>/dev/null | xargs -I{} printf '%s/sbin/debugfs' '{}'; } || true)
 if [ -z "$debugfs" ]; then
     echo "debugfs not found" >&2
     exit 1
 fi
 
-fixture_elf=$(mktemp /tmp/mini-os-arm-init.XXXXXX.elf)
+fixture_elf=$(mktemp /tmp/mini-os-arm-init.XXXXXX)
 rustc \
     --target armv7a-none-eabihf \
     --edition 2021 \

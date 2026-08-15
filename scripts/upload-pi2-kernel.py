@@ -25,11 +25,15 @@ def build_upload(kernel: bytes) -> bytes:
     return MARKER + header + kernel
 
 
-def validate_transfer_options(chunk_size: int, retries: int) -> None:
+def validate_transfer_options(
+    chunk_size: int, retries: int, inter_byte_delay_us: int
+) -> None:
     if chunk_size <= 0:
         raise ValueError("chunk size must be positive")
     if retries <= 0:
         raise ValueError("retries must be positive")
+    if inter_byte_delay_us < 0:
+        raise ValueError("inter-byte delay must not be negative")
 
 
 def open_uart(path: str) -> int:
@@ -66,7 +70,7 @@ def wait_for(fd: int, marker: bytes, timeout: float, echo: bool = True) -> bytes
     raise TimeoutError(f"timed out waiting for {marker.decode(errors='replace')}")
 
 
-def wait_for_result(fd: int, timeout: float) -> bool:
+def wait_for_result(fd: int, timeout: float) -> tuple[bool, bytes]:
     deadline = time.monotonic() + timeout
     received = bytearray()
     while time.monotonic() < deadline:
@@ -78,32 +82,62 @@ def wait_for_result(fd: int, timeout: float) -> bool:
         sys.stdout.buffer.flush()
         received.extend(chunk)
         if b"UPLOAD OK" in received:
-            return True
+            return True, bytes(received)
         if b"UPLOAD FAILED" in received:
-            return False
+            return False, bytes(received)
     raise TimeoutError("timed out waiting for upload result")
 
 
-def write_all(fd: int, data: bytes, chunk_size: int) -> None:
+def wait_for_reboot(fd: int, initial: bytes, timeout: float) -> bool:
+    if b"GABIX LOADER READY" in initial.split(b"UPLOAD OK", 1)[-1]:
+        return True
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        readable, _, _ = select.select(
+            [fd], [], [], min(0.2, deadline - time.monotonic())
+        )
+        if not readable:
+            continue
+        chunk = os.read(fd, 4096)
+        if chunk:
+            sys.stdout.buffer.write(chunk)
+            sys.stdout.buffer.flush()
+            if b"GABIX LOADER READY" in chunk:
+                return True
+    return False
+
+
+def write_all(
+    fd: int, data: bytes, chunk_size: int, inter_byte_delay_us: int = 0
+) -> None:
     started = time.monotonic()
+    next_progress = started
     sent = 0
     total = len(data)
+    paced = inter_byte_delay_us > 0
+    write_size = 1 if paced else chunk_size
+    delay_seconds = inter_byte_delay_us / 1_000_000
     while sent < total:
         _, writable, _ = select.select([], [fd], [], 1.0)
         if not writable:
             continue
-        count = os.write(fd, data[sent : sent + chunk_size])
+        count = os.write(fd, data[sent : sent + write_size])
         sent += count
-        elapsed = max(time.monotonic() - started, 0.001)
-        rate = sent / elapsed
-        eta = (total - sent) / rate
-        print(
-            f"\rupload {sent}/{total} bytes ({sent * 100 / total:5.1f}%) "
-            f"{rate / 1024:6.1f} KiB/s ETA {eta:5.1f}s",
-            end="",
-            file=sys.stderr,
-            flush=True,
-        )
+        if paced and sent < total:
+            time.sleep(delay_seconds)
+        now = time.monotonic()
+        if sent == total or now >= next_progress:
+            elapsed = max(now - started, 0.001)
+            rate = sent / elapsed
+            eta = (total - sent) / rate
+            print(
+                f"\rupload {sent}/{total} bytes ({sent * 100 / total:5.1f}%) "
+                f"{rate / 1024:6.1f} KiB/s ETA {eta:5.1f}s",
+                end="",
+                file=sys.stderr,
+                flush=True,
+            )
+            next_progress = now + 0.25
     print(file=sys.stderr)
     termios.tcdrain(fd)
 
@@ -115,10 +149,24 @@ def main() -> int:
     parser.add_argument("--ready-timeout", type=float, default=30.0)
     parser.add_argument("--result-timeout", type=float, default=10.0)
     parser.add_argument("--chunk-size", type=int, default=4096)
+    parser.add_argument(
+        "--inter-byte-delay-us",
+        type=int,
+        default=0,
+        help="microseconds to wait between bytes; 500 is proven for the current Pi 2 debug loader",
+    )
     parser.add_argument("--retries", type=int, default=3)
     parser.add_argument("--wait-ready", action="store_true")
+    parser.add_argument(
+        "--wait-for-reboot",
+        action="store_true",
+        help="keep the UART open after UPLOAD OK and require a new loader-ready line",
+    )
+    parser.add_argument("--reboot-timeout", type=float, default=15.0)
     args = parser.parse_args()
-    validate_transfer_options(args.chunk_size, args.retries)
+    validate_transfer_options(
+        args.chunk_size, args.retries, args.inter_byte_delay_us
+    )
 
     kernel = open(args.kernel, "rb").read()
     upload = build_upload(kernel)
@@ -132,8 +180,18 @@ def main() -> int:
                 f"sending {len(kernel)}-byte kernel (attempt {attempt}/{args.retries})",
                 file=sys.stderr,
             )
-            write_all(fd, upload, args.chunk_size)
-            if wait_for_result(fd, args.result_timeout):
+            write_all(
+                fd,
+                upload,
+                args.chunk_size,
+                args.inter_byte_delay_us,
+            )
+            uploaded, result = wait_for_result(fd, args.result_timeout)
+            if uploaded:
+                if args.wait_for_reboot and not wait_for_reboot(
+                    fd, result, args.reboot_timeout
+                ):
+                    raise TimeoutError("timed out waiting for loader after reboot")
                 return 0
             print("loader rejected the upload; retrying complete image", file=sys.stderr)
         return 1

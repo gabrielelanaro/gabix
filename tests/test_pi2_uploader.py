@@ -32,7 +32,43 @@ def test_upload_rejects_oversized_kernel():
 
 def test_upload_rejects_zero_chunk_size():
     try:
-        UPLOADER.validate_transfer_options(0, 3)
+        UPLOADER.validate_transfer_options(0, 3, 0)
     except ValueError:
         return
     raise AssertionError("zero chunk size was accepted")
+
+
+def test_upload_rejects_negative_inter_byte_delay():
+    try:
+        UPLOADER.validate_transfer_options(256, 3, -1)
+    except ValueError:
+        return
+    raise AssertionError("negative inter-byte delay was accepted")
+
+
+def test_paced_upload_writes_one_byte_at_a_time(monkeypatch):
+    writes = []
+    sleeps = []
+
+    monkeypatch.setattr(UPLOADER.select, "select", lambda *_args: ([], [7], []))
+    monkeypatch.setattr(
+        UPLOADER.os,
+        "write",
+        lambda _fd, data: writes.append(data) or len(data),
+    )
+    monkeypatch.setattr(UPLOADER.time, "monotonic", lambda: 1.0)
+    monkeypatch.setattr(UPLOADER.time, "sleep", sleeps.append)
+    monkeypatch.setattr(UPLOADER.termios, "tcdrain", lambda _fd: None)
+
+    UPLOADER.write_all(7, b"abc", chunk_size=256, inter_byte_delay_us=500)
+
+    assert writes == [b"a", b"b", b"c"]
+    assert sleeps == [0.0005, 0.0005]
+
+
+def test_wait_for_reboot_accepts_ready_after_upload(monkeypatch):
+    monkeypatch.setattr(UPLOADER.time, "monotonic", lambda: 1.0)
+
+    assert UPLOADER.wait_for_reboot(
+        7, b"UPLOAD OK\r\nGABIX LOADER READY\r\n", timeout=1
+    )
