@@ -70,7 +70,12 @@ def wait_for(fd: int, marker: bytes, timeout: float, echo: bool = True) -> bytes
     raise TimeoutError(f"timed out waiting for {marker.decode(errors='replace')}")
 
 
-def wait_for_result(fd: int, timeout: float) -> tuple[bool, bytes]:
+def wait_for_result(
+    fd: int,
+    timeout: float,
+    success_marker: bytes = b"UPLOAD OK",
+    failure_marker: bytes = b"UPLOAD FAILED",
+) -> tuple[bool, bytes]:
     deadline = time.monotonic() + timeout
     received = bytearray()
     while time.monotonic() < deadline:
@@ -81,15 +86,22 @@ def wait_for_result(fd: int, timeout: float) -> tuple[bool, bytes]:
         sys.stdout.buffer.write(chunk)
         sys.stdout.buffer.flush()
         received.extend(chunk)
-        if b"UPLOAD OK" in received:
+        if success_marker in received:
             return True, bytes(received)
-        if b"UPLOAD FAILED" in received:
+        if failure_marker in received:
             return False, bytes(received)
     raise TimeoutError("timed out waiting for upload result")
 
 
-def wait_for_reboot(fd: int, initial: bytes, timeout: float) -> bool:
-    if b"GABIX LOADER READY" in initial.split(b"UPLOAD OK", 1)[-1]:
+def wait_for_marker_after(
+    fd: int,
+    initial: bytes,
+    after_marker: bytes,
+    marker: bytes,
+    timeout: float,
+) -> bool:
+    received = bytearray(initial.split(after_marker, 1)[-1])
+    if marker in received:
         return True
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -102,9 +114,22 @@ def wait_for_reboot(fd: int, initial: bytes, timeout: float) -> bool:
         if chunk:
             sys.stdout.buffer.write(chunk)
             sys.stdout.buffer.flush()
-            if b"GABIX LOADER READY" in chunk:
+            received.extend(chunk)
+            if marker in received:
                 return True
+            if len(received) > 8192:
+                del received[:-4096]
     return False
+
+
+def wait_for_reboot(fd: int, initial: bytes, timeout: float) -> bool:
+    return wait_for_marker_after(
+        fd,
+        initial,
+        after_marker=b"UPLOAD OK",
+        marker=b"GABIX LOADER READY",
+        timeout=timeout,
+    )
 
 
 def write_all(
@@ -157,12 +182,19 @@ def main() -> int:
     )
     parser.add_argument("--retries", type=int, default=3)
     parser.add_argument("--wait-ready", action="store_true")
-    parser.add_argument(
+    completion = parser.add_mutually_exclusive_group()
+    completion.add_argument(
         "--wait-for-reboot",
         action="store_true",
         help="keep the UART open after UPLOAD OK and require a new loader-ready line",
     )
+    completion.add_argument(
+        "--wait-for-user-ready",
+        action="store_true",
+        help="keep the UART open after UPLOAD OK and require the kernel user loader",
+    )
     parser.add_argument("--reboot-timeout", type=float, default=15.0)
+    parser.add_argument("--user-ready-timeout", type=float, default=30.0)
     args = parser.parse_args()
     validate_transfer_options(
         args.chunk_size, args.retries, args.inter_byte_delay_us
@@ -192,6 +224,14 @@ def main() -> int:
                     fd, result, args.reboot_timeout
                 ):
                     raise TimeoutError("timed out waiting for loader after reboot")
+                if args.wait_for_user_ready and not wait_for_marker_after(
+                    fd,
+                    result,
+                    after_marker=b"UPLOAD OK",
+                    marker=b"GABIX USER READY",
+                    timeout=args.user_ready_timeout,
+                ):
+                    raise TimeoutError("timed out waiting for kernel user loader")
                 return 0
             print("loader rejected the upload; retrying complete image", file=sys.stderr)
         return 1

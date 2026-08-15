@@ -23,13 +23,22 @@ pub unsafe fn dispatch(frame: &mut UserFrame) {
 }
 
 unsafe fn exit(_frame: &mut UserFrame) -> u32 {
-    #[cfg(any(feature = "pi-hardware", feature = "pi-lifecycle"))]
+    #[cfg(any(
+        feature = "pi-hardware",
+        feature = "pi-lifecycle",
+        feature = "pi-uart-user"
+    ))]
     {
-        _frame.return_address = crate::arm_kernel_after_user as *const () as usize as u32;
+        _frame.return_address =
+            crate::arm_kernel_after_user_trampoline as *const () as usize as u32;
         asm!("msr spsr_cxsf, {status}", status = in(reg) 0x13u32);
         0
     }
-    #[cfg(not(any(feature = "pi-hardware", feature = "pi-lifecycle")))]
+    #[cfg(not(any(
+        feature = "pi-hardware",
+        feature = "pi-lifecycle",
+        feature = "pi-uart-user"
+    )))]
     {
         exit_success()
     }
@@ -49,7 +58,11 @@ unsafe fn write(fd: u32, address: u32, len: u32) -> u32 {
     len
 }
 
-#[cfg(not(any(feature = "pi-hardware", feature = "pi-lifecycle")))]
+#[cfg(not(any(
+    feature = "pi-hardware",
+    feature = "pi-lifecycle",
+    feature = "pi-uart-user"
+)))]
 unsafe fn exit_success() -> ! {
     let block = [0x0002_0026u32, 0];
     asm!(

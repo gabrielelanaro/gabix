@@ -17,6 +17,8 @@ mod raspi2b;
 mod scheduler;
 mod syscall;
 mod user;
+#[cfg(feature = "pi-uart-user")]
+mod user_upload;
 #[cfg(feature = "virt")]
 mod virt;
 
@@ -30,9 +32,24 @@ use gabix_kernel::device::FrameDevice;
 use network::{DhcpSession, NetworkEvent};
 use platform::{PLATFORM, UART_BASE};
 
-#[cfg(any(feature = "pi-hardware", feature = "pi-lifecycle"))]
+#[cfg(any(
+    feature = "pi-hardware",
+    feature = "pi-lifecycle",
+    feature = "pi-uart-user"
+))]
+const RASPI2B_SVC_STACK_TOP: u32 = 0x0800_0000;
+
+#[cfg(any(
+    feature = "pi-hardware",
+    feature = "pi-lifecycle",
+    feature = "pi-uart-user"
+))]
 const SEMIHOSTING: u32 = 0;
-#[cfg(not(any(feature = "pi-hardware", feature = "pi-lifecycle")))]
+#[cfg(not(any(
+    feature = "pi-hardware",
+    feature = "pi-lifecycle",
+    feature = "pi-uart-user"
+)))]
 const SEMIHOSTING: u32 = 1;
 
 #[cfg(any(feature = "pi-hardware", feature = "pi-lifecycle"))]
@@ -156,6 +173,7 @@ extern "C" fn arm_kernel_entry() {
 
     #[cfg(feature = "raspi2b")]
     unsafe {
+        #[cfg(not(feature = "pi-uart-user"))]
         let mut disk_user_entry = None;
         if memory::enable_identity_mapping() {
             write_line(&mut console, b"gabix raspi2b memory mapped");
@@ -180,6 +198,7 @@ extern "C" fn arm_kernel_entry() {
                     write_line(&mut console, b"gabix raspi2b file read");
                 }
             }
+            #[cfg(not(feature = "pi-uart-user"))]
             if let Some(image) = gabix_kernel::fs::ext2::read_file(&mut root, b"/init.elf") {
                 disk_user_entry = user::load_elf(&image);
             }
@@ -226,6 +245,9 @@ extern "C" fn arm_kernel_entry() {
             asm!("wfi");
         }
         write_line(&mut console, b"gabix raspi2b timer advanced");
+        #[cfg(feature = "pi-uart-user")]
+        user_upload::run(&mut console);
+        #[cfg(not(feature = "pi-uart-user"))]
         if let Some(entry) = disk_user_entry {
             memory::allow_user_section(entry);
             memory::allow_user_section(user::USER_STACK_TOP - 1);
@@ -234,12 +256,36 @@ extern "C" fn arm_kernel_entry() {
     }
 }
 
-#[cfg(any(feature = "pi-hardware", feature = "pi-lifecycle"))]
+#[cfg(any(
+    feature = "pi-hardware",
+    feature = "pi-lifecycle",
+    feature = "pi-uart-user"
+))]
+#[unsafe(naked)]
+extern "C" fn arm_kernel_after_user_trampoline() -> ! {
+    core::arch::naked_asm!(
+        "mov r0, #{stack_top}",
+        "mov sp, r0",
+        "b {after_user}",
+        stack_top = const RASPI2B_SVC_STACK_TOP,
+        after_user = sym arm_kernel_after_user,
+    );
+}
+
+#[cfg(any(
+    feature = "pi-hardware",
+    feature = "pi-lifecycle",
+    feature = "pi-uart-user"
+))]
 #[no_mangle]
 extern "C" fn arm_kernel_after_user() -> ! {
     let mut console = Pl011::new(UART_BASE);
     write_line(&mut console, b"gabix raspi2b userspace exited");
+    #[cfg(feature = "pi-uart-user")]
+    user_upload::run(&mut console);
+    #[cfg(not(feature = "pi-uart-user"))]
     let mut next_discover = raspi2b::timer::ticks();
+    #[cfg(not(feature = "pi-uart-user"))]
     unsafe {
         loop {
             let network = &mut *core::ptr::addr_of_mut!(PI_NETWORK);

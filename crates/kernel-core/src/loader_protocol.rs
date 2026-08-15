@@ -21,6 +21,7 @@ pub enum UploadEvent {
 
 pub struct UploadReceiver {
     state: State,
+    max_size: u32,
 }
 
 enum State {
@@ -41,8 +42,13 @@ enum State {
 
 impl UploadReceiver {
     pub const fn new() -> Self {
+        Self::with_max_size(MAX_KERNEL_SIZE)
+    }
+
+    pub const fn with_max_size(max_size: u32) -> Self {
         Self {
             state: State::Marker { matched: 0 },
+            max_size,
         }
     }
 
@@ -72,7 +78,7 @@ impl UploadReceiver {
                 let version = u32::from_le_bytes(bytes[0..4].try_into().unwrap());
                 let size = u32::from_le_bytes(bytes[4..8].try_into().unwrap());
                 let expected_crc = u32::from_le_bytes(bytes[8..12].try_into().unwrap());
-                if version != PROTOCOL_VERSION || size == 0 || size > MAX_KERNEL_SIZE {
+                if version != PROTOCOL_VERSION || size == 0 || size > self.max_size {
                     self.reset();
                     return UploadEvent::Failed {
                         reason: UploadFailure::InvalidHeader,
@@ -154,9 +160,7 @@ fn crc32_byte(mut crc: u32, byte: u8) -> u32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        UploadEvent, UploadFailure, UploadReceiver, PROTOCOL_VERSION, UPLOAD_MARKER,
-    };
+    use super::{UploadEvent, UploadFailure, UploadReceiver, PROTOCOL_VERSION, UPLOAD_MARKER};
     use alloc::vec;
     use alloc::vec::Vec;
 
@@ -288,6 +292,19 @@ mod tests {
         let mut receiver = UploadReceiver::new();
         let mut upload = upload_for(b"gabix");
         upload[9..13].copy_from_slice(&2u32.to_le_bytes());
+        assert_eq!(
+            feed(&mut receiver, &upload[..21]),
+            UploadEvent::Failed {
+                reason: UploadFailure::InvalidHeader
+            }
+        );
+    }
+
+    #[test]
+    fn test_upload_rejects_payload_larger_than_receiver_limit() {
+        let mut receiver = UploadReceiver::with_max_size(4);
+        let upload = upload_for(b"gabix");
+
         assert_eq!(
             feed(&mut receiver, &upload[..21]),
             UploadEvent::Failed {

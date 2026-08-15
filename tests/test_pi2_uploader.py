@@ -72,3 +72,33 @@ def test_wait_for_reboot_accepts_ready_after_upload(monkeypatch):
     assert UPLOADER.wait_for_reboot(
         7, b"UPLOAD OK\r\nGABIX LOADER READY\r\n", timeout=1
     )
+
+
+def test_result_wait_accepts_user_upload_markers(monkeypatch):
+    reads = iter([b"USER UPLOAD OK\r\n"])
+    monkeypatch.setattr(UPLOADER.select, "select", lambda *_args: ([7], [], []))
+    monkeypatch.setattr(UPLOADER.os, "read", lambda *_args: next(reads))
+
+    accepted, received = UPLOADER.wait_for_result(
+        7,
+        timeout=1,
+        success_marker=b"USER UPLOAD OK",
+        failure_marker=b"USER UPLOAD FAILED",
+    )
+
+    assert accepted
+    assert received == b"USER UPLOAD OK\r\n"
+
+
+def test_marker_wait_handles_marker_split_between_reads(monkeypatch):
+    reads = iter([b"ER READY\r\n"])
+    monkeypatch.setattr(UPLOADER.select, "select", lambda *_args: ([7], [], []))
+    monkeypatch.setattr(UPLOADER.os, "read", lambda *_args: next(reads))
+
+    assert UPLOADER.wait_for_marker_after(
+        7,
+        initial=b"USER UPLOAD OK\r\nGABIX US",
+        after_marker=b"USER UPLOAD OK",
+        marker=b"GABIX USER READY",
+        timeout=1,
+    )

@@ -10,6 +10,17 @@ impl Pl011 {
             base: base as *mut u32,
         }
     }
+
+    #[cfg(feature = "pi-uart-user")]
+    pub fn try_read_byte(&mut self) -> Option<u8> {
+        unsafe {
+            if core::ptr::read_volatile(self.base.add(0x18 / 4)) & 0x10 != 0 {
+                None
+            } else {
+                Some(core::ptr::read_volatile(self.base) as u8)
+            }
+        }
+    }
 }
 
 impl BootConsole for Pl011 {

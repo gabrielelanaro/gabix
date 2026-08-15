@@ -5,8 +5,9 @@ set -eu
 if [ "$#" -ne 1 ] ||
     { [ "$1" != "virt" ] && [ "$1" != "raspi2b" ] &&
         [ "$1" != "raspi2b-hardware" ] && [ "$1" != "raspi2b-lifecycle" ] &&
-        [ "$1" != "pi2-loader" ] && [ "$1" != "pi2-dev" ]; }; then
-    echo "usage: $0 <virt|raspi2b|raspi2b-hardware|raspi2b-lifecycle|pi2-loader|pi2-dev>" >&2
+        [ "$1" != "raspi2b-uart-user" ] && [ "$1" != "pi2-loader" ] &&
+        [ "$1" != "pi2-dev" ]; }; then
+    echo "usage: $0 <virt|raspi2b|raspi2b-hardware|raspi2b-lifecycle|raspi2b-uart-user|pi2-loader|pi2-dev>" >&2
     exit 2
 fi
 
@@ -37,6 +38,11 @@ case "$platform" in
         feature=pi-lifecycle
         image_name=kernel-raspi2b-lifecycle.img
         ;;
+    raspi2b-uart-user)
+        kernel_base=0x00010000
+        feature=pi-uart-user
+        image_name=kernel-raspi2b-uart-user.img
+        ;;
     pi2-loader)
         kernel_base=0x00008000
         feature=
@@ -45,7 +51,7 @@ case "$platform" in
         ;;
     pi2-dev)
         kernel_base=0x00100000
-        feature=pi-hardware
+        feature=pi-hardware,pi-uart-user
         image_name=kernel-pi2-dev.img
         ;;
 esac

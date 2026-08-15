@@ -46,7 +46,9 @@ _start:
     str r0, [r4, #0x24]
     mov r0, #40
     str r0, [r4, #0x28]
-    mov r0, #0x60
+    @ Eight data bits plus the 16-byte FIFOs. The UART userspace loader polls
+    @ RX, so the FIFO absorbs short host-side bursts between reads.
+    mov r0, #0x70
     str r0, [r4, #0x2c]
     ldr r0, =0x301
     str r0, [r4, #0x30]

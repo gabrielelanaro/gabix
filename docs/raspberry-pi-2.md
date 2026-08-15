@@ -352,16 +352,38 @@ The development kernel is linked at `0x00100000`, which is the address where
 the loader writes it. The loader accepts at most 16 MiB. It checks the protocol
 version, declared size, and CRC32 before executing any received bytes.
 
-Only one process may own the serial device. Stop the passive monitor, upload,
-then restart the monitor if required:
+The `pi2-dev` kernel contains a resident UART user-program loader. It does not
+read `/init.elf` from the SD card. After initialization it prints `GABIX USER
+READY`, accepts one ARM ELF of at most 512 KiB, checks the framed upload and
+ELF, maps the program at its linked user address, and enters userspace. A user
+program that calls `exit` returns to the kernel, which prints `GABIX USER
+READY` again and accepts another ELF. The SD card remains in the Pi to boot the
+fixed firmware and kernel loader.
+
+Only one process may own the serial device. Stop the passive monitor, upload
+the kernel, then upload user programs as separate commands:
 
 ```sh
 sh scripts/monitor-pi2-uart.sh stop
+sh scripts/build-arm.sh pi2-dev
 python3 scripts/upload-pi2-kernel.py \
   /dev/cu.usbserial-DEVICE \
-  targets/armv7/target/armv7a-none-eabihf/debug/kernel-pi2-dev.img
-sh scripts/monitor-pi2-uart.sh start /dev/cu.usbserial-DEVICE
+  targets/armv7/target/armv7a-none-eabihf/debug/kernel-pi2-dev.img \
+  --wait-ready \
+  --inter-byte-delay-us 500 \
+  --wait-for-user-ready
+
+sh scripts/build-arm-user.sh tests/fixtures/arm_syscall.rs
+python3 scripts/upload-pi2-user.py \
+  /dev/cu.usbserial-DEVICE \
+  target/arm_syscall.elf \
+  --wait-for-exit
 ```
+
+Run the final two commands again after changing a user program. The kernel
+stays resident in RAM between those uploads. Rebuild and resend the kernel only
+after kernel code changes or after a board reset. The user uploader defaults to
+a proven 500-microsecond inter-byte delay and reports progress plus ETA.
 
 The uploader can attach after the loader printed its ready line. It sends the
 marker directly, displays bytes sent, percentage, transfer rate, and ETA, then
@@ -390,6 +412,23 @@ Gabix system call 169 requests a platform reboot with no arguments. On the Pi,
 the kernel triggers the BCM2836 power-manager watchdog reset. Firmware then
 loads the UART loader from the SD card again. A physical power cycle remains the
 fallback when a broken development kernel cannot invoke the system call.
+
+The kernel-side user loader emits these lines:
+
+```text
+GABIX USER READY
+USER UPLOAD HEADER FAILED
+USER UPLOAD TIMEOUT
+USER UPLOAD CRC FAILED
+USER UPLOAD CRC OK
+USER ELF FAILED
+USER UPLOAD OK
+USER UPLOAD FAILED
+```
+
+A partial user upload times out after 100 Pi timer ticks and returns to `GABIX
+USER READY`. CRC or ELF validation failure also returns to that state. The host
+can resend the complete ELF without resetting the board.
 
 The `block read` line appears only when sector 1 contains the QEMU test marker,
 so the physical SD image does not print it.

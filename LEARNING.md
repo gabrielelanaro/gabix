@@ -539,6 +539,27 @@ A milestone is a "demo-able" checkpoint. Worth a commit + tag + log entry.
 
 ## Progress Log
 
+### 2026-08-15 — UART-loaded userspace and warm program reload
+- **Done:** Added the `pi-uart-user` development mode. After a UART kernel
+  upload, Gabix prints `GABIX USER READY`, receives a CRC-framed ARM ELF into a
+  bounded 512 KiB RAM buffer, validates and runs it, then returns to the same
+  receiver when userspace calls `exit`. Added separate build and upload commands
+  for user programs; neither command writes the SD card.
+- **Reliability:** The shared framed-upload receiver now enforces a caller-set
+  payload limit. A partial user upload times out after 100 timer ticks; header,
+  CRC, timeout, and ELF failures return to the ready state for a complete retry.
+  The userspace-exit trampoline resets the SVC stack before each receiver pass,
+  so abandoned frames do not accumulate across warm reloads.
+- **Verification:** The QEMU Pi 2 test recovers from a truncated upload, runs
+  the same ELF twice in one kernel session, observes both exits, and reaches a
+  third `GABIX USER READY`. Host uploader tests verify the exact frame and the
+  program-output/exit capture through a pseudo-terminal. The full suite passes
+  48/52; the same four baseline host-toolchain failures remain (missing
+  x86-target `core`, `llvm-objcopy`, and `llvm-readobj`).
+- **Next:** Upload the rebuilt `pi2-dev` kernel to the physical Pi, wait for
+  `GABIX USER READY`, then send `target/arm_syscall.elf` with
+  `scripts/upload-pi2-user.py`. No SD-card modification is required.
+
 ### 2026-08-15 — UART kernel upload and userspace reboot lifecycle
 - **Done:** Added paced UART uploads with progress/ETA output via
   `scripts/upload-pi2-kernel.py --inter-byte-delay-us`, plus a
