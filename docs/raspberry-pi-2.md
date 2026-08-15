@@ -171,41 +171,54 @@ sh scripts/build-arm.sh pi2-loader
 sh scripts/build-arm.sh pi2-dev
 ```
 
-Create the loader SD image from the known-good UART smoke image. This exact
-source already booted on the physical Pi and keeps firmware, partition layout,
-and UART clock configuration fixed:
+Create the loader SD image from the full official-derived UART smoke image.
+This exact source booted on the physical Pi and keeps the complete official
+partition layout, firmware, and UART clock configuration fixed:
 
 ```sh
 sh scripts/make-pi2-loader-image.sh \
-  target/pi2-uart-smoke-fat32-official-layout.img \
-  target/gabix-pi2-loader-v2.img
+  target/official/gabix-official-with-gabix-smoke-clockfix.img \
+  target/official/gabix-pi2-loader-full.img
 ```
 
 The baseline image is a preserved local test artifact rather than a Git file.
 Its required SHA-256 is:
 
 ```text
-d844e1dc13e2f25acb60754f993d4bfd4ac83f19db42e90204c697091a26bbc2
+66abb107a93d2db17729e7fcc5bedc2c4c6be15c5d2844d0e29d0306e870d5c6
 ```
 
 Check it before every derived build:
 
 ```sh
-shasum -a 256 target/pi2-uart-smoke-fat32-official-layout.img
+shasum -a 256 target/official/gabix-official-with-gabix-smoke-clockfix.img
 ```
 
-If the artifact is missing, recreate it from the pinned official Raspberry Pi
-image used for the physical smoke baseline, the smoke kernel, and the tracked
-boot configuration:
+If the artifact is missing, download the pinned Raspberry Pi OS Legacy
+(32-bit) Lite image and verify the compressed file before decompressing it:
+
+```text
+URL: https://downloads.raspberrypi.com/raspios_oldstable_lite_armhf/images/raspios_oldstable_lite_armhf-2026-06-19/2026-06-18-raspios-bookworm-armhf-lite.img.xz
+compressed SHA-256: 8a044f4c55feb9b0626ab2060a2eef15c3f57327dd610a0a4cac02cdb959166e
+decompressed SHA-256: 494db22e6f0f652e97fe6ed5c89fa51810f2abfa5afe6bcb422c6517d7aacd24
+```
+
+Recreate the smoke baseline from the complete decompressed image, the smoke
+kernel, and the tracked boot configuration:
 
 ```sh
 sh scripts/build-pi2-uart-smoke.sh target/pi2-uart-smoke/kernel7.img
 python3 scripts/make-pi2-uart-smoke-from-official.py \
-  /path/to/pinned-official-raspberry-pi.img \
+  target/official/2026-06-18-raspios-bookworm-armhf-lite.img \
   target/pi2-uart-smoke/kernel7.img \
-  target/pi2-uart-smoke-fat32-official-layout.img \
+  target/official/gabix-official-with-gabix-smoke-clockfix.img \
   --config targets/armv7/boot/config.txt
 ```
+
+The result must have SHA-256
+`66abb107a93d2db17729e7fcc5bedc2c4c6be15c5d2844d0e29d0306e870d5c6`.
+The 520 MiB `pi2-uart-smoke-fat32-official-layout.img` was an intermediate
+layout experiment and must not be used as the physical baseline.
 
 Boot this recreated smoke image on the physical Pi and require
 `gabix uart smoke alive` before accepting it as the new baseline. Record its
@@ -239,7 +252,7 @@ steps. Never modify the known-good smoke image in place.
    ```sh
    diskutil unmountDisk /dev/diskN
    sudo dd \
-     if=target/gabix-pi2-loader-v2.img \
+     if=target/official/gabix-pi2-loader-full.img \
      of=/dev/rdiskN \
      bs=16m conv=sync status=progress
    sync
@@ -249,7 +262,7 @@ steps. Never modify the known-good smoke image in place.
 
    ```sh
    python3 scripts/verify-pi2-loader-card.py \
-     target/gabix-pi2-loader-v2.img \
+     target/official/gabix-pi2-loader-full.img \
      /Volumes/BOOTFS
    ```
 

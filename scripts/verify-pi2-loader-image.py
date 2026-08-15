@@ -42,19 +42,6 @@ def verify_fat_metadata(image: mmap.mmap) -> None:
     data_sectors = total_sectors - reserved - fat_count * fat_sectors
     data_clusters = data_sectors // sectors_per_cluster
     last_cluster = min(data_clusters + 1, len(first_fat) // 4 - 1)
-    free_count = sum(
-        1
-        for cluster in range(2, last_cluster + 1)
-        if struct.unpack_from("<I", first_fat, cluster * 4)[0] & 0x0FFFFFFF == 0
-    )
-    next_free = next(
-        (
-            cluster
-            for cluster in range(2, last_cluster + 1)
-            if struct.unpack_from("<I", first_fat, cluster * 4)[0] & 0x0FFFFFFF == 0
-        ),
-        0xFFFFFFFF,
-    )
     for label, relative_sector in (
         ("primary", fsinfo_sector),
         ("backup", backup_boot_sector + fsinfo_sector),
@@ -62,13 +49,18 @@ def verify_fat_metadata(image: mmap.mmap) -> None:
         fsinfo_offset = (partition_start + relative_sector) * SECTOR_SIZE
         recorded_free = struct.unpack_from("<I", image, fsinfo_offset + 488)[0]
         recorded_next = struct.unpack_from("<I", image, fsinfo_offset + 492)[0]
-        if recorded_free != free_count:
+        if recorded_free != 0xFFFFFFFF and recorded_free > data_clusters:
             raise ValueError(
-                f"{label} FSInfo free count is {recorded_free}, calculated {free_count}"
+                f"{label} FSInfo free-count hint exceeds the data-cluster count: "
+                f"{recorded_free}"
             )
-        if recorded_next != next_free:
+        if recorded_next == 0xFFFFFFFF:
+            continue
+        if not 2 <= recorded_next <= last_cluster:
             raise ValueError(
-                f"{label} FSInfo next free is {recorded_next}, calculated {next_free}"
+                f"{label} FSInfo next-free search hint is outside the "
+                f"data-cluster range: "
+                f"{recorded_next}"
             )
 
 

@@ -540,6 +540,15 @@ A milestone is a "demo-able" checkpoint. Worth a commit + tag + log entry.
 ## Progress Log
 
 ### 2026-08-15 — Reproducible Pi loader-image writing
+- **Baseline correction:** The 520 MiB FAT32-layout experiment was mistakenly
+  documented as the physical known-good image. The successful boot used the
+  complete 2,499,805,184-byte official Bookworm image with only `KERNEL7.IMG`
+  and `CONFIG.TXT` replaced. Reconstructing it reproduced the historical
+  SHA-256 `66abb107a93d2db17729e7fcc5bedc2c4c6be15c5d2844d0e29d0306e870d5c6`.
+- **Verifier correction:** FAT32 FSInfo `next free` is a search-start hint.
+  Validation now accepts any in-range cluster or the unknown marker instead of
+  requiring the numerically first free cluster or requiring the hint itself to
+  be free.
 - **Failure:** The first loader image grew the known-good 260-byte smoke kernel
   into a fragmented FAT32 chain and left the FSInfo free-cluster count stale.
   The Pi stopped at four ACT flashes before UART output.
@@ -552,7 +561,7 @@ A milestone is a "demo-able" checkpoint. Worth a commit + tag + log entry.
 - **Runbook:** Documented exact device identification, confirmation, raw write,
   boot-file comparison, unmount, and the reason post-mount whole-disk hashes are
   not the acceptance signal.
-- **Next:** Flash `target/gabix-pi2-loader-v2.img`, confirm
+- **Next:** Flash `target/official/gabix-pi2-loader-full.img`, confirm
   `GABIX LOADER READY`, then run upload A → reboot → upload B → corrupt/retry.
 
 ### 2026-08-15 — Raspberry Pi UART development loader
