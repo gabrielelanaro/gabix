@@ -539,6 +539,22 @@ A milestone is a "demo-able" checkpoint. Worth a commit + tag + log entry.
 
 ## Progress Log
 
+### 2026-08-15 — Gabix UART loader boots on physical Pi 2B
+- **Result:** The full loader image booted from the SD card and printed
+  `GABIX LOADER READY` on the sole 115200-baud UART monitor.
+- **Image:** `cdd2f94825edea97b865dd002a49e8558bcf3dbb43657f6b5074fc02054d7183`,
+  preserved at `~/Documents/Gabix-Images/gabix-pi2-loader-full.img` with
+  read-only and user-immutable protection.
+- **Sequence:** Verified the protected smoke baseline, derived the loader image,
+  wrote all 2,499,805,184 bytes to `/dev/rdisk7`, verified all five boot files
+  on the mounted card, unmounted it, and captured the loader ready line after a
+  Pi power cycle.
+- **Meaning:** The complete official firmware/partition baseline, the Pi's
+  `KERNEL7.IMG` handoff, Gabix's loader entry point, and UART initialization are
+  working together on physical hardware.
+- **Next:** Upload a development kernel over UART. Keep the SD card and its
+  protected loader image unchanged during that loop.
+
 ### 2026-08-15 — Physical Pi image registry and protected baseline
 - **Registry:** Added `artifacts/pi2-images.json` as the tracked source of truth
   for candidate, hardware-passed, and hardware-failed image identities. Every
@@ -549,9 +565,8 @@ A milestone is a "demo-able" checkpoint. Worth a commit + tag + log entry.
 - **Workflow:** Added `scripts/pi2-image-registry.py` to list, resolve, verify,
   preserve, and record physical outcomes. A passing candidate is copied and
   protected before its tracked status changes.
-- **Current state:** The historical full smoke image is `hardware-passed`, the
-  520 MiB intermediate image is `hardware-failed`, and the full loader image is
-  still a `candidate` pending its first physical boot.
+- **Current state:** The historical full smoke image and the full loader image
+  are `hardware-passed`; the 520 MiB intermediate image is `hardware-failed`.
 - **Physical reconfirmation:** Reflashed all 2,499,805,184 bytes of the protected
   baseline, matched all five boot files on the card, and captured
   `gabix uart smoke booted` plus more than 10,000 heartbeat lines. Recorded the
@@ -580,8 +595,8 @@ A milestone is a "demo-able" checkpoint. Worth a commit + tag + log entry.
 - **Runbook:** Documented exact device identification, confirmation, raw write,
   boot-file comparison, unmount, and the reason post-mount whole-disk hashes are
   not the acceptance signal.
-- **Next:** Flash `target/official/gabix-pi2-loader-full.img`, confirm
-  `GABIX LOADER READY`, then run upload A → reboot → upload B → corrupt/retry.
+- **Next:** Run upload A → reboot → upload B → corrupt/retry over UART without
+  changing the SD card.
 
 ### 2026-08-15 — Raspberry Pi UART development loader
 - **Loader:** Added an allocation-free stage-one Pi 2 loader at `0x00008000`.

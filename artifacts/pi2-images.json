@@ -26,10 +26,10 @@
       "filename": "gabix-pi2-loader-full.img",
       "size": 2499805184,
       "sha256": "cdd2f94825edea97b865dd002a49e8558bcf3dbb43657f6b5074fc02054d7183",
-      "status": "candidate",
-      "protected": false,
+      "status": "hardware-passed",
+      "protected": true,
       "source": "pi2-uart-smoke-working-2026-08-09 with the Gabix UART loader as KERNEL7.IMG",
-      "evidence": "Repository image verification passed; physical boot has not been attempted."
+      "evidence": "Physical Raspberry Pi 2B booted from the flashed full loader image and the sole 115200-baud UART monitor captured exactly: GABIX LOADER READY. The 2,499,805,184-byte write returned FLASH_STATUS:0 and all five boot files matched the candidate image before boot."
     }
   ]
 }
