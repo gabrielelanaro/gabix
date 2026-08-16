@@ -21,6 +21,7 @@ const HCDMA: usize = 0x14;
 const PCGCCTL: usize = 0xe00;
 
 const AHB_DMA_ENABLE: u32 = 1 << 5;
+const AHB_GLOBAL_INTERRUPT_ENABLE: u32 = 1;
 #[cfg(feature = "pi-hardware")]
 const AHB_WAIT_AXI_WRITES: u32 = 1 << 4;
 #[cfg(feature = "pi-hardware")]
@@ -127,7 +128,10 @@ impl Dwc2 {
         }
         #[cfg(not(feature = "pi-hardware"))]
         {
-            write32(GAHBCFG, read32(GAHBCFG) | AHB_DMA_ENABLE);
+            write32(
+                GAHBCFG,
+                (read32(GAHBCFG) | AHB_DMA_ENABLE) & !AHB_GLOBAL_INTERRUPT_ENABLE,
+            );
             write32(HCFG, 1);
         }
 
@@ -712,7 +716,9 @@ unsafe fn initialize_hardware() -> Option<()> {
     write32(GUSBCFG, usb_config);
     delay_us(50_000);
 
-    let ahb_config = (read32(GAHBCFG) | AHB_DMA_ENABLE | AHB_WAIT_AXI_WRITES) & !AHB_MAX_BURST_MASK;
+    let ahb_config = (read32(GAHBCFG) | AHB_DMA_ENABLE | AHB_WAIT_AXI_WRITES)
+        & !AHB_MAX_BURST_MASK
+        & !AHB_GLOBAL_INTERRUPT_ENABLE;
     write32(GAHBCFG, ahb_config);
     write32(PCGCCTL, 0);
     write32(HCFG, 0);
