@@ -539,6 +539,23 @@ A milestone is a "demo-able" checkpoint. Worth a commit + tag + log entry.
 
 ## Progress Log
 
+### 2026-08-16 — Physical Pi 2 receives a raw Ethernet frame
+- **Minimal probe:** NET11 keeps the passing USB/LAN9512 initialization,
+  waits five seconds for link negotiation, and polls only the raw frame-device
+  receive path. It prints the first valid frame's length, destination, source,
+  and EtherType over UART.
+- **Physical result:** The Pi received a 110-byte IPv6 frame (`0x86DD`) sent by
+  Mac `en6` MAC `E8:EA:6A:2D:FE:C4` to multicast MAC
+  `33:33:00:00:00:16`. This verifies LAN9512 bulk IN, RX status parsing, and
+  delivery into `EthernetFrame` on physical hardware.
+- **Preserved baseline:**
+  `artifacts/pi2-network-baselines/net11-lan9512-raw-rx.img`, SHA-256
+  `2f5145652139fa7672b7d4db763c02a4b0c666a8b1838448236d575f75136a28`,
+  with its exact UART log beside it.
+- **Next:** Load the full Gabix ARM kernel through UART with this proven USB
+  path, expose its DHCP state over UART, and configure a controlled DHCP peer
+  on Mac `en6` before testing UDP and TCP separately.
+
 ### 2026-08-16 — Physical Pi 2 transmits raw Ethernet frames
 - **Minimal probe:** NET10 extends the passing LAN9512 link probe with one
   action: transmit sixteen 60-byte broadcast frames carrying experimental
