@@ -12,6 +12,7 @@ SD-resident UART loader; these tests do not write the SD card.
 | NET11 | `net11-lan9512-raw-rx.img` | 19,105 | `2f5145652139fa7672b7d4db763c02a4b0c666a8b1838448236d575f75136a28` | Received a 110-byte IPv6 frame from Mac `en6` MAC `E8:EA:6A:2D:FE:C4`, addressed to multicast MAC `33:33:00:00:00:16`, and printed it over UART |
 | NET12 | `net12-lan9512-dhcp-size-tx.img` | 17,809 | `c5bef73ef759d84929659effb5c709d59944062b7b96af42fba6058dc1947743` | Changed only the NET10 frame length from 60 to Gabix's 293-byte DHCP-discover frame length; all 16 transfers completed and Mac `en6` increased by exactly 16 packets and 4,688 bytes |
 | NET13 | `net13-lan9512-dhcp-packet-tx.img` | 19,705 | `8f70f34e0d5aa258e34d7bdec1d5afff5c724b55f63537c7c961c970e0855326` | Used the real Gabix DHCP client and IPv4/UDP/Ethernet packet builders in the minimal passing probe; all 16 discovers completed and Mac `en6` increased by exactly 16 packets and 4,688 bytes |
+| NET14 | `net14-full-pre-timer-release-dhcp-tx.img` | 44,400 | `4042fce909afc788c65c41f1b0f92b8ad8cd8df7249d702fc280a5a58b39c716` | Full Gabix boot path through heap and SD inspection, with DHCP sent before timer initialization; release build sent all 16 frames and Mac `en6` increased by exactly 16 packets and 4,688 bytes, while the corresponding debug build sent zero wire packets |
 
 Exact UART output is preserved in the corresponding `*-physical.log` files.
 NET9's Mac-side link transition is preserved in
@@ -32,3 +33,5 @@ NET12's UART result is preserved in
 `net12-lan9512-dhcp-size-tx-physical.log`.
 NET13's UART result is preserved in
 `net13-lan9512-dhcp-packet-tx-physical.log`.
+NET14's UART result is preserved in
+`net14-full-pre-timer-release-dhcp-tx-physical.log`.
