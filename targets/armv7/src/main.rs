@@ -253,6 +253,8 @@ extern "C" fn arm_kernel_entry() {
                     }
                     let mut session = DhcpSession::new(network.mac_address(), 0x4741_4258);
                     let mut next_discover = raspi2b::timer::ticks();
+                    #[cfg(feature = "pi-hardware")]
+                    let mut discover_count = 0usize;
                     #[cfg(not(feature = "pi-hardware"))]
                     let deadline = raspi2b::timer::ticks() + 200;
                     #[cfg(feature = "pi-hardware")]
@@ -266,14 +268,24 @@ extern "C" fn arm_kernel_entry() {
                             } else {
                                 write_line(&mut console, b"gabix raspi2b dhcp tx failed");
                             }
+                            #[cfg(feature = "pi-hardware")]
+                            {
+                                discover_count += 1;
+                            }
                             next_discover = now + 100;
                         }
-                        if let Some(frame) = network.receive() {
-                            if matches!(
-                                session.handle_frame(&mut network, frame.bytes()),
-                                NetworkEvent::Configured
-                            ) {
-                                write_line(&mut console, b"gabix raspi2b dhcp configured");
+                        #[cfg(feature = "pi-hardware")]
+                        let poll_receive = discover_count >= 2;
+                        #[cfg(not(feature = "pi-hardware"))]
+                        let poll_receive = true;
+                        if poll_receive {
+                            if let Some(frame) = network.receive() {
+                                if matches!(
+                                    session.handle_frame(&mut network, frame.bytes()),
+                                    NetworkEvent::Configured
+                                ) {
+                                    write_line(&mut console, b"gabix raspi2b dhcp configured");
+                                }
                             }
                         }
                         asm!("wfi");
