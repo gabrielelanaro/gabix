@@ -19,5 +19,10 @@ Mac link-up occurred before that host-side timeout.
 NET10's UART result and Mac interface-counter transition are preserved in
 `net10-lan9512-raw-tx-physical.log` and
 `net10-lan9512-raw-tx-mac-counters.log`.
+The preserved NET10 image was rerun unchanged on 2026-08-16 before the DHCP
+bring-up investigation. Its SHA-256 matched the table above, UART again
+reported 16 successful transfers, and Mac `en6` again increased by exactly 16
+packets and 960 bytes. The transcript is preserved in
+`net10-lan9512-raw-tx-rerun-2026-08-16.log`.
 NET11's decoded receive result is preserved in
 `net11-lan9512-raw-rx-physical.log`.
