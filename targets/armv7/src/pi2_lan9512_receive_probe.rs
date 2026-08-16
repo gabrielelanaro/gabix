@@ -73,9 +73,18 @@ extern "C" fn pi2_lan9512_receive_probe_main() -> ! {
 
     write_line(b"NET11 RX POLL");
     let started = timer_now();
+    #[cfg(feature = "pi-network-repeated-receive-probe")]
+    let mut received = 0usize;
     while timer_now().wrapping_sub(started) < 5_000_000 {
         if let Some(frame) = network.receive() {
             let bytes = frame.bytes();
+            #[cfg(feature = "pi-network-repeated-receive-probe")]
+            {
+                received += 1;
+                if received < 16 {
+                    continue;
+                }
+            }
             #[cfg(feature = "pi-network-arp-receive-probe")]
             if bytes.get(12..14) != Some(&[0x08, 0x06]) {
                 continue;
@@ -107,6 +116,12 @@ extern "C" fn pi2_lan9512_receive_probe_main() -> ! {
             }
             wait_for_reset();
         }
+    }
+    #[cfg(feature = "pi-network-repeated-receive-probe")]
+    {
+        write_bytes(b"NET11 RX COUNT ");
+        write_hex_u16(received as u16);
+        write_byte(b'\n');
     }
     write_line(b"NET11 RX NONE");
     wait_for_reset();
