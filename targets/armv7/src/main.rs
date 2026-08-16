@@ -275,6 +275,8 @@ extern "C" fn arm_kernel_entry() {
                     #[cfg(feature = "pi-hardware")]
                     let mut next_rx_fifo_report = next_discover;
                     #[cfg(feature = "pi-hardware")]
+                    let mut receive_pid_reset = false;
+                    #[cfg(feature = "pi-hardware")]
                     let mut discover_count = 0usize;
                     #[cfg(not(feature = "pi-hardware"))]
                     let deadline = raspi2b::timer::ticks() + 200;
@@ -324,6 +326,11 @@ extern "C" fn arm_kernel_entry() {
                                 }
                                 Some(_) => {
                                     write_line(&mut console, b"gabix raspi2b rx fifo has data");
+                                    if !receive_pid_reset {
+                                        network.reset_receive_pid();
+                                        receive_pid_reset = true;
+                                        write_line(&mut console, b"gabix raspi2b rx pid reset data0");
+                                    }
                                 }
                                 None => {
                                     write_line(&mut console, b"gabix raspi2b rx fifo unavailable");

@@ -33,6 +33,12 @@ impl UsbEthernet {
             Self::Rndis(_) => None,
         }
     }
+
+    pub fn reset_receive_pid(&mut self) {
+        if let Self::Lan9512(device) = self {
+            device.reset_receive_pid();
+        }
+    }
 }
 
 unsafe impl Send for UsbEthernet {}

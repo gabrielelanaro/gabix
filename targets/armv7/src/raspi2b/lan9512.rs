@@ -147,6 +147,10 @@ impl Lan9512Ethernet {
     pub unsafe fn rx_fifo_used(&mut self) -> Option<u16> {
         Some(read_register(&mut self.host, self.device, RX_FIFO_INF)? as u16)
     }
+
+    pub fn reset_receive_pid(&mut self) {
+        self.rx_pid = DATA0;
+    }
 }
 
 unsafe impl Send for Lan9512Ethernet {}
