@@ -49,6 +49,7 @@ def test_upload_rejects_negative_inter_byte_delay():
 def test_paced_upload_writes_one_byte_at_a_time(monkeypatch):
     writes = []
     sleeps = []
+    drains = []
 
     monkeypatch.setattr(UPLOADER.select, "select", lambda *_args: ([], [7], []))
     monkeypatch.setattr(
@@ -58,12 +59,25 @@ def test_paced_upload_writes_one_byte_at_a_time(monkeypatch):
     )
     monkeypatch.setattr(UPLOADER.time, "monotonic", lambda: 1.0)
     monkeypatch.setattr(UPLOADER.time, "sleep", sleeps.append)
-    monkeypatch.setattr(UPLOADER.termios, "tcdrain", lambda _fd: None)
+    monkeypatch.setattr(UPLOADER.termios, "tcdrain", drains.append)
 
     UPLOADER.write_all(7, b"abc", chunk_size=256, inter_byte_delay_us=500)
 
     assert writes == [b"a", b"b", b"c"]
     assert sleeps == [0.0005, 0.0005]
+    assert drains == []
+
+
+def test_unpaced_upload_drains_uart(monkeypatch):
+    drains = []
+    monkeypatch.setattr(UPLOADER.select, "select", lambda *_args: ([], [7], []))
+    monkeypatch.setattr(UPLOADER.os, "write", lambda _fd, data: len(data))
+    monkeypatch.setattr(UPLOADER.time, "monotonic", lambda: 1.0)
+    monkeypatch.setattr(UPLOADER.termios, "tcdrain", drains.append)
+
+    UPLOADER.write_all(7, b"abc", chunk_size=256)
+
+    assert drains == [7]
 
 
 def test_wait_for_reboot_accepts_ready_after_upload(monkeypatch):

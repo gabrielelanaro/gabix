@@ -6,8 +6,8 @@ if [ "$#" -ne 1 ] ||
     { [ "$1" != "virt" ] && [ "$1" != "raspi2b" ] &&
         [ "$1" != "raspi2b-hardware" ] && [ "$1" != "raspi2b-lifecycle" ] &&
         [ "$1" != "raspi2b-uart-user" ] && [ "$1" != "pi2-loader" ] &&
-        [ "$1" != "pi2-dev" ]; }; then
-    echo "usage: $0 <virt|raspi2b|raspi2b-hardware|raspi2b-lifecycle|raspi2b-uart-user|pi2-loader|pi2-dev>" >&2
+        [ "$1" != "pi2-dev" ] && [ "$1" != "pi2-network-dev" ]; }; then
+    echo "usage: $0 <virt|raspi2b|raspi2b-hardware|raspi2b-lifecycle|raspi2b-uart-user|pi2-loader|pi2-dev|pi2-network-dev>" >&2
     exit 2
 fi
 
@@ -53,6 +53,11 @@ case "$platform" in
         kernel_base=0x00100000
         feature=pi-hardware,pi-uart-user
         image_name=kernel-pi2-dev.img
+        ;;
+    pi2-network-dev)
+        kernel_base=0x00100000
+        feature=pi-hardware
+        image_name=kernel-pi2-network-dev.img
         ;;
 esac
 rust_sysroot=$(rustc --print sysroot)

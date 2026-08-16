@@ -164,7 +164,11 @@ def write_all(
             )
             next_progress = now + 0.25
     print(file=sys.stderr)
-    termios.tcdrain(fd)
+    # A paced upload writes more slowly than the UART can transmit, so no
+    # device-side backlog remains. Some macOS USB-serial drivers can block in
+    # tcdrain indefinitely after a large paced transfer.
+    if not paced:
+        termios.tcdrain(fd)
 
 
 def main() -> int:
