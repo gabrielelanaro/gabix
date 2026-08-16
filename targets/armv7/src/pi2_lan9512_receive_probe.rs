@@ -74,6 +74,10 @@ extern "C" fn pi2_lan9512_receive_probe_main() -> ! {
     while timer_now().wrapping_sub(started) < 5_000_000 {
         if let Some(frame) = network.receive() {
             let bytes = frame.bytes();
+            #[cfg(feature = "pi-network-arp-receive-probe")]
+            if bytes.get(12..14) != Some(&[0x08, 0x06]) {
+                continue;
+            }
             write_bytes(b"NET11 RX LEN ");
             write_hex_u16(bytes.len() as u16);
             if bytes.len() >= 14 {
