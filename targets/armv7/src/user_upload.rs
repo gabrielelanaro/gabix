@@ -4,6 +4,7 @@ use gabix_kernel::loader_protocol::{UploadEvent, UploadFailure, UploadReceiver};
 
 const MAX_USER_ELF_SIZE: u32 = 512 * 1024;
 const UPLOAD_IDLE_TIMEOUT_TICKS: u64 = 100;
+const USER_EXECUTION_DEADMAN_SECONDS: u32 = 10;
 
 #[repr(C, align(16))]
 struct UserElfBuffer([u8; MAX_USER_ELF_SIZE as usize]);
@@ -49,6 +50,8 @@ pub fn run(console: &mut Pl011) -> ! {
                     write_line(console, b"USER UPLOAD OK");
                     unsafe {
                         memory::allow_user_section(user::USER_STACK_TOP - 1);
+                        #[cfg(feature = "pi-hardware")]
+                        crate::raspi2b::reset::arm_deadman(USER_EXECUTION_DEADMAN_SECONDS);
                         user::enter(entry, user::USER_STACK_TOP);
                     }
                 }

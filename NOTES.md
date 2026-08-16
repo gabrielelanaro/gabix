@@ -253,3 +253,157 @@ callers' heads, not the code.
 
 When the IrqSaveMutex wrapper lands, this gets fixed for free.
 
+### Raspberry Pi 2 official kernel source
+
+The known-good official image reported this kernel over UART:
+
+```text
+6.12.93+rpt-rpi-v7
+```
+
+Raspberry Pi publishes the matching packages in its archive:
+
+- `linux-image-6.12.93+rpt-rpi-v7_6.12.93-1+rpt1_armhf.deb`
+- `linux-source-6.12_6.12.93-1+rpt1_all.deb`
+
+Archive: https://archive.raspberrypi.org/debian/pool/main/l/linux/
+
+The upstream Raspberry Pi source tree is https://github.com/raspberrypi/linux.
+Raspberry Pi's kernel build documentation identifies `bcm2709_defconfig` for
+the 32-bit Raspberry Pi 2 and builds the kernel as `zImage`:
+
+```sh
+git clone --branch rpi-6.12.y https://github.com/raspberrypi/linux
+cd linux
+make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- bcm2709_defconfig
+make -j$(nproc) ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- zImage modules dtbs
+```
+
+For an exact reproduction of the official image, use the versioned
+`6.12.93-1+rpt1` source package and its build metadata. The current Git branch
+may contain a newer kernel revision.
+
+Documentation: https://www.raspberrypi.com/documentation/computers/linux_kernel.html
+
+## Raspberry Pi 2 physical UART smoke boot — the journey
+
+### 2026-08-09 — Gabix prints on the real board
+
+We reached the first reliable physical Gabix boot. The clean UART capture
+contains:
+
+```text
+gabix uart smoke booted
+gabix uart smoke alive
+```
+
+The Pi printed one boot marker and thousands of heartbeat markers. The
+heartbeat proves that the ARM entry point ran, GPIO14 was configured for UART0,
+the PL011 was accepting writes, and the kernel remained alive in its loop.
+
+### The starting point
+
+The Raspberry Pi 2 already had a working UART path. The old NOOBS/Raspbian
+recovery card booted Linux and produced a serial console at 115200 baud. The
+first operational problem was capture hygiene: several terminal monitors and
+screen sessions could compete for the same serial device. We added
+`scripts/monitor-pi2-uart.sh`, which creates a unique log directory, reports the
+log path, rejects a second owner, and keeps exactly one screen session attached
+to `/dev/cu.usbserial-0001`.
+
+The official Bookworm image then became the storage baseline. Its UART log
+reported Linux `6.12.93+rpt-rpi-v7`, Raspberry Pi 2 Model B, `ttyAMA0` at
+115200, and a correctly detected SD card. That separated board, wiring, UART,
+firmware, and Linux boot from the Gabix experiment.
+
+### The storage problems
+
+The SD card changed between `/dev/disk6` and other device numbers as macOS
+mounted and detached it. Raw writes also failed with `Resource busy` while the
+boot partition was mounted. Every raw operation therefore needed an explicit
+`diskutil unmountDisk` step and a read-only device check immediately before the
+write.
+
+The first reader produced intermittent block mismatches and disappearing-card
+failures. A retry writer using 16 MiB blocks recorded each attempt and backoff.
+The newer reader was stable. Its contiguous `dd` write sustained about
+5.1 MB/s and finished the 2.5 GB image in about eight minutes, compared with
+roughly twenty-two minutes for the per-block retry workflow.
+
+The `dd` exit status alone was insufficient evidence. The first fast write
+returned status 0 but its full read-back hash differed from the image. The
+successful run used targeted read-back of the mounted FAT boot files. The
+hashes of `KERNEL7.IMG`, `CONFIG.TXT`, `bootcode.bin`, `start.elf`, and
+`fixup.dat` all matched the prepared image before the card was moved to the Pi.
+
+### The binary comparison
+
+The official Linux `KERNEL7.IMG` was 7,817,088 bytes and began with the ARM
+Linux zImage startup/header data. The Gabix smoke image was a 260-byte raw ARM
+binary. Its first instruction was `cpsid if`; it then parked three cores,
+configured GPIO14/15, programmed PL011, printed a message, and repeated the
+heartbeat. Raspberry Pi firmware can load a raw `kernel7.img`; the Pi 2
+default filename and the physical load address are `kernel7.img` and `0x8000`.
+
+QEMU provided a fast binary feedback loop. The smoke image linked for QEMU at
+`0x10000` printed both markers under the `raspi2b` machine. That test proved the
+ARM instructions and entry path. QEMU did not expose the physical UART clock
+contract, so it could not reveal the baud-rate mistake.
+
+### The actual failure
+
+The first derived image replaced `KERNEL7.IMG` while retaining the official
+`CONFIG.TXT`. The official configuration did not contain
+`init_uart_clock=3000000`. Gabix's [uart_smoke.S](targets/armv7/src/uart_smoke.S)
+hardcoded PL011 `IBRD=1` and `FBRD=40`, which produce approximately 115200 baud
+with a 3 MHz UART clock.
+
+Current Raspberry Pi firmware uses a 48 MHz initial PL011 clock. The same
+divisors therefore produced approximately 1,846,154 baud. The Mac monitor was
+listening at 115200, so the log filled with repeating bytes such as `ec`, `6c`,
+`d8`, and `ff`. The stream was the smoke kernel running too quickly for the
+monitor to decode. Linux worked because its PL011 driver reads the actual clock
+and calculates the divisor at runtime.
+
+This changed the interpretation of the symptom. The kernel was loading and
+running; its UART contract was wrong.
+
+### The correction and proof
+
+The corrected image was derived from the official image with the Gabix kernel
+and the project boot configuration, including:
+
+```ini
+arm_64bit=0
+kernel=kernel7.img
+kernel_address=0x8000
+enable_uart=1
+init_uart_clock=3000000
+```
+
+The self-verifying builder is
+`scripts/make-pi2-uart-smoke-from-official.py`. It replaces files through their
+FAT32 chains, updates directory sizes, and reads each replacement back before
+reporting success. The final image was written to the confirmed `/dev/rdisk6`
+with 149 successful 16 MiB blocks and `FAST_DD_STATUS:0`.
+
+The final clean monitor used one owner at 115200 baud. The physical log then
+showed one `gabix uart smoke booted` marker and 4,080 `gabix uart smoke alive`
+markers. The Pi 2 was running Gabix on real hardware.
+
+### Baseline for future experiments
+
+- Keep one UART monitor owner and start a fresh unique log before every power
+  cycle.
+- Preserve the official image as the source baseline.
+- Verify the local image hash and the individual FAT boot files.
+- Confirm the exact raw target after the card is inserted; unmount it before
+  writing.
+- Show progress, throughput, ETA, and a final status for every long write or
+  read.
+- Use a slow heartbeat for human-readable experiments. The current loop emits
+  roughly 450–480 messages per second because the UART transmission time is
+  only about 2.1 ms per 24-byte message.
+- For a production-quality Gabix boot path, query the UART clock through the
+  Raspberry Pi firmware mailbox or calculate the divisor from an explicit
+  clock contract instead of relying only on `init_uart_clock`.

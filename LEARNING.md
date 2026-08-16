@@ -539,6 +539,73 @@ A milestone is a "demo-able" checkpoint. Worth a commit + tag + log entry.
 
 ## Progress Log
 
+### 2026-08-16 — Physical Pi 2 UART userspace reload loop passes
+- **Diagnostic result:** Stage 6e reached the full kernel and accepted the
+  preserved user ELF, then reported `P0000000D@41000020`. Fault status `0x0D`
+  is a section permission prefetch abort, and `0x41000020` is the ELF entry.
+- **Root cause:** `allow_user_section()` changed a descriptor in the cached
+  `BOOT_TABLE`, then issued barriers and a TLB invalidation. The hardware table
+  walk still read the old privileged-only descriptor from RAM. Cleaning the
+  changed descriptor cache line before the barrier made the user mapping
+  visible to the MMU.
+- **Physical verification:** Stage 6f booted through `GABIX USER READY`. The
+  same 4,552-byte user ELF was uploaded twice in the same kernel session. Both
+  runs printed `gabix arm userspace wrote`, reported
+  `gabix raspi2b userspace exited`, and returned to `GABIX USER READY` without
+  a reboot or SD-card write.
+- **Passing baseline:**
+  `artifacts/pi2-stage-baselines/stage6f-clean-user-descriptor.img`, 110,940
+  bytes, SHA-256
+  `0241035587b39e9d05635de9f5d22da61116be42d820a8c8fb7c7240a2aee928`.
+  Exact kernel and user-run logs are stored beside it.
+- **Verification:** The Raspberry Pi 2 QEMU UART test also completed two user
+  reloads. No roadmap checkbox changed.
+- **Next:** Add a user-facing reboot fixture to the physical UART loop, then
+  verify that its reboot system call returns to the SD-resident loader and a
+  fresh development kernel can be uploaded without a physical power cycle.
+
+### 2026-08-16 — Physical Pi 2 UART kernel reaches userspace upload
+- **Staged diagnosis:** Preserved every physical payload and result in
+  `artifacts/pi2-stage-baselines/README.md`. Minimal probes established the
+  handoff, Hyp-to-SVC transition, BSS clearing, Rust entry, a 1 MiB BSS clear,
+  MMU setup, exclusive accesses, allocator initialization, and one `Box<u32>`
+  allocation in that order.
+- **Atomic root cause:** A single `LDREX` raised data abort
+  `DFSR=0x00001008` at `DFAR=0x00108000`, a synchronous read-side AXI slave
+  error. ACTLR.SMP and Normal non-cacheable mappings still faulted. Mapping
+  kernel RAM as cached shared Normal memory and enabling the data cache made
+  `LDREX`, `STREX`, Rust `AtomicU32::compare_exchange`, allocator
+  initialization, and `Box::new` pass physically. The passing marker sequence
+  was `SMIA`.
+- **Full development kernel:** Added raw-image BSS clearing, moved SMP and MMU
+  setup before allocator initialization, and excluded SD/USB probing from the
+  UART-user development path. Physical artifact
+  `stage6a-full-uart-development-kernel.img` booted through `smp enabled`,
+  `memory mapped`, `heap allocated`, and `timer advanced`, then printed
+  `GABIX USER READY`.
+- **Userspace boundary:** The first 4,552-byte ELF passed CRC and printed
+  `USER UPLOAD OK`, then stalled before its first syscall. User code had been
+  written through the newly enabled data cache. The next probe maps only user
+  code and stack sections as Normal non-cacheable memory. QEMU completes two
+  upload/run/exit/reload cycles with that mapping.
+- **Recovery:** Added a physical-development-only 10-second watchdog around
+  user execution. `SYS_EXIT` stops it with the sequence used by Linux's
+  BCM2835 watchdog driver. A failed user handoff returns to the SD loader; a
+  successful exit returns to `GABIX USER READY`.
+- **Current artifact:**
+  `artifacts/pi2-stage-baselines/stage6d-noncacheable-user-deadman.img`, 110,760
+  bytes, SHA-256
+  `e1c60917376e0e3570e68c2f2530f8a76d63efeb7185fd0321dbed339705adc7`.
+  The user fixture is `stage6-user-fixture.elf`, SHA-256
+  `a7f4fba0a80792fc8967e7b2f6c6b6f0ffb876ba6d07cbdd879ef76f8ab1d1f7`.
+- **Status:** No roadmap checkbox changed. Physical UART boot and kernel upload
+  pass. Repeatable physical userspace reload still needs the Stage 6d test.
+- **Next:** Power-cycle once to return from the stalled Stage 6a user handoff,
+  upload Stage 6d with `scripts/upload-pi2-kernel.py --wait-for-user-ready`,
+  then upload `stage6-user-fixture.elf` twice with
+  `scripts/upload-pi2-user.py --wait-for-exit`. Record both physical outputs
+  before changing the memory mapping again.
+
 ### 2026-08-15 — UART-loaded userspace and warm program reload
 - **Done:** Added the `pi-uart-user` development mode. After a UART kernel
   upload, Gabix prints `GABIX USER READY`, receives a CRC-framed ARM ELF into a

@@ -1,0 +1,7 @@
+sending 4552-byte user ELF (attempt 1/1)
+upload 1/4573 bytes (  0.0%)    1.0 KiB/s ETA   4.6supload 388/4573 bytes (  8.5%)    1.5 KiB/s ETA   2.7supload 773/4573 bytes ( 16.9%)    1.5 KiB/s ETA   2.5supload 1159/4573 bytes ( 25.3%)    1.5 KiB/s ETA   2.2supload 1543/4573 bytes ( 33.7%)    1.5 KiB/s ETA   2.0supload 1929/4573 bytes ( 42.2%)    1.5 KiB/s ETA   1.7supload 2316/4573 bytes ( 50.6%)    1.5 KiB/s ETA   1.5supload 2699/4573 bytes ( 59.0%)    1.5 KiB/s ETA   1.2supload 3083/4573 bytes ( 67.4%)    1.5 KiB/s ETA   1.0supload 3464/4573 bytes ( 75.7%)    1.5 KiB/s ETA   0.7supload 3851/4573 bytes ( 84.2%)    1.5 KiB/s ETA   0.5supload 4238/4573 bytes ( 92.7%)    1.5 KiB/s ETA   0.2supload 4573/4573 bytes (100.0%)    1.5 KiB/s ETA   0.0s
+USER UPLOAD CRC OK
+USER UPLOAD OK
+gabix arm userspace wrote
+gabix raspi2b userspace exited
+GABIX USER READY

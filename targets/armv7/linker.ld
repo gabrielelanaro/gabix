@@ -11,7 +11,13 @@ SECTIONS
 
     .rodata : { *(.rodata*) }
     .data : { *(.data*) }
-    .bss (NOLOAD) : { *(.bss*) *(COMMON) }
+    . = ALIGN(16);
+    .bss (NOLOAD) : {
+        __bss_start = .;
+        *(.bss*)
+        *(COMMON)
+        __bss_end = .;
+    }
 
     /DISCARD/ : { *(.ARM.exidx*) *(.ARM.extab*) *(.comment*) }
 }

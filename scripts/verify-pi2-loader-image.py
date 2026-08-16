@@ -95,7 +95,14 @@ def verify(
             if fat.read_file(image, name) != contents:
                 raise ValueError(f"boot-file mismatch: {name!r}")
 
-        _, _, _, _, clusters = fat.locate_file(image, b"KERNEL7 IMG")
+        _, _, cluster_size, size, clusters = fat.locate_file(image, b"KERNEL7 IMG")
+        expected_clusters = (size + cluster_size - 1) // cluster_size
+        if len(clusters) != expected_clusters:
+            raise ValueError(
+                "KERNEL7.IMG cluster count does not match its logical size: "
+                f"size={size} cluster_size={cluster_size} "
+                f"allocated={len(clusters)} expected={expected_clusters}"
+            )
         if any(right != left + 1 for left, right in zip(clusters, clusters[1:])):
             raise ValueError(f"KERNEL7.IMG is fragmented: {clusters}")
 

@@ -49,8 +49,22 @@ fn handle_event(uart: &Uart, event: UploadEvent) {
             write_kernel_byte(offset, byte);
             uart.write(b"UPLOAD CRC OK\r\n");
             uart.write(b"UPLOAD OK\r\n");
+            uart.write(b"HANDOFF ADDRESS ");
+            uart.write_hex32(DEVELOPMENT_KERNEL_ADDRESS as u32);
+            uart.write(b"\r\nHANDOFF LENGTH ");
+            uart.write_hex32(offset + 1);
+            uart.write(b"\r\nHANDOFF FIRST WORD ");
+            uart.write_hex32(unsafe { read32(DEVELOPMENT_KERNEL_ADDRESS) });
+            uart.write(b"\r\nHANDOFF SCTLR ");
+            uart.write_hex32(read_sctlr());
+            uart.write(b"\r\nHANDOFF CPSR ");
+            uart.write_hex32(read_cpsr());
+            uart.write(b"\r\nHANDOFF BRANCH\r\n");
             uart.flush();
-            start_development_kernel();
+            call_development_kernel();
+            uart.write(b"\r\nHANDOFF RETURNED\r\n");
+            uart.write(b"GABIX LOADER READY\r\n");
+            uart.flush();
         }
         UploadEvent::Failed { reason } => {
             match reason {
@@ -73,18 +87,38 @@ fn write_kernel_byte(offset: u32, byte: u8) {
     }
 }
 
-fn start_development_kernel() -> ! {
+fn call_development_kernel() {
     unsafe {
         asm!(
-            "dsb sy",
-            "mov r0, #0",
-            "mcr p15, 0, r0, c7, c5, 0",
-            "isb",
-            "bx {entry}",
+            "blx {entry}",
             entry = in(reg) DEVELOPMENT_KERNEL_ADDRESS,
-            options(noreturn)
+            clobber_abi("C"),
         );
     }
+}
+
+fn read_sctlr() -> u32 {
+    let value: u32;
+    unsafe {
+        asm!(
+            "mrc p15, 0, {value}, c1, c0, 0",
+            value = out(reg) value,
+            options(nostack, preserves_flags)
+        );
+    }
+    value
+}
+
+fn read_cpsr() -> u32 {
+    let value: u32;
+    unsafe {
+        asm!(
+            "mrs {value}, cpsr",
+            value = out(reg) value,
+            options(nostack, preserves_flags)
+        );
+    }
+    value
 }
 
 struct Uart;
@@ -130,6 +164,14 @@ impl Uart {
                 }
                 write32(UART_BASE + UART_DATA, byte as u32);
             }
+        }
+    }
+
+    fn write_hex32(&self, value: u32) {
+        const HEX: &[u8; 16] = b"0123456789ABCDEF";
+        self.write(b"0x");
+        for shift in (0..8).rev() {
+            self.write(&[HEX[((value >> (shift * 4)) & 0xf) as usize]]);
         }
     }
 

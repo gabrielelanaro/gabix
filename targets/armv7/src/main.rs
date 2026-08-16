@@ -95,6 +95,21 @@ global_asm!(
 extern "C" fn arm_kernel_entry() {
     let mut console = Pl011::new(UART_BASE);
     gabix_kernel::announce_boot(&mut console, PLATFORM);
+
+    #[cfg(feature = "raspi2b")]
+    unsafe {
+        if memory::enable_smp() {
+            write_line(&mut console, b"gabix raspi2b smp enabled");
+        } else {
+            write_line(&mut console, b"gabix raspi2b smp unavailable");
+        }
+        if memory::enable_identity_mapping() {
+            write_line(&mut console, b"gabix raspi2b memory mapped");
+        }
+        allocator::init();
+    }
+
+    #[cfg(feature = "virt")]
     unsafe {
         allocator::init();
     }
@@ -175,14 +190,12 @@ extern "C" fn arm_kernel_entry() {
     unsafe {
         #[cfg(not(feature = "pi-uart-user"))]
         let mut disk_user_entry = None;
-        if memory::enable_identity_mapping() {
-            write_line(&mut console, b"gabix raspi2b memory mapped");
-        }
         let boxed = alloc::boxed::Box::new(40u32);
         let values = alloc::vec![1u32, 1];
         if *boxed + values.iter().sum::<u32>() == 42 {
             write_line(&mut console, b"gabix raspi2b heap allocated");
         }
+        #[cfg(not(feature = "pi-uart-user"))]
         if let Some(mut card) = raspi2b::sdhci::SdCard::initialize() {
             if let Some(sector) = card.try_read_sector(1) {
                 if sector.starts_with(b"GABIXPI2") {
@@ -204,6 +217,7 @@ extern "C" fn arm_kernel_entry() {
             }
         }
         raspi2b::timer::init();
+        #[cfg(not(feature = "pi-uart-user"))]
         if let Some(mut usb) = raspi2b::usb::Dwc2::initialize() {
             if let Some(device) = usb.enumerate_root() {
                 write_line(&mut console, b"gabix raspi2b usb enumerated");

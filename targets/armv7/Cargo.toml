@@ -11,6 +11,46 @@ path = "src/main.rs"
 name = "pi2-loader"
 path = "src/pi2_loader.rs"
 
+[[bin]]
+name = "pi2-handoff-probe"
+path = "src/pi2_handoff_probe.rs"
+
+[[bin]]
+name = "pi2-svc-probe"
+path = "src/pi2_svc_probe.rs"
+
+[[bin]]
+name = "pi2-bss-probe"
+path = "src/pi2_bss_probe.rs"
+
+[[bin]]
+name = "pi2-allocator-probe"
+path = "src/pi2_allocator_probe.rs"
+
+[[bin]]
+name = "pi2-rust-probe"
+path = "src/pi2_rust_probe.rs"
+
+[[bin]]
+name = "pi2-rust-bss-probe"
+path = "src/pi2_rust_bss_probe.rs"
+
+[[bin]]
+name = "pi2-allocator-init-probe"
+path = "src/pi2_allocator_init_probe.rs"
+
+[[bin]]
+name = "pi2-large-bss-probe"
+path = "src/pi2_large_bss_probe.rs"
+
+[[bin]]
+name = "pi2-atomic-probe"
+path = "src/pi2_atomic_probe.rs"
+
+[[bin]]
+name = "pi2-mmu-atomic-probe"
+path = "src/pi2_mmu_atomic_probe.rs"
+
 [dependencies]
 gabix-kernel = { path = "../../crates/kernel-core", default-features = false }
 linked_list_allocator = "0.10"

@@ -107,7 +107,7 @@ def replace_file(image: mmap.mmap, short_name: bytes, replacement: bytes) -> Non
         image, short_name
     )
     required_clusters = (len(replacement) + cluster_size - 1) // cluster_size
-    if required_clusters > len(clusters):
+    if required_clusters != len(clusters):
         mbr = image[:SECTOR_SIZE]
         partition_start = struct.unpack_from("<I", mbr, 446 + 8)[0]
         boot_offset = partition_start * SECTOR_SIZE

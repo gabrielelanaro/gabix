@@ -7,6 +7,8 @@ const SECTION_SIZE: u32 = 1024 * 1024;
 const SECTION_DESCRIPTOR: u32 = 0b10;
 const PRIVILEGED_READ_WRITE: u32 = 0b01 << 10;
 const USER_READ_WRITE: u32 = 0b11 << 10;
+const NORMAL_WRITE_BACK_SHARED: u32 = (1 << 16) | (1 << 3) | (1 << 2);
+const NORMAL_NON_CACHEABLE: u32 = 0b001 << 12;
 #[cfg(feature = "raspi2b")]
 const USER_VIRTUAL_BASE: u32 = 0x4100_0000;
 #[cfg(feature = "raspi2b")]
@@ -19,6 +21,30 @@ static mut BOOT_TABLE: TranslationTable = TranslationTable([0; SECTION_COUNT]);
 static mut MMU_PROBE: u32 = 0;
 #[cfg(feature = "virt")]
 static mut FRAMES: FrameAllocator = FrameAllocator::empty();
+
+/// Enable Cortex-A7 coherent requests before using the MMU or exclusive
+/// accesses. Returns whether ACTLR.SMP bit 6 remained set after the write.
+pub unsafe fn enable_smp() -> bool {
+    let mut auxiliary_control: u32;
+    asm!(
+        "mrc p15, 0, {value}, c1, c0, 1",
+        value = out(reg) auxiliary_control,
+        options(nostack)
+    );
+    auxiliary_control |= 1 << 6;
+    asm!(
+        "mcr p15, 0, {value}, c1, c0, 1",
+        "isb",
+        value = in(reg) auxiliary_control,
+        options(nostack)
+    );
+    asm!(
+        "mrc p15, 0, {value}, c1, c0, 1",
+        value = out(reg) auxiliary_control,
+        options(nostack)
+    );
+    auxiliary_control & (1 << 6) != 0
+}
 
 #[cfg(feature = "virt")]
 pub unsafe fn frame_is_reused() -> bool {
@@ -42,7 +68,11 @@ pub unsafe fn frame_is_reused() -> bool {
 pub unsafe fn enable_identity_mapping() -> bool {
     let table = &mut *core::ptr::addr_of_mut!(BOOT_TABLE);
     for (index, descriptor) in table.0.iter_mut().enumerate() {
-        *descriptor = index as u32 * SECTION_SIZE | PRIVILEGED_READ_WRITE | SECTION_DESCRIPTOR;
+        let address = index as u32 * SECTION_SIZE;
+        *descriptor = address
+            | section_memory_attributes(address)
+            | PRIVILEGED_READ_WRITE
+            | SECTION_DESCRIPTOR;
     }
 
     let table_address = core::ptr::addr_of!(BOOT_TABLE) as u32;
@@ -60,12 +90,26 @@ pub unsafe fn enable_identity_mapping() -> bool {
 
     let mut system_control: u32;
     asm!("mrc p15, 0, {value}, c1, c0, 0", value = out(reg) system_control);
-    system_control |= 1;
+    system_control |= 1 | (1 << 2);
     asm!("mcr p15, 0, {value}, c1, c0, 0", value = in(reg) system_control);
     asm!("isb");
 
     core::ptr::write_volatile(core::ptr::addr_of_mut!(MMU_PROBE), 0x4741_4249);
     core::ptr::read_volatile(core::ptr::addr_of!(MMU_PROBE)) == 0x4741_4249
+}
+
+fn section_memory_attributes(address: u32) -> u32 {
+    #[cfg(feature = "raspi2b")]
+    if address < 0x3f00_0000 {
+        return NORMAL_WRITE_BACK_SHARED;
+    }
+
+    #[cfg(feature = "virt")]
+    if (0x4000_0000..0x4800_0000).contains(&address) {
+        return NORMAL_WRITE_BACK_SHARED;
+    }
+
+    0
 }
 
 pub unsafe fn allow_user_section(address: u32) {
@@ -75,9 +119,15 @@ pub unsafe fn allow_user_section(address: u32) {
     let physical = table.0[index] & 0xfff0_0000;
     #[cfg(feature = "raspi2b")]
     let physical = USER_PHYSICAL_BASE + (address & 0xfff0_0000) - USER_VIRTUAL_BASE;
-    table.0[index] = physical | USER_READ_WRITE | SECTION_DESCRIPTOR;
+    let descriptor = &mut table.0[index];
+    *descriptor = physical | NORMAL_NON_CACHEABLE | USER_READ_WRITE | SECTION_DESCRIPTOR;
 
+    let descriptor_address = descriptor as *mut u32 as u32;
     let zero = 0u32;
+    asm!(
+        "mcr p15, 0, {address}, c7, c10, 1",
+        address = in(reg) descriptor_address
+    );
     asm!("dsb");
     asm!("mcr p15, 0, {value}, c8, c7, 0", value = in(reg) zero);
     asm!("dsb");

@@ -29,6 +29,8 @@ unsafe fn exit(_frame: &mut UserFrame) -> u32 {
         feature = "pi-uart-user"
     ))]
     {
+        #[cfg(feature = "pi-hardware")]
+        crate::raspi2b::reset::stop_deadman();
         _frame.return_address =
             crate::arm_kernel_after_user_trampoline as *const () as usize as u32;
         asm!("msr spsr_cxsf, {status}", status = in(reg) 0x13u32);

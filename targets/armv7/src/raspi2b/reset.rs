@@ -7,6 +7,28 @@ const WATCHDOG: *mut u32 = (POWER_BASE + 0x24) as *mut u32;
 const PASSWORD: u32 = 0x5a00_0000;
 const RESET_CONFIG_MASK: u32 = 0xffff_ffcf;
 const FULL_RESET: u32 = 0x20;
+const STOP_RESET: u32 = 0x102;
+const WATCHDOG_TICKS_MASK: u32 = 0x000f_ffff;
+
+pub fn arm_deadman(seconds: u32) {
+    let ticks = seconds.saturating_mul(1 << 16) & WATCHDOG_TICKS_MASK;
+    unsafe {
+        write_volatile(WATCHDOG, PASSWORD | ticks);
+        let control = read_volatile(RESET_CONTROL);
+        write_volatile(
+            RESET_CONTROL,
+            PASSWORD | (control & RESET_CONFIG_MASK) | FULL_RESET,
+        );
+        asm!("dsb sy", options(nostack, preserves_flags));
+    }
+}
+
+pub fn stop_deadman() {
+    unsafe {
+        write_volatile(RESET_CONTROL, PASSWORD | STOP_RESET);
+        asm!("dsb sy", options(nostack, preserves_flags));
+    }
+}
 
 /// Ask the BCM2836 power manager to reset the board through its watchdog.
 pub fn reset() -> ! {
