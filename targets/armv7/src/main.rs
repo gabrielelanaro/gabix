@@ -98,7 +98,7 @@ extern "C" fn arm_kernel_entry() {
 
     #[cfg(any(feature = "pi-network-dev", feature = "pi-network-pre-timer-probe"))]
     {
-        raspi2b::reset::arm_deadman(30);
+        raspi2b::reset::arm_deadman(15);
         write_line(&mut console, b"gabix raspi2b development watchdog armed");
     }
 
@@ -302,6 +302,7 @@ extern "C" fn arm_kernel_entry() {
                                 match session.handle_frame(&mut network, frame.bytes()) {
                                     NetworkEvent::Configured => {
                                         write_line(&mut console, b"gabix raspi2b dhcp configured");
+                                        raspi2b::reset::arm_deadman(15);
                                     }
                                     NetworkEvent::ReplyTransmitted(true) => {
                                         write_line(&mut console, b"gabix raspi2b network reply tx ok");
