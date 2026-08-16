@@ -96,7 +96,11 @@ extern "C" fn arm_kernel_entry() {
     let mut console = Pl011::new(UART_BASE);
     gabix_kernel::announce_boot(&mut console, PLATFORM);
 
-    #[cfg(any(feature = "pi-network-dev", feature = "pi-network-pre-timer-probe"))]
+    #[cfg(any(
+        feature = "pi-network-dev",
+        feature = "pi-network-pre-timer-probe",
+        feature = "pi-network-no-irq-dev"
+    ))]
     {
         raspi2b::reset::arm_deadman(15);
         write_line(&mut console, b"gabix raspi2b development watchdog armed");
