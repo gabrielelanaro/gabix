@@ -539,6 +539,29 @@ A milestone is a "demo-able" checkpoint. Worth a commit + tag + log entry.
 
 ## Progress Log
 
+### 2026-08-16 — Physical Pi 2 userspace reboot reloads the kernel
+- **Host capture:** Added `--wait-for-reboot` to
+  `scripts/upload-pi2-user.py`. It keeps the UART open after
+  `USER UPLOAD OK` until the SD-resident loader prints
+  `GABIX LOADER READY`. A pseudo-terminal test covers this completion mode.
+- **Physical reboot:** The 4,560-byte ARM fixture invoked syscall 169 from the
+  live Stage 6f kernel. The Raspberry Pi 2 reset itself and returned to
+  `GABIX LOADER READY` without a physical power cycle. The immediate reset
+  truncated the preceding userspace UART marker while it was still queued in
+  the PL011 FIFO; the complete loader marker established the reset result.
+- **Fresh kernel upload:** The host uploaded the unchanged Stage 6f kernel
+  after the syscall reset. The loader reported CRC success and handoff, and
+  Gabix returned to `GABIX USER READY`.
+- **Preserved evidence:** `stage7-reboot-user-fixture.elf`,
+  `stage7-physical-reboot.log`, and `stage7-physical-kernel-reload.log` live in
+  `artifacts/pi2-stage-baselines/`. The fixture SHA-256 is
+  `db116882ed56bee543a57f25a66f6a15a749faf7a725300c35e5d3d5dcde74ca`.
+- **Verification:** The QEMU Pi 2 reboot test and all 10 host uploader tests
+  pass. No roadmap checkbox changed.
+- **Next:** Decide whether reboot should drain the PL011 transmit FIFO before
+  arming the short reset watchdog, then add the next user-program development
+  capability on top of the proven reload lifecycle.
+
 ### 2026-08-16 — Physical Pi 2 UART userspace reload loop passes
 - **Diagnostic result:** Stage 6e reached the full kernel and accepted the
   preserved user ELF, then reported `P0000000D@41000020`. Fault status `0x0D`

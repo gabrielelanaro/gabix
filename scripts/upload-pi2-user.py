@@ -10,6 +10,7 @@ from pathlib import Path
 
 MAX_USER_ELF_SIZE = 512 * 1024
 USER_READY = b"GABIX USER READY"
+LOADER_READY = b"GABIX LOADER READY"
 USER_UPLOAD_OK = b"USER UPLOAD OK"
 USER_UPLOAD_FAILED = b"USER UPLOAD FAILED"
 
@@ -33,7 +34,10 @@ def main() -> int:
     parser.add_argument("--inter-byte-delay-us", type=int, default=500)
     parser.add_argument("--retries", type=int, default=3)
     parser.add_argument("--wait-ready", action="store_true")
-    parser.add_argument("--wait-for-exit", action="store_true")
+    completion = parser.add_mutually_exclusive_group()
+    completion.add_argument("--wait-for-exit", action="store_true")
+    completion.add_argument("--wait-for-reboot", action="store_true")
+    parser.add_argument("--reboot-timeout", type=float, default=15.0)
     args = parser.parse_args()
 
     transport = load_transport()
@@ -74,6 +78,14 @@ def main() -> int:
                     timeout=args.exit_timeout,
                 ):
                     raise TimeoutError("timed out waiting for userspace exit")
+                if args.wait_for_reboot and not transport.wait_for_marker_after(
+                    fd,
+                    result,
+                    after_marker=USER_UPLOAD_OK,
+                    marker=LOADER_READY,
+                    timeout=args.reboot_timeout,
+                ):
+                    raise TimeoutError("timed out waiting for loader after reboot")
                 return 0
             print("kernel rejected the user ELF; retrying", file=sys.stderr)
         return 1

@@ -56,4 +56,23 @@ The exact physical logs are preserved as:
 - `stage6f-physical-user-run1.log`
 - `stage6f-physical-user-run2.log`
 
+## Stage 7: autonomous reboot and kernel reload
+
+The preserved `stage7-reboot-user-fixture.elf` is 4,560 bytes with SHA-256
+`db116882ed56bee543a57f25a66f6a15a749faf7a725300c35e5d3d5dcde74ca`.
+It writes a reboot marker and invokes syscall 169. On the physical Pi 2,
+Stage 6f accepted this ELF and the syscall reset the board to
+`GABIX LOADER READY`. The host then uploaded the unchanged Stage 6f kernel;
+the loader validated its CRC, transferred control to `0x00100000`, and the
+kernel returned to `GABIX USER READY`. This lifecycle required no physical
+power cycle and no SD-card write.
+
+The reboot happened while the marker remained in the PL011 transmit FIFO, so
+the captured marker ends partway through `gabix arm userspace rebooting`. The
+complete post-reset loader marker and successful kernel reload establish the
+reset result. Exact logs:
+
+- `stage7-physical-reboot.log`
+- `stage7-physical-kernel-reload.log`
+
 Stage 0 through Stage 2 passed on the physical Raspberry Pi 2B on 2026-08-16.
