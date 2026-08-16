@@ -33,6 +33,6 @@ impl EthernetFrame {
 /// Raw Ethernet frame transport implemented by a network driver.
 pub trait FrameDevice: Send {
     fn mac_address(&self) -> [u8; 6];
-    fn transmit(&mut self, frame: &[u8]);
+    fn transmit(&mut self, frame: &[u8]) -> bool;
     fn receive(&mut self) -> Option<EthernetFrame>;
 }

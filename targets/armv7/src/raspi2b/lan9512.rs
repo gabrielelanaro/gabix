@@ -137,10 +137,8 @@ impl FrameDevice for Lan9512Ethernet {
         self.mac
     }
 
-    fn transmit(&mut self, frame: &[u8]) {
-        unsafe {
-            self.transmit_frame(frame);
-        }
+    fn transmit(&mut self, frame: &[u8]) -> bool {
+        unsafe { self.transmit_frame(frame) }
     }
 
     fn receive(&mut self) -> Option<EthernetFrame> {

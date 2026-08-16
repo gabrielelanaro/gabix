@@ -236,6 +236,11 @@ extern "C" fn arm_kernel_entry() {
                     .and_then(|device| raspi2b::ethernet::UsbEthernet::configure(usb, device))
                 {
                     write_line(&mut console, b"gabix raspi2b usb network configured");
+                    #[cfg(feature = "pi-hardware")]
+                    {
+                        write_line(&mut console, b"gabix raspi2b waiting for ethernet link");
+                        raspi2b::timer::delay_us(5_000_000);
+                    }
                     let mut session = DhcpSession::new(network.mac_address(), 0x4741_4258);
                     let mut next_discover = raspi2b::timer::ticks();
                     #[cfg(not(feature = "pi-hardware"))]
@@ -246,7 +251,11 @@ extern "C" fn arm_kernel_entry() {
                         let now = raspi2b::timer::ticks();
                         if !session.is_configured() && now >= next_discover {
                             write_line(&mut console, b"gabix raspi2b dhcp discover");
-                            session.send_discover(&mut network);
+                            if session.send_discover(&mut network) {
+                                write_line(&mut console, b"gabix raspi2b dhcp tx ok");
+                            } else {
+                                write_line(&mut console, b"gabix raspi2b dhcp tx failed");
+                            }
                             next_discover = now + 100;
                         }
                         if let Some(frame) = network.receive() {

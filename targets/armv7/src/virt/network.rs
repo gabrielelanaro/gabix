@@ -255,7 +255,7 @@ impl FrameDevice for VirtioNet {
         self.mac
     }
 
-    fn transmit(&mut self, frame: &[u8]) {
+    fn transmit(&mut self, frame: &[u8]) -> bool {
         assert!(frame.len() <= MAX_ETHERNET_FRAME_LEN);
         let frame_len = frame.len().max(MIN_FRAME_LEN);
 
@@ -312,6 +312,7 @@ impl FrameDevice for VirtioNet {
             self.tx_last_used = self.tx_last_used.wrapping_add(1);
             barrier();
         }
+        true
     }
 
     fn receive(&mut self) -> Option<EthernetFrame> {

@@ -31,7 +31,7 @@ impl FrameDevice for UsbEthernet {
         }
     }
 
-    fn transmit(&mut self, frame: &[u8]) {
+    fn transmit(&mut self, frame: &[u8]) -> bool {
         match self {
             Self::Lan9512(device) => device.transmit(frame),
             Self::Rndis(device) => device.transmit(frame),

@@ -340,7 +340,7 @@ impl Dwc2 {
             data_pid,
             bytes.as_ptr(),
             bytes.len(),
-            false,
+            true,
         )
     }
 

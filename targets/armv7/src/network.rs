@@ -22,12 +22,12 @@ impl DhcpSession {
         }
     }
 
-    pub fn send_discover(&self, device: &mut impl FrameDevice) {
+    pub fn send_discover(&self, device: &mut impl FrameDevice) -> bool {
         let mut payload = [0u8; 300];
         let Some(payload_len) = self.client.write_discover(&mut payload) else {
-            return;
+            return false;
         };
-        self.send_dhcp(device, &payload[..payload_len]);
+        self.send_dhcp(device, &payload[..payload_len])
     }
 
     pub fn handle_frame(&mut self, device: &mut impl FrameDevice, bytes: &[u8]) -> NetworkEvent {
@@ -62,7 +62,7 @@ impl DhcpSession {
         self.interface.address() != [0; 4]
     }
 
-    fn send_dhcp(&self, device: &mut impl FrameDevice, payload: &[u8]) {
+    fn send_dhcp(&self, device: &mut impl FrameDevice, payload: &[u8]) -> bool {
         let mut frame = [0u8; MAX_FRAME_LEN];
         if let Some(length) = self.interface.write_udp_from(
             [0; 4],
@@ -73,7 +73,9 @@ impl DhcpSession {
             payload,
             &mut frame,
         ) {
-            device.transmit(&frame[..length]);
+            device.transmit(&frame[..length])
+        } else {
+            false
         }
     }
 }

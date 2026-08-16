@@ -2,6 +2,7 @@ use core::arch::asm;
 use core::sync::atomic::{AtomicU64, Ordering};
 
 const LOCAL_CONTROL_BASE: usize = 0x4000_0000;
+const SYSTEM_TIMER_LOW: *const u32 = 0x3f00_3004 as *const u32;
 const LOCAL_TIMER_ROUTE: usize = LOCAL_CONTROL_BASE + 0x24;
 const LOCAL_TIMER_CONTROL: usize = LOCAL_CONTROL_BASE + 0x34;
 const LOCAL_TIMER_ACK: usize = LOCAL_CONTROL_BASE + 0x38;
@@ -31,6 +32,15 @@ pub unsafe fn handle_interrupt() {
 
 pub fn ticks() -> u64 {
     TICKS.load(Ordering::Relaxed)
+}
+
+pub fn delay_us(microseconds: u32) {
+    let started = unsafe { core::ptr::read_volatile(SYSTEM_TIMER_LOW) };
+    while unsafe { core::ptr::read_volatile(SYSTEM_TIMER_LOW) }.wrapping_sub(started)
+        < microseconds
+    {
+        core::hint::spin_loop();
+    }
 }
 
 unsafe fn write32(address: usize, value: u32) {

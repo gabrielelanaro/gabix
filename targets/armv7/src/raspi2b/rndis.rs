@@ -89,9 +89,9 @@ impl FrameDevice for RndisEthernet {
         self.mac
     }
 
-    fn transmit(&mut self, frame: &[u8]) {
+    fn transmit(&mut self, frame: &[u8]) -> bool {
         if frame.len() > MAX_ETHERNET_FRAME_LEN {
-            return;
+            return false;
         }
         let frame_len = frame.len().max(60);
         let message_len = RNDIS_HEADER_LEN + frame_len;
@@ -114,6 +114,9 @@ impl FrameDevice for RndisEthernet {
                 .is_some()
             {
                 Self::update_pid(&mut self.tx_pid, message_len, self.bulk_max_packet as usize);
+                true
+            } else {
+                false
             }
         }
     }
