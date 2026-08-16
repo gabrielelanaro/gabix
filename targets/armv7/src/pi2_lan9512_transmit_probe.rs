@@ -23,6 +23,10 @@ const UART_BASE: usize = 0x3f20_1000;
 const UART_FLAGS: usize = UART_BASE + 0x18;
 const UART_TX_FULL: u32 = 1 << 5;
 const SYSTEM_TIMER_LOW: *const u32 = 0x3f00_3004 as *const u32;
+#[cfg(feature = "pi-network-dhcp-size-probe")]
+const FRAME_LEN: usize = 293;
+#[cfg(not(feature = "pi-network-dhcp-size-probe"))]
+const FRAME_LEN: usize = 60;
 
 #[no_mangle]
 extern "C" fn pi2_lan9512_transmit_probe_main() -> ! {
@@ -69,7 +73,7 @@ extern "C" fn pi2_lan9512_transmit_probe_main() -> ! {
     write_line(b"NET10 WAITING FOR LINK");
     delay_us(5_000_000);
 
-    let mut frame = [0u8; 60];
+    let mut frame = [0u8; FRAME_LEN];
     frame[..6].fill(0xff);
     frame[6..12].copy_from_slice(&mac);
     frame[12..14].copy_from_slice(&[0x88, 0xb5]);

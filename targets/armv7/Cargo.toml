@@ -77,6 +77,7 @@ virt = ["gabix-kernel/kernel"]
 raspi2b = ["gabix-kernel/kernel"]
 pi-hardware = ["raspi2b"]
 pi-network-dev = ["pi-hardware"]
+pi-network-dhcp-size-probe = []
 pi-lifecycle = ["raspi2b"]
 pi-uart-user = ["raspi2b"]
 
