@@ -273,6 +273,8 @@ extern "C" fn arm_kernel_entry() {
                     let mut session = DhcpSession::new(network.mac_address(), 0x4741_4258);
                     let mut next_discover = raspi2b::timer::ticks();
                     #[cfg(feature = "pi-hardware")]
+                    let mut next_rx_fifo_report = next_discover;
+                    #[cfg(feature = "pi-hardware")]
                     let mut discover_count = 0usize;
                     #[cfg(not(feature = "pi-hardware"))]
                     let deadline = raspi2b::timer::ticks() + 200;
@@ -313,6 +315,21 @@ extern "C" fn arm_kernel_entry() {
                                     NetworkEvent::None => {}
                                 }
                             }
+                        }
+                        #[cfg(feature = "pi-hardware")]
+                        if session.is_configured() && now >= next_rx_fifo_report {
+                            match network.rx_fifo_used() {
+                                Some(0) => {
+                                    write_line(&mut console, b"gabix raspi2b rx fifo empty");
+                                }
+                                Some(_) => {
+                                    write_line(&mut console, b"gabix raspi2b rx fifo has data");
+                                }
+                                None => {
+                                    write_line(&mut console, b"gabix raspi2b rx fifo unavailable");
+                                }
+                            }
+                            next_rx_fifo_report = now + 100;
                         }
                         asm!("wfi");
                     }

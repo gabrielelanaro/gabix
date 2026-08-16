@@ -26,6 +26,13 @@ impl UsbEthernet {
             Self::Rndis(_) => None,
         }
     }
+
+    pub unsafe fn rx_fifo_used(&mut self) -> Option<u16> {
+        match self {
+            Self::Lan9512(device) => device.rx_fifo_used(),
+            Self::Rndis(_) => None,
+        }
+    }
 }
 
 unsafe impl Send for UsbEthernet {}

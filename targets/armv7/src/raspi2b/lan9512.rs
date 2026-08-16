@@ -10,6 +10,7 @@ const READ_REGISTER: u8 = 0xa1;
 const INT_STS: u16 = 0x08;
 const TX_CFG: u16 = 0x10;
 const HW_CFG: u16 = 0x14;
+const RX_FIFO_INF: u16 = 0x18;
 const AFC_CFG: u16 = 0x2c;
 const E2P_CMD: u16 = 0x30;
 const E2P_DATA: u16 = 0x34;
@@ -141,6 +142,10 @@ impl Lan9512Ethernet {
         Some(
             read_phy_register(&mut self.host, self.device, MII_BMSR)? & BMSR_LINK_STATUS != 0,
         )
+    }
+
+    pub unsafe fn rx_fifo_used(&mut self) -> Option<u16> {
+        Some(read_register(&mut self.host, self.device, RX_FIFO_INF)? as u16)
     }
 }
 
