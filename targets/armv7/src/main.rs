@@ -222,7 +222,10 @@ extern "C" fn arm_kernel_entry() {
                 disk_user_entry = user::load_elf(&image);
             }
         }
-        #[cfg(not(feature = "pi-network-pre-timer-probe"))]
+        #[cfg(not(any(
+            feature = "pi-network-pre-timer-probe",
+            feature = "pi-network-no-irq-dev"
+        )))]
         raspi2b::timer::init();
         #[cfg(not(feature = "pi-uart-user"))]
         if let Some(mut usb) = raspi2b::usb::Dwc2::initialize() {
@@ -338,6 +341,9 @@ extern "C" fn arm_kernel_entry() {
                             }
                             next_rx_fifo_report = now + 100;
                         }
+                        #[cfg(feature = "pi-network-no-irq-dev")]
+                        core::hint::spin_loop();
+                        #[cfg(not(feature = "pi-network-no-irq-dev"))]
                         asm!("wfi");
                     }
                     #[cfg(any(feature = "pi-hardware", feature = "pi-lifecycle"))]
@@ -349,6 +355,9 @@ extern "C" fn arm_kernel_entry() {
             }
         }
         while raspi2b::timer::ticks() < 2 {
+            #[cfg(feature = "pi-network-no-irq-dev")]
+            core::hint::spin_loop();
+            #[cfg(not(feature = "pi-network-no-irq-dev"))]
             asm!("wfi");
         }
         write_line(&mut console, b"gabix raspi2b timer advanced");

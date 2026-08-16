@@ -31,6 +31,11 @@ pub unsafe fn handle_interrupt() {
 }
 
 pub fn ticks() -> u64 {
+    #[cfg(feature = "pi-network-no-irq-dev")]
+    {
+        return unsafe { core::ptr::read_volatile(SYSTEM_TIMER_LOW) } as u64 / 10_000;
+    }
+    #[cfg(not(feature = "pi-network-no-irq-dev"))]
     TICKS.load(Ordering::Relaxed)
 }
 

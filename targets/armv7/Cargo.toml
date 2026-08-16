@@ -83,6 +83,7 @@ pi-network-pre-timer-probe = ["pi-hardware"]
 pi-network-arp-receive-probe = []
 pi-network-arp-reply-probe = ["pi-network-arp-receive-probe"]
 pi-network-repeated-receive-probe = []
+pi-network-no-irq-dev = ["pi-hardware"]
 pi-lifecycle = ["raspi2b"]
 pi-uart-user = ["raspi2b"]
 
