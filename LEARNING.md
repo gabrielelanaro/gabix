@@ -539,6 +539,20 @@ A milestone is a "demo-able" checkpoint. Worth a commit + tag + log entry.
 
 ## Progress Log
 
+### 2026-08-16 — Physical Pi 2 USB hub and LAN9512 enumerate
+- **Minimal probe:** Added a 7,386-byte UART-loaded probe that contains only
+  the mailbox and DWC2 paths needed for USB enumeration. A watchdog returns it
+  to the SD-resident loader without a manual power cycle.
+- **Physical result:** DWC2 initialized, then enumerated root device
+  `0424:9514` class `09` as the onboard SMSC hub and child device `0424:EC00`
+  class `FF` as the LAN9512 Ethernet function.
+- **Preserved baseline:**
+  `artifacts/pi2-network-baselines/net8-usb-enumeration.img`, SHA-256
+  `3c618e58772a044d149665960874578ab17031e90eb49001b610543cbe88eaab`,
+  with its exact physical UART log beside it.
+- **Next:** Configure LAN9512 registers, expose its MAC address and link state
+  over UART, then transmit one identifiable raw Ethernet frame to the Mac.
+
 ### 2026-08-16 — Physical Pi 2 userspace reboot reloads the kernel
 - **Host capture:** Added `--wait-for-reboot` to
   `scripts/upload-pi2-user.py`. It keeps the UART open after
