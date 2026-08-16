@@ -5,6 +5,7 @@ use gabix_kernel::net::stack::{NetworkInterface, MAX_FRAME_LEN};
 pub enum NetworkEvent {
     None,
     Configured,
+    ReplyTransmitted(bool),
 }
 
 pub struct DhcpSession {
@@ -33,7 +34,7 @@ impl DhcpSession {
     pub fn handle_frame(&mut self, device: &mut impl FrameDevice, bytes: &[u8]) -> NetworkEvent {
         let mut reply = [0u8; MAX_FRAME_LEN];
         if let Some(length) = self.interface.reply(bytes, &mut reply) {
-            device.transmit(&reply[..length]);
+            return NetworkEvent::ReplyTransmitted(device.transmit(&reply[..length]));
         }
 
         let Some(datagram) = self.interface.receive_udp(bytes) else {

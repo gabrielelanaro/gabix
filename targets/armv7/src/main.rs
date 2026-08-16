@@ -299,11 +299,17 @@ extern "C" fn arm_kernel_entry() {
                         let poll_receive = true;
                         if poll_receive {
                             if let Some(frame) = network.receive() {
-                                if matches!(
-                                    session.handle_frame(&mut network, frame.bytes()),
-                                    NetworkEvent::Configured
-                                ) {
-                                    write_line(&mut console, b"gabix raspi2b dhcp configured");
+                                match session.handle_frame(&mut network, frame.bytes()) {
+                                    NetworkEvent::Configured => {
+                                        write_line(&mut console, b"gabix raspi2b dhcp configured");
+                                    }
+                                    NetworkEvent::ReplyTransmitted(true) => {
+                                        write_line(&mut console, b"gabix raspi2b network reply tx ok");
+                                    }
+                                    NetworkEvent::ReplyTransmitted(false) => {
+                                        write_line(&mut console, b"gabix raspi2b network reply tx failed");
+                                    }
+                                    NetworkEvent::None => {}
                                 }
                             }
                         }
