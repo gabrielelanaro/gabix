@@ -15,6 +15,7 @@ SD-resident UART loader; these tests do not write the SD card.
 | NET14 | `net14-full-pre-timer-release-dhcp-tx.img` | 44,400 | `4042fce909afc788c65c41f1b0f92b8ad8cd8df7249d702fc280a5a58b39c716` | Full Gabix boot path through heap and SD inspection, with DHCP sent before timer initialization; release build sent all 16 frames and Mac `en6` increased by exactly 16 packets and 4,688 bytes, while the corresponding debug build sent zero wire packets |
 | NET15 | `net15-full-release-dhcp.img` | 47,100 | `2fe0b857cbb358598506b18e0cc0a93b768bf290d479c5919c6093a698ccdbb2` | Normal integrated release kernel with timer and receive polling completed DHCP against the controlled Mac peer, printed `dhcp configured`, and returned to the UART loader through the watchdog |
 | NET16 | `net16-full-release-udp-echo.img` | 47,100 | `2fe0b857cbb358598506b18e0cc0a93b768bf290d479c5919c6093a698ccdbb2` | With a temporary static Mac ARP entry for the Pi, the NET15 kernel echoed `GABIX-PI2-UDP-NET16` byte-for-byte from UDP port 5555 at `10.0.2.15`; this physically verifies integrated IPv4/UDP RX and TX while leaving dynamic ARP as a separate stage |
+| NET17 | `net17-lan9512-repeated-rx.img` | 19,565 | `6996851b3f7069fa44525c04c2094e62017f59b3714556f414aa3f330ac3ec2b` | Minimal receive probe consumed 16 successive frames from a controlled Mac UDP stream and printed the sixteenth 60-byte IPv4 frame, proving repeated LAN9512 bulk-IN and data-toggle handling |
 
 Exact UART output is preserved in the corresponding `*-physical.log` files.
 NET9's Mac-side link transition is preserved in
@@ -42,3 +43,5 @@ NET15's full DHCP exchange is preserved in
 NET16's UART trace and Mac peer result are preserved in
 `net16-full-release-udp-echo-physical.log` and
 `net16-full-release-udp-echo-peer.log`.
+NET17's UART trace is preserved in
+`net17-lan9512-repeated-rx-physical.log`.
