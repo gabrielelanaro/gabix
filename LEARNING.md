@@ -539,6 +539,25 @@ A milestone is a "demo-able" checkpoint. Worth a commit + tag + log entry.
 
 ## Progress Log
 
+### 2026-08-16 — Physical Pi 2 transmits raw Ethernet frames
+- **Minimal probe:** NET10 extends the passing LAN9512 link probe with one
+  action: transmit sixteen 60-byte broadcast frames carrying experimental
+  EtherType `0x88B5` and the payload marker `GABIX-NET10-PROBE`.
+- **Timing diagnosis:** Sending immediately after register configuration
+  completed every USB bulk transfer before Ethernet autonegotiation finished,
+  and Mac `en6` received zero packets. Waiting five seconds for the already
+  observed physical link transition kept the rest of the probe unchanged.
+- **Physical result:** The probe reported all 16 bulk transfers successful.
+  Mac `en6` counters changed from 0 packets/0 bytes to exactly 16 packets/960
+  bytes, matching the generated frame count and size.
+- **Preserved baseline:**
+  `artifacts/pi2-network-baselines/net10-lan9512-raw-tx.img`, SHA-256
+  `94102ea52f445c54db1d30538d4770ea8b78fea2ea4c0c2a58eff7f554524896`,
+  with UART and Mac counter logs beside it.
+- **Next:** Send a known frame from Mac `en6`, receive it through LAN9512 bulk
+  IN, and report its EtherType/payload over UART. Keep DHCP and higher layers
+  out of that receive probe.
+
 ### 2026-08-16 — Physical Pi 2 LAN9512 configuration establishes Ethernet link
 - **Cache and DMA correction:** Aligned mailbox property messages to a cache
   line, synchronized them around GPU access, and synchronized DWC2 DMA buffers

@@ -106,6 +106,28 @@ impl Lan9512Ethernet {
             *pid = if *pid == DATA0 { DATA1 } else { DATA0 };
         }
     }
+
+    pub unsafe fn transmit_frame(&mut self, frame: &[u8]) -> bool {
+        let mut bytes = [0u8; TX_HEADER_LEN + MAX_ETHERNET_FRAME_LEN];
+        let Some(length) = write_tx_frame(frame, &mut bytes) else {
+            return false;
+        };
+        if self
+            .host
+            .bulk_out(
+                self.device,
+                self.bulk_out_endpoint,
+                self.bulk_max_packet,
+                self.tx_pid,
+                &bytes[..length],
+            )
+            .is_none()
+        {
+            return false;
+        }
+        Self::update_pid(&mut self.tx_pid, length, self.bulk_max_packet as usize);
+        true
+    }
 }
 
 unsafe impl Send for Lan9512Ethernet {}
@@ -116,24 +138,8 @@ impl FrameDevice for Lan9512Ethernet {
     }
 
     fn transmit(&mut self, frame: &[u8]) {
-        let mut bytes = [0u8; TX_HEADER_LEN + MAX_ETHERNET_FRAME_LEN];
-        let Some(length) = write_tx_frame(frame, &mut bytes) else {
-            return;
-        };
         unsafe {
-            if self
-                .host
-                .bulk_out(
-                    self.device,
-                    self.bulk_out_endpoint,
-                    self.bulk_max_packet,
-                    self.tx_pid,
-                    &bytes[..length],
-                )
-                .is_some()
-            {
-                Self::update_pid(&mut self.tx_pid, length, self.bulk_max_packet as usize);
-            }
+            self.transmit_frame(frame);
         }
     }
 
