@@ -19,6 +19,13 @@ impl UsbEthernet {
             None
         }
     }
+
+    pub unsafe fn link_up(&mut self) -> Option<bool> {
+        match self {
+            Self::Lan9512(device) => device.link_up(),
+            Self::Rndis(_) => None,
+        }
+    }
 }
 
 unsafe impl Send for UsbEthernet {}

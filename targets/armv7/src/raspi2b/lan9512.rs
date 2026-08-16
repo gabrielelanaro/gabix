@@ -15,6 +15,8 @@ const E2P_CMD: u16 = 0x30;
 const E2P_DATA: u16 = 0x34;
 const BURST_CAP: u16 = 0x38;
 const MAC_CR: u16 = 0x100;
+const MII_ADDR: u16 = 0x114;
+const MII_DATA: u16 = 0x118;
 const ADDRH: u16 = 0x104;
 const ADDRL: u16 = 0x108;
 const COE_CR: u16 = 0x130;
@@ -30,6 +32,10 @@ const MAC_CR_RX_ENABLE: u32 = 0x0000_0004;
 const E2P_BUSY: u32 = 0x8000_0000;
 const E2P_TIMEOUT: u32 = 0x0000_0400;
 const E2P_READ: u32 = 0;
+const MII_BUSY: u32 = 1;
+const INTERNAL_PHY_ID: u32 = 1;
+const MII_BMSR: u32 = 1;
+const BMSR_LINK_STATUS: u16 = 1 << 2;
 const EEPROM_MAC_OFFSET: u32 = 1;
 const REGISTER_POLL_LIMIT: usize = 1000;
 const FCS_LEN: usize = 4;
@@ -128,6 +134,14 @@ impl Lan9512Ethernet {
         Self::update_pid(&mut self.tx_pid, length, self.bulk_max_packet as usize);
         true
     }
+
+    pub unsafe fn link_up(&mut self) -> Option<bool> {
+        // BMSR link status is latch-low, so Linux reads it twice as well.
+        let _ = read_phy_register(&mut self.host, self.device, MII_BMSR)?;
+        Some(
+            read_phy_register(&mut self.host, self.device, MII_BMSR)? & BMSR_LINK_STATUS != 0,
+        )
+    }
 }
 
 unsafe impl Send for Lan9512Ethernet {}
@@ -180,6 +194,22 @@ unsafe fn write_register(
         register,
         &value.to_le_bytes(),
     )
+}
+
+unsafe fn read_phy_register(
+    host: &mut Dwc2,
+    device: UsbDevice,
+    register: u32,
+) -> Option<u16> {
+    wait_register_clear(host, device, MII_ADDR, MII_BUSY)?;
+    write_register(
+        host,
+        device,
+        MII_ADDR,
+        INTERNAL_PHY_ID << 11 | (register & 0x1f) << 6 | MII_BUSY,
+    )?;
+    wait_register_clear(host, device, MII_ADDR, MII_BUSY)?;
+    Some(read_register(host, device, MII_DATA)? as u16)
 }
 
 unsafe fn wait_register_clear(

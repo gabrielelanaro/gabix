@@ -238,8 +238,18 @@ extern "C" fn arm_kernel_entry() {
                     write_line(&mut console, b"gabix raspi2b usb network configured");
                     #[cfg(feature = "pi-hardware")]
                     {
+                        match network.link_up() {
+                            Some(true) => write_line(&mut console, b"gabix raspi2b ethernet link up"),
+                            Some(false) => write_line(&mut console, b"gabix raspi2b ethernet link down"),
+                            None => write_line(&mut console, b"gabix raspi2b ethernet link unknown"),
+                        }
                         write_line(&mut console, b"gabix raspi2b waiting for ethernet link");
                         raspi2b::timer::delay_us(5_000_000);
+                        match network.link_up() {
+                            Some(true) => write_line(&mut console, b"gabix raspi2b ethernet link up"),
+                            Some(false) => write_line(&mut console, b"gabix raspi2b ethernet link down"),
+                            None => write_line(&mut console, b"gabix raspi2b ethernet link unknown"),
+                        }
                     }
                     let mut session = DhcpSession::new(network.mac_address(), 0x4741_4258);
                     let mut next_discover = raspi2b::timer::ticks();
