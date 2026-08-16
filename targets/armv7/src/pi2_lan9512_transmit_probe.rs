@@ -10,6 +10,9 @@ mod lan9512;
 #[path = "raspi2b/mailbox.rs"]
 mod mailbox;
 mod memory;
+#[cfg(feature = "pi-network-dhcp-packet-probe")]
+#[path = "network.rs"]
+mod network_protocol;
 #[path = "raspi2b/usb.rs"]
 mod usb;
 
@@ -73,16 +76,30 @@ extern "C" fn pi2_lan9512_transmit_probe_main() -> ! {
     write_line(b"NET10 WAITING FOR LINK");
     delay_us(5_000_000);
 
-    let mut frame = [0u8; FRAME_LEN];
-    frame[..6].fill(0xff);
-    frame[6..12].copy_from_slice(&mac);
-    frame[12..14].copy_from_slice(&[0x88, 0xb5]);
-    frame[14..31].copy_from_slice(b"GABIX-NET10-PROBE");
     let mut transmitted = 0;
-    for sequence in 0..16 {
-        frame[31] = sequence;
-        if unsafe { network.transmit_frame(&frame) } {
-            transmitted += 1;
+
+    #[cfg(feature = "pi-network-dhcp-packet-probe")]
+    {
+        let session = network_protocol::DhcpSession::new(mac, 0x4741_4258);
+        for _ in 0..16 {
+            if session.send_discover(&mut network) {
+                transmitted += 1;
+            }
+        }
+    }
+
+    #[cfg(not(feature = "pi-network-dhcp-packet-probe"))]
+    {
+        let mut frame = [0u8; FRAME_LEN];
+        frame[..6].fill(0xff);
+        frame[6..12].copy_from_slice(&mac);
+        frame[12..14].copy_from_slice(&[0x88, 0xb5]);
+        frame[14..31].copy_from_slice(b"GABIX-NET10-PROBE");
+        for sequence in 0..16 {
+            frame[31] = sequence;
+            if unsafe { network.transmit_frame(&frame) } {
+                transmitted += 1;
+            }
         }
     }
     write_bytes(b"NET10 TX SUCCEEDED ");
