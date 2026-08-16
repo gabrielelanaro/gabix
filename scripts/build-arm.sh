@@ -56,7 +56,7 @@ case "$platform" in
         ;;
     pi2-network-dev)
         kernel_base=0x00100000
-        feature=pi-hardware
+        feature=pi-network-dev
         image_name=kernel-pi2-network-dev.img
         ;;
 esac

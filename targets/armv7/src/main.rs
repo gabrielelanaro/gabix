@@ -96,6 +96,12 @@ extern "C" fn arm_kernel_entry() {
     let mut console = Pl011::new(UART_BASE);
     gabix_kernel::announce_boot(&mut console, PLATFORM);
 
+    #[cfg(feature = "pi-network-dev")]
+    {
+        raspi2b::reset::arm_deadman(15);
+        write_line(&mut console, b"gabix raspi2b development watchdog armed");
+    }
+
     #[cfg(feature = "raspi2b")]
     unsafe {
         if memory::enable_smp() {
@@ -231,12 +237,18 @@ extern "C" fn arm_kernel_entry() {
                 {
                     write_line(&mut console, b"gabix raspi2b usb network configured");
                     let mut session = DhcpSession::new(network.mac_address(), 0x4741_4258);
-                    session.send_discover(&mut network);
+                    let mut next_discover = raspi2b::timer::ticks();
                     #[cfg(not(feature = "pi-hardware"))]
                     let deadline = raspi2b::timer::ticks() + 200;
                     #[cfg(feature = "pi-hardware")]
                     let deadline = raspi2b::timer::ticks() + 1_000;
                     while raspi2b::timer::ticks() < deadline {
+                        let now = raspi2b::timer::ticks();
+                        if !session.is_configured() && now >= next_discover {
+                            write_line(&mut console, b"gabix raspi2b dhcp discover");
+                            session.send_discover(&mut network);
+                            next_discover = now + 100;
+                        }
                         if let Some(frame) = network.receive() {
                             if matches!(
                                 session.handle_frame(&mut network, frame.bytes()),

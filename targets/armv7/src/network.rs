@@ -58,10 +58,6 @@ impl DhcpSession {
         NetworkEvent::None
     }
 
-    #[cfg(all(
-        any(feature = "pi-hardware", feature = "pi-lifecycle"),
-        not(feature = "pi-uart-user")
-    ))]
     pub fn is_configured(&self) -> bool {
         self.interface.address() != [0; 4]
     }
