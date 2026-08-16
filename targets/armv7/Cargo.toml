@@ -81,6 +81,7 @@ pi-network-dhcp-size-probe = []
 pi-network-dhcp-packet-probe = []
 pi-network-pre-timer-probe = ["pi-hardware"]
 pi-network-arp-receive-probe = []
+pi-network-arp-reply-probe = ["pi-network-arp-receive-probe"]
 pi-lifecycle = ["raspi2b"]
 pi-uart-user = ["raspi2b"]
 

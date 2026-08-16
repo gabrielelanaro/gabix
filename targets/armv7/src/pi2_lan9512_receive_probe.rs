@@ -16,6 +16,8 @@ mod usb;
 use core::alloc::Layout;
 use core::panic::PanicInfo;
 use gabix_kernel::device::FrameDevice;
+#[cfg(feature = "pi-network-arp-reply-probe")]
+use gabix_kernel::net::stack::{NetworkInterface, MAX_FRAME_LEN};
 
 core::arch::global_asm!(include_str!("pi2_lan9512_receive_probe.S"));
 
@@ -90,6 +92,19 @@ extern "C" fn pi2_lan9512_receive_probe_main() -> ! {
                 write_hex_u8(bytes[13]);
             }
             write_byte(b'\n');
+            #[cfg(feature = "pi-network-arp-reply-probe")]
+            {
+                let interface = NetworkInterface::new(mac, [10, 0, 2, 15]);
+                let mut reply = [0u8; MAX_FRAME_LEN];
+                let Some(length) = interface.reply(bytes, &mut reply) else {
+                    fail(b"NET11 ARP REPLY BUILD FAILED");
+                };
+                if unsafe { network.transmit_frame(&reply[..length]) } {
+                    write_line(b"NET11 ARP REPLY TX OK");
+                } else {
+                    fail(b"NET11 ARP REPLY TX FAILED");
+                }
+            }
             wait_for_reset();
         }
     }
