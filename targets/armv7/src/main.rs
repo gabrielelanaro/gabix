@@ -98,7 +98,7 @@ extern "C" fn arm_kernel_entry() {
 
     #[cfg(any(feature = "pi-network-dev", feature = "pi-network-pre-timer-probe"))]
     {
-        raspi2b::reset::arm_deadman(15);
+        raspi2b::reset::arm_deadman(30);
         write_line(&mut console, b"gabix raspi2b development watchdog armed");
     }
 
@@ -277,7 +277,7 @@ extern "C" fn arm_kernel_entry() {
                     #[cfg(not(feature = "pi-hardware"))]
                     let deadline = raspi2b::timer::ticks() + 200;
                     #[cfg(feature = "pi-hardware")]
-                    let deadline = raspi2b::timer::ticks() + 1_000;
+                    let deadline = raspi2b::timer::ticks() + 2_000;
                     while raspi2b::timer::ticks() < deadline {
                         let now = raspi2b::timer::ticks();
                         if !session.is_configured() && now >= next_discover {

@@ -17,6 +17,11 @@ repo_root=$(CDPATH= cd -- "$script_dir/.." && pwd)
 platform=$1
 manifest="$repo_root/targets/armv7/Cargo.toml"
 linker_script="$repo_root/targets/armv7/linker.ld"
+profile=${GABIX_ARM_PROFILE:-debug}
+if [ "$profile" != "debug" ] && [ "$profile" != "release" ]; then
+    echo "GABIX_ARM_PROFILE must be debug or release" >&2
+    exit 2
+fi
 binary=gabix-armv7
 case "$platform" in
     virt)
@@ -69,8 +74,8 @@ esac
 rust_sysroot=$(rustc --print sysroot)
 rust_host=$(rustc -vV | sed -n 's/^host: //p')
 llvm_objcopy="$rust_sysroot/lib/rustlib/$rust_host/bin/llvm-objcopy"
-elf="$repo_root/targets/armv7/target/armv7a-none-eabihf/debug/$binary"
-image="$repo_root/targets/armv7/target/armv7a-none-eabihf/debug/$image_name"
+elf="$repo_root/targets/armv7/target/armv7a-none-eabihf/$profile/$binary"
+image="$repo_root/targets/armv7/target/armv7a-none-eabihf/$profile/$image_name"
 
 if [ ! -x "$llvm_objcopy" ]; then
     echo "llvm-objcopy was not found in the active Rust toolchain" >&2
@@ -82,6 +87,9 @@ set -- cargo build \
     --target armv7a-none-eabihf \
     --bin "$binary" \
     --no-default-features
+if [ "$profile" = "release" ]; then
+    set -- "$@" --release
+fi
 if [ -n "$feature" ]; then
     set -- "$@" --features "$feature"
 fi
