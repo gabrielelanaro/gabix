@@ -539,6 +539,29 @@ A milestone is a "demo-able" checkpoint. Worth a commit + tag + log entry.
 
 ## Progress Log
 
+### 2026-08-16 — Physical Pi 2 LAN9512 configuration establishes Ethernet link
+- **Cache and DMA correction:** Aligned mailbox property messages to a cache
+  line, synchronized them around GPU access, and synchronized DWC2 DMA buffers
+  around USB transfers. The host driver now waits until a completed DWC2 host
+  channel is disabled before reusing channel zero and retries transient USB
+  transaction errors for control requests.
+- **Physical result:** The UART-loaded NET9 probe configured the onboard
+  LAN9512 and printed `NET9 LAN9512 CONFIG OK`. During the probe's watchdog
+  window, Mac interface `en6` negotiated `100baseTX` full-duplex with flow
+  control. It returned inactive after the Pi reset to its SD-resident loader.
+- **LAN configuration quirk:** The LAN9512 accepts `SET_CONFIGURATION`, then
+  this DWC2 path reports a transaction error on that request's status
+  handshake. Subsequent vendor-register commands succeed and establish the
+  physical link, so the LAN driver validates configuration through those
+  commands. EEPROM MAC reading currently falls back to `02:47:41:42:49:58`.
+- **Preserved baseline:**
+  `artifacts/pi2-network-baselines/net9-lan9512-link.img`, SHA-256
+  `576e39e594b1dc97ec25b08be77ac7e41dd66163e339690e6e1bded2ba78f11c`,
+  with UART and Mac link-poll logs beside it.
+- **Next:** Transmit one identifiable raw Ethernet frame and capture it on
+  Mac `en6`, then add receive independently before integrating the full Gabix
+  network stack.
+
 ### 2026-08-16 — Physical Pi 2 USB hub and LAN9512 enumerate
 - **Minimal probe:** Added a 7,386-byte UART-loaded probe that contains only
   the mailbox and DWC2 paths needed for USB enumeration. A watchdog returns it

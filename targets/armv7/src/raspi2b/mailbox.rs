@@ -1,3 +1,5 @@
+use core::arch::asm;
+
 const BASE: usize = 0x3f00_b880;
 const READ: usize = 0x00;
 const STATUS: usize = 0x18;
@@ -12,7 +14,7 @@ const USB_HCD_DEVICE: u32 = 3;
 const POWER_ON_WAIT: u32 = 3;
 const POLL_LIMIT: usize = 10_000_000;
 
-#[repr(C, align(16))]
+#[repr(C, align(64))]
 struct PropertyMessage([u32; 8]);
 
 static mut MESSAGE: PropertyMessage = PropertyMessage([0; 8]);
@@ -32,6 +34,7 @@ pub unsafe fn power_on_usb() -> Option<()> {
     let address = bus_address(core::ptr::addr_of!(MESSAGE) as u32);
     let request = address | PROPERTY_CHANNEL;
 
+    clean_invalidate_message();
     wait_until(|| read32(STATUS) & STATUS_FULL == 0)?;
     write32(WRITE, request);
     for _ in 0..POLL_LIMIT {
@@ -40,6 +43,7 @@ pub unsafe fn power_on_usb() -> Option<()> {
             continue;
         }
         if read32(READ) == request {
+            invalidate_message();
             return (message.0[1] == RESPONSE_SUCCESS
                 && message.0[4] & RESPONSE_SUCCESS != 0
                 && message.0[6] & 1 != 0)
@@ -47,6 +51,18 @@ pub unsafe fn power_on_usb() -> Option<()> {
         }
     }
     None
+}
+
+unsafe fn clean_invalidate_message() {
+    let address = core::ptr::addr_of!(MESSAGE) as u32;
+    asm!("mcr p15, 0, {address}, c7, c14, 1", address = in(reg) address);
+    asm!("dsb sy");
+}
+
+unsafe fn invalidate_message() {
+    let address = core::ptr::addr_of!(MESSAGE) as u32;
+    asm!("mcr p15, 0, {address}, c7, c6, 1", address = in(reg) address);
+    asm!("dsb sy");
 }
 
 const fn bus_address(address: u32) -> u32 {

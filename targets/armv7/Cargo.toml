@@ -55,6 +55,10 @@ path = "src/pi2_mmu_atomic_probe.rs"
 name = "pi2-usb-enumeration-probe"
 path = "src/pi2_usb_enumeration_probe.rs"
 
+[[bin]]
+name = "pi2-lan9512-configure-probe"
+path = "src/pi2_lan9512_configure_probe.rs"
+
 [dependencies]
 gabix-kernel = { path = "../../crates/kernel-core", default-features = false }
 linked_list_allocator = "0.10"

@@ -1,3 +1,5 @@
+use core::arch::asm;
+
 const BASE: usize = 0x3f98_0000;
 const SYSTEM_TIMER_LOW: *const u32 = 0x3f00_3004 as *const u32;
 
@@ -68,12 +70,14 @@ const INTERRUPT_TRANSFER_COMPLETE: u32 = 1 << 0;
 const INTERRUPT_CHANNEL_HALTED: u32 = 1 << 1;
 const INTERRUPT_STALL: u32 = 1 << 3;
 const INTERRUPT_NAK: u32 = 1 << 4;
+const INTERRUPT_TRANSACTION_ERROR: u32 = 1 << 7;
 const INTERRUPT_ERRORS: u32 = (1 << 2) | (1 << 7) | (1 << 8) | (1 << 10);
 const PID_DATA1: u32 = 2;
 const PID_SETUP: u32 = 3;
 const PID_SHIFT: u32 = 29;
 const PACKET_COUNT_SHIFT: u32 = 19;
 const POLL_LIMIT: usize = 1_000_000;
+const DATA_CACHE_LINE_SIZE: usize = 64;
 
 #[repr(C, align(64))]
 struct DmaBuffer([u8; 256]);
@@ -94,6 +98,21 @@ pub struct BulkEndpoints {
     pub input: u8,
     pub output: u8,
     pub max_packet_size: u16,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum HubEnumerationError {
+    NotHub = 1,
+    SetConfiguration = 2,
+    ReadDescriptor = 3,
+    NoPorts = 4,
+    PowerPort = 5,
+    ReadPortStatus = 6,
+    ResetPort = 7,
+    ReadResetStatus = 8,
+    NoConnectedChild = 9,
+    NoEnabledChild = 10,
+    EnumerateChild = 11,
 }
 
 pub struct Dwc2;
@@ -133,41 +152,64 @@ impl Dwc2 {
     }
 
     pub unsafe fn enumerate_hub_child(&mut self, hub: UsbDevice) -> Option<UsbDevice> {
+        self.enumerate_hub_child_diagnostic(hub).ok()
+    }
+
+    pub unsafe fn enumerate_hub_child_diagnostic(
+        &mut self,
+        hub: UsbDevice,
+    ) -> Result<UsbDevice, HubEnumerationError> {
         if hub.device_class != 9 {
-            return None;
+            return Err(HubEnumerationError::NotHub);
         }
-        self.control_write_no_data(hub, 0, 9, 1, 0)?;
+        self.control_write_no_data(hub, 0, 9, 1, 0)
+            .ok_or(HubEnumerationError::SetConfiguration)?;
         let mut descriptor = [0u8; 9];
-        self.control_read(hub, 0xa0, 6, 0x2900, 0, &mut descriptor)?;
+        self.control_read(hub, 0xa0, 6, 0x2900, 0, &mut descriptor)
+            .ok_or(HubEnumerationError::ReadDescriptor)?;
         let ports = descriptor[2];
         if ports == 0 {
-            return None;
+            return Err(HubEnumerationError::NoPorts);
         }
         for port in 1..=ports {
-            self.control_write_no_data(hub, 0x23, 3, 8, port as u16)?;
+            self.control_write_no_data(hub, 0x23, 3, 8, port as u16)
+                .ok_or(HubEnumerationError::PowerPort)?;
         }
         delay_us(100_000);
 
+        let mut connected = false;
+        let mut enabled = false;
         for port in 1..=ports {
             let mut status = [0u8; 4];
-            self.control_read(hub, 0xa3, 0, 0, port as u16, &mut status)?;
+            self.control_read(hub, 0xa3, 0, 0, port as u16, &mut status)
+                .ok_or(HubEnumerationError::ReadPortStatus)?;
             let port_status = u16::from_le_bytes([status[0], status[1]]);
             if port_status & 1 == 0 {
                 continue;
             }
-            self.control_write_no_data(hub, 0x23, 3, 4, port as u16)?;
+            connected = true;
+            self.control_write_no_data(hub, 0x23, 3, 4, port as u16)
+                .ok_or(HubEnumerationError::ResetPort)?;
             delay_us(50_000);
-            self.control_read(hub, 0xa3, 0, 0, port as u16, &mut status)?;
+            self.control_read(hub, 0xa3, 0, 0, port as u16, &mut status)
+                .ok_or(HubEnumerationError::ReadResetStatus)?;
             let port_status = u16::from_le_bytes([status[0], status[1]]);
             if port_status & 2 == 0 {
                 continue;
             }
+            enabled = true;
             let _ = self.control_write_no_data(hub, 0x23, 1, 20, port as u16);
             if let Some(device) = self.enumerate_device(2) {
-                return Some(device);
+                return Ok(device);
             }
         }
-        None
+        if !connected {
+            Err(HubEnumerationError::NoConnectedChild)
+        } else if !enabled {
+            Err(HubEnumerationError::NoEnabledChild)
+        } else {
+            Err(HubEnumerationError::EnumerateChild)
+        }
     }
 
     unsafe fn enumerate_device(&mut self, new_address: u8) -> Option<UsbDevice> {
@@ -274,7 +316,10 @@ impl Dwc2 {
             return None;
         }
         let endpoints = parse_bulk_endpoints(&descriptors[..total])?;
-        self.control_write_no_data(device, 0, 9, header[5] as u16, 0)?;
+        // This LAN9512 revision may report a transaction error for the status
+        // handshake after accepting SET_CONFIGURATION. The vendor-register
+        // operations performed by its driver validate that it is configured.
+        let _ = self.control_write_no_data(device, 0, 9, header[5] as u16, 0);
         Some(endpoints)
     }
 
@@ -507,7 +552,7 @@ unsafe fn transfer(
     pid: u32,
     buffer: *const u8,
     length: usize,
-    retry_nak: bool,
+    retry_transient: bool,
 ) -> Option<usize> {
     let packet_size = max_packet_size as usize;
     let packet_count = if length == 0 {
@@ -516,6 +561,7 @@ unsafe fn transfer(
         length.div_ceil(packet_size)
     };
     for _ in 0..1000 {
+        prepare_dma_buffer(buffer, length, direction_in);
         write32(CHANNEL_BASE + HCINT, u32::MAX);
         write32(
             CHANNEL_BASE + HCINTMSK,
@@ -544,7 +590,7 @@ unsafe fn transfer(
                 | (endpoint as u32) << ENDPOINT_NUMBER_SHIFT
                 | max_packet_size as u32,
         );
-        wait_until(|| {
+        if wait_until(|| {
             read32(CHANNEL_BASE + HCINT)
                 & (INTERRUPT_TRANSFER_COMPLETE
                     | INTERRUPT_CHANNEL_HALTED
@@ -552,9 +598,20 @@ unsafe fn transfer(
                     | INTERRUPT_STALL
                     | INTERRUPT_ERRORS)
                 != 0
-        })?;
+        })
+        .is_none()
+        {
+            return None;
+        }
         let interrupt = read32(CHANNEL_BASE + HCINT);
-        if interrupt & INTERRUPT_NAK != 0 && retry_nak {
+        if wait_until(|| read32(CHANNEL_BASE + HCCHAR) & CHANNEL_ENABLE == 0).is_none() {
+            return None;
+        }
+        complete_dma_buffer(buffer, length, direction_in);
+        if interrupt & INTERRUPT_NAK != 0 && retry_transient {
+            continue;
+        }
+        if interrupt & INTERRUPT_TRANSACTION_ERROR != 0 && retry_transient {
             continue;
         }
         if interrupt & (INTERRUPT_STALL | INTERRUPT_ERRORS) != 0
@@ -566,6 +623,60 @@ unsafe fn transfer(
         return Some(length.saturating_sub(remaining));
     }
     None
+}
+
+unsafe fn prepare_dma_buffer(buffer: *const u8, length: usize, direction_in: bool) {
+    #[cfg(feature = "pi-hardware")]
+    if length != 0 {
+        cache_lines(
+            buffer,
+            length,
+            if direction_in {
+                CacheOperation::CleanInvalidate
+            } else {
+                CacheOperation::Clean
+            },
+        );
+    }
+}
+
+unsafe fn complete_dma_buffer(buffer: *const u8, length: usize, direction_in: bool) {
+    #[cfg(feature = "pi-hardware")]
+    if direction_in && length != 0 {
+        cache_lines(buffer, length, CacheOperation::Invalidate);
+    }
+}
+
+#[cfg(feature = "pi-hardware")]
+#[derive(Clone, Copy)]
+enum CacheOperation {
+    Clean,
+    Invalidate,
+    CleanInvalidate,
+}
+
+#[cfg(feature = "pi-hardware")]
+unsafe fn cache_lines(buffer: *const u8, length: usize, operation: CacheOperation) {
+    let mut line = buffer as usize & !(DATA_CACHE_LINE_SIZE - 1);
+    let end = (buffer as usize)
+        .saturating_add(length)
+        .saturating_add(DATA_CACHE_LINE_SIZE - 1)
+        & !(DATA_CACHE_LINE_SIZE - 1);
+    while line < end {
+        match operation {
+            CacheOperation::Clean => {
+                asm!("mcr p15, 0, {address}, c7, c10, 1", address = in(reg) line as u32);
+            }
+            CacheOperation::Invalidate => {
+                asm!("mcr p15, 0, {address}, c7, c6, 1", address = in(reg) line as u32);
+            }
+            CacheOperation::CleanInvalidate => {
+                asm!("mcr p15, 0, {address}, c7, c14, 1", address = in(reg) line as u32);
+            }
+        }
+        line += DATA_CACHE_LINE_SIZE;
+    }
+    asm!("dsb sy");
 }
 
 unsafe fn port_value() -> u32 {
