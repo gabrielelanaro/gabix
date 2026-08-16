@@ -96,7 +96,7 @@ extern "C" fn arm_kernel_entry() {
     let mut console = Pl011::new(UART_BASE);
     gabix_kernel::announce_boot(&mut console, PLATFORM);
 
-    #[cfg(feature = "pi-network-dev")]
+    #[cfg(any(feature = "pi-network-dev", feature = "pi-network-pre-timer-probe"))]
     {
         raspi2b::reset::arm_deadman(15);
         write_line(&mut console, b"gabix raspi2b development watchdog armed");
@@ -222,6 +222,7 @@ extern "C" fn arm_kernel_entry() {
                 disk_user_entry = user::load_elf(&image);
             }
         }
+        #[cfg(not(feature = "pi-network-pre-timer-probe"))]
         raspi2b::timer::init();
         #[cfg(not(feature = "pi-uart-user"))]
         if let Some(mut usb) = raspi2b::usb::Dwc2::initialize() {
@@ -249,6 +250,24 @@ extern "C" fn arm_kernel_entry() {
                             Some(true) => write_line(&mut console, b"gabix raspi2b ethernet link up"),
                             Some(false) => write_line(&mut console, b"gabix raspi2b ethernet link down"),
                             None => write_line(&mut console, b"gabix raspi2b ethernet link unknown"),
+                        }
+                    }
+                    #[cfg(feature = "pi-network-pre-timer-probe")]
+                    {
+                        let session = DhcpSession::new(network.mac_address(), 0x4741_4258);
+                        let mut transmitted = 0usize;
+                        for _ in 0..16 {
+                            if session.send_discover(&mut network) {
+                                transmitted += 1;
+                            }
+                        }
+                        if transmitted == 16 {
+                            write_line(&mut console, b"gabix raspi2b pre-timer dhcp tx 16");
+                        } else {
+                            write_line(&mut console, b"gabix raspi2b pre-timer dhcp tx incomplete");
+                        }
+                        loop {
+                            core::hint::spin_loop();
                         }
                     }
                     let mut session = DhcpSession::new(network.mac_address(), 0x4741_4258);
