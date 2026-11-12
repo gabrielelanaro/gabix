@@ -96,6 +96,78 @@ before printing a UDP response; this Python command performs the same check:
 python3 -c 'import socket; s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM); s.settimeout(2); s.sendto(b"hello from mac",("PI_ADDRESS",5555)); print(s.recvfrom(1500)[0].decode())'
 ```
 
+## Persistent echo server and UART kernel replacement
+
+Connect the Pi Ethernet port to the Mac adapter (`en6` in this setup). The
+SD card must contain the UART loader. Close other serial monitors before an
+upload. Start the Mac DHCP peer once:
+
+```sh
+sudo sh scripts/pi2-dhcp-peer-macos.sh start en6
+```
+
+Build and load the resident development kernel while the Pi is waiting at
+`GABIX LOADER READY`:
+
+```sh
+GABIX_ARM_PROFILE=release sh scripts/build-arm.sh pi2-dev
+python3 scripts/upload-pi2-kernel.py /dev/cu.usbserial-0001 \
+  targets/armv7/target/armv7a-none-eabihf/release/kernel-pi2-dev.img \
+  --inter-byte-delay-us 500 --wait-for-user-ready
+```
+
+After DHCP and `GABIX USER READY`, send messages repeatedly:
+
+```sh
+python3 scripts/pi2-echo.py 'what up buddy how are you'
+```
+
+```text
+Mac → Pi: what up buddy how are you
+Pi → Mac: what up buddy how are you
+```
+
+This command sends one UDP message to `10.0.2.15:5555`. It performs no kernel
+upload or reset. The kernel remains resident until reboot or power loss.
+
+The UART user-program loader polls Ethernet while waiting for an upload.
+Network polling pauses during UART uploads and while a user program executes;
+the ARM port currently runs one user program at a time. The UDP echo handler
+runs in the kernel. A userspace socket API remains future work.
+
+To replace the kernel without touching the power cable, upload the small
+program that calls the existing reboot syscall:
+
+```sh
+sh scripts/build-arm-user.sh tests/fixtures/arm_reboot.rs target/arm_reboot.elf
+python3 scripts/upload-pi2-user.py /dev/cu.usbserial-0001 \
+  target/arm_reboot.elf --wait-for-reboot
+```
+
+Wait for `GABIX LOADER READY`, then run the kernel upload command again.
+The SD bootloader receives replacement kernels after reset. The running
+kernel's user-program loader accepts the reboot program before reset.
+A kernel hang can still require a physical power cycle.
+
+For an automated diagnostic run that checks ARP, both pings, and three UDP
+messages separated by idle periods, use the watchdog-enabled build:
+
+```sh
+GABIX_ARM_PROFILE=release sh scripts/build-arm.sh pi2-network-dev
+python3 scripts/check-pi2-network.py --message 'what up buddy how are you'
+```
+
+Start this diagnostic from `GABIX LOADER READY`. It returns to the loader after
+the checks. Its one-second pauses exercise USB receive polling when LAN9512
+has no frame available. The check reports the current ARP entry; it does not
+flush an entry learned on an earlier run.
+
+When finished with the direct test network:
+
+```sh
+sudo sh scripts/pi2-dhcp-peer-macos.sh stop en6
+```
+
 ## UART baseline and serial diagnostics
 
 Use a 3.3 V USB-to-TTL serial adapter. Connect these pins while the Pi is

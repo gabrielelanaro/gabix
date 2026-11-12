@@ -52,9 +52,9 @@ const SEMIHOSTING: u32 = 0;
 )))]
 const SEMIHOSTING: u32 = 1;
 
-#[cfg(any(feature = "pi-hardware", feature = "pi-lifecycle"))]
+#[cfg(any(feature = "pi-hardware", feature = "pi-lifecycle", feature = "pi-uart-user"))]
 static mut PI_NETWORK: Option<raspi2b::ethernet::UsbEthernet> = None;
-#[cfg(any(feature = "pi-hardware", feature = "pi-lifecycle"))]
+#[cfg(any(feature = "pi-hardware", feature = "pi-lifecycle", feature = "pi-uart-user"))]
 static mut PI_DHCP: Option<DhcpSession> = None;
 
 #[cfg(all(feature = "virt", feature = "raspi2b"))]
@@ -231,7 +231,7 @@ extern "C" fn arm_kernel_entry() {
             feature = "pi-network-no-irq-dev"
         )))]
         raspi2b::timer::init();
-        #[cfg(not(feature = "pi-uart-user"))]
+        #[cfg(any(not(feature = "pi-uart-user"), feature = "pi-hardware"))]
         if let Some(mut usb) = raspi2b::usb::Dwc2::initialize() {
             if let Some(device) = usb.enumerate_root() {
                 write_line(&mut console, b"gabix raspi2b usb enumerated");
@@ -280,10 +280,6 @@ extern "C" fn arm_kernel_entry() {
                     let mut session = DhcpSession::new(network.mac_address(), 0x4741_4258);
                     let mut next_discover = raspi2b::timer::ticks();
                     #[cfg(feature = "pi-hardware")]
-                    let mut next_rx_fifo_report = next_discover;
-                    #[cfg(feature = "pi-hardware")]
-                    let mut receive_pid_reset = false;
-                    #[cfg(feature = "pi-hardware")]
                     let mut discover_count = 0usize;
                     #[cfg(not(feature = "pi-hardware"))]
                     let deadline = raspi2b::timer::ticks() + 200;
@@ -313,7 +309,10 @@ extern "C" fn arm_kernel_entry() {
                                 match session.handle_frame(&mut network, frame.bytes()) {
                                     NetworkEvent::Configured => {
                                         write_line(&mut console, b"gabix raspi2b dhcp configured");
+                                        #[cfg(any(feature = "pi-network-dev", feature = "pi-network-no-irq-dev"))]
                                         raspi2b::reset::arm_deadman(15);
+                                        #[cfg(feature = "pi-uart-user")]
+                                        break;
                                     }
                                     NetworkEvent::ReplyTransmitted(true) => {
                                         write_line(&mut console, b"gabix raspi2b network reply tx ok");
@@ -325,32 +324,12 @@ extern "C" fn arm_kernel_entry() {
                                 }
                             }
                         }
-                        #[cfg(feature = "pi-hardware")]
-                        if session.is_configured() && now >= next_rx_fifo_report {
-                            match network.rx_fifo_used() {
-                                Some(0) => {
-                                    write_line(&mut console, b"gabix raspi2b rx fifo empty");
-                                }
-                                Some(_) => {
-                                    write_line(&mut console, b"gabix raspi2b rx fifo has data");
-                                    if !receive_pid_reset {
-                                        network.reset_receive_pid();
-                                        receive_pid_reset = true;
-                                        write_line(&mut console, b"gabix raspi2b rx pid reset data0");
-                                    }
-                                }
-                                None => {
-                                    write_line(&mut console, b"gabix raspi2b rx fifo unavailable");
-                                }
-                            }
-                            next_rx_fifo_report = now + 100;
-                        }
                         #[cfg(feature = "pi-network-no-irq-dev")]
                         core::hint::spin_loop();
                         #[cfg(not(feature = "pi-network-no-irq-dev"))]
                         asm!("wfi");
                     }
-                    #[cfg(any(feature = "pi-hardware", feature = "pi-lifecycle"))]
+                    #[cfg(any(feature = "pi-hardware", feature = "pi-lifecycle", feature = "pi-uart-user"))]
                     {
                         PI_NETWORK = Some(network);
                         PI_DHCP = Some(session);
@@ -366,12 +345,33 @@ extern "C" fn arm_kernel_entry() {
         }
         write_line(&mut console, b"gabix raspi2b timer advanced");
         #[cfg(feature = "pi-uart-user")]
-        user_upload::run(&mut console);
+        user_upload::serve_uart_uploads_and_ethernet(&mut console);
         #[cfg(not(feature = "pi-uart-user"))]
         if let Some(entry) = disk_user_entry {
             memory::allow_user_section(entry);
             memory::allow_user_section(user::USER_STACK_TOP - 1);
             user::enter(entry, user::USER_STACK_TOP);
+        }
+    }
+}
+
+/// Poll from the UART loader's idle loop; the IRQ handler never owns these objects.
+#[cfg(feature = "pi-uart-user")]
+pub fn poll_ethernet_and_reply(console: &mut Pl011, next_dhcp_discover_tick: &mut u64) {
+    unsafe {
+        let network = &mut *core::ptr::addr_of_mut!(PI_NETWORK);
+        let session = &mut *core::ptr::addr_of_mut!(PI_DHCP);
+        if let (Some(network), Some(session)) = (network.as_mut(), session.as_mut()) {
+            let current_tick = raspi2b::timer::ticks();
+            if !session.is_configured() && current_tick >= *next_dhcp_discover_tick {
+                session.send_discover(network);
+                *next_dhcp_discover_tick = current_tick + 100;
+            }
+            if let Some(frame) = network.receive() {
+                if matches!(session.handle_frame(network, frame.bytes()), NetworkEvent::Configured) {
+                    write_line(console, b"gabix raspi2b dhcp configured");
+                }
+            }
         }
     }
 }
@@ -402,7 +402,7 @@ extern "C" fn arm_kernel_after_user() -> ! {
     let mut console = Pl011::new(UART_BASE);
     write_line(&mut console, b"gabix raspi2b userspace exited");
     #[cfg(feature = "pi-uart-user")]
-    user_upload::run(&mut console);
+    user_upload::serve_uart_uploads_and_ethernet(&mut console);
     #[cfg(not(feature = "pi-uart-user"))]
     let mut next_discover = raspi2b::timer::ticks();
     #[cfg(not(feature = "pi-uart-user"))]

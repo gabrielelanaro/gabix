@@ -1,0 +1,50 @@
+Uploading 49,516 bytes to the Pi...
+
+Pi UART: UPLOAD CRC OK
+Pi UART: UPLOAD OK
+Pi UART: HANDOFF ADDRESS 0x00100000
+Pi UART: HANDOFF LENGTH 0x0000C16C
+Pi UART: HANDOFF FIRST WORD 0xF10C00C0
+Pi UART: HANDOFF SCTLR 0x00C50878
+Pi UART: HANDOFF CPSR 0x600001DA
+Pi UART: HANDOFF BRANCH
+Pi UART: gabix raspi2b booted
+Pi UART: gabix raspi2b development watchdog armed
+Pi UART: gabix raspi2b smp enabled
+Pi UART: gabix raspi2b memory mapped
+Pi UART: gabix raspi2b heap allocated
+Pi UART: gabix raspi2b usb enumerated
+Pi UART: gabix raspi2b usb network configured
+Pi UART: gabix raspi2b ethernet link down
+Pi UART: gabix raspi2b waiting for ethernet link
+Pi UART: gabix raspi2b ethernet link up
+Pi UART: gabix raspi2b dhcp discover
+Pi UART: gabix raspi2b dhcp tx ok
+Pi UART: gabix raspi2b dhcp discover
+Pi UART: gabix raspi2b dhcp tx ok
+Pi UART: gabix raspi2b dhcp configured
+
+DHCP complete. Checking ping and ARP...
+Pi UART: gabix raspi2b network reply tx ok
+Pi UART: gabix raspi2b network reply tx ok
+PING 10.0.2.15 (10.0.2.15): 56 data bytes
+64 bytes from 10.0.2.15: icmp_seq=0 ttl=64 time=17.131 ms
+64 bytes from 10.0.2.15: icmp_seq=1 ttl=64 time=3.610 ms
+
+--- 10.0.2.15 ping statistics ---
+2 packets transmitted, 2 packets received, 0.0% packet loss
+round-trip min/avg/max/stddev = 3.610/10.370/17.131/6.761 ms
+Pi UART: gabix raspi2b network reply tx ok
+ARP: ? (10.0.2.15) at 2:47:41:42:49:58 on en6 ifscope [ethernet]
+Mac → Pi: what up buddy how are you
+Pi → Mac: what up buddy how are you
+Pi UART: gabix raspi2b network reply tx ok
+Mac → Pi: what up buddy how are you [2]
+Pi → Mac: what up buddy how are you [2]
+Pi UART: gabix raspi2b network reply tx ok
+Mac → Pi: what up buddy how are you [3]
+Pi → Mac: what up buddy how are you [3]
+UDP: 3/3 exact replies
+Checks: {'ping': True, 'arp': True, 'udp_after_idle': True}
+Pi UART: gabix raspi2b network reply tx ok
+PASS: ARP, ping, and three UDP replies after idle

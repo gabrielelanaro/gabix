@@ -45,3 +45,21 @@ NET16's UART trace and Mac peer result are preserved in
 `net16-full-release-udp-echo-peer.log`.
 NET17's UART trace is preserved in
 `net17-lan9512-repeated-rx-physical.log`.
+
+## 2026-11-12 — Receive recovery and persistent server
+
+- `net18-before-fix-physical.log`: DHCP completed, but dynamic ARP, ping, and UDP failed in a synchronized test before the watchdog reset.
+- `net18-usb-status-physical.log`: after removing the forced DATA0 reset, ARP and one ping worked. The first idle receive had `HCINT=0x10` (NAK), `HCCHAR=0x80888a00` (enabled), and `HCTSIZ=0x401805f2`. The driver returned without halting the DMA channel.
+- `net18-idle-echo-physical.log`: with explicit channel halt on NAK, both pings and all three UDP messages passed, including one-second idle periods. The watchdog returned the diagnostic build to the loader.
+- `net19-uart-reboot-physical.log`: the persistent `pi2-dev` server accepted `arm_reboot.elf` through its UART user-program loader and returned to `GABIX LOADER READY`. A subsequent kernel upload restored the echo service.
+
+Reproduce the network regression from the loader with
+`python3 scripts/check-pi2-network.py`. See the runbook for the release build
+and Mac DHCP peer prerequisites. Use `scripts/pi2-echo.py` for a message to an
+already-running persistent server.
+
+The halt operation follows the DMA abort mechanism described in Linux's
+[`dwc2_hc_halt`](https://code.googlesource.com/linux/torvalds/linux/+/586b5dfb51b962c1b6c06495715e4c4f76a7fc5a/drivers/usb/dwc2/hcd.c).
+A hardware regression that sends traffic after idle would have caught this
+failure: boot-only and immediate-response tests did not exercise reuse of an
+active NAKed channel.

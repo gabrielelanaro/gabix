@@ -1,0 +1,41 @@
+UPLOAD CRC OK
+UPLOAD OK
+HANDOFF ADDRESS 0x00100000
+HANDOFF LENGTH 0x0000C57C
+HANDOFF FIRST WORD 0xF10C00C0
+HANDOFF SCTLR 0x00C50878
+HANDOFF CPSR 0x600001DA
+HANDOFF BRANCH
+gabix raspi2b booted
+gabix raspi2b development watchdog armed
+gabix raspi2b smp enabled
+gabix raspi2b memory mapped
+gabix raspi2b heap allocated
+gabix raspi2b usb enumerated
+gabix raspi2b usb network configured
+gabix raspi2b ethernet link down
+gabix raspi2b waiting for ethernet link
+gabix raspi2b ethernet link up
+gabix raspi2b dhcp discover
+gabix raspi2b dhcp tx ok
+gabix raspi2b dhcp discover
+gabix raspi2b dhcp tx ok
+gabix raspi2b dhcp configured
+gabix raspi2b rx fifo has data
+gabix raspi2b rx pid reset data0
+gabix raspi2b dhcp configured
+gabix raspi2b rx fifo unavailable
+gabix raspi2b rx fifo unavailable
+gabix raspi2b rx fifo unavailable
+gabix raspi2b rx fifo unavailable
+gabix raspi2b rx fifo unavailable
+gabix raspi2b rx fifo unavailable
+gabix raspi2b rx fifo unavailable
+gabix raspi2b rx fifo unavailable
+gabix raspi2b rx fifo unavailable
+gabix raspi2b rx fifo unavailable
+gabix raspi2b rx fifo unavailable
+gabix raspi2b rx fifo unavailable
+gabix raspi2b rx fifo unavailable
+gabix raspi2b rx fifo unavailable
+GABIX LOADER READY

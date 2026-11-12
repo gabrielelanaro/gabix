@@ -539,11 +539,25 @@ A milestone is a "demo-able" checkpoint. Worth a commit + tag + log entry.
 
 ## Progress Log
 
+### 2026-11-12 — Persistent Pi echo server and UART reload
+- **Naming follow-up:** Named the shared loop `serve_uart_uploads_and_ethernet`, its network operation `poll_ethernet_and_reply`, and its UART/upload/tick state explicitly. Added named scheduling conditions and three-step comments. Release build and whitespace checks pass; polling behavior is unchanged.
+- **Readability follow-up:** Rewrote the USB transfer-completion section as four explained steps, with named status conditions and helpers for checking and halting the channel. Preserved the existing retry decisions; the release build passes. The running Pi was left untouched.
+- **Physical diagnosis:** A synchronized DHCP → ping → UDP test reproduced the failure before the watchdog reset. Removing the forced DATA0 receive reset restored dynamic ARP and the first ping. USB status then showed `HCINT=0x10` (NAK) with `HCCHAR=0x80888a00` (channel still enabled): the driver returned while DMA remained active.
+- **Fix:** Explicitly halt an enabled channel on NAK before reuse, wait for it to stop, and reread completion status. Removed the diagnostic receive-PID reset and periodic register polling. The physical check now passes both pings and three byte-exact UDP replies separated by one-second idle periods.
+- **Persistent service:** The `pi2-dev` kernel initializes Ethernet, obtains DHCP, and polls networking from the idle UART user-program loader. Diagnostic watchdog resets are restricted to diagnostic features. The server remains running between Mac messages; polling pauses during user uploads and user execution because ARM still runs one user program at a time.
+- **Reload:** Built and physically uploaded the existing `arm_reboot.elf` through UART, observed `USER UPLOAD OK` and `GABIX LOADER READY`, and reloaded the server without power cycling or SD writes.
+- **Tools:** Added `scripts/pi2-echo.py` for messages to a running kernel and `scripts/check-pi2-network.py` for a repeatable watchdog-enabled physical regression. Documented persistent service, diagnostic runs, and UART reboot/reload in `docs/raspberry-pi-2.md`.
+- **Verification:** Physical ARP, 2/2 pings, 3/3 UDP echoes, and a further echo after 20 seconds idle passed. QEMU Raspberry Pi UDP and repeated UART userspace-upload tests passed; 16 Python uploader/image-registry tests passed. Release builds and `git diff --check` passed. No roadmap checkbox changed: the combined physical milestone also includes SD verification, which this session did not rerun.
+- **Next:** Use the persistent message demo, then choose between an ARM userspace socket API and ARM process scheduling. DHCP lease renewal and long-running reliability remain follow-up work.
+
 ### 2026-11-12 — Resume physical Pi connection checks
 - **Done:** Fetched origin and fast-forwarded the clean main checkout to `c02f643`. Located the later hardware work in `/Users/gabrielelanaro/.codex/worktrees/cacd/gabix`, branch `codex/pi2-uart-loader`, at `47b6a03`. Fast-forwarded main to include all 43 hardware commits at the user’s request.
 - **Context recovered:** The prior UART session reported working loader uploads, physical DHCP, and UDP echo with static ARP. Its next test was the DWC2 global-interrupt fix; these results belong to the hardware branch and were not reverified today.
 - **Verification:** Opened `/dev/cu.usbserial-0001` at 115200 8N1. No bytes arrived during listening, including after the user reported a power reconnect. No kernel upload or SD-card write performed. UART uploader, userspace uploader, and image-registry tests passed (16/16); `git diff --check` passed. Roadmap checkboxes unchanged.
-- **Next:** Confirm Pi power, SD card, and UART wiring; capture `GABIX LOADER READY`, then resume the hardware branch's DHCP test.
+- **Follow-up:** With the UART capture active, the user power-cycled the Pi and confirmed green ACT activity with the SD card inserted. Captured `GABIX LOADER READY` at 115200 8N1, confirming the bootloader and serial connection are working.
+- **Network follow-up:** Built `pi2-network-dev` in release mode and uploaded 50,556 bytes with CRC success. The Mac DHCP peer ran on `en6` at `10.0.2.2`. Physical UART confirmed USB enumeration, Ethernet configuration, link up, successful DHCP configuration, and watchdog return to `GABIX LOADER READY`. The receive path then repeatedly reported `rx fifo unavailable`; ping/UDP testing overlapped the reset and is inconclusive. Saved the UART evidence in `artifacts/pi2-network-baselines/resume-2026-11-12-dhcp-physical.log`.
+- **Learning:** Reviewed the teach skill and learning records. The user correctly recalled that Pi Ethernet traffic passes through USB; clarified the separate onboard LAN9512 chip. Suggested lesson 7.05 first, with 7.02/7.04 and 6.10 as supporting refreshers.
+- **Next:** Diagnose receive failures after DHCP using a controlled test window, then verify ARP, ping, and UDP.
 
 ### 2026-08-16 — Physical Pi 2 receives a raw Ethernet frame
 - **Minimal probe:** NET11 keeps the passing USB/LAN9512 initialization,

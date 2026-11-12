@@ -62,6 +62,7 @@ const PORT_CONNECTED: u32 = 1 << 0;
 const PORT_WRITE_TO_CLEAR: u32 = PORT_ENABLE_CHANGE | PORT_ENABLE | PORT_CONNECT_DETECTED;
 
 const CHANNEL_ENABLE: u32 = 1 << 31;
+const CHANNEL_DISABLE: u32 = 1 << 30;
 const DEVICE_ADDRESS_SHIFT: u32 = 22;
 const ENDPOINT_TYPE_CONTROL: u32 = 0 << 18;
 const ENDPOINT_TYPE_BULK: u32 = 2 << 18;
@@ -607,26 +608,57 @@ unsafe fn transfer(
         {
             return None;
         }
-        let interrupt = read32(CHANNEL_BASE + HCINT);
-        if wait_until(|| read32(CHANNEL_BASE + HCCHAR) & CHANNEL_ENABLE == 0).is_none() {
-            return None;
+        // 1. NAK means the device cannot supply or accept data yet.
+        // In DMA mode the controller may keep retrying, so NAK alone does
+        // not mean that it has stopped accessing our buffer.
+        let status = read32(CHANNEL_BASE + HCINT);
+        let device_not_ready = status & INTERRUPT_NAK != 0;
+        if device_not_ready && channel_is_enabled() {
+            request_channel_halt();
         }
+
+        // 2. Wait until the controller releases the channel before reusing
+        // its registers or the memory buffer passed to this function.
+        wait_until(|| !channel_is_enabled())?;
+
+        // 3. Read status again: the transfer may have completed while we
+        // were requesting the halt. Keep a completed transfer's result.
+        let status = read32(CHANNEL_BASE + HCINT);
+        let transfer_completed = status & INTERRUPT_TRANSFER_COMPLETE != 0;
+        let device_not_ready = status & INTERRUPT_NAK != 0;
+        let transaction_failed = status & INTERRUPT_TRANSACTION_ERROR != 0;
+        let transfer_failed = status & (INTERRUPT_STALL | INTERRUPT_ERRORS) != 0;
         complete_dma_buffer(buffer, length, direction_in);
-        if interrupt & INTERRUPT_NAK != 0 && retry_transient {
+
+        // 4. Retry recoverable conditions when this caller permits retries.
+        if !transfer_completed && device_not_ready && retry_transient {
             continue;
         }
-        if interrupt & INTERRUPT_TRANSACTION_ERROR != 0 && retry_transient {
+        if transaction_failed && retry_transient {
             continue;
         }
-        if interrupt & (INTERRUPT_STALL | INTERRUPT_ERRORS) != 0
-            || interrupt & INTERRUPT_TRANSFER_COMPLETE == 0
-        {
+        if transfer_failed || !transfer_completed {
             return None;
         }
         let remaining = (read32(CHANNEL_BASE + HCTSIZ) & 0x7ffff) as usize;
         return Some(length.saturating_sub(remaining));
     }
     None
+}
+
+unsafe fn channel_is_enabled() -> bool {
+    read32(CHANNEL_BASE + HCCHAR) & CHANNEL_ENABLE != 0
+}
+
+unsafe fn request_channel_halt() {
+    let configuration = read32(CHANNEL_BASE + HCCHAR);
+    // DWC2 requires BOTH bits to request a DMA-channel halt. Setting ENABLE
+    // here submits the halt request; hardware clears it when the halt finishes.
+    // Preserve the endpoint address, direction, and packet-size fields.
+    write32(
+        CHANNEL_BASE + HCCHAR,
+        configuration | CHANNEL_DISABLE | CHANNEL_ENABLE,
+    );
 }
 
 unsafe fn prepare_dma_buffer(buffer: *const u8, length: usize, direction_in: bool) {
