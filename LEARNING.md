@@ -539,6 +539,12 @@ A milestone is a "demo-able" checkpoint. Worth a commit + tag + log entry.
 
 ## Progress Log
 
+### 2026-11-12 — Resume physical Pi connection checks
+- **Done:** Fetched origin and fast-forwarded the clean main checkout to `c02f643`. Located the later hardware work in `/Users/gabrielelanaro/.codex/worktrees/cacd/gabix`, branch `codex/pi2-uart-loader`, at `47b6a03`. Fast-forwarded main to include all 43 hardware commits at the user’s request.
+- **Context recovered:** The prior UART session reported working loader uploads, physical DHCP, and UDP echo with static ARP. Its next test was the DWC2 global-interrupt fix; these results belong to the hardware branch and were not reverified today.
+- **Verification:** Opened `/dev/cu.usbserial-0001` at 115200 8N1. No bytes arrived during listening, including after the user reported a power reconnect. No kernel upload or SD-card write performed. UART uploader, userspace uploader, and image-registry tests passed (16/16); `git diff --check` passed. Roadmap checkboxes unchanged.
+- **Next:** Confirm Pi power, SD card, and UART wiring; capture `GABIX LOADER READY`, then resume the hardware branch's DHCP test.
+
 ### 2026-08-16 — Physical Pi 2 receives a raw Ethernet frame
 - **Minimal probe:** NET11 keeps the passing USB/LAN9512 initialization,
   waits five seconds for link negotiation, and polls only the raw frame-device
