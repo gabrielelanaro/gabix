@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>3.07 — Follow an ARM timer context switch</title>
+<link rel="stylesheet" href="../assets/lesson.css"><link rel="stylesheet" href="../assets/arm-preemption.css">
+<script src="../assets/arm-preemption-model.js" defer></script><script src="../assets/arm-preemption-view.js" defer></script>
+</head><body><article class="lesson cpu-lesson"><header class="lesson-header"><div class="lesson-eyebrow">Module 3 · Processes · Interactive lesson</div>
+<h1 class="lesson-title">Follow an ARM timer context switch</h1>
+<p class="lesson-subtitle">Track a value from a CPU register to a task’s stack and back.</p></header>
+<div class="content"><div class="reading">
+<p><a href="3.06-arm-preemption.html">Previous: timer preemption</a> · <a href="../reference/arm-scheduling.html">Quick reference</a></p>
+<h2>What to look for</h2>
+<p>Task A is running with <code>r0 = 10</code>. A timer interrupts it, and task B runs with <code>r0 = 99</code>. When A resumes, it needs its original 10. Follow where that value is stored while B uses the CPU.</p>
+<p>The model also tracks the <strong>Z flag</strong>: a bit set to 1 when a comparison finds equal values. A has just compared 10 with 10, so Z is 1. Its next instruction branches if Z is 1. Both the number in r0 and the comparison result must survive the interruption.</p>
+<dl>
+<dt>CPU registers</dt><dd>Storage inside the CPU. The left panel shows the values currently in use. r0 and r4 represent two of the general-purpose registers.</dd>
+<dt>Task stacks</dt><dd>Memory belonging to each task. The right panels show the groups of values saved there. The newest group is displayed first.</dd>
+<dt>PC and SP</dt><dd>The program counter identifies the code being executed. The stack pointer identifies the current stack position.</dd>
+<dt>SVC and IRQ modes</dt><dd>Our kernel tasks run in SVC mode. A timer interrupt enters IRQ mode. ARM has separate stack pointers and link registers for these modes; changing modes selects those registers.</dd>
+</dl>
+<p><strong>First pass:</strong> keep both fault options disabled. Press Next and follow r0. Read the explanation when its value changes. The amber rows show changes since the previous step. Three prediction questions check the key transitions.</p>
+</div>
+<section class="cpu-lab" id="arm-cpu-lab" aria-label="ARM preemption step simulator">
+<div class="cpu-controls"><button type="button" data-view="previous">Previous</button><button type="button" data-view="next">Next</button><button type="button" data-view="reset">Restart</button><span class="cpu-step" data-view="step"></span><input type="range" min="0" max="18" value="0" data-view="position" aria-label="Simulation step"></div>
+<div class="cpu-description" aria-live="polite"><h2 data-view="title"></h2><code data-view="instruction"></code><p data-view="explanation"></p><p class="cpu-transfer" data-view="transfer"></p><a data-view="source"></a></div>
+<div class="cpu-panels">
+<section class="cpu-panel"><h3>CPU registers</h3><p data-view="owner"></p><dl data-view="registers"></dl><details class="cpu-banks"><summary>Banked status and IRQ return registers</summary><div data-view="banks"></div><p>LR_irq holds the IRQ return address. SPSR_irq holds the interrupted status. SPSR_svc is separate saved status used by SVC exceptions.</p></details></section>
+<section class="cpu-panel"><h3>Task A stack <span class="cpu-status" data-view="state-A"></span></h3><p>Saved memory · newest group first</p><div data-view="stack-A"></div></section>
+<section class="cpu-panel"><h3>Task B stack <span class="cpu-status" data-view="state-B"></span></h3><p>Saved memory · newest group first</p><div data-view="stack-B"></div></section>
+</div>
+<section class="cpu-quiz" data-view="quiz" aria-label="Prediction question"></section>
+<details class="cpu-faults"><summary>Second pass: try an incorrect restore</summary><p>Changing an option restarts the sequence. Predict the final r0 and branch destination, then use the slider to inspect the last steps.</p><label><input type="checkbox" data-view="lose-r0"> Substitute B’s r0 value when restoring A</label><label><input type="checkbox" data-view="lose-flags"> Keep the handler’s Z flag when returning to A</label><p>These are deliberate simulator faults. The kernel implements both restores.</p></details>
+<noscript><p>This simulator requires JavaScript. Read <a href="3.06-arm-preemption.html">lesson 3.06</a> for the same sequence in prose.</p></noscript>
+</section>
+<div class="reading">
+<h2>Check the two different restores</h2>
+<p>When the dispatcher selects A again, A first resumes inside <code>yield_now()</code>. At that point r4 holds the wrapper’s saved frame address. Later, the IRQ wrapper restores A’s interrupted r4 value, 40. These restores happen at different points because the handler itself was paused while B ran.</p>
+<p>Use Previous to find both operations. Identify the stack group consumed by each one. Then explain why restoring only the switch context would leave A’s original calculation unfinished.</p>
+<details><summary>Check your explanation</summary><p>The switch context resumes the suspended handler call. The handler must still return through the IRQ wrapper, which restores the interrupted general-purpose registers and then the interrupted PC and status. Only after those operations can A continue its original instruction sequence.</p></details>
+<h2>What the model includes</h2>
+<p>The instruction sequence follows <a href="../targets/armv7/src/boot.S">boot.S</a>, <a href="../targets/armv7/src/context.rs">context.rs</a>, and <a href="../targets/armv7/src/scheduler.rs">scheduler.rs</a>. Step labels distinguish hardware behavior, assembly, and grouped Rust calls.</p>
+<p>This is a model of one possible execution, not an ARM instruction emulator or a live view of the Pi. Code addresses and stack positions are symbolic. r0, r4, and Z have chosen example values. The other general-purpose registers, compiler-generated call frames, stack-alignment padding, and dispatcher stack are grouped or omitted. Floating-point registers and userspace scheduling are outside this lesson.</p>
+<p>The physical kernel test uses two non-yielding tasks that exchange progress counters. This lesson uses a comparison and branch so you can see why register values and condition flags both need restoration.</p>
+<h2>Practice again later</h2>
+<p>Before opening the simulator tomorrow, write the sequence from memory: what hardware saves, what the wrapper saves, what the context switch saves, and the order in which they are restored. Use the simulator to check your sequence. Ask me about any step where the register or stack change is unclear.</p>
+<p>Primary references: <a href="https://github.com/ARM-software/CMSIS_5/blob/develop/CMSIS/RTOS2/RTX/Source/GCC/irq_armv7a.S">Arm’s ARMv7-A IRQ implementation</a> and the <a href="https://github.com/ARM-software/abi-aa/blob/main/aapcs32/aapcs32.rst">ARM procedure-call standard</a>.</p>
+</div></div></article></body></html>

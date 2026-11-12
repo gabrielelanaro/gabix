@@ -6,14 +6,12 @@ extern crate alloc;
 
 mod allocator;
 mod console;
-#[cfg(feature = "virt")]
 mod context;
 mod memory;
 mod network;
 mod platform;
 #[cfg(feature = "raspi2b")]
 mod raspi2b;
-#[cfg(feature = "virt")]
 mod scheduler;
 mod syscall;
 mod user;
@@ -143,6 +141,7 @@ extern "C" fn arm_kernel_entry() {
             write_line(&mut console, b"gabix arm virt task resumed");
         }
         virt::timer::init();
+        verify_timer_preemption(&mut console);
         if let Some(mut block) = virt::block::VirtioBlock::probe() {
             if let Some(sector) = block.try_read_sector(1) {
                 if sector.starts_with(b"GABIXARM") {
@@ -205,6 +204,20 @@ extern "C" fn arm_kernel_entry() {
         if *boxed + values.iter().sum::<u32>() == 42 {
             write_line(&mut console, b"gabix raspi2b heap allocated");
         }
+        #[cfg(feature = "pi-hardware")]
+        raspi2b::reset::arm_deadman(15);
+        if scheduler::task_resumes() {
+            // Persistent builds release the boot-test watchdog. Diagnostic
+            // builds keep their watchdog armed through device initialization.
+            #[cfg(all(feature = "pi-hardware", not(any(
+                feature = "pi-network-dev",
+                feature = "pi-network-pre-timer-probe",
+                feature = "pi-network-no-irq-dev"
+            ))))]
+            raspi2b::reset::stop_deadman();
+            write_line(&mut console, b"gabix arm scheduler trace 10 20 11 21 12 22");
+            write_line(&mut console, b"gabix arm scheduler tasks finished");
+        }
         #[cfg(not(feature = "pi-uart-user"))]
         if let Some(mut card) = raspi2b::sdhci::SdCard::initialize() {
             if let Some(sector) = card.try_read_sector(1) {
@@ -230,7 +243,10 @@ extern "C" fn arm_kernel_entry() {
             feature = "pi-network-pre-timer-probe",
             feature = "pi-network-no-irq-dev"
         )))]
-        raspi2b::timer::init();
+        {
+            raspi2b::timer::init();
+            verify_timer_preemption(&mut console);
+        }
         #[cfg(any(not(feature = "pi-uart-user"), feature = "pi-hardware"))]
         if let Some(mut usb) = raspi2b::usb::Dwc2::initialize() {
             if let Some(device) = usb.enumerate_root() {
@@ -437,15 +453,32 @@ fn allocation_error(_: Layout) -> ! {
     }
 }
 
+/// The physical watchdog returns a stalled test to the UART loader.
+unsafe fn verify_timer_preemption(console: &mut Pl011) {
+    #[cfg(feature = "pi-hardware")]
+    raspi2b::reset::arm_deadman(15);
+    if scheduler::timer_preempts_tasks() {
+        write_line(console, b"gabix arm timer preempted two non-yielding tasks");
+        #[cfg(all(feature = "pi-hardware", not(any(
+            feature = "pi-network-dev", feature = "pi-network-pre-timer-probe",
+            feature = "pi-network-no-irq-dev"
+        ))))]
+        raspi2b::reset::stop_deadman();
+    } else {
+        write_line(console, b"gabix arm preemption check failed");
+    }
+}
+
 #[no_mangle]
 extern "C" fn arm_irq_entry() {
     #[cfg(feature = "virt")]
     unsafe {
-        virt::timer::handle_interrupt();
+        if virt::timer::handle_interrupt() { scheduler::preempt_on_timer(); }
     }
     #[cfg(feature = "raspi2b")]
     unsafe {
         raspi2b::timer::handle_interrupt();
+        scheduler::preempt_on_timer();
     }
 }
 

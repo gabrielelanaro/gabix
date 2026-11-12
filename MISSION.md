@@ -5,8 +5,8 @@ Hobby project: learn how a computer works by building and running a Linux-like
 kernel on two CPUs — x86_64 and ARMv7 — and on real hardware. The gabix kernel
 already boots on QEMU x86_64, on QEMU ARM (`virt` and `raspi2b`), and reaches
 userspace on all three. The focus right now is ARM and the Raspberry Pi 2B
-because the hardware arrives Monday. The broader goal is permanent: understand
-both architectures, not just ARM.
+with working UART reload and Ethernet on the connected board. The broader goal
+is permanent: understand both architectures.
 
 A concrete north star keeps the work pointed: **post a message to LinkedIn from
 a gabix user program running on the Pi.** The post is an excuse; the
@@ -15,6 +15,14 @@ keyboard, a display) whenever they teach something worth knowing.
 
 The previous mission (x86 disk → ext2 → ELF → ring 3) is complete — see
 learning-record 0017 and git history.
+
+## Current objective: feature parity
+
+Deliver the same kernel services on x86_64 and ARMv7: scheduling, isolated
+processes, file operations, and UDP/TCP sockets. Share architecture-independent
+logic and retain explicit CPU and board adapters. Start with cooperative ARM
+kernel scheduling, then preemption. Each step includes a didactic lesson and
+behavioral tests on the physical Pi using UART reboot and upload.
 
 ## Success looks like
 - Boot gabix on a physical Raspberry Pi 2B and see the full serial sequence in
@@ -52,7 +60,7 @@ per-lesson index lives in `reference/modules.html`.
 | 0 — Orientation | The course map, cross-cutting overviews, roadmaps, spaced-repetition reviews. Read `0.01` first. | 0.01 written |
 | 1 — The CPU | Running a program with reduced rights, the door it uses to call the kernel, and how a device or a timer pulls the CPU's attention away from a program. Both x86 and ARM. | 1.01 written |
 | 2 — Memory | How every memory access is checked against a table that hides one program's memory from another and from the kernel. x86 gives each process its own table; the ARM port uses one shared table so far. | new — both archs |
-| 3 — Processes | Switching between programs, loading an ELF binary, and the fork/exec/wait lifecycle. | 4 lessons (x86); ARM context switch to add |
+| 3 — Processes | Switching between programs, loading an ELF binary, and the fork/exec/wait lifecycle. | 4 x86 lessons; 3.05–3.06 ARM cooperative scheduling and timer preemption written |
 | 4 — Devices | Finding devices, moving bytes with them, and learning the moment one finishes a job. | 11 lessons (x86); ARM device discovery + keyboard to add |
 | 5 — Storage | The layer that reads a sector, the shared file interface, and ext2 on disk. None of it depends on the CPU. | 7 lessons (complete, arch-neutral) |
 | 6 — Networking | Sending bytes to another computer, one layer at a time, up to a reliable stream. The code is CPU-independent. | 13 lessons (x86); talking to a web server to add |

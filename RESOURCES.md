@@ -142,3 +142,9 @@
 ## Gaps
 
 - No single "VFS design from scratch" reference exists for a Rust no_std context. The Robert Love chapter plus Theseus source is the closest combination. We will be filling this gap with our own lessons.
+
+## ARM scheduling parity
+- ARM AAPCS32: https://github.com/ARM-software/abi-aa/blob/main/aapcs32/aapcs32.rst — integer register preservation and stack alignment.
+- ARM32 scheduling, Linux maintainer walkthrough: https://people.kernel.org/linusw/the-arm32-scheduling-and-kernelspace-userspace-boundary
+
+- ARM preemption: [Arm CMSIS ARMv7-A IRQ implementation](https://github.com/ARM-software/CMSIS_5/blob/develop/CMSIS/RTOS2/RTX/Source/GCC/irq_armv7a.S) — primary implementation reference for SRS/RFE exception state handling; read alongside gabix lesson 3.06.

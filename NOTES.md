@@ -1,5 +1,17 @@
 # Teaching Notes
 
+## Meet the learner at the mechanism — 2026-11-12
+
+User explicitly found the register simulator hard to follow and visually unappealing. Their gap: how the timer causes another task to run, with the scenario previously implicit. Start by naming the tasks, what each is doing, the one-core constraint, and what we want to happen. Explain timer request → CPU handler entry → scheduler choice before introducing saved registers or ARM modes. Use a stable component diagram and progressive disclosure. Ask for a short explanation to check understanding; do not infer mastery from delivering a lesson.
+
+## Interactive learning preference — 2026-11-12
+
+Use a step-through CPU/register/stack model for mechanisms such as preemption. Show saved values, changed values, and the source operation together. Include predictions and controlled faults with immediate feedback; label all simplifications.
+
+## Lesson style correction — 2026-11-12
+
+The user found lesson 3.05 difficult to parse and sensational. Explain concrete behavior before asking for predictions. Define task, scheduler, context switch, and dispatcher before using them. Give one worked example before each interactive activity. Use descriptive headings and literal button labels. Keep assembly details optional after the basic mechanism. Avoid mission/challenge framing and compressed technical summaries.
+
 ## Teaching process principles (meta-level — how to drive a lesson)
 
 These are the *process* rules from the `/teach` skill plus what's been earned

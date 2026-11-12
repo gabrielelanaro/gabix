@@ -1,63 +1,240 @@
+//! Single-core kernel tasks with explicit yields and timer preemption.
+//! Scheduler mutations and context switches run with IRQs masked.
 use crate::context::{switch, TaskContext};
 use core::arch::asm;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
+const MAX_TASKS: usize = 4;
 const STACK_SIZE: usize = 16 * 1024;
-const SAVED_REGISTER_COUNT: usize = 9;
+const SAVED_WORDS: usize = 9; // r4..r11 followed by lr, matching context::switch.
 
+#[derive(Clone, Copy, PartialEq)]
+enum TaskState {
+    Empty,
+    Ready,
+    Running,
+    Finished,
+}
+
+#[derive(Clone, Copy)]
+struct Task {
+    context: TaskContext,
+    state: TaskState,
+    entry: Option<fn()>,
+}
+impl Task {
+    const EMPTY: Self = Self {
+        context: TaskContext::empty(),
+        state: TaskState::Empty,
+        entry: None,
+    };
+}
 #[repr(C, align(8))]
 struct TaskStack([u8; STACK_SIZE]);
+static mut STACKS: [TaskStack; MAX_TASKS] = [const { TaskStack([0; STACK_SIZE]) }; MAX_TASKS];
+static mut TASKS: [Task; MAX_TASKS] = [Task::EMPTY; MAX_TASKS];
+static mut DISPATCHER: TaskContext = TaskContext::empty();
+static mut CURRENT_TASK: usize = MAX_TASKS;
 
-static mut MAIN_CONTEXT: TaskContext = TaskContext::empty();
-static mut WORKER_CONTEXT: TaskContext = TaskContext::empty();
-static mut WORKER_STACK: TaskStack = TaskStack([0; STACK_SIZE]);
-static STAGE: AtomicUsize = AtomicUsize::new(0);
+// A switched-out task resumes with IRQs masked, then restores its own prior
+// IRQ setting. The dispatcher always runs masked; new tasks inherit this setting.
+static mut TASK_IRQS_ENABLED: bool = false;
+static PREEMPTIONS: AtomicUsize = AtomicUsize::new(0);
 
-unsafe fn prepare_worker() {
-    let stack_bottom = core::ptr::addr_of_mut!(WORKER_STACK).cast::<u8>();
-    let stack_top = (stack_bottom.add(STACK_SIZE) as usize & !7) as *mut u32;
-    let saved = stack_top.sub(SAVED_REGISTER_COUNT);
-
-    for index in 0..SAVED_REGISTER_COUNT - 1 {
-        saved.add(index).write(0);
-    }
-    saved
-        .add(SAVED_REGISTER_COUNT - 1)
-        .write(worker as *const () as u32);
-    WORKER_CONTEXT.sp = saved as u32;
+unsafe fn mask_irqs() -> bool {
+    let status: u32;
+    asm!("mrs {status}, cpsr", "cpsid i", status = out(reg) status);
+    status & (1 << 7) == 0
 }
 
-unsafe extern "C" fn worker() -> ! {
-    STAGE.store(1, Ordering::Release);
-    switch(
-        core::ptr::addr_of_mut!(WORKER_CONTEXT),
-        core::ptr::addr_of!(MAIN_CONTEXT),
-    );
+unsafe fn restore_irqs(were_enabled: bool) {
+    if were_enabled {
+        asm!("cpsie i", "isb");
+    }
+}
 
-    STAGE.store(2, Ordering::Release);
-    switch(
-        core::ptr::addr_of_mut!(WORKER_CONTEXT),
-        core::ptr::addr_of!(MAIN_CONTEXT),
-    );
+/// Called after acknowledging the timer, with the IRQ frame on this task's
+/// SVC stack. yield_now saves the handler's call chain on that same stack.
+/// Returning here later lets the assembly wrapper restore the interrupted code.
+pub unsafe fn preempt_on_timer() {
+    if CURRENT_TASK < MAX_TASKS {
+        PREEMPTIONS.fetch_add(1, Ordering::Relaxed);
+        yield_now();
+    }
+}
 
+/// Register a task with a private stack. Finished slots are reused only by reset.
+/// Safety: single core, outside a running scheduler. IRQs are masked here.
+pub unsafe fn spawn(entry: fn()) -> Option<usize> {
+    let were_enabled = mask_irqs();
+    if CURRENT_TASK != MAX_TASKS {
+        restore_irqs(were_enabled);
+        return None;
+    }
+    for id in 0..MAX_TASKS {
+        let task = core::ptr::addr_of_mut!(TASKS).cast::<Task>().add(id);
+        if (*task).state != TaskState::Empty {
+            continue;
+        }
+        let stack = core::ptr::addr_of_mut!(STACKS).cast::<TaskStack>().add(id);
+        let top = stack.cast::<u8>().add(STACK_SIZE).cast::<u32>();
+        let saved = top.sub(SAVED_WORDS);
+        for word in 0..SAVED_WORDS {
+            saved.add(word).write(0);
+        }
+        // Restoring these nine words leaves SP 8-byte aligned at Rust entry.
+        saved.add(8).write(task_entry as *const () as u32);
+        (*task).context.sp = saved as u32;
+        (*task).entry = Some(entry);
+        (*task).state = TaskState::Ready;
+        restore_irqs(were_enabled);
+        return Some(id);
+    }
+    restore_irqs(were_enabled);
+    None
+}
+
+/// Run ready tasks in slot order until all have returned. If IRQs are enabled
+/// by the caller, timer interrupts can also return tasks to this dispatcher.
+pub unsafe fn run_until_finished() {
+    let were_enabled = mask_irqs();
+    assert!(CURRENT_TASK == MAX_TASKS);
+    TASK_IRQS_ENABLED = were_enabled;
     loop {
-        asm!("wfi");
+        let mut ran_task = false;
+        for id in 0..MAX_TASKS {
+            let task = core::ptr::addr_of_mut!(TASKS).cast::<Task>().add(id);
+            if (*task).state != TaskState::Ready {
+                continue;
+            }
+            ran_task = true;
+            CURRENT_TASK = id;
+            (*task).state = TaskState::Running;
+            // Keep raw pointers, not live mutable Rust references, across a switch.
+            switch(
+                core::ptr::addr_of_mut!(DISPATCHER),
+                core::ptr::addr_of!((*task).context),
+            );
+            CURRENT_TASK = MAX_TASKS;
+        }
+        if !ran_task {
+            restore_irqs(were_enabled);
+            return;
+        }
     }
 }
 
+/// Save this task's call stack and let the dispatcher choose another task.
+pub fn yield_now() {
+    unsafe {
+        let were_enabled = mask_irqs();
+        assert!(CURRENT_TASK < MAX_TASKS);
+        let task = core::ptr::addr_of_mut!(TASKS)
+            .cast::<Task>()
+            .add(CURRENT_TASK);
+        (*task).state = TaskState::Ready;
+        switch(
+            core::ptr::addr_of_mut!((*task).context),
+            core::ptr::addr_of!(DISPATCHER),
+        );
+        // Execution resumes here when the dispatcher selects this task again.
+        restore_irqs(were_enabled);
+    }
+}
+
+extern "C" fn task_entry() -> ! {
+    unsafe {
+        let task = core::ptr::addr_of_mut!(TASKS)
+            .cast::<Task>()
+            .add(CURRENT_TASK);
+        let entry = (*task).entry.expect("registered task has an entry");
+        restore_irqs(TASK_IRQS_ENABLED);
+        entry();
+        mask_irqs();
+        (*task).state = TaskState::Finished;
+        switch(
+            core::ptr::addr_of_mut!((*task).context),
+            core::ptr::addr_of!(DISPATCHER),
+        );
+        unreachable!("finished tasks are never resumed");
+    }
+}
+
+static mut TRACE: [u32; 6] = [0; 6];
+static mut TRACE_LEN: usize = 0;
+fn record(value: u32) {
+    unsafe {
+        TRACE[TRACE_LEN] = value;
+        TRACE_LEN += 1;
+    }
+}
+fn first_task() {
+    let mut local = 10;
+    for _ in 0..3 {
+        record(local);
+        local += 1;
+        yield_now();
+    }
+}
+fn second_task() {
+    let mut local = 20;
+    for _ in 0..2 {
+        record(local);
+        local += 1;
+        yield_now();
+    }
+    record(local);
+}
+
+/// Boot-time behavioral check: independent local counters, round-robin yields,
+/// task return, and a second scheduler run after every task has finished.
 pub unsafe fn task_resumes() -> bool {
-    prepare_worker();
-    switch(
-        core::ptr::addr_of_mut!(MAIN_CONTEXT),
-        core::ptr::addr_of!(WORKER_CONTEXT),
-    );
-    if STAGE.load(Ordering::Acquire) != 1 {
+    TASKS = [Task::EMPTY; MAX_TASKS];
+    CURRENT_TASK = MAX_TASKS;
+    TRACE_LEN = 0;
+    if spawn(first_task) != Some(0) || spawn(second_task) != Some(1) {
         return false;
     }
+    run_until_finished();
+    run_until_finished();
+    TRACE_LEN == 6
+        && TRACE == [10, 20, 11, 21, 12, 22]
+        && TASKS[0].state == TaskState::Finished
+        && TASKS[1].state == TaskState::Finished
+}
 
-    switch(
-        core::ptr::addr_of_mut!(MAIN_CONTEXT),
-        core::ptr::addr_of!(WORKER_CONTEXT),
-    );
-    STAGE.load(Ordering::Acquire) == 2
+// Each task waits for progress from the other task. Neither task yields.
+// With preemption broken, the first task waits forever and the test times out.
+static PROGRESS: [AtomicUsize; 2] = [const { AtomicUsize::new(0) }; 2];
+fn wait_for_other_task(id: usize) {
+    for round in 1..=8 {
+        PROGRESS[id].store(round, Ordering::SeqCst);
+        while PROGRESS[1 - id].load(Ordering::SeqCst) < round {
+            core::hint::spin_loop();
+        }
+    }
+}
+fn first_busy_task() {
+    wait_for_other_task(0);
+}
+fn second_busy_task() {
+    wait_for_other_task(1);
+}
+
+/// Requires an initialized timer and enabled IRQs. Call outside the scheduler.
+/// Repeated handshakes prove both non-yielding tasks resume across timer IRQs.
+pub unsafe fn timer_preempts_tasks() -> bool {
+    TASKS = [Task::EMPTY; MAX_TASKS];
+    PROGRESS[0].store(0, Ordering::SeqCst);
+    PROGRESS[1].store(0, Ordering::SeqCst);
+    PREEMPTIONS.store(0, Ordering::SeqCst);
+    if spawn(first_busy_task) != Some(0) || spawn(second_busy_task) != Some(1) {
+        return false;
+    }
+    run_until_finished();
+    PROGRESS[0].load(Ordering::SeqCst) == 8
+        && PROGRESS[1].load(Ordering::SeqCst) == 8
+        && PREEMPTIONS.load(Ordering::SeqCst) >= 8
+        && TASKS[0].state == TaskState::Finished
+        && TASKS[1].state == TaskState::Finished
 }

@@ -1,0 +1,60 @@
+UPLOAD CRC OK
+UPLOAD OK
+HANDOFF ADDRESS 0x00100000
+HANDOFF LENGTH 0x0000BF70
+HANDOFF FIRST WORD 0xF10C00C0
+HANDOFF SCTLR 0x00C50878
+HANDOFF CPSR 0x600001DA
+HANDOFF BRANCH
+gabix raspi2b booted
+gabix raspi2b smp enabled
+gabix raspi2b memory mapped
+gabix raspi2b heap allocated
+gabix arm scheduler trace 10 20 11 21 12 22
+gabix arm scheduler tasks finished
+gabix arm timer preempted two non-yielding tasks
+gabix raspi2b usb enumerated
+gabix raspi2b usb network configured
+gabix raspi2b ethernet link down
+gabix raspi2b waiting for ethernet link
+gabix raspi2b ethernet link up
+gabix raspi2b dhcp discover
+gabix raspi2b dhcp tx ok
+gabix raspi2b dhcp discover
+gabix raspi2b dhcp tx ok
+gabix raspi2b dhcp configured
+gabix raspi2b timer advanced
+GABIX USER READY
+Mac → Pi: timer preemption works on the Pi
+Pi → Mac: timer preemption works on the Pi
+
+Repeated UART reboot from the preemptive kernel: GABIX LOADER READY
+UPLOAD CRC OK
+UPLOAD OK
+HANDOFF ADDRESS 0x00100000
+HANDOFF LENGTH 0x0000BF70
+HANDOFF FIRST WORD 0xF10C00C0
+HANDOFF SCTLR 0x00C50878
+HANDOFF CPSR 0x600001DA
+HANDOFF BRANCH
+gabix raspi2b booted
+gabix raspi2b smp enabled
+gabix raspi2b memory mapped
+gabix raspi2b heap allocated
+gabix arm scheduler trace 10 20 11 21 12 22
+gabix arm scheduler tasks finished
+gabix arm timer preempted two non-yielding tasks
+gabix raspi2b usb enumerated
+gabix raspi2b usb network configured
+gabix raspi2b ethernet link down
+gabix raspi2b waiting for ethernet link
+gabix raspi2b ethernet link up
+gabix raspi2b dhcp discover
+gabix raspi2b dhcp tx ok
+gabix raspi2b dhcp discover
+gabix raspi2b dhcp tx ok
+gabix raspi2b dhcp configured
+gabix raspi2b timer advanced
+GABIX USER READY
+Mac → Pi: UART reboot after preemption passed
+Pi → Mac: UART reboot after preemption passed

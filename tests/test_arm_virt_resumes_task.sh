@@ -21,7 +21,7 @@ QEMU_MODULE_DIR=/tmp/gabix-qemu-arm/root/usr/lib/qemu \
     -no-reboot
 exit_code=$?
 
-if [ "$exit_code" -eq 0 ] && grep -Fqx "gabix arm virt task resumed" "$out"; then
+if [ "$exit_code" -eq 0 ] && grep -Fqx "gabix arm timer preempted two non-yielding tasks" "$out" && grep -Fqx "gabix arm virt task resumed" "$out"; then
     echo "[arm-virt-task] PASS"
     rm "$out"
     exit 0

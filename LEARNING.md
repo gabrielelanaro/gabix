@@ -6,6 +6,18 @@ Approach: follow the "Writing an OS in Rust" tutorial (phil-opp.com) as the spin
 
 ## Roadmap
 
+### x86 / ARM feature parity (current objective)
+- [x] Cooperative ARM kernel tasks: private stacks, round-robin yield, completion; verify QEMU and physical Pi
+- [x] Timer-driven ARM preemption and interrupt-safe scheduler state (single-core kernel tasks)
+- [ ] Per-process ARM address spaces and memory isolation
+- [ ] ARM process lifecycle: fork, exec, wait, exit
+- [ ] Shared file descriptors, VFS, and file syscalls on both architectures
+- [ ] Shared userspace sockets, blocking I/O, and TCP on ARM
+- [ ] Equivalent behavioral suites on x86, ARM virt, and physical Pi
+
+Each slice includes didactic source names, a short lesson, and physical validation
+through UART reboot/upload. Preserve the working server as the recovery image.
+
 ### Networking objective
 - [x] Lesson 26.1 UDP socket objects, per-process FDs, and port routing
 - [x] Lesson 26.2 `socket`, `bind`, `sendto`, and `recvfrom` syscalls
@@ -538,6 +550,33 @@ A milestone is a "demo-able" checkpoint. Worth a commit + tag + log entry.
 ---
 
 ## Progress Log
+
+### 2026-11-12 — Rebuild timer lesson around the learner’s question
+- **Feedback:** User did not understand how the timer changes the running task; the previous scenario was implicit and the interface too dense.
+- **Revision:** Lesson 3.07 now states the counting-task scenario and shows timer hardware, CPU execution, and memory in eight steps. A timer-off comparison shows why B keeps waiting. Register details moved to an optional linked page.
+- **Validation:** Eight Node checks pass across both teaching models and their controls; local lesson links pass. Browser layout remains unverified. Kernel unchanged.
+- **Next teaching check:** Ask the learner to distinguish the timer’s interrupt request from the scheduler’s task selection before introducing IRQ/SVC register banks.
+
+### 2026-11-12 — ARM register and stack simulator
+- **Teaching:** Added lesson 3.07 with a 19-step model of two timer interrupts and task A’s resumption. CPU registers, banked IRQ status, and per-task saved frames are shown together. Backward navigation, a step slider, three prediction questions, and independent register/condition-flag fault options support practice.
+- **Scope:** Symbolic code addresses and stack positions; selected registers shown, compiler calls grouped. This is a teaching model of the current source, not an instruction emulator or live hardware view. Kernel behavior was unchanged.
+- **Validation:** Six Node behavioral checks cover register/status restoration, independent saved task state, both injected faults, snapshot isolation, and UI navigation/reset/quiz controls. Local links and JavaScript syntax checked. Browser rendering remains unverified because local-file preview was previously restricted.
+- **Learning status:** User requested concrete CPU-state visualization; no mastery inferred. Next review: explain why restoring the switch context resumes the handler before the interrupted task.
+
+### 2026-11-12 — Timer preemption on ARM
+- **Built:** Timer IRQs now preempt registered ARM kernel tasks. The IRQ wrapper stores the interrupted PC/status and general-purpose registers on the task’s own SVC stack, preserves SVC status, aligns the Rust call stack, and returns with RFE. Scheduler selection, explicit yield, registration, and completion use masked IRQs; resumed calls restore their prior IRQ setting.
+- **Verified:** QEMU virt and raspi2b require the new preemption marker. Two non-yielding tasks complete eight atomic progress handshakes and record at least eight preemptions. The repeated UART userspace-load regression also passed. The release build passed on the physical Pi through UART reboot/upload, followed by DHCP and an exact UDP echo response. A second UART reboot from the preemptive kernel, re-upload, preemption check, and echo also passed. No manual power cycle.
+- **Teaching:** Added lesson 3.06 with the interrupt save/switch/return sequence, the comparison with x86, and a worked non-yielding-task example. Updated lesson 3.05 to identify its simulations as cooperative-only. Linked Arm’s IRQ implementation as a primary reference.
+- **Roadmap:** Checked timer preemption for single-core kernel tasks. Floating-point/SIMD state, ARM process isolation and lifecycle, blocking, and migrating device services into tasks remain unfinished. Next: address-space isolation; review device ownership before scheduling driver work.
+
+
+### 2026-11-12 — ARM cooperative scheduling and parity objective
+- **Lesson revision:** Rewrote 3.05 after user feedback about dense, sensational prose. Added definitions, worked examples before activities, literal controls, and optional assembly detail. Recorded the teaching preference in NOTES.md.
+- **Goal:** User selected x86/ARM feature parity. Updated mission and roadmap, beginning with scheduling before memory isolation, process lifecycle, VFS and sockets.
+- **Built:** Four-slot cooperative ARM task dispatcher with separate 16 KiB stacks, explicit yield and finished states. Integer-only, single-core kernel tasks; timer preemption and driver-task integration remain unchecked.
+- **Verified:** QEMU ARM virt resumption, Raspberry Pi scheduler trace, and Raspberry Pi UART reload tests passed. Physical Pi printed the exact `10 20 11 21 12 22` trace and completion marker after UART reboot/upload, with a watchdog protecting the scheduling check. No manual power cycle. Mac bootpd independently exited with a routing allocation error and required an administrator restart; UDP echo passed again afterward.
+- **Teaching:** Added lesson 3.05 with two microworlds (yield versus timer tick, saved versus lost local state), architecture comparison, and quick reference. Recorded the mission change without claiming mastery of the new material. Browser preview was blocked for local file URLs; JavaScript syntax and interaction logic were checked separately.
+- **Next:** Timer-driven ARM preemption, full interrupt context, and ownership rules before moving UART/Ethernet into independent tasks.
 
 ### 2026-11-12 — Persistent Pi echo server and UART reload
 - **Naming follow-up:** Named the shared loop `serve_uart_uploads_and_ethernet`, its network operation `poll_ethernet_and_reply`, and its UART/upload/tick state explicitly. Added named scheduling conditions and three-step comments. Release build and whitespace checks pass; polling behavior is unchanged.

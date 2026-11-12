@@ -166,11 +166,27 @@ _start:
     movs pc, lr
 
 .Lirq:
+    @ Save the interrupted PC and CPSR on the current SVC (kernel) stack.
+    @ Each scheduled kernel task has its own SVC stack. The IRQ bank is free
+    @ again before we schedule another task, so its next IRQ cannot overwrite
+    @ this task's saved return state.
     sub lr, lr, #4
+    srsdb sp!, #0x13
+    cps #0x13
     stmdb sp!, {{r0-r12, lr}}
+    @ Keep the SVC saved status too: an IRQ may interrupt a syscall handler.
+    mrs r0, spsr
+    push {{r0, r1}}
+    @ An interrupted instruction may have a four-byte-aligned SP. Rust calls
+    @ require eight-byte alignment. r4 preserves the unrounded frame address.
+    mov r4, sp
+    bic sp, sp, #7
     bl {irq_entry}
+    mov sp, r4
+    pop {{r0, r1}}
+    msr spsr_cxsf, r0
     ldmia sp!, {{r0-r12, lr}}
-    subs pc, lr, #0
+    rfeia sp!
 
     .align 2
 .Lexit_block:

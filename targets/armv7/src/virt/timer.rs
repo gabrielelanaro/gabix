@@ -58,11 +58,12 @@ pub fn ticks() -> usize {
     TICKS.load(Ordering::Acquire)
 }
 
-pub unsafe fn handle_interrupt() {
+pub unsafe fn handle_interrupt() -> bool {
     let acknowledge = read32(GIC_CPU_BASE + GICC_IAR);
     if acknowledge & 0x3ff == PHYSICAL_TIMER_INTERRUPT {
         TICKS.fetch_add(1, Ordering::Release);
         reload();
     }
     write32(GIC_CPU_BASE + GICC_EOIR, acknowledge);
+    acknowledge & 0x3ff == PHYSICAL_TIMER_INTERRUPT
 }
