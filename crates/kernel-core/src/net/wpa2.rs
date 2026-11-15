@@ -12,7 +12,42 @@ pub const RSN: [u8; 22] = [
     48, 20, 1, 0, 0, 15, 172, 4, 1, 0, 0, 15, 172, 4, 1, 0, 0, 15, 172, 2, 0, 0,
 ];
 const MIC: core::ops::Range<usize> = 81..97;
-const HEADER: usize = 99;
+// Byte ranges start at the EAPOL version byte. The fixed key header is
+// followed by key data; its two-byte length excludes the fixed header.
+const EAPOL_HEADER_BYTES: usize = 4;
+const KEY_DATA_OFFSET: usize = 99;
+const EAPOL_KEY_PACKET: u8 = 3;
+const RSN_KEY_DESCRIPTOR: u8 = 2;
+const BODY_LENGTH: core::ops::Range<usize> = 2..4;
+const KEY_INFORMATION: core::ops::Range<usize> = 5..7;
+const KEY_LENGTH: core::ops::Range<usize> = 7..9;
+const REPLAY_COUNTER: core::ops::Range<usize> = 9..17;
+const NONCE: core::ops::Range<usize> = 17..49;
+const GROUP_RECEIVE_COUNTER: core::ops::Range<usize> = 65..73;
+const KEY_DATA_LENGTH: core::ops::Range<usize> = 97..99;
+
+// Exact accepted key-information words. Matching the whole word retains our
+// restriction to WPA2/CCMP and rejects unsupported combinations of flags.
+const PAIRWISE_KEY: u16 = 1 << 3;
+const PAIRWISE_MESSAGE_1: u16 = 0x008a;
+const PAIRWISE_MESSAGE_2: u16 = 0x010a;
+const PAIRWISE_MESSAGE_3: u16 = 0x13ca;
+const PAIRWISE_MESSAGE_4: u16 = 0x030a;
+const GROUP_MESSAGE_1: u16 = 0x1382;
+const GROUP_MESSAGE_1_WITH_INSTALL: u16 = 0x13c2;
+const GROUP_MESSAGE_2: u16 = 0x0302;
+
+// The derived pairwise transient key contains three separate 16-byte keys:
+// authenticate handshake messages, unwrap key data, encrypt unicast traffic.
+const MESSAGE_AUTHENTICATION_KEY: core::ops::Range<usize> = 0..16;
+const KEY_ENCRYPTION_KEY: core::ops::Range<usize> = 16..32;
+const UNICAST_ENCRYPTION_KEY: core::ops::Range<usize> = 32..48;
+
+#[derive(Clone, Copy)]
+enum ReplyNonce {
+    Station,
+    Zero,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Error {
@@ -89,30 +124,36 @@ impl Supplicant {
     /// Process an EAPOL packet after the caller checks its source BSSID.
     /// A duplicate message 3 gets another message 4, without reinstalling keys.
     pub fn receive(&mut self, packet: &[u8], out: &mut [u8]) -> Result<Reply, Error> {
-        if packet.len() < HEADER || packet[1] != 3 || packet[4] != 2 || !matches!(packet[0], 1 | 2)
+        if packet.len() < KEY_DATA_OFFSET
+            || packet[1] != EAPOL_KEY_PACKET
+            || packet[4] != RSN_KEY_DESCRIPTOR
+            || !matches!(packet[0], 1 | 2)
         {
             return Err(Error::Malformed);
         }
-        let length = 4 + u16::from_be_bytes([packet[2], packet[3]]) as usize;
+        let length = EAPOL_HEADER_BYTES
+            + u16::from_be_bytes(packet[BODY_LENGTH].try_into().unwrap()) as usize;
         let packet = packet.get(..length).ok_or(Error::Malformed)?;
-        if packet.len() < HEADER {
+        if packet.len() < KEY_DATA_OFFSET {
             return Err(Error::Malformed);
         }
-        let data_length = u16::from_be_bytes([packet[97], packet[98]]) as usize;
-        if HEADER + data_length != packet.len() {
+        let data_length = u16::from_be_bytes(packet[KEY_DATA_LENGTH].try_into().unwrap()) as usize;
+        if KEY_DATA_OFFSET + data_length != packet.len() {
             return Err(Error::Malformed);
         }
-        let flags = u16::from_be_bytes([packet[5], packet[6]]);
-        let key_length = u16::from_be_bytes([packet[7], packet[8]]);
-        let group_key = flags & 8 == 0;
+        let flags = u16::from_be_bytes(packet[KEY_INFORMATION].try_into().unwrap());
+        let key_length = u16::from_be_bytes(packet[KEY_LENGTH].try_into().unwrap());
+        let group_key = flags & PAIRWISE_KEY == 0;
         if key_length != 16 && !(group_key && key_length == 0) {
             return Err(Error::Unsupported);
         }
-        let replay = u64::from_be_bytes(packet[9..17].try_into().unwrap());
+        let replay = u64::from_be_bytes(packet[REPLAY_COUNTER].try_into().unwrap());
         match flags {
-            0x008a => self.message1(packet, replay, out),
-            0x13ca => self.message3(packet, replay, out),
-            0x1382 | 0x13c2 => self.group_message1(packet, replay, out),
+            PAIRWISE_MESSAGE_1 => self.message1(packet, replay, out),
+            PAIRWISE_MESSAGE_3 => self.message3(packet, replay, out),
+            GROUP_MESSAGE_1 | GROUP_MESSAGE_1_WITH_INSTALL => {
+                self.group_message1(packet, replay, out)
+            }
             _ => Err(Error::Unsupported),
         }
     }
@@ -123,7 +164,7 @@ impl Supplicant {
         }
         // Some access points include PMKID in message 1. It lets us verify
         // the configured PMK before debugging the reply's radio delivery.
-        let mut data = &packet[HEADER..];
+        let mut data = &packet[KEY_DATA_OFFSET..];
         while !data.is_empty() {
             if data.len() < 2 {
                 return Err(Error::KeyData);
@@ -144,18 +185,18 @@ impl Supplicant {
             }
             data = &data[2 + length..];
         }
-        if packet[17..49].iter().all(|b| *b == 0) {
+        if packet[NONCE].iter().all(|b| *b == 0) {
             return Err(Error::Nonce);
         }
         if self.state == State::AwaitMessage3 {
             if replay < self.replay {
                 return Err(Error::Replay);
             }
-            if packet[17..49] != self.ap_nonce {
+            if packet[NONCE] != self.ap_nonce {
                 return Err(Error::Nonce);
             }
         } else {
-            self.ap_nonce.copy_from_slice(&packet[17..49]);
+            self.ap_nonce.copy_from_slice(&packet[NONCE]);
             self.ptk = derive_ptk(
                 &self.pmk,
                 self.station,
@@ -164,7 +205,14 @@ impl Supplicant {
                 self.ap_nonce,
             );
         }
-        let length = self.reply(out, packet[0], 0x010a, replay, true, &RSN)?;
+        let length = self.reply(
+            out,
+            packet[0],
+            PAIRWISE_MESSAGE_2,
+            replay,
+            ReplyNonce::Station,
+            &RSN,
+        )?;
         self.replay = replay;
         self.state = State::AwaitMessage3;
         Ok(Reply {
@@ -177,16 +225,23 @@ impl Supplicant {
         if self.state == State::AwaitMessage1 {
             return Err(Error::Replay);
         }
-        if packet[17..49] != self.ap_nonce {
+        if packet[NONCE] != self.ap_nonce {
             return Err(Error::Nonce);
         }
-        verify_mic(&self.ptk[..16], packet)?;
+        verify_mic(&self.ptk[MESSAGE_AUTHENTICATION_KEY], packet)?;
         if self.state == State::Established {
             if replay != self.replay || packet[MIC] != self.message3_mic {
                 return Err(Error::Replay);
             }
             return Ok(Reply {
-                length: self.reply(out, packet[0], 0x030a, replay, false, &[])?,
+                length: self.reply(
+                    out,
+                    packet[0],
+                    PAIRWISE_MESSAGE_4,
+                    replay,
+                    ReplyNonce::Zero,
+                    &[],
+                )?,
                 install: None,
             });
         }
@@ -194,15 +249,26 @@ impl Supplicant {
             return Err(Error::Replay);
         }
         let mut unwrapped = [0u8; 512];
-        let length = unwrap_key(&self.ptk[16..32], &packet[HEADER..], &mut unwrapped)?;
+        let length = unwrap_key(
+            &self.ptk[KEY_ENCRYPTION_KEY],
+            &packet[KEY_DATA_OFFSET..],
+            &mut unwrapped,
+        )?;
         let (group_id, group) = parse_key_data(&unwrapped[..length], true)?;
         let keys = InstalledKeys {
-            pairwise: Some(self.ptk[32..48].try_into().unwrap()),
+            pairwise: Some(self.ptk[UNICAST_ENCRYPTION_KEY].try_into().unwrap()),
             group,
             group_id,
-            group_receive_counter: packet[65..73].try_into().unwrap(),
+            group_receive_counter: packet[GROUP_RECEIVE_COUNTER].try_into().unwrap(),
         };
-        let length = self.reply(out, packet[0], 0x030a, replay, false, &[])?;
+        let length = self.reply(
+            out,
+            packet[0],
+            PAIRWISE_MESSAGE_4,
+            replay,
+            ReplyNonce::Zero,
+            &[],
+        )?;
         self.message3_mic.copy_from_slice(&packet[MIC]);
         self.current_group = Some((group_id, group));
         self.replay = replay;
@@ -224,18 +290,29 @@ impl Supplicant {
         if self.state != State::Established || replay < self.replay {
             return Err(Error::Replay);
         }
-        verify_mic(&self.ptk[..16], packet)?;
+        verify_mic(&self.ptk[MESSAGE_AUTHENTICATION_KEY], packet)?;
         if replay == self.replay {
             if self.group_mic.as_ref().map(|mic| &mic[..]) != Some(&packet[MIC]) {
                 return Err(Error::Replay);
             }
             return Ok(Reply {
-                length: self.reply(out, packet[0], 0x0302, replay, false, &[])?,
+                length: self.reply(
+                    out,
+                    packet[0],
+                    GROUP_MESSAGE_2,
+                    replay,
+                    ReplyNonce::Zero,
+                    &[],
+                )?,
                 install: None,
             });
         }
         let mut unwrapped = [0u8; 512];
-        let length = unwrap_key(&self.ptk[16..32], &packet[HEADER..], &mut unwrapped)?;
+        let length = unwrap_key(
+            &self.ptk[KEY_ENCRYPTION_KEY],
+            &packet[KEY_DATA_OFFSET..],
+            &mut unwrapped,
+        )?;
         let (group_id, group) = parse_key_data(&unwrapped[..length], false)?;
         // A repeated key with a fresh replay counter must preserve its PN state.
         let install = match self.current_group {
@@ -249,10 +326,17 @@ impl Supplicant {
                 pairwise: None,
                 group,
                 group_id,
-                group_receive_counter: packet[65..73].try_into().unwrap(),
+                group_receive_counter: packet[GROUP_RECEIVE_COUNTER].try_into().unwrap(),
             }),
         };
-        let length = self.reply(out, packet[0], 0x0302, replay, false, &[])?;
+        let length = self.reply(
+            out,
+            packet[0],
+            GROUP_MESSAGE_2,
+            replay,
+            ReplyNonce::Zero,
+            &[],
+        )?;
         self.current_group = Some((group_id, group));
         self.group_mic = Some(packet[MIC].try_into().unwrap());
         self.replay = replay;
@@ -265,24 +349,25 @@ impl Supplicant {
         version: u8,
         flags: u16,
         replay: u64,
-        nonce: bool,
+        nonce: ReplyNonce,
         data: &[u8],
     ) -> Result<usize, Error> {
-        let length = HEADER + data.len();
+        let length = KEY_DATA_OFFSET + data.len();
         let out = out.get_mut(..length).ok_or(Error::Capacity)?;
+        // Message 2 sends our nonce; later acknowledgements keep this field zero.
         out.fill(0);
         out[0] = version;
-        out[1] = 3;
-        out[4] = 2;
-        out[2..4].copy_from_slice(&((length - 4) as u16).to_be_bytes());
-        out[5..7].copy_from_slice(&flags.to_be_bytes());
-        out[9..17].copy_from_slice(&replay.to_be_bytes());
-        if nonce {
-            out[17..49].copy_from_slice(&self.station_nonce);
+        out[1] = EAPOL_KEY_PACKET;
+        out[4] = RSN_KEY_DESCRIPTOR;
+        out[BODY_LENGTH].copy_from_slice(&((length - EAPOL_HEADER_BYTES) as u16).to_be_bytes());
+        out[KEY_INFORMATION].copy_from_slice(&flags.to_be_bytes());
+        out[REPLAY_COUNTER].copy_from_slice(&replay.to_be_bytes());
+        if matches!(nonce, ReplyNonce::Station) {
+            out[NONCE].copy_from_slice(&self.station_nonce);
         }
-        out[97..99].copy_from_slice(&(data.len() as u16).to_be_bytes());
-        out[HEADER..].copy_from_slice(data);
-        let mic = hmac_sha1(&self.ptk[..16], &[out]);
+        out[KEY_DATA_LENGTH].copy_from_slice(&(data.len() as u16).to_be_bytes());
+        out[KEY_DATA_OFFSET..].copy_from_slice(data);
+        let mic = hmac_sha1(&self.ptk[MESSAGE_AUTHENTICATION_KEY], &[out]);
         out[MIC].copy_from_slice(&mic[..16]);
         Ok(length)
     }
@@ -331,9 +416,9 @@ fn derive_ptk(
 }
 fn verify_mic(key: &[u8], packet: &[u8]) -> Result<(), Error> {
     let mut mac = <Hmac<Sha1> as hmac::KeyInit>::new_from_slice(key).unwrap();
-    mac.update(&packet[..81]);
+    mac.update(&packet[..MIC.start]);
     mac.update(&[0; 16]);
-    mac.update(&packet[97..]);
+    mac.update(&packet[MIC.end..]);
     mac.verify_truncated_left(&packet[MIC])
         .map_err(|_| Error::Mic)
 }

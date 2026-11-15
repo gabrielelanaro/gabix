@@ -563,6 +563,11 @@ A milestone is a "demo-able" checkpoint. Worth a commit + tag + log entry.
 
 ## Progress Log
 
+### 2026-11-15 — Readability audit: WPA2 handshake fields
+- Named EAPOL key-field ranges, accepted message words and the three derived key ranges. Reply construction explicitly selects the station nonce or a zero nonce.
+- Both existing WPA2 tests pass, including authenticated handshake/retransmission behavior and RFC 3394 unwrap/corruption checks. Managed Wi-Fi release build passes. Synthetic fixtures remain unchanged.
+- Key-data element parsing, cryptographic helper internals and the broader audit remain open. Pi disconnected; physical validation pending.
+
 ### 2026-11-15 — Readability audit: CCMP frame handling
 - Named encrypted-frame lengths, packet-number/key-ID fields, QoS/fragment flags and replay-counter dimensions. Explained the adapter's crypto role and the point where a received packet number becomes accepted state.
 - Both existing Wi-Fi frame tests pass, including replay and rejected-aggregate checks. An ignored old/new transmit comparison passes 13,130 buffer/frame/state cases. Managed Wi-Fi release build passes.

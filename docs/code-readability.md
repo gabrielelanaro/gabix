@@ -42,7 +42,8 @@ will be checked alongside the implementation they exercise.
   - [x] Receiver startup sequence, RF interface controls and scan filters
   - [x] Analog preset registers and reference USB-interference sequence
   - [x] Management-frame address ranges shared with the station adapter
-  - [ ] Remaining shared encrypted-frame/security fields
+  - [x] WPA2 fixed message fields, reply nonce selection and derived key ranges
+  - [ ] Remaining shared security fields and cryptographic helpers
 - [ ] Pi USB controller, hub enumeration, Ethernet, and RNDIS
   - [x] LAN9512 register transport, PHY access and SMSC frame headers
   - [x] Ethernet selection and QEMU RNDIS setup/frame fields
@@ -523,3 +524,13 @@ of aggregated QoS payloads without consuming the next packet number. An ignored
 comparison of actual old/new CCMP transmit methods passes 13,130 cases across
 buffer/frame lengths and consecutive calls, with equal results and bytes.
 Managed Wi-Fi release build passes; physical encrypted traffic remains pending.
+
+### WPA2 fixed handshake fields
+
+`crates/kernel-core/src/net/wpa2.rs` now names the packet ranges, exact accepted
+message words and derived key ranges used by the existing handshake. The reply
+helper uses `ReplyNonce::Station` or `ReplyNonce::Zero` at each call site.
+Existing synthetic handshake and RFC 3394 tests both pass; their fixture bytes
+were preserved. The managed Wi-Fi release kernel builds. No new Pi run was
+performed because the board is disconnected. Key-data element parsing and
+cryptographic helper internals remain for subsequent review.
