@@ -50,6 +50,7 @@ will be checked alongside the implementation they exercise.
   - [x] DHCP options/header fields and ARM lease retry policy; stack dispatch contracts
   - [ ] Remaining Wi-Fi/WPA2 fields
 - [ ] Shared ELF, partitions, ext2, memory, loader protocol, and boot records
+  - [x] Shared frame bitmap and both heap wrappers: frame/address units, availability bits, IRQ locking
   - [x] Shared ext2 boot reader: disk fields, inode/group arithmetic, directory records and direct-block limit
   - [x] ARM ELF32 parser: named header offsets, segment/callback contracts; x86 ELF introduction corrected (remaining x86 parser review pending)
   - [x] MBR primary-entry lookup and offset adapter: named layout fields and explicit validation limits
@@ -201,3 +202,14 @@ The IRQ mask has its CPSR bit name; scheduling behavior is unchanged.
 Reference: [Arm AAPCS32](https://github.com/ARM-software/abi-aa/blob/main/aapcs32/aapcs32.rst), core registers and stack alignment; interrupt-frame ordering is visible in `targets/armv7/src/boot.S` at `.Lirq`.
 Existing Pi QEMU process-isolation regression passes, covering resumed user
 processes and fault containment. Physical confirmation remains pending.
+
+## Frame allocation and heap wrappers
+
+The shared bitmap names its capacity and bit states; helper names say whether
+frames become available or unavailable. Its API documents frame-number units,
+inward rounding and caller ownership responsibilities. Both heap wrappers now
+explain IRQ masking before locking; ARM names the CPSR IRQ mask and x86's stale
+initialization example is corrected. The x86 boot-memory adapter was reviewed
+and retained: its names already express the memory-map-to-frame conversion.
+Existing ARM virt QEMU heap allocation and frame-reuse tests pass separately.
+The linked-list library's internal splitting/merging was not changed.

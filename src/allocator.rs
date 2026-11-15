@@ -15,6 +15,8 @@ use linked_list_allocator::LockedHeap;
 
 use crate::arch::interrupts;
 
+/// Mask interrupts before taking the heap lock so a timer cannot schedule a
+/// second allocator caller while the interrupted task still holds the lock.
 pub struct IrqLockedHeap {
     inner: LockedHeap,
 }
@@ -54,6 +56,6 @@ unsafe impl GlobalAlloc for IrqLockedHeap {
 /// through it.
 ///
 /// Starts empty (no heap region). `memory::init_heap` calls
-/// `ALLOCATOR.lock().init(start, size)` once the heap pages are mapped.
+/// `ALLOCATOR.init(start, size)` once the heap pages are mapped.
 #[global_allocator]
 pub static ALLOCATOR: IrqLockedHeap = IrqLockedHeap::empty();

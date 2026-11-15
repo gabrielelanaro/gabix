@@ -563,6 +563,11 @@ A milestone is a "demo-able" checkpoint. Worth a commit + tag + log entry.
 
 ## Progress Log
 
+### 2026-11-15 — Readability audit: frame and heap allocation
+- Clarified frame-number/address units, bitmap states and caller ownership; renamed private bitmap operations by availability.
+- Documented why ARM and x86 heap wrappers mask IRQs before taking the allocation lock. Retained the already-clear x86 boot-memory adapter after review.
+- Existing ARM virt QEMU heap allocation and frame-reuse checks both pass. Library allocator internals are unchanged; broader audit remains open.
+
 ### 2026-11-15 — Readability audit: ARM task context
 - Connected task frame construction to the switch assembly through shared saved-word names; derive the user-register-bank offset from TaskContext's actual layout.
 - Explained stack-pointer replacement, first entry versus resumption, and IRQ masking. Preserved instructions and scheduling behavior.
