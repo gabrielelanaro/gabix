@@ -563,6 +563,11 @@ A milestone is a "demo-able" checkpoint. Worth a commit + tag + log entry.
 
 ## Progress Log
 
+### 2026-11-15 — Readability audit: Wi-Fi packet RAM
+- Named linked-list commands, page indices, queue reservations/mapping, FIFO byte boundaries and page-size fields. Explained the separate roles of the end-of-list marker and page index 255.
+- Managed Wi-Fi release build passes. An ignored host harness compared old/new setup traces for one/two/three OUT endpoints and clear/stuck-busy responses; all six results and traces match, including the full 256-page setup.
+- Physical packet RAM validation remains pending. Receiver/radio initialization and remaining shared protocol code still need review.
+
 ### 2026-11-15 — Readability audit: Wi-Fi factory identity
 - Named eFuse register fields, physical/logical sizes, compressed block layout, identity signature and MAC location. Explained skipped words and the upper-half timeout diagnostic.
 - Managed Wi-Fi release build passes. An ignored host harness compared actual old/new identity methods on six synthetic cases: valid data, bad signature, multicast MAC, truncated record stream and both unsupported chip flags. Results and setup writes match.

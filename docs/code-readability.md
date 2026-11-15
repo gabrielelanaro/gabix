@@ -36,6 +36,7 @@ will be checked alongside the implementation they exercise.
   - [x] Adapter key-table commands/layout, security enable fields and station-rate registration
   - [x] I/Q calibration result fields, consistency policy and correction selection; reference table contract
   - [x] Factory identity/eFuse decoding and read-completion polling
+  - [x] Packet RAM page links, queue reservations, boundaries and page sizes
   - [ ] Remaining radio initialization and shared frame/security fields
 - [ ] Pi USB controller, hub enumeration, Ethernet, and RNDIS
   - [x] LAN9512 register transport, PHY access and SMSC frame headers
@@ -412,3 +413,20 @@ old/new identity methods with synthetic eFuse bytes. Six cases cover a valid
 identity, invalid signature, multicast MAC, a truncated record stream, and each
 unsupported chip flag. Decoded results/errors and setup writes match. The byte
 reader was stubbed, so USB/read-completion timing still needs physical testing.
+
+## Wi-Fi packet RAM
+
+Named linked-list command fields, page boundaries and end marker, queue page
+reservations, queue mapping, receive byte boundary and page-size encoding.
+Preserved the two-OUT-pipe requirement and every write value/order. The ring
+comment describes its links without assigning an unsupported receive-only role.
+Reference: OpenBSD [if_urtwn.c](https://github.com/openbsd/src/blob/master/sys/dev/usb/if_urtwn.c)
+`urtwn_llt_init` and DMA initialization, plus
+[r92creg.h](https://github.com/openbsd/src/blob/master/sys/dev/ic/r92creg.h)
+LLT_INIT, RQPN, TRXDMA_CTRL and PBP fields.
+
+Managed Wi-Fi release build passes. An ignored host harness compiled the actual
+old/new initialization methods with a recording transport. One/two/three OUT
+endpoints combined with idle/stuck-busy replies gave six identical results and
+traces, including the complete 256-page list setup and bounded timeout path.
+Actual adapter page handling still requires physical validation.

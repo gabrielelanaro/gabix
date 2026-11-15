@@ -172,6 +172,41 @@ mod fw {
     pub const MAILBOX_POLL_US: u32 = 10;
 }
 
+// Packet RAM is addressed in pages. LLT is the linked-list table that stores
+// the next-page index; queue reservations and byte boundaries use other registers.
+mod packet_memory {
+    pub const LINK_COMMAND: u16 = 0x01e0;
+    pub const LINK_WRITE: u32 = 1 << 30;
+    pub const LINK_OPERATION_MASK: u32 = 3 << 30;
+    pub const LINK_PAGE_SHIFT: u32 = 8;
+    pub const PAGE_COUNT: u32 = 256;
+    pub const LAST_TRANSMIT_PAGE: u32 = 248;
+    pub const FIRST_RING_PAGE: u32 = 249;
+    pub const LAST_RING_PAGE: u32 = PAGE_COUNT - 1;
+    pub const END_OF_LIST: u32 = 0xff;
+    pub const WRITE_ATTEMPTS: usize = 20;
+    pub const WRITE_POLL_US: u32 = 5;
+    pub const REQUIRED_OUT_PIPES: usize = 2;
+    pub const NORMAL_QUEUE_PAGES_REGISTER: u16 = 0x0214;
+    pub const QUEUE_PAGES_REGISTER: u16 = 0x0200;
+    pub const NORMAL_QUEUE_PAGES: u8 = 2;
+    pub const HIGH_QUEUE_PAGES: u32 = 12;
+    pub const SHARED_QUEUE_PAGES: u32 = 234;
+    pub const SHARED_PAGES_SHIFT: u32 = 16;
+    pub const LOAD_QUEUE_PAGES: u32 = 1 << 31;
+    // Beacon, management, loopback, TX FIFO and TX DMA boundary registers.
+    pub const BOUNDARY_REGISTERS: [u16; 5] = [0x0424, 0x0425, 0x045d, 0x0114, 0x0209];
+    pub const DMA_QUEUE_MAP: u16 = 0x010c;
+    pub const QUEUE_MAP_MASK: u16 = 0xfff0;
+    // Voice/video/management/high -> high pipe; best-effort/background -> normal.
+    pub const HIGH_NORMAL_QUEUE_MAP: u16 = 0xfaf0;
+    pub const RECEIVE_FIFO_BOUNDARY: u16 = 0x0116;
+    pub const RECEIVE_LAST_BYTE: u16 = 0x27ff;
+    pub const PAGE_SIZE_REGISTER: u16 = 0x0104;
+    pub const PAGE_SIZE_128_BYTES: u8 = 1;
+    pub const TRANSMIT_PAGE_SIZE_SHIFT: u32 = 4;
+}
+
 // Factory eFuse storage is a compressed stream of optional two-byte words.
 // Decoding it produces the logical ROM map used by identity/calibration code.
 mod efuse {
@@ -717,25 +752,28 @@ impl Rtl8188cu {
 
     /// Partition the adapter's packet RAM and connect it to the USB queues.
     pub fn initialize_packet_memory(&mut self) -> Result<(), Error> {
+        use packet_memory::*;
+
         self.phase = "packet memory";
-        if self.endpoints.output_count != 2 {
+        if self.endpoints.output_count != REQUIRED_OUT_PIPES {
             return Err(Error::Configuration);
         }
-        // Pages 0..248 form the transmit list; 249..255 form the receive ring.
-        for page in 0u32..256 {
+        // Pages 0..248 end with an end-of-list marker; 249..255 form a ring.
+        // The marker value 255 and page index 255 have distinct roles.
+        for page in 0u32..PAGE_COUNT {
             let next = match page {
-                248 => 255,
-                255 => 249,
+                LAST_TRANSMIT_PAGE => END_OF_LIST,
+                LAST_RING_PAGE => FIRST_RING_PAGE,
                 _ => page + 1,
             };
-            self.write32(0x01e0, (1 << 30) | (page << 8) | next)?;
+            self.write32(LINK_COMMAND, LINK_WRITE | (page << LINK_PAGE_SHIFT) | next)?;
             let mut done = false;
-            for _ in 0..20 {
-                if self.read32(0x01e0)? & 0xc0000000 == 0 {
+            for _ in 0..WRITE_ATTEMPTS {
+                if self.read32(LINK_COMMAND)? & LINK_OPERATION_MASK == 0 {
                     done = true;
                     break;
                 }
-                delay_us(5);
+                delay_us(WRITE_POLL_US);
             }
             if !done {
                 return Err(Error::Configuration);
@@ -743,14 +781,20 @@ impl Rtl8188cu {
         }
         // This dongle has high/normal priority bulk-OUT pipes. Reserve 12/2
         // pages for them and share the remaining 234 transmit pages.
-        self.write8(0x0214, 2)?;
-        self.write32(0x0200, 0x80000000 | (234 << 16) | 12)?;
-        for register in [0x0424, 0x0425, 0x045d, 0x0114, 0x0209] {
-            self.write8(register, 249)?;
+        self.write8(NORMAL_QUEUE_PAGES_REGISTER, NORMAL_QUEUE_PAGES)?;
+        self.write32(
+            QUEUE_PAGES_REGISTER,
+            LOAD_QUEUE_PAGES | (SHARED_QUEUE_PAGES << SHARED_PAGES_SHIFT) | HIGH_QUEUE_PAGES,
+        )?;
+        for register in BOUNDARY_REGISTERS {
+            self.write8(register, FIRST_RING_PAGE as u8)?;
         }
-        self.update16(0x010c, 0xfff0, 0xfaf0)?;
-        self.write16(0x0116, 0x27ff)?;
-        self.write8(0x0104, 0x11)
+        self.update16(DMA_QUEUE_MAP, QUEUE_MAP_MASK, HIGH_NORMAL_QUEUE_MAP)?;
+        self.write16(RECEIVE_FIFO_BOUNDARY, RECEIVE_LAST_BYTE)?;
+        self.write8(
+            PAGE_SIZE_REGISTER,
+            PAGE_SIZE_128_BYTES | (PAGE_SIZE_128_BYTES << TRANSMIT_PAGE_SIZE_SHIFT),
+        )
     }
 
     /// Initialize one-chain baseband/RF for passive reception on 2.4 GHz.
