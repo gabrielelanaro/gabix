@@ -35,7 +35,8 @@ will be checked alongside the implementation they exercise.
   - [ ] Packet descriptors, calibration, remaining frame/security fields
 - [ ] Pi USB controller, hub enumeration, Ethernet, and RNDIS
   - [x] LAN9512 register transport, PHY access and SMSC frame headers
-  - [ ] USB controller/hubs, Ethernet selection, RNDIS
+  - [x] Ethernet selection and QEMU RNDIS setup/frame fields
+  - [ ] USB controller/hubs
 - [ ] Pi SD controller, mailbox, timer, reset, and hardware random generator
   - [x] Timer: source rates, interrupt routing/acknowledgement, rollover-safe uptime read
   - [x] Random generator: enable/warm-up, FIFO word count, whole-nonce timeout
@@ -251,3 +252,15 @@ Reference: [Linux smsc95xx.h](https://github.com/torvalds/linux/blob/master/driv
 Existing host frame tests pass (3), and the managed Pi release build passes.
 QEMU's RNDIS USB network device does not exercise LAN9512 register behavior;
 physical Ethernet validation remains pending reconnection.
+
+## QEMU RNDIS adapter
+
+Named initialization/filter fields, request IDs, USB class requests, packet
+filter bits, fixed QEMU identity and frame data offsets. Comments explain the
+relative offset bases and control-versus-bulk transport. Ethernet selection
+names supported IDs and documents unavailable link status. Register calls,
+packet bytes and validation behavior are preserved.
+References: Microsoft [RNDIS packet message](https://learn.microsoft.com/en-us/windows-hardware/drivers/network/remote-ndis-packet-msg) and [Remote NDIS device control](https://learn.microsoft.com/en-us/windows-hardware/drivers/network/remote-ndis-device-control).
+Existing Pi QEMU UDP echo test passes through RNDIS initialization and bidirectional
+bulk frames. This adapter remains specific to the configured QEMU device: fixed
+MAC, no link query, and no generic device/response negotiation added.

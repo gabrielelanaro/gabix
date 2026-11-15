@@ -1,8 +1,15 @@
+//! Select one USB network adapter and expose the shared Ethernet-frame API.
+//! The supported USB identities are explicit; this is not generic class probing.
+
 use super::lan9512::Lan9512Ethernet;
 use super::rndis::RndisEthernet;
 use super::usb::{Dwc2, UsbDevice};
 use gabix_kernel::device::{EthernetFrame, FrameDevice};
 use gabix_kernel::net::smsc95xx::is_lan9512;
+
+#[cfg(feature = "pi-wifi")]
+const RTL8188CU_USB_ID: (u16, u16) = (0x0bda, 0x8176);
+const QEMU_RNDIS_USB_ID: (u16, u16) = (0x0525, 0xa4a2);
 
 pub enum UsbEthernet {
     Lan9512(Lan9512Ethernet),
@@ -14,7 +21,7 @@ pub enum UsbEthernet {
 impl UsbEthernet {
     pub unsafe fn configure(host: Dwc2, device: UsbDevice) -> Option<Self> {
         #[cfg(feature = "pi-wifi")]
-        if (device.vendor_id, device.product_id) == (0x0bda, 0x8176) {
+        if (device.vendor_id, device.product_id) == RTL8188CU_USB_ID {
             return super::wifi_ethernet::WifiEthernet::configure(
                 host,
                 device,
@@ -27,13 +34,14 @@ impl UsbEthernet {
         }
         if is_lan9512(device.vendor_id, device.product_id) {
             Lan9512Ethernet::configure(host, device).map(Self::Lan9512)
-        } else if device.vendor_id == 0x0525 && device.product_id == 0xa4a2 {
+        } else if (device.vendor_id, device.product_id) == QEMU_RNDIS_USB_ID {
             RndisEthernet::configure(host, device).map(Self::Rndis)
         } else {
             None
         }
     }
 
+    /// None means link status is unavailable; RNDIS has no status query here.
     pub unsafe fn link_up(&mut self) -> Option<bool> {
         match self {
             Self::Lan9512(device) => device.link_up(),

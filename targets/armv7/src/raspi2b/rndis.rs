@@ -1,3 +1,8 @@
+//! Remote NDIS (Network Driver Interface Specification) over USB for QEMU.
+//! Control requests initialize the adapter; bulk transfers carry a 44-byte
+//! RNDIS packet header followed by Ethernet bytes. Integers are little-endian.
+//! This adapter uses the fixed MAC configured by the QEMU test scripts.
+
 use super::usb::{Dwc2, UsbDevice};
 use gabix_kernel::device::{EthernetFrame, FrameDevice, MAX_ETHERNET_FRAME_LEN};
 
@@ -10,7 +15,43 @@ const RNDIS_INITIALIZE_COMPLETE: u32 = 0x8000_0002;
 const RNDIS_SET_COMPLETE: u32 = 0x8000_0005;
 const RNDIS_STATUS_SUCCESS: u32 = 0;
 const OID_GEN_CURRENT_PACKET_FILTER: u32 = 0x0001_010e;
-const PACKET_FILTER: u32 = 1 | 2 | 8;
+const FILTER_DIRECTED: u32 = 1;
+const FILTER_MULTICAST: u32 = 2;
+const FILTER_BROADCAST: u32 = 8;
+const PACKET_FILTER: u32 = FILTER_DIRECTED | FILTER_MULTICAST | FILTER_BROADCAST;
+const INITIALIZE_BYTES: usize = 24;
+const SET_FILTER_BYTES: usize = 32;
+const COMPLETION_PREFIX_BYTES: usize = 16;
+const RESPONSE_BUFFER_BYTES: usize = 256;
+const ADVERTISED_MAX_TRANSFER: u32 = 2048;
+const INITIALIZE_REQUEST_ID: u32 = 1;
+const FILTER_REQUEST_ID: u32 = 2;
+const RNDIS_MAJOR_VERSION: u32 = 1;
+const RNDIS_MINOR_VERSION: u32 = 0;
+const MIN_ETHERNET_BYTES_WITHOUT_FCS: usize = 60;
+const QEMU_TEST_MAC: [u8; 6] = [0x52, 0x54, 0x00, 0x12, 0x34, 0x56];
+const USB_CLASS_INTERFACE_WRITE: u8 = 0x21;
+const USB_CLASS_INTERFACE_READ: u8 = 0xa1;
+const SEND_ENCAPSULATED_COMMAND: u8 = 0;
+const GET_ENCAPSULATED_RESPONSE: u8 = 1;
+const CONTROL_INTERFACE: u16 = 0;
+const UNUSED_CONTROL_VALUE: u16 = 0;
+
+mod field {
+    pub const MESSAGE_TYPE: usize = 0;
+    pub const MESSAGE_LENGTH: usize = 4;
+    pub const REQUEST_ID: usize = 8;
+    pub const COMPLETION_STATUS: usize = 12;
+    pub const MAJOR_VERSION: usize = 12;
+    pub const MINOR_VERSION: usize = 16;
+    pub const MAX_TRANSFER: usize = 20;
+    pub const OID: usize = 12;
+    pub const INFO_LENGTH: usize = 16;
+    pub const INFO_OFFSET: usize = 20;
+    pub const FILTER_VALUE: usize = 28;
+    pub const DATA_OFFSET: usize = 8;
+    pub const DATA_LENGTH: usize = 12;
+}
 const RNDIS_HEADER_LEN: usize = 44;
 
 pub struct RndisEthernet {
@@ -28,36 +69,54 @@ impl RndisEthernet {
     pub unsafe fn configure(mut host: Dwc2, device: UsbDevice) -> Option<Self> {
         let endpoints = host.configure_bulk_device(device)?;
 
-        let mut initialize = [0u8; 24];
-        put_u32(&mut initialize, 0, RNDIS_INITIALIZE);
-        put_u32(&mut initialize, 4, 24);
-        put_u32(&mut initialize, 8, 1);
-        put_u32(&mut initialize, 12, 1);
-        put_u32(&mut initialize, 16, 0);
-        put_u32(&mut initialize, 20, 2048);
+        let mut initialize = [0u8; INITIALIZE_BYTES];
+        put_u32(&mut initialize, field::MESSAGE_TYPE, RNDIS_INITIALIZE);
+        put_u32(
+            &mut initialize,
+            field::MESSAGE_LENGTH,
+            INITIALIZE_BYTES as u32,
+        );
+        put_u32(&mut initialize, field::REQUEST_ID, INITIALIZE_REQUEST_ID);
+        put_u32(&mut initialize, field::MAJOR_VERSION, RNDIS_MAJOR_VERSION);
+        put_u32(&mut initialize, field::MINOR_VERSION, RNDIS_MINOR_VERSION);
+        put_u32(
+            &mut initialize,
+            field::MAX_TRANSFER,
+            ADVERTISED_MAX_TRANSFER,
+        );
         send_command(&mut host, device, &initialize)?;
-        let mut response = [0u8; 256];
+        let mut response = [0u8; RESPONSE_BUFFER_BYTES];
         let response_len = receive_response(&mut host, device, &mut response)?;
-        if response_len < 16
-            || get_u32(&response, 0) != RNDIS_INITIALIZE_COMPLETE
-            || get_u32(&response, 12) != RNDIS_STATUS_SUCCESS
+        if response_len < COMPLETION_PREFIX_BYTES
+            || get_u32(&response, field::MESSAGE_TYPE) != RNDIS_INITIALIZE_COMPLETE
+            || get_u32(&response, field::COMPLETION_STATUS) != RNDIS_STATUS_SUCCESS
         {
             return None;
         }
 
-        let mut set_filter = [0u8; 32];
-        put_u32(&mut set_filter, 0, RNDIS_SET);
-        put_u32(&mut set_filter, 4, 32);
-        put_u32(&mut set_filter, 8, 2);
-        put_u32(&mut set_filter, 12, OID_GEN_CURRENT_PACKET_FILTER);
-        put_u32(&mut set_filter, 16, 4);
-        put_u32(&mut set_filter, 20, 20);
-        put_u32(&mut set_filter, 28, PACKET_FILTER);
+        // Accept directed, multicast and broadcast traffic. The information
+        // offset is measured from RequestId, eight bytes into the message.
+        let mut set_filter = [0u8; SET_FILTER_BYTES];
+        put_u32(&mut set_filter, field::MESSAGE_TYPE, RNDIS_SET);
+        put_u32(
+            &mut set_filter,
+            field::MESSAGE_LENGTH,
+            SET_FILTER_BYTES as u32,
+        );
+        put_u32(&mut set_filter, field::REQUEST_ID, FILTER_REQUEST_ID);
+        put_u32(&mut set_filter, field::OID, OID_GEN_CURRENT_PACKET_FILTER);
+        put_u32(&mut set_filter, field::INFO_LENGTH, 4);
+        put_u32(
+            &mut set_filter,
+            field::INFO_OFFSET,
+            (field::FILTER_VALUE - field::REQUEST_ID) as u32,
+        );
+        put_u32(&mut set_filter, field::FILTER_VALUE, PACKET_FILTER);
         send_command(&mut host, device, &set_filter)?;
         let response_len = receive_response(&mut host, device, &mut response)?;
-        if response_len < 16
-            || get_u32(&response, 0) != RNDIS_SET_COMPLETE
-            || get_u32(&response, 12) != RNDIS_STATUS_SUCCESS
+        if response_len < COMPLETION_PREFIX_BYTES
+            || get_u32(&response, field::MESSAGE_TYPE) != RNDIS_SET_COMPLETE
+            || get_u32(&response, field::COMPLETION_STATUS) != RNDIS_STATUS_SUCCESS
         {
             return None;
         }
@@ -68,13 +127,14 @@ impl RndisEthernet {
             bulk_in_endpoint: endpoints.input,
             bulk_out_endpoint: endpoints.output,
             bulk_max_packet: endpoints.max_packet_size,
-            mac: [0x52, 0x54, 0x00, 0x12, 0x34, 0x56],
+            mac: QEMU_TEST_MAC,
             tx_pid: DATA0,
             rx_pid: DATA0,
         })
     }
 
     fn update_pid(pid: &mut u32, length: usize, packet_size: usize) {
+        // Each USB packet toggles DATA0/DATA1, including a zero-length packet.
         let packets = length.max(1).div_ceil(packet_size);
         if packets & 1 != 0 {
             *pid = if *pid == DATA0 { DATA1 } else { DATA0 };
@@ -93,13 +153,17 @@ impl FrameDevice for RndisEthernet {
         if frame.len() > MAX_ETHERNET_FRAME_LEN {
             return false;
         }
-        let frame_len = frame.len().max(60);
+        let frame_len = frame.len().max(MIN_ETHERNET_BYTES_WITHOUT_FCS);
         let message_len = RNDIS_HEADER_LEN + frame_len;
         let mut message = [0u8; RNDIS_HEADER_LEN + MAX_ETHERNET_FRAME_LEN];
-        put_u32(&mut message, 0, RNDIS_PACKET);
-        put_u32(&mut message, 4, message_len as u32);
-        put_u32(&mut message, 8, (RNDIS_HEADER_LEN - 8) as u32);
-        put_u32(&mut message, 12, frame_len as u32);
+        put_u32(&mut message, field::MESSAGE_TYPE, RNDIS_PACKET);
+        put_u32(&mut message, field::MESSAGE_LENGTH, message_len as u32);
+        put_u32(
+            &mut message,
+            field::DATA_OFFSET,
+            (RNDIS_HEADER_LEN - field::DATA_OFFSET) as u32,
+        );
+        put_u32(&mut message, field::DATA_LENGTH, frame_len as u32);
         message[RNDIS_HEADER_LEN..RNDIS_HEADER_LEN + frame.len()].copy_from_slice(frame);
         unsafe {
             if self
@@ -132,12 +196,14 @@ impl FrameDevice for RndisEthernet {
                 &mut message,
             )?
         };
-        if message_len < RNDIS_HEADER_LEN || get_u32(&message, 0) != RNDIS_PACKET {
+        if message_len < RNDIS_HEADER_LEN || get_u32(&message, field::MESSAGE_TYPE) != RNDIS_PACKET
+        {
             return None;
         }
         Self::update_pid(&mut self.rx_pid, message_len, self.bulk_max_packet as usize);
-        let data_offset = get_u32(&message, 8) as usize + 8;
-        let data_len = get_u32(&message, 12) as usize;
+        // DataOffset is relative to its own field, not the message beginning.
+        let data_offset = get_u32(&message, field::DATA_OFFSET) as usize + field::DATA_OFFSET;
+        let data_len = get_u32(&message, field::DATA_LENGTH) as usize;
         let data_end = data_offset.checked_add(data_len)?;
         if data_len == 0
             || data_len > MAX_ETHERNET_FRAME_LEN
@@ -151,7 +217,14 @@ impl FrameDevice for RndisEthernet {
 }
 
 unsafe fn send_command(host: &mut Dwc2, device: UsbDevice, command: &[u8]) -> Option<()> {
-    host.control_write(device, 0x21, 0, 0, 0, command)
+    host.control_write(
+        device,
+        USB_CLASS_INTERFACE_WRITE,
+        SEND_ENCAPSULATED_COMMAND,
+        UNUSED_CONTROL_VALUE,
+        CONTROL_INTERFACE,
+        command,
+    )
 }
 
 unsafe fn receive_response(
@@ -159,7 +232,14 @@ unsafe fn receive_response(
     device: UsbDevice,
     response: &mut [u8],
 ) -> Option<usize> {
-    host.control_read(device, 0xa1, 1, 0, 0, response)
+    host.control_read(
+        device,
+        USB_CLASS_INTERFACE_READ,
+        GET_ENCAPSULATED_RESPONSE,
+        UNUSED_CONTROL_VALUE,
+        CONTROL_INTERFACE,
+        response,
+    )
 }
 
 fn put_u32(bytes: &mut [u8], offset: usize, value: u32) {

@@ -563,6 +563,10 @@ A milestone is a "demo-able" checkpoint. Worth a commit + tag + log entry.
 
 ## Progress Log
 
+### 2026-11-15 — Readability audit: RNDIS and Ethernet selection
+- Named control/header fields, USB requests, packet filters and fixed adapter identities. Explained RNDIS's relative data offsets and unsupported link-status reporting.
+- Existing Pi QEMU UDP echo test passes through initialization and frame transfer. Preserved wire bytes and existing QEMU-specific assumptions; USB controller/hub review remains pending.
+
 ### 2026-11-15 — Readability audit: LAN9512 USB Ethernet
 - Explained control-register versus bulk-frame transfers; named PHY packing, vendor request fields, RX length shift and supported device IDs.
 - Documented command words, FCS removal, reset/MAC initialization, packet-toggle accounting and polling units without changing operations.
