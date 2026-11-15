@@ -1574,3 +1574,21 @@ The current helper panics if execution continues after its port write.
 Offline x86 cargo check with qemu-exit passes. These comment and constant-name
 changes preserve behavior; behavioral tests were not repeated. UART smoke and
 platform exit helpers remain to be reviewed before the source inventory closes.
+
+### Standalone UART smoke and ARM platform exit
+
+`uart_smoke.S` names GPIO function fields, PL011 register offsets/control bits,
+baud divisors and busy-loop counts. Comments state the assumed 3 MHz UART clock,
+FIFO-disabled line control and uncalibrated heartbeat pacing. Secondary-core
+filtering is described conditionally on those cores reaching the payload.
+Values match the previously reviewed boot/PL011 references; instruction order
+and UART strings remain unchanged.
+
+`platform.rs` names the semihosting operation, exit reason/status and A32 SVC
+immediate already used by the syscall exit path. Its virt reset adapter exits
+QEMU; starting another VM run belongs to the host. Pi reset still delegates to
+the power-manager watchdog implementation.
+
+Standalone UART smoke and ARM virt builds pass. These checks establish assembly
+and build compatibility; no physical UART run or new semihosting runtime test
+was performed. Remaining source inventory and learning-reference review continue.

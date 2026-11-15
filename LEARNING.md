@@ -563,6 +563,11 @@ A milestone is a "demo-able" checkpoint. Worth a commit + tag + log entry.
 
 ## Progress Log
 
+### 2026-11-15 — Readability audit: UART smoke/platform exit
+- Named standalone GPIO/UART setup and heartbeat counts; documented clock assumptions and FIFO configuration.
+- Named ARM semihosting exit fields and clarified that virt reset exits the emulator.
+- UART smoke and virt builds pass. Physical checks and remaining source/reference inventory remain pending.
+
 ### 2026-11-15 — Readability audit: x86 console contracts
 - Corrected serial delivery, VGA mode/font and QEMU exit-status claims; named the VGA address and replacement glyph and documented separate output locks.
 - Offline x86 cargo check passes. Behavior is unchanged; no redundant behavioral tests were added.
