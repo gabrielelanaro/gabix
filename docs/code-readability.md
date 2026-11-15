@@ -78,6 +78,7 @@ will be checked alongside the implementation they exercise.
   - [x] SD transfer request fields and staging-header layout
   - [x] SD upload chunk/retry state and pending-kernel publication
   - [x] Management status payload field names and snapshot semantics
+  - [x] Management authentication envelope and replay/cache contracts
 - [ ] ARM VirtIO adapters and hardware probes
   - [x] QEMU VirtIO network: queue roles, feature words, packet metadata and buffer reuse
   - [x] QEMU VirtIO block: feature negotiation, descriptor roles, memory ordering and polling contract
@@ -1338,3 +1339,23 @@ a validity indicator. This limitation is preserved and made explicit.
 Managed and plain SD-transfer builds pass, covering both authentication feature
 branches. No physical status request was sent while the Pi is disconnected.
 Authentication, journal behavior and remaining audit areas stay open.
+
+### Management authentication
+
+`management_auth.rs` names envelope ranges, prefix/tag lengths, command bounds
+and request/response domain prefixes. These match the host uploader's `<4sQQ`
+envelope and HMAC input construction in `scripts/pi2-sd-transfer.py`. The named
+challenge opcode is also reused in receiver dispatch. Bytes, verification order
+and state transitions are unchanged.
+
+Contracts explain that Fresh consumes the next sequence before command execution;
+only the latest tag/reply is retained and all peers share the sequence counter.
+A verified command for which no reply is sealed cannot be replayed at the same
+sequence. seal/reply depend on caller buffer bounds and panic when exceeded.
+Cross-reset replay resistance depends on a persistent boot number that is not
+reused; restoring an older disk state can violate that assumption.
+
+The managed kernel build passes. Existing physical authentication/replay tests
+were not run while the Pi is disconnected. No private key bytes were printed or
+committed; this readability review does not establish new cryptographic assurance.
+Journal persistence and remaining audit work stay open.

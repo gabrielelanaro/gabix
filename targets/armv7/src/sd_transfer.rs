@@ -227,7 +227,7 @@ impl Receiver {
             // counter. Every diagnostic/read/write/reboot command requires HMAC.
             if packet.len() == 20
                 && &packet[..4] == WIRE_MAGIC
-                && word(packet, wire_field::OPERATION) == 10
+                && word(packet, wire_field::OPERATION) == AUTH_CHALLENGE
             {
                 reply[..20].copy_from_slice(packet);
                 reply[4..8].copy_from_slice(&(AUTH_CHALLENGE | REPLY_OPERATION_BIT).to_le_bytes());

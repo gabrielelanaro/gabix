@@ -563,6 +563,11 @@ A milestone is a "demo-able" checkpoint. Worth a commit + tag + log entry.
 
 ## Progress Log
 
+### 2026-11-15 — Readability audit: management authentication
+- Named signed-envelope fields, lengths and direction prefixes. Explained sequence consumption, one-reply cache, shared-peer counter and persistent boot-number dependency.
+- Managed kernel build passes with unchanged bytes/behavior. Private key material was neither printed nor committed; physical authentication tests remain pending.
+- Journal persistence, memory assumptions and remaining audit areas stay open.
+
 ### 2026-11-15 — Readability audit: management status fields
 - Named status payload offsets/ranges and lengths, matched to the host decoder. Documented cached-network versus fresh-storage snapshots and stale boot fields after failed SD reads.
 - Managed and plain transfer builds pass; wire values remain unchanged. No physical request was sent.
