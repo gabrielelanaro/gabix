@@ -70,6 +70,7 @@ will be checked alongside the implementation they exercise.
   - [ ] Memory ownership/cache assumptions
 - [ ] ARM loader, SD update/install, authenticated management, and diagnostics
   - [x] Loader/kernel RAM handoff fields and trial-confirmation contracts
+  - [x] Loader SD selection, streaming read and UART recovery contracts
 - [ ] ARM VirtIO adapters and hardware probes
   - [x] QEMU VirtIO network: queue roles, feature words, packet metadata and buffer reuse
   - [x] QEMU VirtIO block: feature negotiation, descriptor roles, memory ordering and polling contract
@@ -1184,3 +1185,24 @@ Both SD loader and managed kernel builds pass. All three existing host boot-reco
 tests pass (record validation, fallback ordering, partition bounds). Those tests
 cover persistent record behavior, not physical RAM handoff or SD persistence.
 No new tests or device writes were added; physical validation is pending.
+
+### SD loader selection and recovery
+
+`targets/armv7/src/pi2_loader.rs` names the UART override window, boot watchdog,
+sector size and watchdog refresh byte interval. The source now explains that
+attempt state is persisted before loading, image read/CRC failure selects another
+copy, and record I/O failure returns to UART immediately. Streaming copies bytes
+into RAM before the final CRC decision; execution waits for a matching checksum.
+The running kernel performs confirmation later. Values and control flow remain
+unchanged.
+
+Raw destination writes rely on their caller's bounds. A returning kernel is
+treated as failed, but that continuation requires the loader's stack/mapping
+environment to remain usable. UART waits are polling loops; write/flush have no
+local timeout, reads discard error flags, and the timed read gives arriving data
+priority when checking its deadline.
+
+The existing firmware-address test passes for the UART loader; the SD loader
+build passes separately. No physical SD boot or recovery was exercised in this
+slice. Loader startup assembly and remaining installer/management paths remain
+open, along with disconnected-Pi validation.

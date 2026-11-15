@@ -563,6 +563,11 @@ A milestone is a "demo-able" checkpoint. Worth a commit + tag + log entry.
 
 ## Progress Log
 
+### 2026-11-15 — Readability audit: SD boot selection
+- Named UART override/watchdog timings and SD transfer units. Clarified record persistence, image-failure fallback, UART recovery, streaming CRC and loader-return assumptions.
+- Existing UART-loader firmware-address test and SD-loader build pass. No device writes or physical boot tests were performed.
+- Loader startup assembly, installer/management and remaining memory review stay open; physical validation remains pending.
+
 ### 2026-11-15 — Readability audit: trial handoff and confirmation
 - Shared the existing RAM handoff field names between loader writer and kernel reader. Named trial watchdog duration and running-image address; clarified consume-once validation and confirmation failure semantics.
 - SD loader and managed kernel builds pass. Three existing host boot-record tests pass; these do not establish physical handoff/persistence correctness.

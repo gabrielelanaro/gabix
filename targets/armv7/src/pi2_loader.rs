@@ -41,6 +41,14 @@ const UART_BUSY: u32 = 1 << 3;
 const SYSTEM_TIMER_LOW: usize = 0x3f00_3004;
 const UPLOAD_TIMEOUT_MICROSECONDS: u32 = 5_000_000;
 const DEVELOPMENT_KERNEL_ADDRESS: usize = 0x0010_0000;
+#[cfg(feature = "pi-sd-loader")]
+const UART_OVERRIDE_WINDOW_MICROSECONDS: u32 = 2_000_000;
+#[cfg(feature = "pi-sd-loader")]
+const BOOT_WATCHDOG_SECONDS: u32 = 15;
+#[cfg(feature = "pi-sd-loader")]
+const SD_SECTOR_BYTES: u32 = 512;
+#[cfg(feature = "pi-sd-loader")]
+const WATCHDOG_REFRESH_BYTES: u32 = 32 * SD_SECTOR_BYTES;
 
 #[no_mangle]
 extern "C" fn pi2_loader_main() -> ! {
@@ -51,7 +59,7 @@ extern "C" fn pi2_loader_main() -> ! {
     #[cfg(feature = "pi-sd-loader")]
     {
         // Starting a UART upload within this window takes priority over SD boot.
-        if let Some(byte) = uart.read_with_timeout(2_000_000) {
+        if let Some(byte) = uart.read_with_timeout(UART_OVERRIDE_WINDOW_MICROSECONDS) {
             handle_event(&uart, receiver.push(byte));
         } else {
             try_sd_boot(&uart);
@@ -115,11 +123,14 @@ fn handle_event(uart: &Uart, event: UploadEvent) {
 }
 
 #[cfg(feature = "pi-sd-loader")]
+// Read/validate the partition and boot record, then try its selected copies.
+// Record I/O failure returns to UART immediately; an image read/CRC failure
+// advances to the next copy. Confirmation is done later by the running kernel.
 fn try_sd_boot(uart: &Uart) {
     use gabix_kernel::boot_record::{find_partition, update_crc, BootRecord};
     use gabix_kernel::device::WritableBlockDevice;
     use gabix_kernel::loader_protocol::MAX_KERNEL_SIZE;
-    reset::arm_deadman(15);
+    reset::arm_deadman(BOOT_WATCHDOG_SECONDS);
     let outcome = (|| unsafe {
         let mut card = sdhci::SdCard::initialize()?;
         let mbr = card.try_read_sector(0)?;
@@ -142,14 +153,16 @@ fn try_sd_boot(uart: &Uart) {
                 continue;
             }
             let start = partition_start + selected.offset_sectors;
+            // Stream sectors straight into the kernel destination. A bad CRC
+            // leaves those bytes in RAM, but execution is allowed only on a match.
             let loaded = (|| {
-                let mut crc = !0;
-                for offset in (0..selected.image_bytes).step_by(512) {
-                    if offset % (32 * 512) == 0 {
-                        reset::arm_deadman(15);
+                let mut crc = !0; // CRC32 initial state; complement after the final byte.
+                for offset in (0..selected.image_bytes).step_by(SD_SECTOR_BYTES as usize) {
+                    if offset % WATCHDOG_REFRESH_BYTES == 0 {
+                        reset::arm_deadman(BOOT_WATCHDOG_SECONDS);
                     }
-                    let sector = card.try_read_sector(start + offset as u64 / 512)?;
-                    let count = (selected.image_bytes - offset).min(512) as usize;
+                    let sector = card.try_read_sector(start + offset as u64 / SD_SECTOR_BYTES as u64)?;
+                    let count = (selected.image_bytes - offset).min(SD_SECTOR_BYTES) as usize;
                     crc = update_crc(crc, &sector[..count]);
                     for (i, &byte) in sector[..count].iter().enumerate() {
                         write_kernel_byte(offset + i as u32, byte);
@@ -169,11 +182,13 @@ fn try_sd_boot(uart: &Uart) {
             );
             uart.write(b"GABIX SD KERNEL VERIFIED\r\n");
             uart.flush();
+            // Discard cached instructions before branching to the verified image.
             let zero = 0u32;
             asm!("dsb sy", "mcr p15, 0, {zero}, c7, c5, 0", "isb", zero = in(reg) zero);
-            reset::arm_deadman(15);
+            reset::arm_deadman(BOOT_WATCHDOG_SECONDS);
             call_development_kernel();
-            // Returning is a failed boot too; try the remaining copy.
+            // Returning is treated as failure. This path assumes the callee
+            // preserved the loader's stack/mapping environment on return.
             clear_boot_handoff();
         }
         uart.write(b"GABIX SD COPIES EXHAUSTED\r\n");
@@ -208,6 +223,8 @@ fn clear_boot_handoff() {
     }
 }
 
+// The upload decoder or decoded boot record must bound offset before this call.
+// This raw store performs no independent destination-range check.
 fn write_kernel_byte(offset: u32, byte: u8) {
     unsafe {
         core::ptr::write_volatile(
@@ -263,6 +280,8 @@ impl Uart {
         }
     }
 
+    // Busy-poll the timer's wrapping microsecond counter. The small configured
+    // deadlines fit within one wrap; receive gets priority at the deadline.
     fn read_with_timeout(&self, timeout_microseconds: u32) -> Option<u8> {
         let started = timer_low();
         loop {
@@ -276,6 +295,7 @@ impl Uart {
         }
     }
 
+    // Consume the low data byte; UART receive-error flags are discarded.
     fn try_read(&self) -> Option<u8> {
         unsafe {
             if read32(UART_BASE + UART_FLAGS) & UART_RX_EMPTY != 0 {
@@ -286,6 +306,7 @@ impl Uart {
         }
     }
 
+    // Wait for FIFO space per byte, with no local timeout.
     fn write(&self, bytes: &[u8]) {
         for &byte in bytes {
             unsafe {
@@ -305,6 +326,7 @@ impl Uart {
         }
     }
 
+    // Wait for transmission to finish, with no local timeout.
     fn flush(&self) {
         unsafe {
             while read32(UART_BASE + UART_FLAGS) & UART_BUSY != 0 {
