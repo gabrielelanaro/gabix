@@ -142,9 +142,9 @@ impl WifiEthernet {
         if let Some(ap) = self.access_point {
             let mut frame = [0u8; wifi::MANAGEMENT_HEADER_BYTES + 2];
             frame[0] = wifi::DEAUTHENTICATION;
-            frame[4..10].copy_from_slice(&ap.address);
-            frame[10..16].copy_from_slice(&self.identity.mac);
-            frame[16..22].copy_from_slice(&ap.address);
+            frame[wifi::ADDRESS_1].copy_from_slice(&ap.address);
+            frame[wifi::ADDRESS_2].copy_from_slice(&self.identity.mac);
+            frame[wifi::ADDRESS_3].copy_from_slice(&ap.address);
             frame[24..26].copy_from_slice(&wifi::REASON_STATION_LEAVING.to_le_bytes());
             let _ = self.radio.transmit(&frame);
         }
@@ -349,9 +349,9 @@ impl WifiEthernet {
         if frame.len() >= wifi::MANAGEMENT_HEADER_BYTES + 2
             && matches!(frame[0], wifi::DISASSOCIATION | wifi::DEAUTHENTICATION)
             && frame[1] & wifi::DISTRIBUTION_DIRECTION_MASK == 0
-            && frame[4..10] == self.identity.mac
-            && frame[10..16] == ap.address
-            && frame[16..22] == ap.address
+            && frame[wifi::ADDRESS_1] == self.identity.mac
+            && frame[wifi::ADDRESS_2] == ap.address
+            && frame[wifi::ADDRESS_3] == ap.address
         {
             self.disconnect(u16::from_le_bytes([frame[24], frame[25]]));
             return Ok(None);

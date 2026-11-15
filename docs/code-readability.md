@@ -41,7 +41,8 @@ will be checked alongside the implementation they exercise.
   - [x] Station power groups, retry/contention settings and ACK diagnostic filter
   - [x] Receiver startup sequence, RF interface controls and scan filters
   - [x] Analog preset registers and reference USB-interference sequence
-  - [ ] Remaining shared frame/security fields and station-frame offsets
+  - [x] Management-frame address ranges shared with the station adapter
+  - [ ] Remaining shared encrypted-frame/security fields
 - [ ] Pi USB controller, hub enumeration, Ethernet, and RNDIS
   - [x] LAN9512 register transport, PHY access and SMSC frame headers
   - [x] Ethernet selection and QEMU RNDIS setup/frame fields
@@ -64,7 +65,8 @@ will be checked alongside the implementation they exercise.
 - [ ] Shared network parsers and state machines, including WPA2
   - [x] Ethernet, ARP, IPv4, ICMP, UDP, and checksum helpers: wire layouts, abbreviations, meaningful field values, and split-buffer checksum explanation
   - [x] DHCP options/header fields and ARM lease retry policy; stack dispatch contracts
-  - [ ] Remaining Wi-Fi/WPA2 fields
+  - [x] Beacon/association information elements, capability/rate encoding and EAPOL framing
+  - [ ] Remaining CCMP/WPA2 fields
 - [ ] Shared ELF, partitions, ext2, memory, loader protocol, and boot records
   - [x] Boot record: field layout, copy-selection state, persistence ownership and MBR bounds
   - [x] UART upload decoder: header fields, incremental storage events, checksum and timeout ownership
@@ -490,3 +492,18 @@ kept as an ordered preset sequence with their undocumented fields acknowledged.
 The managed build and the same receiver trace comparison pass after this change.
 References remain the OpenBSD initialization/register sources above; physical
 validation remains pending.
+
+## Shared Wi-Fi management frames
+
+Named address ranges, information-element IDs, capability/rate fields,
+authentication request/reply values and LLC/SNAP EAPOL header. Comments explain
+rate units, RSN suite contents and sequence/fragment packing. The station
+adapter uses the same address ranges. Reference: Linux
+[ieee80211.h](https://github.com/torvalds/linux/blob/master/include/linux/ieee80211.h)
+frame flags, address roles and management definitions.
+
+Both existing `tests/test_wifi_frames.rs` checks pass (beacon truncation and
+CCMP replay rejection). An ignored host comparison loads the actual old/new
+modules and checks authentication, association and EAPOL builders across 6,288
+buffer/SSID/capability/sequence/payload combinations. Return values and bytes
+match. Managed Wi-Fi release build passes; physical association remains pending.

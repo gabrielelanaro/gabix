@@ -563,6 +563,11 @@ A milestone is a "demo-able" checkpoint. Worth a commit + tag + log entry.
 
 ## Progress Log
 
+### 2026-11-15 — Readability audit: Wi-Fi management frames
+- Named shared address ranges, information-element IDs, capability bits, rate arrays, authentication payloads and EAPOL encapsulation. Explained rate units, RSN suite contents and sequence/fragment packing. Station management handling uses the shared address names.
+- Both existing Wi-Fi frame tests pass. An ignored old/new builder comparison passes 6,288 cases covering buffer limits, SSID lengths, capabilities, sequences and EAPOL sizes; output bytes and results match. Managed Wi-Fi release build passes.
+- CCMP/WPA2 fields and the broader architecture audit remain open. Physical association validation still awaits the Pi.
+
 ### 2026-11-15 — Readability audit: receiver preset registers
 - Named PLL, regulator, crystal and reset/enable registers and fields. Grouped the three USB-interference writes with the reference driver's explanation, leaving undocumented fields explicitly undecoded.
 - Managed Wi-Fi release build passes. Reused the ignored receiver trace comparison with the updated source; complete startup and unsupported-board rejection still match the pre-refactor baseline.
