@@ -563,6 +563,11 @@ A milestone is a "demo-able" checkpoint. Worth a commit + tag + log entry.
 
 ## Progress Log
 
+### 2026-11-15 — Readability audit: ARM task context
+- Connected task frame construction to the switch assembly through shared saved-word names; derive the user-register-bank offset from TaskContext's actual layout.
+- Explained stack-pointer replacement, first entry versus resumption, and IRQ masking. Preserved instructions and scheduling behavior.
+- Existing Pi QEMU process-isolation/fault-containment regression passes. Physical checks and remaining boot/exception/process/memory audit stay open.
+
 ### 2026-11-15 — Readability audit: ARM virt timer
 - Named the GIC acknowledgement mask, enable/priority values and timer rate; explained frequency-to-deadline conversion and acknowledgement ordering before scheduling.
 - Existing ARM virt QEMU timer test passes. Preserved register operations and kept the remaining scheduler/interrupt assembly audit open.

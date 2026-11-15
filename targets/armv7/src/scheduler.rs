@@ -1,12 +1,12 @@
 //! Single-core kernel tasks with explicit yields and timer preemption.
 //! Scheduler mutations and context switches run with IRQs masked.
-use crate::context::{switch, TaskContext};
+use crate::context::{switch, TaskContext, SAVED_REGISTER_WORDS, SAVED_RETURN_ADDRESS_WORD};
 use core::arch::asm;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 const MAX_TASKS: usize = 4;
 const STACK_SIZE: usize = 16 * 1024;
-const SAVED_WORDS: usize = 9; // r4..r11 followed by lr, matching context::switch.
+const CPSR_IRQ_MASK: u32 = 1 << 7; // I bit: one disables IRQ exceptions.
 
 #[derive(Clone, Copy, PartialEq)]
 enum TaskState {
@@ -46,7 +46,7 @@ static PREEMPTIONS: AtomicUsize = AtomicUsize::new(0);
 unsafe fn mask_irqs() -> bool {
     let status: u32;
     asm!("mrs {status}, cpsr", "cpsid i", status = out(reg) status);
-    status & (1 << 7) == 0
+    status & CPSR_IRQ_MASK == 0
 }
 
 unsafe fn restore_irqs(were_enabled: bool) {
@@ -83,12 +83,16 @@ pub unsafe fn spawn(entry: fn()) -> Option<usize> {
         }
         let stack = core::ptr::addr_of_mut!(STACKS).cast::<TaskStack>().add(id);
         let top = stack.cast::<u8>().add(STACK_SIZE).cast::<u32>();
-        let saved = top.sub(SAVED_WORDS);
-        for word in 0..SAVED_WORDS {
+        let saved = top.sub(SAVED_REGISTER_WORDS);
+        for word in 0..SAVED_REGISTER_WORDS {
             saved.add(word).write(0);
         }
-        // Restoring these nine words leaves SP 8-byte aligned at Rust entry.
-        saved.add(8).write(task_entry as *const () as u32);
+        // Build the frame that context::switch will pop. Its saved lr starts
+        // a fresh task at task_entry; later switches resume a suspended call.
+        // Popping all nine words restores the eight-byte-aligned stack top.
+        saved
+            .add(SAVED_RETURN_ADDRESS_WORD)
+            .write(task_entry as *const () as u32);
         (*task).context.sp = saved as u32;
         (*task).entry = Some(entry);
         (*task).state = TaskState::Ready;

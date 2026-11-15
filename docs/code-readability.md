@@ -40,6 +40,8 @@ will be checked alongside the implementation they exercise.
   - [x] Mailbox: request layout, power flags, reply fields, RAM/cache ownership
   - [ ] SD, reset
 - [ ] ARM boot, page tables, interrupts, scheduling, processes, and syscalls
+  - [x] Kernel task context switch and scheduler frame creation: named saved-word layout, user-bank offset and IRQ mask
+  - [ ] Boot/exception assembly, process operations, memory and syscalls
 - [ ] ARM loader, SD update/install, authenticated management, and diagnostics
 - [ ] ARM VirtIO adapters and hardware probes
   - [x] QEMU virt timer/GIC: named interrupt fields, counter interval and acknowledgement sequence
@@ -188,3 +190,14 @@ order and values are unchanged. The existing ARM virt QEMU timer test passes.
 Reference: [ARM GIC Architecture Specification IHI 0048B](https://documentation-service.arm.com/static/5f8ff21df86e16515cdbfafe), GICC_IAR and GICC_EOIR.
 This review covers the virt timer adapter; scheduler context-switch assembly
 and the remaining interrupt entry path are still pending review.
+
+## ARM task context switch
+
+`context.rs` now documents how the task stack, saved return address and user
+register bank participate in a switch. The assembly user-bank offset comes from
+the actual TaskContext layout. Scheduler frame construction shares named word
+indices with the switch module and explains the first return into task_entry.
+The IRQ mask has its CPSR bit name; scheduling behavior is unchanged.
+Reference: [Arm AAPCS32](https://github.com/ARM-software/abi-aa/blob/main/aapcs32/aapcs32.rst), core registers and stack alignment; interrupt-frame ordering is visible in `targets/armv7/src/boot.S` at `.Lirq`.
+Existing Pi QEMU process-isolation regression passes, covering resumed user
+processes and fault containment. Physical confirmation remains pending.
