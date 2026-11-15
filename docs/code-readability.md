@@ -63,6 +63,7 @@ will be checked alongside the implementation they exercise.
   - [x] ARM memory control bits, table dimensions and range-helper contracts
   - [x] Fixed-process isolation probe ABI and fault-status checks
   - [x] ARM user-entry mode changes and bootstrap ELF-loader contracts
+  - [x] ARM syscall frame, dispatch, output bounds and exit paths
   - [ ] Boot/exception assembly, process operations, memory ownership/cache assumptions and syscalls
 - [ ] ARM loader, SD update/install, authenticated management, and diagnostics
 - [ ] ARM VirtIO adapters and hardware probes
@@ -1080,3 +1081,22 @@ stack and processor status, while other registers keep their current values.
 The existing QEMU userspace-write test passes through the flat-header and user
 entry path. ELF loading received comments only; this test does not establish
 malformed-ELF safety. Physical Pi checks remain pending.
+
+### ARM syscall adapter
+
+`targets/armv7/src/syscall.rs` names the syscall/result register indices, saved
+register count, getpid number, error value, stdout descriptor, output-size limit
+and semihosting exit fields. Write bounds reuse the identical process-address
+constants. The UserFrame comment matches boot.S .Lsvc's r0-r12/LR save order;
+SPSR remains separate. All values and dispatch decisions are preserved.
+
+Comments explain scheduled-process exit/getpid and reboot rejection, standalone
+exit through the Pi trampoline or QEMU semihosting, and synchronous UART output.
+The standalone exit ignores the requested status. Write checks address arithmetic
+but does not inspect mappings or recover from a read fault. These are existing
+limits. This review does not certify the exception assembly's full context-save
+or interrupt behavior, which remains separately open.
+
+Reference: [Arm semihosting specification, trap encoding and SYS_EXIT_EXTENDED](https://github.com/ARM-software/abi-aa/blob/main/semihosting/semihosting.rst).
+Existing QEMU userspace-write and process-isolation tests pass. The Pi hardware
+build also passes; physical execution is pending while the board is disconnected.

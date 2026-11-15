@@ -563,6 +563,11 @@ A milestone is a "demo-able" checkpoint. Worth a commit + tag + log entry.
 
 ## Progress Log
 
+### 2026-11-15 — Readability audit: ARM syscall adapter
+- Named register indices, getpid/error/output constants and semihosting exit fields. Documented the saved-frame layout, process versus standalone exit behavior and write-pointer validation limits.
+- Existing QEMU userspace-write and isolation tests pass; Pi hardware build passes. Numeric values and behavior are unchanged.
+- Exception assembly, process scheduling/ownership, remaining memory review and other audit areas stay open. Physical Pi execution remains pending.
+
 ### 2026-11-15 — Readability audit: ARM user entry
 - Named processor modes and the flat-image entry field; explained user stack setup, saved processor status and the final exception return instruction.
 - Documented bootstrap ELF-loader permission, entry validation, partial-failure and cache-synchronization limits without changing behavior.
