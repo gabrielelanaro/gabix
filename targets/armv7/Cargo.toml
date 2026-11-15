@@ -86,6 +86,7 @@ pi-network-repeated-receive-probe = []
 pi-network-no-irq-dev = ["pi-hardware"]
 pi-lifecycle = ["raspi2b"]
 pi-uart-user = ["raspi2b"]
+pi-sd-transfer = ["pi-hardware", "pi-uart-user"]
 
 [profile.dev]
 panic = "abort"

@@ -13,6 +13,10 @@ mod platform;
 #[cfg(feature = "raspi2b")]
 mod raspi2b;
 mod scheduler;
+#[cfg(feature = "pi-sd-transfer")]
+mod sd_transfer;
+#[cfg(feature = "pi-sd-transfer")]
+static mut PI_SD_TRANSFER: Option<sd_transfer::Receiver> = None;
 mod process;
 mod syscall;
 mod user;
@@ -118,6 +122,19 @@ extern "C" fn arm_kernel_entry() {
             write_line(&mut console, b"gabix raspi2b memory mapped");
         }
         allocator::init();
+        #[cfg(feature = "pi-sd-transfer")]
+        {
+            raspi2b::reset::arm_deadman(15);
+            let receiver = sd_transfer::Receiver::initialize();
+            let ready = receiver.is_some();
+            PI_SD_TRANSFER = receiver;
+            raspi2b::reset::stop_deadman();
+            if ready {
+                write_line(&mut console, b"gabix SD transfer region ready");
+            } else {
+                write_line(&mut console, b"gabix SD transfer unavailable: card or region check failed");
+            }
+        }
     }
 
     #[cfg(feature = "virt")]
@@ -389,6 +406,10 @@ pub fn poll_ethernet_and_reply(console: &mut Pl011, next_dhcp_discover_tick: &mu
                 *next_dhcp_discover_tick = current_tick + 100;
             }
             if let Some(frame) = network.receive() {
+                #[cfg(feature = "pi-sd-transfer")]
+                if let Some(receiver) = (&mut *core::ptr::addr_of_mut!(PI_SD_TRANSFER)).as_mut() {
+                    if session.handle_sd_transfer(network, frame.bytes(), receiver) { return; }
+                }
                 if matches!(session.handle_frame(network, frame.bytes()), NetworkEvent::Configured) {
                     write_line(console, b"gabix raspi2b dhcp configured");
                 }

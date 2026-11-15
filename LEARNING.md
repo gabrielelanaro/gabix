@@ -551,6 +551,12 @@ A milestone is a "demo-able" checkpoint. Worth a commit + tag + log entry.
 
 ## Progress Log
 
+### 2026-11-15 — Ethernet file transfer to SD
+- **Built:** Opt-in Pi transfer kernel, bounded staging-file receiver on UDP 5556, and a Mac uploader. Chunks are written and read back before acknowledgement; whole-file CRC and host byte-for-byte read-back verify completion. No boot selection changes.
+- **Storage:** Reserved sectors 8192–12287 of the known recovery image's empty pre-partition gap. First use checks the whole area is zero; later boots validate the file header. Requests cannot choose arbitrary card sectors. One staging file, one uploader, private direct link.
+- **Physical validation:** Transferred 65,549 bytes over Ethernet and compared all bytes read back. Rebooted through UART, reloaded the kernel, and read the saved file successfully without resending it. The end-to-end test also covers duplicate requests, out-of-order chunks, corrupt chunks, and a partial final sector.
+- **Next:** Decide the persistent kernel layout and teach the loader to validate/load a staged image. The current file header is not a boot pointer; kernel activation and rollback remain unimplemented. Roadmap checkboxes unchanged.
+
 ### 2026-11-15 — SD card and clock microworld
 - **Teaching:** Added lesson 7.06 with an isometric CPU/RAM/controller/card scene, six write steps, chip inspection, and a clock-divider experiment. The main scenario distinguishes the CPU's source RAM pointer from the card's destination sector number. Optional detail ties PIO, polling, ARM register accesses, and both VirtIO implementations to source.
 - **Validation:** Browser checks exercised the stepper, chip keyboard interaction, quiz feedback, divider arithmetic, and source/SD cycle counters. Light, dark, and narrow layouts were rendered and inspected; no page overflow or script errors were found. Captures remain in ignored target/runs. Kernel unchanged.

@@ -59,6 +59,43 @@ impl DhcpSession {
         NetworkEvent::None
     }
 
+    #[cfg(feature = "pi-sd-transfer")]
+    pub fn handle_sd_transfer(
+        &self,
+        device: &mut impl FrameDevice,
+        bytes: &[u8],
+        receiver: &mut crate::sd_transfer::Receiver,
+    ) -> bool {
+        let Some(datagram) = self.interface.receive_udp(bytes) else {
+            return false;
+        };
+        if !self.is_configured()
+            || datagram.destination_ip != self.interface.address()
+            || datagram.destination_port != crate::sd_transfer::PORT
+        {
+            return false;
+        }
+        let mut payload = [0; 532];
+        if let Some(length) = receiver.handle(
+            (datagram.source_ip, datagram.source_port),
+            datagram.payload,
+            &mut payload,
+        ) {
+            let mut frame = [0; MAX_FRAME_LEN];
+            if let Some(frame_length) = self.interface.write_udp(
+                datagram.source_mac,
+                datagram.source_ip,
+                crate::sd_transfer::PORT,
+                datagram.source_port,
+                &payload[..length],
+                &mut frame,
+            ) {
+                device.transmit(&frame[..frame_length]);
+            }
+        }
+        true
+    }
+
     pub fn is_configured(&self) -> bool {
         self.interface.address() != [0; 4]
     }
