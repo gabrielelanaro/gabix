@@ -2,13 +2,14 @@
 //!
 //! ELF is the file format Linux uses for binaries. The kernel reads
 //! the header at offset 0, then walks the Program Header Table (PHT)
-//! — an array of 56-byte entries immediately after the 64-byte header.
+//! at the file offset recorded in e_phoff. ELF64 program-header entries
+//! have 56 bytes; the table need not immediately follow the ELF header.
 //! Each entry describes one chunk of the program that needs to land
 //! in memory: which file bytes, which virtual address, what size,
 //! what permissions.
 //!
-//! Lesson 15 is parsing only. Lesson 16 will map PT_LOAD segments
-//! into a fresh AddressSpace and jump to e_entry — that's exec().
+//! This module parses the file. src/exec.rs maps PT_LOAD segments into
+//! a fresh AddressSpace and prepares execution at e_entry.
 //!
 //! Reference: the System V ABI Generic Introduction (gABI) and
 //! Linux's elf(5) man page document the field offsets. The kernel's
