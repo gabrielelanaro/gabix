@@ -2,6 +2,8 @@
 /targets/armv7/target/
 /crates/kernel-core/target/
 **/__pycache__/
+**/.pytest_cache/
+**/.DS_Store
 /qemu.log
 /disk.img
 /serial.log
