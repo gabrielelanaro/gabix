@@ -49,6 +49,7 @@ const OCR_READY: u32 = 1 << 31;
 pub struct SdCard {
     high_capacity: bool,
     relative_address: u32,
+    sector_count: u64,
 }
 
 impl SdCard {
@@ -84,6 +85,29 @@ impl SdCard {
         if relative_address == 0 {
             return None;
         }
+        // CMD9 reads the Card-Specific Data register while the card is in
+        // standby. Its capacity describes the whole card, not its partitions.
+        command(9, relative_address, RESPONSE_LONG | COMMAND_CRC)?;
+        // SDHCI strips the final CRC byte from a 136-bit response. Restore
+        // the bit positions used by the SD specification before extracting CSD.
+        let mut csd = 0u128;
+        for index in 0..4 {
+            csd |= (read32(RESPONSE_0 + index * 4) as u128) << (index * 32);
+        }
+        csd <<= 8;
+        let sector_count = match csd >> 126 {
+            0 => {
+                let read_block_length = ((csd >> 80) & 0xf) as u32;
+                let size = ((csd >> 62) & 0xfff) as u64 + 1;
+                let multiplier = ((csd >> 47) & 7) as u32 + 2;
+                size.checked_shl(multiplier + read_block_length)? / 512
+            }
+            1 => (((csd >> 48) & 0x3fffff) as u64 + 1) * 1024,
+            _ => return None, // SDUC addressing is not implemented.
+        };
+        if sector_count == 0 {
+            return None;
+        }
         command(
             7,
             relative_address,
@@ -99,10 +123,18 @@ impl SdCard {
         Some(Self {
             high_capacity,
             relative_address,
+            sector_count,
         })
     }
 
+    pub fn sector_count(&self) -> u64 {
+        self.sector_count
+    }
+
     pub unsafe fn try_read_sector(&mut self, sector: u64) -> Option<[u8; 512]> {
+        if sector >= self.sector_count {
+            return None;
+        }
         let sector = u32::try_from(sector).ok()?;
         let argument = if self.high_capacity {
             sector
@@ -141,6 +173,9 @@ impl BlockDevice for SdCard {
 
 impl WritableBlockDevice for SdCard {
     fn write_sector(&mut self, sector: u64, data: &[u8; 512]) -> Result<(), BlockError> {
+        if sector >= self.sector_count {
+            return Err(BlockError::AddressOutOfRange);
+        }
         let sector = u32::try_from(sector).map_err(|_| BlockError::AddressOutOfRange)?;
         // SDHC/SDXC cards take a sector number; standard-capacity cards take bytes.
         let argument = if self.high_capacity {

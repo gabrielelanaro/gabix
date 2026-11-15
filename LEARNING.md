@@ -14,6 +14,7 @@ Approach: follow the "Writing an OS in Rust" tutorial (phil-opp.com) as the spin
 - [ ] Shared file descriptors, VFS, and file syscalls on both architectures
 - [ ] Shared userspace sockets, blocking I/O, and TCP on ARM
 - [ ] Equivalent behavioral suites on x86, ARM virt, and physical Pi
+- [ ] Future extension: file-backed demand paging on x86 and ARM — handle a missing mapping by reading the required file page from storage into RAM, then resume the process. Existing page tables do not provide this automatically; the boot loader can continue loading the whole kernel.
 
 Each slice includes didactic source names, a short lesson, and physical validation
 through UART reboot/upload. Preserve the working server as the recovery image.
@@ -550,6 +551,14 @@ A milestone is a "demo-able" checkpoint. Worth a commit + tag + log entry.
 ---
 
 ## Progress Log
+
+### 2026-11-15 — Card capacity and SD-loader checkpoint
+- **Physical evidence:** Read CSD capacity and the final sector on the Pi: 15,523,840 sectors (7,948,206,080 bytes). Existing partitions end at sector 4,882,432. No partition-table or boot-file writes performed.
+- **Implemented:** Planned 128 MiB kernel partition with two 32 MiB extents, read-only layout checker, checked boot-record decoder, and optional SD-loader build. Decoder host tests and loader release build pass; SD-loader execution on hardware remains untested.
+- **Incomplete:** Automatic new/previous/UART fallback, recovery-image generation, and permanent installation. See docs/pi2-boot-status.md for the explicit inventory and next delivery milestone.
+
+### 2026-11-15 — Demand-paging follow-up
+- **Requested:** Record file-backed demand paging as future work for both architectures. Added an unchecked roadmap item; no paging implementation changed.
 
 ### 2026-11-15 — Ethernet file transfer to SD
 - **Built:** Opt-in Pi transfer kernel, bounded staging-file receiver on UDP 5556, and a Mac uploader. Chunks are written and read back before acknowledgement; whole-file CRC and host byte-for-byte read-back verify completion. No boot selection changes.

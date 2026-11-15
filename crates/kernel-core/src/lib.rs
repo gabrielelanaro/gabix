@@ -10,6 +10,7 @@ pub mod elf;
 #[cfg(feature = "kernel")]
 pub mod fs;
 pub mod loader_protocol;
+pub mod boot_record;
 #[cfg(feature = "kernel")]
 pub mod memory;
 #[cfg(feature = "kernel")]

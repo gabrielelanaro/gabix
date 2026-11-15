@@ -33,9 +33,34 @@ extern "C" fn check() {
     reset::arm_deadman(15);
     write_line(&mut console, b"SD check: initialize");
     if let Some(mut card) = unsafe { sdhci::SdCard::initialize() } {
+        write_line(
+            &mut console,
+            b"SD check: sector count (high then low words)",
+        );
+        hex(&mut console, (card.sector_count() >> 32) as u32);
+        hex(&mut console, card.sector_count() as u32);
+        write_line(&mut console, b"");
+        if unsafe { card.try_read_sector(card.sector_count() - 1) }.is_some() {
+            write_line(&mut console, b"SD check: final sector readable");
+        }
         write_line(&mut console, b"SD check: initialized; reading MBR");
         if let Some(sector) = unsafe { card.try_read_sector(0) } {
-            write_line(&mut console, b"SD check: MBR read");
+            write_line(
+                &mut console,
+                b"SD check: MBR read; partition type/start/count",
+            );
+            for entry in sector[446..510].chunks_exact(16) {
+                hex(&mut console, entry[4] as u32);
+                hex(
+                    &mut console,
+                    u32::from_le_bytes(entry[8..12].try_into().unwrap()),
+                );
+                hex(
+                    &mut console,
+                    u32::from_le_bytes(entry[12..16].try_into().unwrap()),
+                );
+                write_line(&mut console, b"");
+            }
             // This opt-in names the recovery image whose empty pre-partition
             // gap was checked against the saved original image. Never infer
             // that an arbitrary unpartitioned sector is disposable.

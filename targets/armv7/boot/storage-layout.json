@@ -1,0 +1,25 @@
+{
+  "version": 1,
+  "sector_size": 512,
+  "status": "planned-not-installed",
+  "observed_card_sectors": 15523840,
+  "preserved_partitions": [
+    {"index": 0, "type": 12, "start_sector": 16384, "sector_count": 1048576},
+    {"index": 1, "type": 131, "start_sector": 1064960, "sector_count": 3817472}
+  ],
+  "kernel_partition": {
+    "index": 2,
+    "type": 218,
+    "start_sector": 4882432,
+    "sector_count": 262144,
+    "boot_record_offset": 0,
+    "metadata_sectors": 2048,
+    "copies": [
+      {"name": "A", "offset_sectors": 2048, "capacity_sectors": 65536},
+      {"name": "B", "offset_sectors": 67584, "capacity_sectors": 65536}
+    ],
+    "spare_offset_sectors": 133120,
+    "spare_sectors": 129024
+  },
+  "current_loader_limit_bytes": 16777216
+}

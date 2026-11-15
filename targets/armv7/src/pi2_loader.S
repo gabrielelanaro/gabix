@@ -16,6 +16,13 @@ _start:
     bne .Lpark
 
     ldr sp, =STACK_TOP
+    ldr r0, =__bss_start
+    ldr r1, =__bss_end
+    mov r2, #0
+.Lclear_bss:
+    cmp r0, r1
+    strlo r2, [r0], #4
+    blo .Lclear_bss
 
     @ GPIO14 = PL011 TXD and GPIO15 = PL011 RXD.
     ldr r4, =GPIO_BASE
