@@ -563,6 +563,11 @@ A milestone is a "demo-able" checkpoint. Worth a commit + tag + log entry.
 
 ## Progress Log
 
+### 2026-11-15 — Readability audit: source inventory follow-up
+- Read the remaining unchanged module/re-export/entry wrappers and recorded no-edit coverage; clarified frame allocator, dispatcher and halt contracts.
+- Offline x86 cargo check passes. Comment-only changes preserve behavior.
+- Next: learning-reference/test-helper consistency and physical validation. Source review alone does not close the broad roadmap checks.
+
 ### 2026-11-15 — Readability audit: shared interfaces/reset
 - Documented sector-read error differences, frame/console interface limits and force-unlock caller requirements; named i8042 reset fields.
 - Offline x86 cargo check passes. No behavior changes, reset or hardware activity.

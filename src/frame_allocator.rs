@@ -11,7 +11,10 @@ lazy_static! {
     pub static ref FRAMES: IrqMutex<FrameAllocator> = IrqMutex::new(FrameAllocator::empty());
 }
 
-/// Initialize the shared allocator from the x86 bootloader memory map.
+/// Initialize once before allocating frames. Reset discards allocation history.
+/// Only Usable regions become available; their frame numbers are converted to
+/// byte addresses. The shared bitmap covers at most 1 GiB starting at zero, so
+/// a usable region ending above that limit triggers its reset assertion.
 pub fn init(memory_map: &MemoryMap) {
     let max_frame = memory_map
         .iter()
@@ -39,10 +42,13 @@ pub fn init(memory_map: &MemoryMap) {
     );
 }
 
+/// Return the physical byte address of one frame, or None when exhausted.
 pub fn allocate() -> Option<u64> {
     FRAMES.lock().allocate()
 }
 
+/// Release a physical frame address. The shared allocator does not prove
+/// ownership; callers must ensure no mapping or other owner still uses it.
 pub fn deallocate(frame: u64) {
     FRAMES.lock().deallocate(frame)
 }

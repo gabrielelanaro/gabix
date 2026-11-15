@@ -1609,3 +1609,26 @@ References: [Linux reboot.c](https://raw.githubusercontent.com/torvalds/linux/ma
 and [i8042 status definitions](https://raw.githubusercontent.com/torvalds/linux/master/include/linux/i8042.h).
 Offline x86 cargo check passes. Behavior is unchanged; no reset was executed.
 Source inventory and learning-reference consistency review remain open.
+
+### Source inventory follow-up
+
+Compared the current three source roots with the baseline and read the unchanged
+files rather than treating a changed filename as proof of coverage. Module-only
+files (`fs/mod.rs`, `net/mod.rs`, ARM platform module declarations), x86 packet
+re-exports, `drivers/mod.rs`, `memory.rs` and `task.rs` need no additional edits.
+The x86 architecture facade delegates directly to named interrupt helpers. The
+Rust-only BSS/handoff/SVC/smoke wrappers include their reviewed assembly and a
+panic spin loop. `src/main.rs` delegates boot and retains the fatal-console-lock
+assumptions already documented in the lock/console review.
+
+Additional comments explain the x86 frame adapter's physical byte-address units,
+one-time reset requirement and shared bitmap's 1 GiB limit. Syscall dispatch
+makes handler argument subsets and unchecked reboot dispatch explicit. The x86
+halt loop retains the incoming interrupt-enable state, allowing enabled handlers
+to run after HLT wakes. Offline x86 cargo check passes; these edits are comments
+only. No behavior or panic recovery design was changed.
+
+Source areas now have review records, including files requiring no edits. This
+inventory does not certify hardware behavior or learning snippets. Remaining
+work is consistency checking of references/test helpers and the recorded physical
+validation on the Pi. Existing implementation limitations remain listed above.
