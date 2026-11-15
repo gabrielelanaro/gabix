@@ -692,39 +692,32 @@
     <h3>Reading the path from user memory</h3>
 
     <div class="snippet-meta">
-      <span class="snippet-file">src/syscall.rs</span>
+      <span class="snippet-file">src/syscall/user.rs:24</span>
       <span class="snippet-what">— read_user_path helper</span>
     </div>
-<pre><span class="k">fn</span> <span class="f">read_user_path</span>(ptr: <span class="t">u64</span>) -&gt; <span class="t">Option</span>&lt;<span class="t">alloc::string::String</span>&gt; {
-    <span class="k">const</span> <span class="t">MAX_PATH</span>: <span class="t">usize</span> = <span class="n">256</span>;
+<pre><code>pub(super) fn read_user_path(ptr: u64) -&gt; Option&lt;alloc::string::String&gt; {
+    const PATH_SCAN_BYTES: usize = 256;
 
-    <span class="k">if</span> ptr == <span class="n">0</span> {
-        <span class="k">return</span> <span class="t">None</span>;
-    }
-    <span class="k">if</span> !<span class="f">is_user_range</span>(ptr, <span class="t">MAX_PATH</span> <span class="k">as</span> <span class="t">u64</span>) {
-        <span class="k">return</span> <span class="t">None</span>;
+    if ptr == 0 || !is_low_half_range(ptr, PATH_SCAN_BYTES as u64) {
+        return None;
     }
 
-    <span class="c">// SAFETY: ptr is non-NULL and inside user range.</span>
-    <span class="k">let</span> bytes: &amp;[<span class="t">u8</span>] = <span class="k">unsafe</span> {
-        <span class="t">core::slice::from_raw_parts</span>(ptr <span class="k">as</span> *<span class="k">const</span> <span class="t">u8</span>, <span class="t">MAX_PATH</span>)
-    };
-    <span class="k">let</span> end = bytes.iter().position(|&amp;b| b == <span class="n">0</span>)?;
-    <span class="k">if</span> end == <span class="n">0</span> {
-        <span class="k">return</span> <span class="t">None</span>; <span class="c">// empty path</span>
+    let bytes = unsafe { core::slice::from_raw_parts(ptr as *const u8, PATH_SCAN_BYTES) };
+    let end = bytes.iter().position(|&amp;byte| byte == 0)?;
+    if end == 0 {
+        return None;
     }
 
-    <span class="k">let</span> s = <span class="t">core::str</span>::from_utf8(&amp;bytes[..end]).ok()?;
-    <span class="t">Some</span>(<span class="t">alloc::string::String</span>::from(s))
-}</pre>
+    let path = core::str::from_utf8(&amp;bytes[..end]).ok()?;
+    Some(alloc::string::String::from(path))
+}</code></pre>
 
-    <p>
-      Four failure modes: NULL pointer, out-of-range pointer, no null
-      terminator within 256 bytes, invalid UTF-8. The first one (NULL) is
-      what makes this step shippable on its own — the existing USER_PROGRAM
-      passes <code>0x0</code>, and without the NULL check, the unsafe slice
-      read would page-fault at address 0 and triple-fault the kernel.
-    </p>
+    <p>The helper rejects a zero pointer, a numerically out-of-range window,
+      a missing terminator, an empty path or invalid UTF-8. It still assumes the
+      entire 256-byte window is readable. The range check does not establish page
+      presence or user permissions, so constructing and reading this slice remains
+      an unchecked requirement that can fault in the kernel. Source:
+      <code>src/syscall/user.rs:20–41</code>.</p>
 
     <p>
       The <em>in-range-but-unmapped</em> case (e.g., user passes

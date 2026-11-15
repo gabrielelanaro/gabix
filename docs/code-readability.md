@@ -1661,3 +1661,18 @@ noted the Wi-Fi adapter alongside the wired diagram. Existing layout is retained
 Checked statements against lan9512.rs, ethernet.rs and shared smsc95xx.rs. HTML
 parses and diff whitespace checks pass. Historical lesson coverage remains an
 ongoing review; this correction does not imply all old listings compile unchanged.
+
+### Renamed helper references and VFS user-memory explanation
+
+Compared removed Rust function names against lessons, tours, references, scripts
+and tests. Remaining meaningful stale API references were is_user_range in the
+VFS tour/glossary. Other search hits were ordinary words (property/barrier), not
+calls to removed APIs; this name scan is not a full prose correctness audit.
+
+Updated the VFS path-reading snippet to current src/syscall/user.rs and verified
+its decoded text exactly matches the function. The glossary now uses
+LOW_HALF_END/is_low_half_range and explains the boolean return, numeric-only
+check, low-half kernel mappings and unchecked mapping/permission requirements.
+Removed the false claim that a nonzero in-range pointer establishes slice safety.
+Both HTML files parse. No kernel behavior changed. Other historical snippets
+and hardware validation remain pending.

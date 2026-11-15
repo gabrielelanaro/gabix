@@ -563,6 +563,11 @@ A milestone is a "demo-able" checkpoint. Worth a commit + tag + log entry.
 
 ## Progress Log
 
+### 2026-11-15 — Readability audit: renamed helper references
+- Searched removed API names across teaching material and host scripts/tests; updated the VFS tour/glossary's stale user-range helper.
+- Corrected unsafe pointer-validation claims and verified the path snippet exactly matches current source. Both HTML files parse.
+- Remaining historical snippet consistency and physical validation are still open.
+
 ### 2026-11-15 — Readability audit: LAN9512 lesson consistency
 - Updated register names, transmit return contract, endpoint descriptions and adapter selection context; corrected source locations.
 - Checked against current drivers/shared framing and parsed the HTML. Kernel behavior is unchanged.
