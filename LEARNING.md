@@ -563,6 +563,11 @@ A milestone is a "demo-able" checkpoint. Worth a commit + tag + log entry.
 
 ## Progress Log
 
+### 2026-11-15 — Readability audit: x86 page-table dimensions and copying
+- Named page-table entry count and high-half boundary; frame strides, copying and clearing use the shared frame size. Loop bounds and copied bytes are unchanged.
+- Corrected stale fork/unmap explanations and clarified that address-space handles can refer to existing tables. Documented shared writable kernel state, shared huge pages, mapping errors and caller serialization requirements.
+- Existing fork-resumption and exec-replacement QEMU tests pass. Paging synchronization/ownership and remaining interrupt/process code still need review. Pi remains disconnected; hardware validation is pending.
+
 ### 2026-11-15 — Readability audit: x86 syscall entry
 - Named saved syscall argument offsets and the seventh C argument's stack slot. STAR selector fields derive from the GDT. Frame arithmetic uses the shared size; comments correctly identify the existing stack as 64 KiB.
 - Replaced obsolete argument-preservation commentary with the actual distinction between ordinary return and the smaller fork snapshot; corrected the assembly step explanation before argument conversion. Push/pop order, offsets, stack size and selector values are preserved.

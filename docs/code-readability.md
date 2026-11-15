@@ -85,6 +85,8 @@ will be checked alongside the implementation they exercise.
   - [x] Task context switch and matching new-task/fork stack construction
   - [x] Boot orchestration, GDT/TSS contracts and initial user entry
   - [x] SYSCALL/SYSRET entry, saved argument offsets and STAR selector setup
+  - [x] Page-table dimensions, frame arithmetic and clone/copy explanations
+  - [ ] Page-table ownership/synchronization contracts and interrupt wrappers
 - [x] x86 PCI and VirtIO drivers (source review; existing QEMU checks pass)
   - [x] PCI bus-0 discovery, BAR fields and configuration access contract
   - [x] VirtIO capability regions and MSI-X table/control parsing
@@ -713,3 +715,20 @@ Existing fork-resumption and UDP echo QEMU tests pass. These exercise user entry
 fork return, and socket argument forwarding; they do not prove every register
 value under arbitrary nested scheduling. The scheduler/global snapshot policy
 remains part of the broader process review.
+
+### x86 page-table dimensions and copying
+
+`src/arch/x86_64/paging.rs` names the 512-entry table size and upper-half
+boundary. Frame allocation, clearing, copying and stepping use the existing
+shared 4096-byte frame constant. The clone walk retains the same iteration
+bounds and branching. Comments explain that high-half subtrees and low-half
+supervisor frames remain shared, while low-half 4 KiB user frames are copied.
+Huge-page entries remain shared regardless of their user flag.
+
+Corrected obsolete claims that `new()` copies user mappings and that sharing
+kernel frames depends on their being read-only. Address-space handles have no
+automatic reclamation. Caller serialization remains required: this slice does
+not establish exclusive ownership or add locking to per-address-space operations.
+Existing fork-resumption and exec-replacement QEMU tests pass; raw output stays
+under ignored `target/runs/readability/`. Synchronization and aliasing review
+remains open, as does physical validation of earlier Pi changes.

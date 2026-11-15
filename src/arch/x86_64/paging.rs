@@ -5,17 +5,14 @@
 //! `memory::translate(virt)` or `memory::map_to(virt, phys, flags)` without
 //! recreating the mapper.
 //!
-//! History:
-//! - Slice 2.2a: created the mapper locally inside `init`, ran translate tests.
-//! - Slice 2.2b: added `map_to` end-to-end test.
-//! - Slice 2.3/2.3b: added the heap setup (`init_heap`).
-//! - Slice 2.5 (this version): extracted the mapper into a global so other
-//!   modules can use it. Required by M3 (page-fault handlers, user processes).
+//! The global mapper refers to the boot-time page table. `AddressSpace`
+//! operations construct a mapper for their own PML4 frame instead.
 
 use crate::irq_mutex::IrqMutex;
 use crate::println;
 use bootloader::bootinfo::BootInfo;
 use core::sync::atomic::{AtomicU64, Ordering};
+use gabix_kernel::memory::FRAME_SIZE;
 use lazy_static::lazy_static;
 use x86_64::{
     registers::control::Cr3,
@@ -25,6 +22,12 @@ use x86_64::{
     },
     PhysAddr, VirtAddr,
 };
+
+// Each four-level x86 page table occupies one 4 KiB frame and has 512
+// eight-byte entries. The upper 256 PML4 entries cover high virtual addresses.
+const PAGE_TABLE_ENTRIES: usize = 512;
+const HIGH_HALF_PML4_START: usize = PAGE_TABLE_ENTRIES / 2;
+const FRAME_BYTES: usize = FRAME_SIZE as usize;
 
 /// Virtual address where our heap begins. Picked to be far from everything
 /// else (kernel image, stacks, physical-memory offset mapping).
@@ -132,7 +135,7 @@ pub fn map_mmio(phys_start: u64, size: u64) -> u64 {
                     .unwrap();
             }
         }
-        current_phys += 4096u64;
+        current_phys += FRAME_SIZE;
     }
 
     virt_start
@@ -143,8 +146,9 @@ pub fn map_mmio(phys_start: u64, size: u64) -> u64 {
 /// Allocates any missing intermediate page tables (PML4/PDPT/PD/PT entries)
 /// along the walk, drawing the frames from our bitmap allocator.
 ///
-/// SAFETY: caller must guarantee the virtual page is currently unmapped
-/// (else this aliases an existing mapping, which is undefined behavior).
+/// SAFETY: the physical frame and flags must permit the accesses callers
+/// will make through this mapping. Any aliases must respect Rust's reference
+/// rules. An already-mapped page returns a mapping error.
 pub unsafe fn map_to(
     virt: VirtAddr,
     phys: PhysAddr,
@@ -161,8 +165,8 @@ pub unsafe fn map_to(
     })
 }
 
-/// Error returned by `map_to` when the page-table walk can't allocate a
-/// needed intermediate table (i.e., out of physical memory).
+/// Mapping errors include an existing mapping, an intermediate huge-page
+/// mapping, or failure to allocate an intermediate page table.
 pub type MapToError = x86_64::structures::paging::mapper::MapToError<Size4KiB>;
 
 /// Error returned by `AddressSpace::unmap` when the page isn't mapped.
@@ -172,18 +176,10 @@ pub type UnmapError = x86_64::structures::paging::mapper::UnmapError;
 // AddressSpace (slice 4.4.a)
 // ============================================================
 
-/// A first-class address space: owns a PML4 frame, can be loaded into CR3.
-///
-/// Until now the kernel had a single implicit address space — whatever the
-/// bootloader set up, captured at boot into `MAPPER`. To support `fork`
-/// (and per-process memory isolation in general) we need to be able to
-/// create new address spaces, populate them, and switch between them.
-///
-/// Each `AddressSpace` owns exactly one physical frame: the PML4 (the
-/// top-level page table). Lower levels of the page-table tree (PDPTs, PDs,
-/// PTs) are allocated on demand by `map_to` and are not directly tracked
-/// here — that's a memory leak for now, fixable later with proper cleanup
-/// on process exit.
+/// A handle to a PML4 (top-level page table) frame that can be loaded into CR3.
+/// `new()` allocates the frame; `from_current()` refers to an existing frame.
+/// This type has no destructor: page tables and copied user frames remain
+/// allocated after the handle is dropped.
 pub struct AddressSpace {
     /// The physical frame holding this address space's PML4.
     pml4_frame: PhysFrame,
@@ -229,22 +225,22 @@ impl AddressSpace {
             let current_pml4: *const PageTable = current_pml4_virt.as_ptr();
 
             // Zero the new PML4.
-            core::ptr::write_bytes(new_pml4 as *mut u8, 0, 4096);
+            core::ptr::write_bytes(new_pml4 as *mut u8, 0, FRAME_BYTES);
 
             // Copy entries 256–511 (kernel half) from current PML4. Each
             // entry holds the physical address of the next-level page table
             // plus flags — copying the raw entry shares the underlying
             // subtree, which is exactly what we want for kernel memory.
             // Entries 0–255 stay zero (per-process user memory).
-            for i in 256..512 {
+            for i in HIGH_HALF_PML4_START..PAGE_TABLE_ENTRIES {
                 (&mut *new_pml4)[i] = (&*current_pml4)[i].clone();
             }
         }
 
         println!(
             "[mem] new AddressSpace: pml4_frame={} (copied 256 kernel entries 256-511 from current CR3={})",
-            pml4_frame.start_address().as_u64() / 4096,
-            current_pml4_frame.start_address().as_u64() / 4096,
+            pml4_frame.start_address().as_u64() / FRAME_SIZE,
+            current_pml4_frame.start_address().as_u64() / FRAME_SIZE,
         );
 
         AddressSpace { pml4_frame }
@@ -262,8 +258,8 @@ impl AddressSpace {
     /// when possible (e.g., skip the switch if the new task shares the
     /// current AS).
     pub fn switch_to(&self) {
-        // SAFETY: the frame was properly initialized in `new` and is owned
-        // by this AddressSpace. Writing CR3 to a valid PML4 is safe.
+        // SAFETY: callers must populate the target mappings before switching,
+        // including the executing kernel code, current stack and direct map.
         unsafe {
             Cr3::write(
                 self.pml4_frame,
@@ -283,10 +279,8 @@ impl AddressSpace {
     fn with_mapper<R>(&self, f: impl FnOnce(&mut OffsetPageTable) -> R) -> R {
         let pml4_virt = phys_to_virt(self.pml4_frame.start_address());
         let phys_offset = VirtAddr::new(PHYS_OFFSET.load(Ordering::SeqCst));
-        // SAFETY: the frame is owned by this AddressSpace and was properly
-        // initialized in `new`. We have exclusive access via `&self`
-        // (callers must serialize map_to calls — which they do via the
-        // scheduler lock pattern).
+        // SAFETY: this handle refers to an initialized page-table frame. Callers must serialize operations on this
+        // table and its shared subtrees; `&self` supplies no synchronization.
         let pml4: &mut PageTable = unsafe { &mut *(pml4_virt.as_mut_ptr()) };
         let mut mapper = unsafe { OffsetPageTable::new(pml4, phys_offset) };
         f(&mut mapper)
@@ -296,8 +290,9 @@ impl AddressSpace {
     /// the given flags. Allocates any missing intermediate page tables
     /// (PDPT/PD/PT entries) during the walk.
     ///
-    /// SAFETY: caller must guarantee the virtual page is currently unmapped
-    /// in this address space.
+    /// SAFETY: the frame and flags must permit access through this mapping;
+    /// aliases must respect Rust's reference rules. Callers must serialize
+    /// mutations of this table and any shared intermediate tables.
     pub unsafe fn map_to(
         &self,
         virt: VirtAddr,
@@ -316,11 +311,6 @@ impl AddressSpace {
     /// Unmap a virtual page from THIS address space. The physical frame it
     /// pointed at is not freed — just no longer reachable via this virtual
     /// address. (Caller responsible for freeing the frame if appropriate.)
-    ///
-    /// Used by `sys_fork`: after `AddressSpace::new()` duplicates all the
-    /// parent's entries (including user pages pointing at the parent's
-    /// frames), fork needs to unmap those entries and replace them with
-    /// mappings to fresh child-owned frames.
     pub fn unmap(&self, virt: VirtAddr) -> Result<(), UnmapError> {
         let page: Page<Size4KiB> = Page::containing_address(virt);
         self.with_mapper(|m| {
@@ -373,11 +363,12 @@ impl AddressSpace {
     ///     of every user page (proper fork isolation).
     ///   - **Non-user entries** (kernel pages that still live in the low
     ///     half — the heap, VGA buffer, physical-memory offset): copy the
-    ///     entry as-is, sharing the physical frame. Kernel pages are
-    ///     typically read-only or read-mostly, so sharing is safe.
+    ///     entry as-is, sharing the physical frame. This keeps kernel state,
+    ///     including the writable heap, accessible from both address spaces.
     ///
     /// "Huge page" entries (1 GB at PDPT level, 2 MB at PD level) are
-    /// copied as-is (shared) — we don't try to break them up.
+    /// copied as-is (shared), including any marked USER_ACCESSIBLE. Private
+    /// user-memory copies therefore require the current 4 KiB user mappings.
     ///
     /// # Why this exists
     ///
@@ -398,20 +389,18 @@ impl AddressSpace {
                 phys_to_virt(self.pml4_frame.start_address()).as_mut_ptr();
 
             // Zero the destination PML4 first.
-            core::ptr::write_bytes(dst_pml4 as *mut u8, 0, 4096);
+            core::ptr::write_bytes(dst_pml4 as *mut u8, 0, FRAME_BYTES);
 
-            // Phase 1: copy kernel half (entries 256–511) verbatim. No
-            // walking, no allocations — just share the source's kernel
-            // subtrees. This is the entire win from linking the kernel at
-            // high addresses.
-            for i in 256..512 {
+            // Share the high-half page-table subtrees by copying their
+            // top-level entries. Their physical table frames stay shared.
+            for i in HIGH_HALF_PML4_START..PAGE_TABLE_ENTRIES {
                 (&mut *dst_pml4)[i] = (&*src_pml4)[i].clone();
             }
 
             // Phase 2: walk user half (entries 0–255). This is where
             // per-process isolation happens.
-            for pml4_idx in 0..256u64 {
-                let src_entry = (&*src_pml4)[pml4_idx as usize].clone();
+            for pml4_idx in 0..HIGH_HALF_PML4_START {
+                let src_entry = (&*src_pml4)[pml4_idx].clone();
                 if !src_entry.flags().contains(PageTableFlags::PRESENT) {
                     continue;
                 }
@@ -424,22 +413,22 @@ impl AddressSpace {
 
                 // Set the dest PML4 entry to point at the fresh PDPT,
                 // preserving the source entry's flags.
-                (&mut *dst_pml4)[pml4_idx as usize].set_frame(dst_pdpt_frame, src_entry.flags());
+                (&mut *dst_pml4)[pml4_idx].set_frame(dst_pdpt_frame, src_entry.flags());
 
                 let src_pdpt: *const PageTable =
                     phys_to_virt(src_pdpt_frame.start_address()).as_ptr();
                 let dst_pdpt: *mut PageTable =
                     phys_to_virt(dst_pdpt_frame.start_address()).as_mut_ptr();
-                core::ptr::write_bytes(dst_pdpt as *mut u8, 0, 4096);
+                core::ptr::write_bytes(dst_pdpt as *mut u8, 0, FRAME_BYTES);
 
-                for pdpt_idx in 0..512u64 {
-                    let src_entry = (&*src_pdpt)[pdpt_idx as usize].clone();
+                for pdpt_idx in 0..PAGE_TABLE_ENTRIES {
+                    let src_entry = (&*src_pdpt)[pdpt_idx].clone();
                     if !src_entry.flags().contains(PageTableFlags::PRESENT) {
                         continue;
                     }
                     // 1 GB huge page: copy as-is, share the huge frame.
                     if src_entry.flags().contains(PageTableFlags::HUGE_PAGE) {
-                        (&mut *dst_pdpt)[pdpt_idx as usize] = src_entry;
+                        (&mut *dst_pdpt)[pdpt_idx] = src_entry;
                         continue;
                     }
                     let src_pd_frame = src_entry.frame().expect("src PDPT entry had no frame");
@@ -447,22 +436,22 @@ impl AddressSpace {
                         .allocate_frame()
                         .expect("out of frames for deep_clone PD");
 
-                    (&mut *dst_pdpt)[pdpt_idx as usize].set_frame(dst_pd_frame, src_entry.flags());
+                    (&mut *dst_pdpt)[pdpt_idx].set_frame(dst_pd_frame, src_entry.flags());
 
                     let src_pd: *const PageTable =
                         phys_to_virt(src_pd_frame.start_address()).as_ptr();
                     let dst_pd: *mut PageTable =
                         phys_to_virt(dst_pd_frame.start_address()).as_mut_ptr();
-                    core::ptr::write_bytes(dst_pd as *mut u8, 0, 4096);
+                    core::ptr::write_bytes(dst_pd as *mut u8, 0, FRAME_BYTES);
 
-                    for pd_idx in 0..512u64 {
-                        let src_entry = (&*src_pd)[pd_idx as usize].clone();
+                    for pd_idx in 0..PAGE_TABLE_ENTRIES {
+                        let src_entry = (&*src_pd)[pd_idx].clone();
                         if !src_entry.flags().contains(PageTableFlags::PRESENT) {
                             continue;
                         }
                         // 2 MB huge page: copy as-is.
                         if src_entry.flags().contains(PageTableFlags::HUGE_PAGE) {
-                            (&mut *dst_pd)[pd_idx as usize] = src_entry;
+                            (&mut *dst_pd)[pd_idx] = src_entry;
                             continue;
                         }
                         let src_pt_frame = src_entry.frame().expect("src PD entry had no frame");
@@ -470,16 +459,16 @@ impl AddressSpace {
                             .allocate_frame()
                             .expect("out of frames for deep_clone PT");
 
-                        (&mut *dst_pd)[pd_idx as usize].set_frame(dst_pt_frame, src_entry.flags());
+                        (&mut *dst_pd)[pd_idx].set_frame(dst_pt_frame, src_entry.flags());
 
                         let src_pt: *const PageTable =
                             phys_to_virt(src_pt_frame.start_address()).as_ptr();
                         let dst_pt: *mut PageTable =
                             phys_to_virt(dst_pt_frame.start_address()).as_mut_ptr();
-                        core::ptr::write_bytes(dst_pt as *mut u8, 0, 4096);
+                        core::ptr::write_bytes(dst_pt as *mut u8, 0, FRAME_BYTES);
 
-                        for pt_idx in 0..512u64 {
-                            let src_entry = (&*src_pt)[pt_idx as usize].clone();
+                        for pt_idx in 0..PAGE_TABLE_ENTRIES {
+                            let src_entry = (&*src_pt)[pt_idx].clone();
                             if !src_entry.flags().contains(PageTableFlags::PRESENT) {
                                 continue;
                             }
@@ -494,13 +483,12 @@ impl AddressSpace {
                                 let dst_virt = phys_to_virt(dst_frame.start_address());
                                 let src_ptr: *const u8 = src_virt.as_u64() as *const u8;
                                 let dst_ptr: *mut u8 = dst_virt.as_u64() as *mut u8;
-                                core::ptr::copy_nonoverlapping(src_ptr, dst_ptr, 4096);
-                                (&mut *dst_pt)[pt_idx as usize]
-                                    .set_frame(dst_frame, src_entry.flags());
+                                core::ptr::copy_nonoverlapping(src_ptr, dst_ptr, FRAME_BYTES);
+                                (&mut *dst_pt)[pt_idx].set_frame(dst_frame, src_entry.flags());
                             } else {
                                 // Low-half kernel page (heap, VGA, phys-offset):
                                 // share the frame (copy entry as-is).
-                                (&mut *dst_pt)[pt_idx as usize] = src_entry;
+                                (&mut *dst_pt)[pt_idx] = src_entry;
                             }
                         }
                     }
@@ -532,7 +520,7 @@ pub fn copy_frame(src_phys: PhysAddr, dst_phys: PhysAddr) {
     // SAFETY: both frames are mapped via the direct map (bootloader guarantee).
     // They're distinct frames so nonoverlapping is sound.
     unsafe {
-        core::ptr::copy_nonoverlapping(src, dst, 4096);
+        core::ptr::copy_nonoverlapping(src, dst, FRAME_BYTES);
     }
 }
 
@@ -546,13 +534,13 @@ pub fn copy_frame(src_phys: PhysAddr, dst_phys: PhysAddr) {
 /// Caller must guarantee `bytes.len() <= 4096`.
 pub fn write_to_frame(dst_phys: PhysAddr, bytes: &[u8]) {
     assert!(
-        bytes.len() <= 4096,
+        bytes.len() <= FRAME_BYTES,
         "write_to_frame: bytes too long for one frame"
     );
     let dst = phys_to_virt(dst_phys).as_u64() as *mut u8;
     // SAFETY: frame is mapped via the direct map.
     unsafe {
-        core::ptr::write_bytes(dst, 0, 4096);
+        core::ptr::write_bytes(dst, 0, FRAME_BYTES);
         core::ptr::copy_nonoverlapping(bytes.as_ptr(), dst, bytes.len());
     }
 }
@@ -564,7 +552,7 @@ pub fn zero_frame(dst_phys: PhysAddr) {
     let dst = phys_to_virt(dst_phys).as_u64() as *mut u8;
     // SAFETY: frame is mapped via the direct map.
     unsafe {
-        core::ptr::write_bytes(dst, 0, 4096);
+        core::ptr::write_bytes(dst, 0, FRAME_BYTES);
     }
 }
 
@@ -577,7 +565,9 @@ pub fn zero_frame(dst_phys: PhysAddr) {
 /// Caller must guarantee `offset + bytes.len() <= 4096`.
 pub fn write_to_frame_at(dst_phys: PhysAddr, offset: usize, bytes: &[u8]) {
     assert!(
-        offset.checked_add(bytes.len()).map_or(false, |n| n <= 4096),
+        offset
+            .checked_add(bytes.len())
+            .map_or(false, |n| n <= FRAME_BYTES),
         "write_to_frame_at: write out of bounds (offset={}, len={})",
         offset,
         bytes.len()
@@ -663,8 +653,9 @@ struct BitmapFrameAllocator;
 
 unsafe impl FrameAllocator<Size4KiB> for BitmapFrameAllocator {
     fn allocate_frame(&mut self) -> Option<PhysFrame<Size4KiB>> {
-        crate::frame_allocator::allocate()
-            .map(|frame_number| PhysFrame::containing_address(PhysAddr::new(frame_number * 4096)))
+        crate::frame_allocator::allocate().map(|frame_number| {
+            PhysFrame::containing_address(PhysAddr::new(frame_number * FRAME_SIZE))
+        })
     }
 }
 
