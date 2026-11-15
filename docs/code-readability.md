@@ -42,6 +42,7 @@ will be checked alongside the implementation they exercise.
 - [ ] ARM boot, page tables, interrupts, scheduling, processes, and syscalls
 - [ ] ARM loader, SD update/install, authenticated management, and diagnostics
 - [ ] ARM VirtIO adapters and hardware probes
+  - [x] QEMU virt timer/GIC: named interrupt fields, counter interval and acknowledgement sequence
 - [ ] Shared network parsers and state machines, including WPA2
   - [x] Ethernet, ARP, IPv4, ICMP, UDP, and checksum helpers: wire layouts, abbreviations, meaningful field values, and split-buffer checksum explanation
   - [x] DHCP options/header fields and ARM lease retry policy; stack dispatch contracts
@@ -177,3 +178,13 @@ Reference: [Linux fs/ext2/ext2.h](https://github.com/torvalds/linux/blob/master/
 The existing Pi QEMU partition test passed through MBR translation, ext2 file
 loading and a userspace write syscall. This covers the combined parser changes;
 it does not establish support for large files or malformed images.
+
+## ARM virt timer delivery
+
+Named the GIC acknowledgement ID mask, interface enable values, priority
+threshold and timer interval. Comments connect the counter frequency, relative
+deadline, interrupt acknowledgement and end-of-interrupt write. Register access
+order and values are unchanged. The existing ARM virt QEMU timer test passes.
+Reference: [ARM GIC Architecture Specification IHI 0048B](https://documentation-service.arm.com/static/5f8ff21df86e16515cdbfafe), GICC_IAR and GICC_EOIR.
+This review covers the virt timer adapter; scheduler context-switch assembly
+and the remaining interrupt entry path are still pending review.

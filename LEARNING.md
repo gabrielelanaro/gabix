@@ -563,6 +563,10 @@ A milestone is a "demo-able" checkpoint. Worth a commit + tag + log entry.
 
 ## Progress Log
 
+### 2026-11-15 — Readability audit: ARM virt timer
+- Named the GIC acknowledgement mask, enable/priority values and timer rate; explained frequency-to-deadline conversion and acknowledgement ordering before scheduling.
+- Existing ARM virt QEMU timer test passes. Preserved register operations and kept the remaining scheduler/interrupt assembly audit open.
+
 ### 2026-11-15 — Readability changes grouped for review
 - Saved separate commits for the VirtIO return-type repair (`ad479cc`), network fields/DHCP (`0d48765`), disk/ELF parsing (`776e3fa`), timer/mailbox/random generator (`3866d46`), and Wi-Fi sequences (`ac9934f`).
 - Commit descriptions distinguish passed host/QEMU checks from pending physical verification. No new Pi deployment was attempted while the board is disconnected.
