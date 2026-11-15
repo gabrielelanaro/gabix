@@ -12,6 +12,20 @@
     .equ IRQ_STACK_TOP, {irq_stack_top}
     .equ SEMIHOSTING, {semihosting}
 
+    .equ CPSR_MODE_MASK, 0x1f
+    .equ MODE_HYPERVISOR, 0x1a
+    .equ MODE_SUPERVISOR, 0x13
+    .equ MODE_IRQ, 0x12
+    .equ CORE_INDEX_MASK, 3
+    .equ IRQ_RETURN_BIAS, 4
+    .equ PREFETCH_ABORT_RETURN_BIAS, 4
+    .equ DATA_ABORT_RETURN_BIAS, 8
+    @ SRS stores return PC/status, then push stores r0-r12 and LR (14 words).
+    .equ ABORT_SAVED_STATUS_OFFSET, (14 * 4 + 4)
+    .equ CALL_STACK_ALIGNMENT_MASK, 7
+    .equ FAULT_IS_INSTRUCTION, 1
+    .equ FAULT_IS_DATA, 0
+
 _start:
     cpsid if
 
@@ -19,11 +33,11 @@ _start:
     @ mode. Normalize to SVC before programming VBAR or selecting banked
     @ exception stacks.
     mrs r0, cpsr
-    and r1, r0, #0x1f
-    cmp r1, #0x1a
+    and r1, r0, #CPSR_MODE_MASK
+    cmp r1, #MODE_HYPERVISOR
     bne .Lsvc_entry
-    bic r0, r0, #0x1f
-    orr r0, r0, #0x13
+    bic r0, r0, #CPSR_MODE_MASK
+    orr r0, r0, #MODE_SUPERVISOR
     adr lr, .Lsvc_entry
     msr spsr_hyp, r0
     msr elr_hyp, lr
@@ -33,16 +47,16 @@ _start:
 
     @ Raspberry Pi starts four cores at the same entry point.
     mrc p15, 0, r0, c0, c0, 5
-    ands r0, r0, #3
+    ands r0, r0, #CORE_INDEX_MASK
     bne .Lpark
 
     adr r0, .Lvectors
     mcr p15, 0, r0, c12, c0, 0
     isb
 
-    cps #0x12
+    cps #MODE_IRQ
     ldr sp, =IRQ_STACK_TOP
-    cps #0x13
+    cps #MODE_SUPERVISOR
     ldr sp, =STACK_TOP
 
     ldr r0, =__bss_start
@@ -93,6 +107,7 @@ _start:
     wfe
     b .Lpark
 
+    @ These wrappers preserve integer state only; VFP/NEON state is not saved.
     .align 5
 .Lvectors:
     b .Lpark
@@ -109,17 +124,19 @@ _start:
     bl .Lfault_putc
     b .Lpark
 
+@ Abort handlers never resume the saved frame: Rust ends the user process or
+@ halts for a kernel fault. Rounding SP down therefore needs no restoration.
 .Lprefetch_abort:
     cpsid i
-    sub lr, lr, #4
-    srsdb sp!, #0x13
-    cps #0x13
+    sub lr, lr, #PREFETCH_ABORT_RETURN_BIAS
+    srsdb sp!, #MODE_SUPERVISOR
+    cps #MODE_SUPERVISOR
     push {{r0-r12, lr}}
     mrc p15, 0, r0, c6, c0, 2    @ IFAR: rejected instruction address
     mrc p15, 0, r1, c5, c0, 1    @ IFSR: instruction fault kind
-    ldr r2, [sp, #60]
-    mov r3, #1                  @ instruction-fetch fault
-    bic sp, sp, #7
+    ldr r2, [sp, #ABORT_SAVED_STATUS_OFFSET]
+    mov r3, #FAULT_IS_INSTRUCTION
+    bic sp, sp, #CALL_STACK_ALIGNMENT_MASK
     bl {memory_abort_entry}
     b .Lpark
 
@@ -127,15 +144,15 @@ _start:
     @ Abort mode has a banked return address/status. Store them directly on
     @ the faulting task's SVC stack; no shared abort stack is needed.
     cpsid i
-    sub lr, lr, #8
-    srsdb sp!, #0x13
-    cps #0x13
+    sub lr, lr, #DATA_ABORT_RETURN_BIAS
+    srsdb sp!, #MODE_SUPERVISOR
+    cps #MODE_SUPERVISOR
     push {{r0-r12, lr}}
     mrc p15, 0, r0, c6, c0, 0    @ DFAR: address the process tried to access
     mrc p15, 0, r1, c5, c0, 0    @ DFSR: fault kind and read/write bit
-    ldr r2, [sp, #60]            @ saved CPSR after 14 regs and return PC
-    bic sp, sp, #7
-    mov r3, #0                  @ data-access fault
+    ldr r2, [sp, #ABORT_SAVED_STATUS_OFFSET]            @ saved CPSR after 14 regs and return PC
+    bic sp, sp, #CALL_STACK_ALIGNMENT_MASK
+    mov r3, #FAULT_IS_DATA
     bl {memory_abort_entry}        @ terminates user process; kernel fault halts
     b .Lpark
 
@@ -163,10 +180,14 @@ _start:
     bx r7
 
 .Lsvc:
+    @ The 14-word layout is syscall::UserFrame. Its saved r0 is the return value.
+    @ SPSR_svc remains banked; this wrapper assumes an aligned SVC stack and
+    @ no nested SVC. IRQ entry below preserves SPSR_svc across preemption.
     stmdb sp!, {{r0-r12, lr}}
     mov r0, sp
     bl {svc_entry}
     ldmia sp!, {{r0-r12, lr}}
+    @ Restore PC from LR and processor status from SPSR_svc together.
     movs pc, lr
 
 .Lirq:
@@ -174,9 +195,9 @@ _start:
     @ Each scheduled kernel task has its own SVC stack. The IRQ bank is free
     @ again before we schedule another task, so its next IRQ cannot overwrite
     @ this task's saved return state.
-    sub lr, lr, #4
-    srsdb sp!, #0x13
-    cps #0x13
+    sub lr, lr, #IRQ_RETURN_BIAS
+    srsdb sp!, #MODE_SUPERVISOR
+    cps #MODE_SUPERVISOR
     stmdb sp!, {{r0-r12, lr}}
     @ Keep the SVC saved status too: an IRQ may interrupt a syscall handler.
     mrs r0, spsr
@@ -184,12 +205,13 @@ _start:
     @ An interrupted instruction may have a four-byte-aligned SP. Rust calls
     @ require eight-byte alignment. r4 preserves the unrounded frame address.
     mov r4, sp
-    bic sp, sp, #7
+    bic sp, sp, #CALL_STACK_ALIGNMENT_MASK
     bl {irq_entry}
     mov sp, r4
     pop {{r0, r1}}
     msr spsr_cxsf, r0
     ldmia sp!, {{r0-r12, lr}}
+    @ SRS's saved PC/status pair restores the interrupted mode and IRQ mask.
     rfeia sp!
 
     .align 2

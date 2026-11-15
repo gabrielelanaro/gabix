@@ -65,7 +65,8 @@ will be checked alongside the implementation they exercise.
   - [x] ARM user-entry mode changes and bootstrap ELF-loader contracts
   - [x] ARM syscall frame, dispatch, output bounds and exit paths
   - [x] ARM scheduler task states, process switching and static-stack lifetime
-  - [ ] Boot/exception assembly and memory ownership/cache assumptions
+  - [x] ARM exception frame offsets, mode changes and return adjustments
+  - [ ] Boot peripheral setup and memory ownership/cache assumptions
 - [ ] ARM loader, SD update/install, authenticated management, and diagnostics
 - [ ] ARM VirtIO adapters and hardware probes
   - [x] QEMU VirtIO network: queue roles, feature words, packet metadata and buffer reuse
@@ -1122,3 +1123,22 @@ Existing QEMU cooperative/task-preemption and process-isolation checks pass.
 An initial local sentinel-replacement typo failed compilation and was corrected
 before both checks were rerun successfully. Exception-wrapper review and deeper
 memory/cache assumptions remain open, as does physical Pi verification.
+
+### ARM exception assembly
+
+`targets/armv7/src/boot.S` names processor modes, core-index mask, exception
+return-address adjustments, call alignment and the abort frame's saved-status
+offset. The offset follows SRS's PC/status pair plus the 14-word integer push.
+Comments tie the SVC frame to syscall::UserFrame and trace SPSR preservation
+across IRQ preemption and the RFE return. Numeric values and instruction order
+are unchanged.
+
+The abort handlers terminate a process or halt, so their rounded stack pointer
+is never restored. SVC entry assumes an aligned kernel stack and no nested SVC.
+These wrappers save integer state only; floating-point/NEON context preservation
+is absent. Startup GPIO/UART setup remains a separate review.
+
+Reference: [Arm Cortex-A programmer's guide, exception handling](https://documentation-service.arm.com/static/6893ad23e7f7ce6150e88d37),
+chapter 12, for saved status and exception return adjustments. Existing QEMU
+isolation and task/preemption tests pass through these wrappers, and the Pi
+hardware build passes. Physical Pi execution remains pending.

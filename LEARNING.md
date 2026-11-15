@@ -563,6 +563,11 @@ A milestone is a "demo-able" checkpoint. Worth a commit + tag + log entry.
 
 ## Progress Log
 
+### 2026-11-15 — Readability audit: ARM exception frames
+- Named modes, saved-status offset, return-address adjustments and call alignment in boot.S. Explained SVC/IRQ restoration and non-returning abort frames, preserving values and instruction order.
+- Recorded existing aligned-stack/no-nested-SVC assumptions and absent VFP/NEON preservation. Existing QEMU isolation and task/preemption tests plus Pi hardware build pass.
+- Boot peripheral setup and memory ownership/cache review remain open; physical Pi execution remains pending.
+
 ### 2026-11-15 — Readability audit: ARM scheduler lifecycle
 - Named the dispatcher sentinel and probe round count. Explained address-space/stack switch order, per-task IRQ restoration, static stack reuse and process-spawn preconditions.
 - Corrected the stack-lifetime comment and documented that finished call chains do not run destructors. Existing QEMU task/preemption and process-isolation checks pass after fixing a local constant-substitution typo.
