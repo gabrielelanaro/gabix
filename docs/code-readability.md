@@ -76,6 +76,7 @@ will be checked alongside the implementation they exercise.
   - [x] Installer FAT32 field layout and loader-chain limits
   - [x] Installer MBR identity, publication boundary and caller bounds
   - [x] SD transfer request fields and staging-header layout
+  - [x] SD upload chunk/retry state and pending-kernel publication
 - [ ] ARM VirtIO adapters and hardware probes
   - [x] QEMU VirtIO network: queue roles, feature words, packet metadata and buffer reuse
   - [x] QEMU VirtIO block: feature negotiation, descriptor roles, memory ordering and polling contract
@@ -1301,3 +1302,22 @@ CRC at that point. State transitions, status-payload layout and authentication
 remain separate review items. The managed kernel build passes. Existing physical
 management tests require a reachable Pi and were not run while it is disconnected;
 no device writes were made.
+
+### SD upload state and publication
+
+`sd_transfer.rs` renames save_header to persist_upload_state, reflecting its
+two destinations: staging metadata or the kernel boot record. Named sector units
+and CRC polynomial replace repeated literals without changing arithmetic.
+Comments explain same-session BEGIN matching, replacement by a new peer/session,
+next-byte tracking, duplicate read-back, final-sector zero padding and FINISH's
+full-file CRC check. Repeated FINISH skips metadata writes once locally verified.
+
+For kernel uploads, incomplete state clears the inactive copy's image descriptor;
+complete state publishes it as pending, preserving active_copy for later boot
+confirmation. The chosen copy is opposite the confirmed active index. Ordinary
+storage commands are gated after an I/O error is latched; status/log/reboot paths
+are evaluated earlier. Read-back failure can follow a successful metadata write.
+
+The managed kernel build passes. These edits preserve behavior; physical retry,
+interrupted upload and reboot checks are pending while the Pi is disconnected.
+Status payload, authentication and diagnostics review remain open.

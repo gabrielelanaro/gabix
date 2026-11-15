@@ -563,6 +563,11 @@ A milestone is a "demo-able" checkpoint. Worth a commit + tag + log entry.
 
 ## Progress Log
 
+### 2026-11-15 — Readability audit: SD upload state
+- Renamed metadata persistence to describe both staging and kernel targets. Explained chunk offsets, retry read-back, padding, completion CRC and pending-trial publication; named sector units and CRC polynomial.
+- Managed kernel build passes with unchanged behavior. No physical upload or SD write was performed.
+- Status payload, authentication/diagnostics and other audit work remain open. Physical Pi validation is pending.
+
 ### 2026-11-15 — Readability audit: SD transfer fields
 - Named request/reply fields, management operation numbers and persisted staging-header offsets; matched the wire format to the host uploader.
 - Clarified restored verification state. Managed kernel build passes with unchanged values/behavior; no physical transfer or SD write was performed.

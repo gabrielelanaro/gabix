@@ -7,7 +7,9 @@ pub const PORT: u16 = 5556;
 const HEADER_SECTOR: u64 = 8192;
 const DATA_SECTOR: u64 = HEADER_SECTOR + 1;
 const END_SECTOR: u64 = 12288;
-const MAX_BYTES: u32 = ((END_SECTOR - DATA_SECTOR) * 512) as u32;
+const SECTOR_BYTES: u32 = 512;
+const CRC32_REFLECTED_POLYNOMIAL: u32 = 0xedb88320;
+const MAX_BYTES: u32 = ((END_SECTOR - DATA_SECTOR) * SECTOR_BYTES as u64) as u32;
 const DISK_MAGIC: &[u8; 8] = b"GABIXNET";
 const WIRE_MAGIC: &[u8; 4] = b"GBSD";
 const HEADER_LEN: usize = 20;
@@ -62,8 +64,10 @@ pub struct Receiver {
     session: u32,
     length: u32,
     expected_crc: u32,
+    // Next byte offset accepted for a new write; earlier offsets are retries.
     next: u32,
     verified: bool,
+    // I/O error latch: ordinary storage requests stay disabled until reinit.
     failed: bool,
     peer: Option<([u8; 4], u16)>,
     data_sector: u64,
@@ -92,7 +96,8 @@ impl Receiver {
         let header = card.try_read_sector(HEADER_SECTOR)?;
         // A valid header identifies previously claimed staging storage. It does
         // not recheck the payload CRC here; verified is restored from its flag.
-        let owned = header[..8] == *DISK_MAGIC && word(&header, disk_field::HEADER_CRC) == crc32(&header[..disk_field::HEADER_CRC]);
+        let owned = header[..8] == *DISK_MAGIC
+            && word(&header, disk_field::HEADER_CRC) == crc32(&header[..disk_field::HEADER_CRC]);
         if !owned {
             // First use requires an empty region, not merely an empty header.
             for sector in HEADER_SECTOR..END_SECTOR {
@@ -104,7 +109,11 @@ impl Receiver {
                 }
             }
         }
-        let length = if owned { word(&header, disk_field::LENGTH) } else { 0 };
+        let length = if owned {
+            word(&header, disk_field::LENGTH)
+        } else {
+            0
+        };
         if owned && (length == 0 || length > MAX_BYTES || word(&header, disk_field::COMPLETE) > 1) {
             return None;
         }
@@ -149,7 +158,11 @@ impl Receiver {
             repeated_errors: 0,
             session: 0,
             length,
-            expected_crc: if owned { word(&header, disk_field::IMAGE_CRC) } else { 0 },
+            expected_crc: if owned {
+                word(&header, disk_field::IMAGE_CRC)
+            } else {
+                0
+            },
             next: if verified { length } else { 0 },
             verified,
             failed: false,
@@ -169,7 +182,10 @@ impl Receiver {
         {
             // A public challenge exposes only the persistent boot number and
             // counter. Every diagnostic/read/write/reboot command requires HMAC.
-            if packet.len() == 20 && &packet[..4] == WIRE_MAGIC && word(packet, wire_field::OPERATION) == 10 {
+            if packet.len() == 20
+                && &packet[..4] == WIRE_MAGIC
+                && word(packet, wire_field::OPERATION) == 10
+            {
                 reply[..20].copy_from_slice(packet);
                 reply[4..8].copy_from_slice(&(AUTH_CHALLENGE | REPLY_OPERATION_BIT).to_le_bytes());
                 reply[16..20].fill(0);
@@ -273,6 +289,8 @@ impl Receiver {
                     MAX_BYTES
                 }
         {
+            // Repeated BEGIN with the same peer/session must match its metadata.
+            // A different peer/session can replace the in-progress transfer.
             if self.peer == Some(peer) && self.session == session {
                 status = if self.length == argument
                     && self.expected_crc == value
@@ -303,7 +321,7 @@ impl Receiver {
                         b"staging upload started"
                     });
                     self.maintenance(true);
-                    status = if self.save_header(false) {
+                    status = if self.persist_upload_state(false) {
                         OK
                     } else {
                         IO_ERROR
@@ -312,25 +330,28 @@ impl Receiver {
             }
         } else if self.peer == Some(peer) && self.session == session {
             match operation {
-                DATA if argument % 512 == 0 && argument < self.length => {
-                    let expected_len = (self.length - argument).min(512) as usize;
+                DATA if argument % SECTOR_BYTES == 0 && argument < self.length => {
+                    let expected_len = (self.length - argument).min(SECTOR_BYTES) as usize;
                     if data.len() == expected_len && crc32(data) == value {
                         if argument > self.next {
                             status = ORDER;
                         } else if argument < self.next {
                             // A lost ACK must not cause another flash write.
                             status = match unsafe {
-                                self.card
-                                    .try_read_sector(self.data_sector + argument as u64 / 512)
+                                self.card.try_read_sector(
+                                    self.data_sector + argument as u64 / SECTOR_BYTES as u64,
+                                )
                             } {
                                 Some(stored) if stored[..data.len()] == *data => OK,
                                 Some(_) => CHECKSUM,
                                 None => IO_ERROR,
                             };
                         } else if !self.verified {
+                            // Pad the final partial sector with zeroes and verify
+                            // the whole sector before advancing the next offset.
                             let mut sector = [0; 512];
                             sector[..data.len()].copy_from_slice(data);
-                            let lba = self.data_sector + argument as u64 / 512;
+                            let lba = self.data_sector + argument as u64 / SECTOR_BYTES as u64;
                             status = if self.card.write_sector(lba, &sector).is_ok()
                                 && unsafe { self.card.try_read_sector(lba) } == Some(sector)
                             {
@@ -353,17 +374,21 @@ impl Receiver {
                         INVALID
                     };
                 }
+                // Verify exactly length bytes from SD, then publish metadata.
+                // Repeated FINISH rechecks the bytes but skips metadata rewrites
+                // once this receiver has marked the upload verified.
                 FINISH if data.is_empty() && self.next == self.length => {
                     let mut crc = !0;
                     status = OK;
-                    for offset in (0..self.length).step_by(512) {
+                    for offset in (0..self.length).step_by(SECTOR_BYTES as usize) {
                         if let Some(sector) = unsafe {
-                            self.card
-                                .try_read_sector(self.data_sector + offset as u64 / 512)
+                            self.card.try_read_sector(
+                                self.data_sector + offset as u64 / SECTOR_BYTES as u64,
+                            )
                         } {
                             crc = update_crc(
                                 crc,
-                                &sector[..(self.length - offset).min(512) as usize],
+                                &sector[..(self.length - offset).min(SECTOR_BYTES) as usize],
                             );
                         } else {
                             status = IO_ERROR;
@@ -373,7 +398,7 @@ impl Receiver {
                     if status == OK {
                         if !crc != self.expected_crc {
                             status = CHECKSUM;
-                        } else if !self.verified && !self.save_header(true) {
+                        } else if !self.verified && !self.persist_upload_state(true) {
                             status = IO_ERROR;
                         } else {
                             self.verified = true;
@@ -384,15 +409,16 @@ impl Receiver {
                 }
                 READ if data.is_empty()
                     && self.verified
-                    && argument % 512 == 0
+                    && argument % SECTOR_BYTES == 0
                     && argument < self.length =>
                 {
                     status = match unsafe {
-                        self.card
-                            .try_read_sector(self.data_sector + argument as u64 / 512)
+                        self.card.try_read_sector(
+                            self.data_sector + argument as u64 / SECTOR_BYTES as u64,
+                        )
                     } {
                         Some(sector) => {
-                            reply_data_len = (self.length - argument).min(512) as usize;
+                            reply_data_len = (self.length - argument).min(SECTOR_BYTES) as usize;
                             reply[HEADER_LEN..HEADER_LEN + reply_data_len]
                                 .copy_from_slice(&sector[..reply_data_len]);
                             OK
@@ -533,6 +559,8 @@ impl Receiver {
         crate::boot_trial::confirm(&mut self.card)
     }
 
+    // Choose the other copy relative to the last confirmed active copy. The
+    // returned pair identifies its boot-record sector and descriptor index.
     fn inactive_kernel(&mut self, length: u32) -> Option<(u64, Option<(u64, usize)>)> {
         use gabix_kernel::boot_record::{find_partition, BootRecord};
         unsafe {
@@ -541,14 +569,18 @@ impl Receiver {
             let record = BootRecord::decode(&self.card.try_read_sector(start)?, count)?;
             let index = 1 - record.active_copy;
             let copy = record.copies[index];
-            if length as u64 > copy.capacity_sectors * 512 {
+            if length as u64 > copy.capacity_sectors * SECTOR_BYTES as u64 {
                 return None;
             }
             Some((start + copy.offset_sectors, Some((start, index))))
         }
     }
 
-    fn save_header(&mut self, complete: bool) -> bool {
+    // Persist either staging metadata or the inactive kernel's boot descriptor.
+    // complete=false invalidates that kernel copy before upload; true publishes
+    // it as pending trial. active_copy changes only through boot confirmation.
+    // A failed read-back may follow a completed write; callers latch I/O failure.
+    fn persist_upload_state(&mut self, complete: bool) -> bool {
         if let Some((start, index)) = self.kernel_target {
             use gabix_kernel::boot_record::{find_partition, BootRecord, NO_COPY};
             return (|| unsafe {
@@ -574,11 +606,15 @@ impl Receiver {
         }
         let mut header = [0; 512];
         header[..8].copy_from_slice(DISK_MAGIC);
-        header[disk_field::LENGTH..disk_field::IMAGE_CRC].copy_from_slice(&self.length.to_le_bytes());
-        header[disk_field::IMAGE_CRC..disk_field::COMPLETE].copy_from_slice(&self.expected_crc.to_le_bytes());
-        header[disk_field::COMPLETE..disk_field::HEADER_CRC].copy_from_slice(&(complete as u32).to_le_bytes());
+        header[disk_field::LENGTH..disk_field::IMAGE_CRC]
+            .copy_from_slice(&self.length.to_le_bytes());
+        header[disk_field::IMAGE_CRC..disk_field::COMPLETE]
+            .copy_from_slice(&self.expected_crc.to_le_bytes());
+        header[disk_field::COMPLETE..disk_field::HEADER_CRC]
+            .copy_from_slice(&(complete as u32).to_le_bytes());
         let checksum = crc32(&header[..disk_field::HEADER_CRC]);
-        header[disk_field::HEADER_CRC..disk_field::HEADER_BYTES].copy_from_slice(&checksum.to_le_bytes());
+        header[disk_field::HEADER_CRC..disk_field::HEADER_BYTES]
+            .copy_from_slice(&checksum.to_le_bytes());
         self.card.write_sector(HEADER_SECTOR, &header).is_ok()
             && unsafe { self.card.try_read_sector(HEADER_SECTOR) } == Some(header)
     }
@@ -591,7 +627,7 @@ fn update_crc(mut crc: u32, bytes: &[u8]) -> u32 {
     for &byte in bytes {
         crc ^= byte as u32;
         for _ in 0..8 {
-            crc = (crc >> 1) ^ (0xedb88320 & 0u32.wrapping_sub(crc & 1));
+            crc = (crc >> 1) ^ (CRC32_REFLECTED_POLYNOMIAL & 0u32.wrapping_sub(crc & 1));
         }
     }
     crc
