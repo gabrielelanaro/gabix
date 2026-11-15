@@ -563,6 +563,11 @@ A milestone is a "demo-able" checkpoint. Worth a commit + tag + log entry.
 
 ## Progress Log
 
+### 2026-11-15 — Readability audit: UART service timing
+- Named managed watchdog timing and explained UART idle-timeout priority, network polling delays, static-buffer ownership and user-exit service restart.
+- Managed and UART-user builds pass with unchanged values/behavior. No physical device activity was performed.
+- Main orchestration, remaining probes/lesson references and physical checks remain open.
+
 ### 2026-11-15 — Readability audit: ARM memory ownership/cache
 - Named descriptor subfields and documented static-table exclusion, inherited control state, bootstrap visibility and cached/noncacheable alias requirements.
 - Existing QEMU isolation test and Pi hardware build pass with unchanged descriptor values and instruction order. Hardware cache assumptions remain unverified in this slice.

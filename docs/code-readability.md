@@ -80,6 +80,7 @@ will be checked alongside the implementation they exercise.
   - [x] Management status payload field names and snapshot semantics
   - [x] Management authentication envelope and replay/cache contracts
   - [x] Diagnostic queue, ring-record fields and flush/failure semantics
+  - [x] UART service-loop watchdog timing and polling contracts
 - [ ] ARM VirtIO adapters and hardware probes
   - [x] QEMU VirtIO network: queue roles, feature words, packet metadata and buffer reuse
   - [x] QEMU VirtIO block: feature negotiation, descriptor roles, memory ordering and polling contract
@@ -1429,3 +1430,19 @@ not establish cache coherency for arbitrary entry states or hardware aliases.
 The review documents existing requirements; physical cache-sensitive checks remain
 pending while the Pi is disconnected. Remaining probes/orchestration and learning
 references still require review.
+
+### UART upload service loop
+
+`user_upload.rs` names the managed-service watchdog timeout and refresh interval,
+and ties tick units to raspi2b::timer's 100 Hz rate. Contracts explain exclusive
+upload-buffer/service ownership, synchronous device/log work and the difference
+between poll scheduling and a latency bound. Any received UART byte refreshes
+the idle timer; timeout is checked only with no byte available. Continuous UART
+events can postpone network work before or during an upload.
+
+The raw payload write relies on UploadReceiver's configured maximum. Successful
+user entry leaves the service call chain; main.rs's user-exit trampoline resets
+the kernel stack and starts the service again. Managed and UART-user builds pass.
+Constants retain their prior values, and no runtime behavior was changed.
+Physical UART/network coexistence checks remain pending. Main orchestration and
+remaining probe/lesson-reference coverage are still open.

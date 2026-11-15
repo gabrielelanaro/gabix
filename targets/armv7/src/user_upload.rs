@@ -3,15 +3,26 @@ use crate::{memory, user};
 use gabix_kernel::loader_protocol::{UploadEvent, UploadFailure, UploadReceiver};
 
 const MAX_USER_ELF_SIZE: u32 = 512 * 1024;
+// raspi2b::timer provides 100 ticks per second.
 const UPLOAD_IDLE_TIMEOUT_TICKS: u64 = 100;
 const USER_EXECUTION_DEADMAN_SECONDS: u32 = 10;
 const ETHERNET_POLL_INTERVAL_TICKS: u64 = 1;
+#[cfg(feature = "pi-managed")]
+const SERVICE_WATCHDOG_SECONDS: u32 = 15;
+#[cfg(feature = "pi-managed")]
+const SERVICE_WATCHDOG_REFRESH_TICKS: u64 = 100;
 
 #[repr(C, align(16))]
 struct UserElfBuffer([u8; MAX_USER_ELF_SIZE as usize]);
 
 static mut USER_ELF: UserElfBuffer = UserElfBuffer([0; MAX_USER_ELF_SIZE as usize]);
 
+/// Run the foreground UART upload and network polling loop.
+/// The caller owns exclusive access to the static upload buffer and service
+/// state. Device calls and diagnostic flushes run synchronously in this loop;
+/// the poll interval schedules opportunities, not a maximum response latency.
+/// Successful user entry abandons this call chain; the exit trampoline later
+/// restarts kernel service on its configured stack.
 pub fn serve_uart_uploads_and_ethernet(uart_console: &mut Pl011) -> ! {
     let mut uart_upload_receiver = UploadReceiver::with_max_size(MAX_USER_ELF_SIZE);
     let mut last_uart_byte_tick = crate::raspi2b::timer::ticks();
@@ -30,12 +41,13 @@ pub fn serve_uart_uploads_and_ethernet(uart_console: &mut Pl011) -> ! {
         if crate::raspi2b::timer::ticks() >= next_watchdog_tick {
             // Refresh from foreground work, so a stuck device driver triggers
             // recovery. UART uploads also keep this service loop progressing.
-            crate::raspi2b::reset::arm_deadman(15);
-            next_watchdog_tick = crate::raspi2b::timer::ticks() + 100;
+            crate::raspi2b::reset::arm_deadman(SERVICE_WATCHDOG_SECONDS);
+            next_watchdog_tick = crate::raspi2b::timer::ticks() + SERVICE_WATCHDOG_REFRESH_TICKS;
         }
         #[cfg(feature = "pi-sd-transfer")]
         crate::flush_diagnostics(false);
-        // 1. Read one UART byte, or detect an interrupted upload.
+        // 1. Read one UART byte, or detect an interrupted upload. Any received
+        // byte refreshes the idle timer; the timeout is checked only when RX is empty.
         let uart_upload_event = if let Some(byte) = uart_console.try_read_byte() {
             last_uart_byte_tick = crate::raspi2b::timer::ticks();
             Some(uart_upload_receiver.push(byte))
@@ -50,7 +62,9 @@ pub fn serve_uart_uploads_and_ethernet(uart_console: &mut Pl011) -> ! {
         let Some(uart_upload_event) = uart_upload_event else {
             let current_tick = crate::raspi2b::timer::ticks();
             // 2. With no UART event, give Ethernet a turn when its poll is due.
-            // Pause Ethernet during uploads so the UART FIFO can be drained promptly.
+            // Pause network polling during uploads so the UART FIFO can be drained
+            // promptly. Continuous UART events can delay network work even when
+            // the decoder has not accepted an upload header.
             let uart_upload_in_progress = uart_upload_receiver.is_upload_active();
             let ethernet_poll_is_due = current_tick >= next_ethernet_poll_tick;
             if !uart_upload_in_progress && ethernet_poll_is_due {
@@ -105,6 +119,8 @@ pub fn serve_uart_uploads_and_ethernet(uart_console: &mut Pl011) -> ! {
     }
 }
 
+// UploadReceiver's configured maximum bounds every emitted payload offset.
+// The raw buffer store relies on that decoder contract and has no local check.
 fn write_byte(offset: u32, byte: u8) {
     unsafe {
         core::ptr::write_volatile(
