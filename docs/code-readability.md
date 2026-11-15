@@ -1676,3 +1676,34 @@ check, low-half kernel mappings and unchecked mapping/permission requirements.
 Removed the false claim that a nonzero in-range pointer establishes slice safety.
 Both HTML files parse. No kernel behavior changed. Other historical snippets
 and hardware validation remain pending.
+
+### Host compatibility checks and physical validation gate
+
+Current host verification: 16 tests pass across test_pi2_uploader.py,
+test_pi2_user_uploader.py and test_pi2_image_registry.py. These cover upload
+encoding/limits, pseudo-terminal user-upload behavior and image metadata rules.
+The shared library's default-feature unit suite passes all eight tests, covering
+loader protocol and boot-record cases. It does not enable wifi-security or
+exercise physical devices. Captures remain under ignored target/runs/readability.
+
+Reviewed the physical helper entry points without running them. Completion still
+requires a connected Pi and evidence for the changed hardware paths:
+
+- Wi-Fi/USB: current kernel startup, authentication/DHCP, bidirectional traffic,
+  reconnect and bounded failure recovery. test_pi2_wifi.py checks its diagnostic
+  PASS marker and return to the installed kernel; it requires UART access.
+- Managed service: test_pi2_management.py authentication and reboot cases check
+  signed requests, rejection behavior, post-reboot network readiness and persisted
+  logs. Record the running image identity so results apply to this revision.
+- SD/loader: verify current card layout before running write/restore or trial
+  fallback checks. test_sd_write_restores_sector.sh targets recovery-image scratch
+  sector 8192, which is also the transfer staging-header location; it must not be
+  run blindly against an active staged update. test_pi2_sd_boot.py requires the
+  documented installed layout and installer service.
+- Scheduling/memory: capture the current kernel's timer-preemption and process
+  isolation results on physical hardware; QEMU evidence alone does not establish
+  Pi cache/DMA behavior.
+
+The Pi remains disconnected by the user's instruction. No network probes, uploads,
+SD writes or resets were attempted in this verification slice. Lesson-reference
+review remains independent local work; the physical gate is still unsatisfied.

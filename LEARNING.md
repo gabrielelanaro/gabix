@@ -563,6 +563,12 @@ A milestone is a "demo-able" checkpoint. Worth a commit + tag + log entry.
 
 ## Progress Log
 
+### 2026-11-15 — Readability audit: host compatibility and hardware gate
+- Passed all 16 uploader/registry host tests and all eight default-feature shared-library unit tests.
+- Reviewed physical helper scope and recorded concrete Wi-Fi/USB, management/logging, SD recovery and memory/scheduling checks still required.
+- Pi remains disconnected; no physical actions performed. Recovery scratch sector 8192 overlaps the staging header, so verify current layout/update state before that test.
+- Continue local reference consistency work; hardware validation remains an explicit completion gate.
+
 ### 2026-11-15 — Readability audit: renamed helper references
 - Searched removed API names across teaching material and host scripts/tests; updated the VFS tour/glossary's stale user-range helper.
 - Corrected unsafe pointer-validation claims and verified the path snippet exactly matches current source. Both HTML files parse.
