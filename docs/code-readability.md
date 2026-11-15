@@ -1446,3 +1446,15 @@ the kernel stack and starts the service again. Managed and UART-user builds pass
 Constants retain their prior values, and no runtime behavior was changed.
 Physical UART/network coexistence checks remain pending. Main orchestration and
 remaining probe/lesson-reference coverage are still open.
+
+### Network service polling
+
+`main.rs::poll_ethernet_and_reply` names the status-packet link values, two-second
+link-check interval and unmanaged one-second DHCP discover interval. Comments
+explain exclusive foreground ownership and synchronous device/storage work.
+Unknown link status permits DHCP; known-down status pauses it. Each call receives
+at most one frame, offering it to the update/management handler before ordinary
+network processing. A handled management frame returns before Wi-Fi event logging.
+
+Managed and UART-user builds pass. Values and operation order are unchanged.
+Physical service checks remain pending while the Pi is disconnected.

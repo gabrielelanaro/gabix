@@ -452,7 +452,10 @@ extern "C" fn arm_kernel_entry() {
     }
 }
 
-/// Poll from the UART loader's idle loop; the IRQ handler never owns these objects.
+/// Service DHCP and at most one received frame from the UART service's idle loop.
+/// The caller must exclusively own the global network/session/receiver objects;
+/// this function is synchronous and must never run from an IRQ or another task.
+/// Device polling and SD writes can delay the caller beyond its polling interval.
 #[cfg(feature = "pi-uart-user")]
 pub fn poll_ethernet_and_reply(console: &mut Pl011, _next_dhcp_discover_tick: &mut u64) {
     unsafe {
@@ -464,30 +467,32 @@ pub fn poll_ethernet_and_reply(console: &mut Pl011, _next_dhcp_discover_tick: &m
             #[cfg(feature = "pi-managed")]
             {
                 let now = raspi2b::timer::uptime_millis();
-                if now >= NEXT_LINK_CHECK {
+                if now >= NEXT_LINK_CHECK_MILLIS {
                     let link = match network.link_up() {
-                        Some(true) => 2,
-                        Some(false) => 1,
-                        None => 0,
+                        Some(true) => LINK_UP,
+                        Some(false) => LINK_DOWN,
+                        None => LINK_UNKNOWN,
                     };
                     if link != LINK_STATUS {
                         diagnostics::event(format_args!(
                             "network link {}",
                             match link {
-                                2 => "up",
-                                1 => "down",
+                                LINK_UP => "up",
+                                LINK_DOWN => "down",
                                 _ => "unknown",
                             }
                         ));
-                        if LINK_STATUS != 0 {
+                        if LINK_STATUS != LINK_UNKNOWN {
                             session.restart("link changed");
                         }
                         LINK_STATUS = link;
                         flush_diagnostics(true);
                     }
-                    NEXT_LINK_CHECK = now + 2000;
+                    NEXT_LINK_CHECK_MILLIS = now + LINK_CHECK_INTERVAL_MILLIS;
                 }
-                session.poll(network, now / 1000, LINK_STATUS != 1);
+                // An unknown link still permits DHCP attempts. Only a known-down
+                // link pauses them; DHCP consumes seconds rather than milliseconds.
+                session.poll(network, now / 1000, LINK_STATUS != LINK_DOWN);
                 record_network_progress(session);
                 if let Some(receiver) = (&mut *core::ptr::addr_of_mut!(PI_SD_TRANSFER)).as_mut() {
                     receiver.network_status(session, LINK_STATUS);
@@ -496,8 +501,11 @@ pub fn poll_ethernet_and_reply(console: &mut Pl011, _next_dhcp_discover_tick: &m
             #[cfg(not(feature = "pi-managed"))]
             if !session.is_configured() && current_tick >= *_next_dhcp_discover_tick {
                 session.send_discover(network);
-                *_next_dhcp_discover_tick = current_tick + 100;
+                *_next_dhcp_discover_tick = current_tick + DHCP_DISCOVER_INTERVAL_TICKS;
             }
+            // Give the update/management protocol first access to this frame.
+            // A handled request returns immediately, postponing Wi-Fi event logging
+            // until a later call. Other frames go through DHCP/ARP/echo handling.
             if let Some(frame) = network.receive() {
                 #[cfg(feature = "pi-sd-transfer")]
                 if let Some(receiver) = (&mut *core::ptr::addr_of_mut!(PI_SD_TRANSFER)).as_mut() {
@@ -690,9 +698,20 @@ pub fn flush_diagnostics(critical: bool) {
     }
 }
 #[cfg(feature = "pi-managed")]
-static mut LINK_STATUS: u32 = 0;
+// Numeric values are also exposed by the management status packet.
+const LINK_UNKNOWN: u32 = 0;
 #[cfg(feature = "pi-managed")]
-static mut NEXT_LINK_CHECK: u64 = 0;
+const LINK_DOWN: u32 = 1;
+#[cfg(feature = "pi-managed")]
+const LINK_UP: u32 = 2;
+#[cfg(feature = "pi-managed")]
+const LINK_CHECK_INTERVAL_MILLIS: u64 = 2000;
+#[cfg(all(feature = "pi-uart-user", not(feature = "pi-managed")))]
+const DHCP_DISCOVER_INTERVAL_TICKS: u64 = 100; // One second at the Pi timer's 100 Hz.
+#[cfg(feature = "pi-managed")]
+static mut LINK_STATUS: u32 = LINK_UNKNOWN;
+#[cfg(feature = "pi-managed")]
+static mut NEXT_LINK_CHECK_MILLIS: u64 = 0;
 #[cfg(feature = "pi-managed")]
 fn record_network_progress(session: &DhcpSession) {
     static mut PREVIOUS: (u32, u32, u32, u64) = (u32::MAX, 0, 0, 0);

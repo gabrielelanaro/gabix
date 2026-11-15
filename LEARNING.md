@@ -563,6 +563,11 @@ A milestone is a "demo-able" checkpoint. Worth a commit + tag + log entry.
 
 ## Progress Log
 
+### 2026-11-15 — Readability audit: network service polling
+- Named link status values and link/DHCP polling intervals; explained exclusive service ownership, synchronous work and management-frame priority.
+- Managed and UART-user builds pass with unchanged values and operation order. The Pi is disconnected, so physical checks remain pending.
+- Remaining orchestration, probes and lesson-reference review continue under the readability goal.
+
 ### 2026-11-15 — Readability audit: UART service timing
 - Named managed watchdog timing and explained UART idle-timeout priority, network polling delays, static-buffer ownership and user-exit service restart.
 - Managed and UART-user builds pass with unchanged values/behavior. No physical device activity was performed.
