@@ -83,6 +83,7 @@ will be checked alongside the implementation they exercise.
   - [x] PIT: named control-word fields and corrected the mode description
   - [x] PIC masks and local APIC enable/address/acknowledgement fields
   - [x] Task context switch and matching new-task/fork stack construction
+  - [x] Boot orchestration, GDT/TSS contracts and initial user entry
 - [x] x86 PCI and VirtIO drivers (source review; existing QEMU checks pass)
   - [x] PCI bus-0 discovery, BAR fields and configuration access contract
   - [x] VirtIO capability regions and MSI-X table/control parsing
@@ -682,3 +683,18 @@ entry from the fork assembly entry and correct the initial-stack diagram.
 access to the configured local forwarding port; the first launch failed before
 boot. Evidence covers startup and parent/child resumption, not the full remaining
 scheduler and exception-entry review.
+
+### x86 boot and user entry
+
+Named boot settings and CPU flags; initial user entry takes the selectors
+created by GDT setup. The installed `x86_64` crate's `GlobalDescriptorTable::append`
+constructs selectors with the descriptor's privilege level, retaining the
+current user CS/SS values. GDT comments reflect scheduler updates of TSS.RSP0
+and the separate software SYSCALL stack switch.
+
+Corrected invalid inline-assembly annotations encountered during review: the
+SSE-enable OR clobbers flags, and the IRETQ sequence pushes memory and never
+returns. This is a compiler-contract correction alongside the readability work.
+Existing user-mode boot and timer QEMU tests pass. These cover startup and
+ordinary interrupts; the remaining interrupt-wrapper review is separate.
+Flag references: [Linux x86 processor flags](https://raw.githubusercontent.com/torvalds/linux/master/arch/x86/include/uapi/asm/processor-flags.h).

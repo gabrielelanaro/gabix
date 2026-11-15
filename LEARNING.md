@@ -563,6 +563,11 @@ A milestone is a "demo-able" checkpoint. Worth a commit + tag + log entry.
 
 ## Progress Log
 
+### 2026-11-15 — Readability audit: x86 boot and user entry
+- Named CR4 SSE-support bits, initial user flags, timer rate and queue size. User entry obtains selectors from the GDT instead of repeating their encoded values. Explained the IRETQ stack order.
+- Corrected stale GDT/TSS descriptions: scheduler updates RSP0, and SYSCALL uses a software stack switch. Fixed assembly annotations: OR changes flags; the push/IRETQ sequence touches the stack and transfers control permanently. Intended register values and transition order are preserved.
+- Existing user-mode boot and timer tests pass. Checked descriptor privilege selection in the installed x86_64 crate. Interrupt wrappers, paging and syscall entry remain to review; physical Pi validation remains pending.
+
 ### 2026-11-15 — Readability audit: x86 saved task stacks
 - Shared named saved-register slots and stack sizes between context switching and scheduler stack construction. Fork assembly uses named operands derived from the same layout. Corrected the new-task diagram to identify its trampoline return address.
 - Existing fork test passes: both parent and child resume. Initial test launch failed before boot on its local forwarding port; rerun with port access passed. Register order, stack offsets, alignment and return instructions are preserved.
