@@ -64,7 +64,8 @@ will be checked alongside the implementation they exercise.
   - [x] Fixed-process isolation probe ABI and fault-status checks
   - [x] ARM user-entry mode changes and bootstrap ELF-loader contracts
   - [x] ARM syscall frame, dispatch, output bounds and exit paths
-  - [ ] Boot/exception assembly, process operations, memory ownership/cache assumptions and syscalls
+  - [x] ARM scheduler task states, process switching and static-stack lifetime
+  - [ ] Boot/exception assembly and memory ownership/cache assumptions
 - [ ] ARM loader, SD update/install, authenticated management, and diagnostics
 - [ ] ARM VirtIO adapters and hardware probes
   - [x] QEMU VirtIO network: queue roles, feature words, packet metadata and buffer reuse
@@ -1100,3 +1101,24 @@ or interrupt behavior, which remains separately open.
 Reference: [Arm semihosting specification, trap encoding and SYS_EXIT_EXTENDED](https://github.com/ARM-software/abi-aa/blob/main/semihosting/semihosting.rst).
 Existing QEMU userspace-write and process-isolation tests pass. The Pi hardware
 build also passes; physical execution is pending while the board is disconnected.
+
+### ARM scheduler lifecycle
+
+`targets/armv7/src/scheduler.rs` names the dispatcher sentinel and preemption
+probe round count. Comments follow the source's switch order: choose mappings,
+resume a task stack, regain the dispatcher stack with IRQs masked, then select
+boot mappings. The per-call saved IRQ setting stays on each suspended stack.
+The state machine has Empty, Ready, Running and Finished only; there is no
+blocked/sleeping state. With IRQs disabled, a non-yielding task prevents return.
+
+The static stack arrays live for the kernel's entire run. reset_finished_tasks
+checks that all slots are inactive before permitting their reuse; it does not
+free stack memory. Process exit abandons the call chain without running local
+destructors. spawn_process requires a prepared, unique process identity from its
+caller and does not validate that requirement. These comments describe existing
+behavior; names preserve the previous numeric values.
+
+Existing QEMU cooperative/task-preemption and process-isolation checks pass.
+An initial local sentinel-replacement typo failed compilation and was corrected
+before both checks were rerun successfully. Exception-wrapper review and deeper
+memory/cache assumptions remain open, as does physical Pi verification.

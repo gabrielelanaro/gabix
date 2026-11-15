@@ -563,6 +563,11 @@ A milestone is a "demo-able" checkpoint. Worth a commit + tag + log entry.
 
 ## Progress Log
 
+### 2026-11-15 — Readability audit: ARM scheduler lifecycle
+- Named the dispatcher sentinel and probe round count. Explained address-space/stack switch order, per-task IRQ restoration, static stack reuse and process-spawn preconditions.
+- Corrected the stack-lifetime comment and documented that finished call chains do not run destructors. Existing QEMU task/preemption and process-isolation checks pass after fixing a local constant-substitution typo.
+- Marked scheduler/process source review in the audit; exception assembly and memory/cache review remain open. Physical Pi verification is still pending.
+
 ### 2026-11-15 — Readability audit: ARM syscall adapter
 - Named register indices, getpid/error/output constants and semihosting exit fields. Documented the saved-frame layout, process versus standalone exit behavior and write-pointer validation limits.
 - Existing QEMU userspace-write and isolation tests pass; Pi hardware build passes. Numeric values and behavior are unchanged.
