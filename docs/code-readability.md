@@ -101,6 +101,8 @@ will be checked alongside the implementation they exercise.
   - [x] Scheduler state selection, block/wake and lifecycle helper contracts
   - [x] Task creation, fork layout and process-table resource contracts (known limitations below)
   - [x] VFS inode cache, internal directory encoding and descriptor ownership
+  - [x] x86 ext2 adapter storage units, pointer roles and read limits
+  - [ ] Remaining x86 ext2 serialized field offsets
 - [ ] Learning snippets and test helpers affected by the edits
 
 ## First slice: Wi-Fi power-on
@@ -892,3 +894,19 @@ The existing QEMU file-read test passes through path resolution, open and read.
 It does not test mount replacement or the standalone cached-directory decoder;
 the latter's renamed width expressions retain 1 + name length + 8 and the same
 field slices. No disk-write or cache-invalidation behavior changed.
+
+### x86 ext2 adapter storage units
+
+`src/fs/ext2.rs` names sector/superblock/read-block sizes, base inode and group
+descriptor widths, and direct/indirect pointer positions. The same two sectors
+and slices are read as before. Field-offset parsing remains a separate review.
+Corrected the directory file-type description: its enumeration differs from
+inode mode bits. References were checked against Linux
+[fs/ext2/ext2.h](https://raw.githubusercontent.com/torvalds/linux/master/fs/ext2/ext2.h).
+
+Comments identify the adapter's existing limits: fixed 1 KiB data reads,
+group-0 inode-table selection, direct blocks only, truncation at the first zero
+file pointer, and no feature/block-size rejection at mount. On-disk self/parent
+directory entries are omitted from listings but remain available through lookup.
+The existing QEMU file-read test passes for the generated supported image.
+It does not validate other block sizes, inode groups or sparse/indirect files.

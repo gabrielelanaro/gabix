@@ -6,7 +6,7 @@
 //! where the first data lives, etc.
 //!
 //! Field offsets and sizes come from `struct ext2_super_block` in
-//! Linux's include/uapi/linux/ext2_fs.h. We parse only the fields
+//! Linux's fs/ext2/ext2.h. We parse only the fields
 //! we need (the first ~60 bytes); the rest of the 1024-byte struct
 //! is metadata for journaling, quotas, etc. that we don't touch.
 
@@ -32,6 +32,22 @@ pub const EXT2_ROOT_INO: u32 = 2;
 /// 1 -> 2048, 2 -> 4096.
 const EXT2_MIN_BLOCK_SIZE: u32 = 1024;
 
+// Device reads use 512-byte sectors; this adapter's data-block helper
+// always reads 1 KiB, even when the parsed superblock advertises another size.
+const SECTOR_BYTES: usize = 512;
+const SUPERBLOCK_BYTES: usize = 1024;
+const SUPERBLOCK_START_SECTOR: u64 = (SUPERBLOCK_BYTES / SECTOR_BYTES) as u64;
+const READ_BLOCK_BYTES: usize = 1024;
+const SECTORS_PER_READ_BLOCK: u64 = (READ_BLOCK_BYTES / SECTOR_BYTES) as u64;
+const BASE_INODE_BYTES: usize = 128;
+const GROUP_DESCRIPTOR_BYTES: usize = 32;
+const DIRECT_BLOCK_COUNT: usize = 12;
+const INDIRECT_BLOCK_INDEX: usize = DIRECT_BLOCK_COUNT;
+const DOUBLE_INDIRECT_BLOCK_INDEX: usize = INDIRECT_BLOCK_INDEX + 1;
+const TRIPLE_INDIRECT_BLOCK_INDEX: usize = DOUBLE_INDIRECT_BLOCK_INDEX + 1;
+const BLOCK_POINTER_COUNT: usize = TRIPLE_INDIRECT_BLOCK_INDEX + 1;
+const DIRECTORY_HEADER_BYTES: usize = 8;
+
 /// Read the ext2 superblock from disk. The superblock is 1024 bytes
 /// starting at byte offset 1024 (sector 2). Since `read_sector` returns
 /// 512 bytes at a time, we read two sectors (2 and 3) and concatenate.
@@ -42,12 +58,12 @@ const EXT2_MIN_BLOCK_SIZE: u32 = 1024;
 pub fn read_superblock(dev: &mut dyn BlockDevice) -> Superblock {
     println!("[ext2] reading superblock (sectors 2 and 3)");
 
-    let sector2 = dev.read_sector(2);
-    let sector3 = dev.read_sector(3);
+    let first_sector = dev.read_sector(SUPERBLOCK_START_SECTOR);
+    let second_sector = dev.read_sector(SUPERBLOCK_START_SECTOR + 1);
 
-    let mut bytes = [0u8; 1024];
-    bytes[..512].copy_from_slice(&sector2);
-    bytes[512..].copy_from_slice(&sector3);
+    let mut bytes = [0u8; SUPERBLOCK_BYTES];
+    bytes[..SECTOR_BYTES].copy_from_slice(&first_sector);
+    bytes[SECTOR_BYTES..].copy_from_slice(&second_sector);
 
     Superblock::parse(&bytes)
 }
@@ -98,7 +114,7 @@ impl Superblock {
     /// without needing repr(C) transmute tricks.
     pub fn parse(bytes: &[u8]) -> Self {
         assert!(
-            bytes.len() >= 1024,
+            bytes.len() >= SUPERBLOCK_BYTES,
             "superblock needs 1024 bytes, got {}",
             bytes.len()
         );
@@ -196,7 +212,11 @@ pub struct BlockGroupDescriptor {
 impl BlockGroupDescriptor {
     /// Parse 32 bytes into a BlockGroupDescriptor. Per the ext2 spec.
     pub fn parse(bytes: &[u8]) -> Self {
-        assert!(bytes.len() >= 32, "BGD needs 32 bytes, got {}", bytes.len());
+        assert!(
+            bytes.len() >= GROUP_DESCRIPTOR_BYTES,
+            "BGD needs 32 bytes, got {}",
+            bytes.len()
+        );
 
         let u32_at =
             |off: usize| -> u32 { u32::from_le_bytes(bytes[off..off + 4].try_into().unwrap()) };
@@ -268,7 +288,7 @@ pub struct Inode {
     pub blocks: u32,
     /// 15 block pointers: 12 direct, 1 indirect, 1 double, 1 triple.
     /// We don't dereference these in Lesson 12; that's Lesson 13.
-    pub block_pointers: [u32; 15],
+    pub block_pointers: [u32; BLOCK_POINTER_COUNT],
 }
 
 impl Inode {
@@ -277,7 +297,7 @@ impl Inode {
     /// larger (256+); bytes 128+ are extended attributes we don't touch.
     pub fn parse(bytes: &[u8]) -> Self {
         assert!(
-            bytes.len() >= 128,
+            bytes.len() >= BASE_INODE_BYTES,
             "inode needs 128 bytes, got {}",
             bytes.len()
         );
@@ -287,8 +307,8 @@ impl Inode {
         let u16_at =
             |off: usize| -> u16 { u16::from_le_bytes(bytes[off..off + 2].try_into().unwrap()) };
 
-        let mut block_pointers = [0u32; 15];
-        for i in 0..15 {
+        let mut block_pointers = [0u32; BLOCK_POINTER_COUNT];
+        for i in 0..BLOCK_POINTER_COUNT {
             block_pointers[i] = u32_at(40 + i * 4);
         }
 
@@ -355,13 +375,16 @@ impl Inode {
         let direct: Vec<u32> = self
             .block_pointers
             .iter()
-            .take(12)
+            .take(DIRECT_BLOCK_COUNT)
             .filter(|&&b| b != 0)
             .copied()
             .collect();
         println!(
             "[ext2]   block_ptrs    = direct {:?}, indirect={}, double={}, triple={}",
-            direct, self.block_pointers[12], self.block_pointers[13], self.block_pointers[14]
+            direct,
+            self.block_pointers[INDIRECT_BLOCK_INDEX],
+            self.block_pointers[DOUBLE_INDIRECT_BLOCK_INDEX],
+            self.block_pointers[TRIPLE_INDIRECT_BLOCK_INDEX]
         );
     }
 }
@@ -373,8 +396,9 @@ impl Inode {
 ///   local_idx  = (inode_num - 1) % inodes_per_group
 ///   byte_offset = bg_inode_table[group] * block_size + local_idx * inode_size
 ///
-/// For inode 2 on our disk: group 0, local_idx 1, bg_inode_table = 5,
-/// block_size 1024, inode_size 256. Byte offset = 5*1024 + 1*256 = 5376.
+/// The caller supplies a group descriptor; this helper computes only the
+/// within-group index. Ext2::read_inode always supplies group 0, so other
+/// inode groups are currently read from the wrong table.
 pub fn read_inode(
     dev: &mut dyn BlockDevice,
     sb: &Superblock,
@@ -394,15 +418,15 @@ pub fn read_inode(
 
     // The 128-byte inode may straddle a sector boundary. Read the two
     // sectors that contain it, then index in.
-    let start_sector = inode_byte / 512;
-    let offset_in_buf = (inode_byte % 512) as usize;
+    let start_sector = inode_byte / SECTOR_BYTES as u64;
+    let offset_in_buf = (inode_byte % SECTOR_BYTES as u64) as usize;
     let sector_a = dev.read_sector(start_sector);
     let sector_b = dev.read_sector(start_sector + 1);
-    let mut buf = [0u8; 1024];
-    buf[..512].copy_from_slice(&sector_a);
-    buf[512..].copy_from_slice(&sector_b);
+    let mut buf = [0u8; READ_BLOCK_BYTES];
+    buf[..SECTOR_BYTES].copy_from_slice(&sector_a);
+    buf[SECTOR_BYTES..].copy_from_slice(&sector_b);
 
-    Inode::parse(&buf[offset_in_buf..offset_in_buf + 128])
+    Inode::parse(&buf[offset_in_buf..offset_in_buf + BASE_INODE_BYTES])
 }
 
 // ============================================================
@@ -412,12 +436,12 @@ pub fn read_inode(
 /// Read one ext2 block (1024 bytes = 2 sectors). Used by superblock,
 /// inode, and now directory readers. Assumes 1024-byte blocks — our
 /// disk's only size. A block-size-aware version is a future refactor.
-pub fn read_block(dev: &mut dyn BlockDevice, block_n: u32) -> [u8; 1024] {
-    let sector_a = dev.read_sector((block_n as u64) * 2);
-    let sector_b = dev.read_sector((block_n as u64) * 2 + 1);
-    let mut buf = [0u8; 1024];
-    buf[..512].copy_from_slice(&sector_a);
-    buf[512..].copy_from_slice(&sector_b);
+pub fn read_block(dev: &mut dyn BlockDevice, block_n: u32) -> [u8; READ_BLOCK_BYTES] {
+    let sector_a = dev.read_sector((block_n as u64) * SECTORS_PER_READ_BLOCK);
+    let sector_b = dev.read_sector((block_n as u64) * SECTORS_PER_READ_BLOCK + 1);
+    let mut buf = [0u8; READ_BLOCK_BYTES];
+    buf[..SECTOR_BYTES].copy_from_slice(&sector_a);
+    buf[SECTOR_BYTES..].copy_from_slice(&sector_b);
     buf
 }
 
@@ -425,8 +449,8 @@ pub fn read_block(dev: &mut dyn BlockDevice, block_n: u32) -> [u8; 1024] {
 // Directory entry (Lesson 13.1)
 // ============================================================
 
-/// ext2 file-type bits stored in the dirent's `file_type` byte.
-/// Same encoding as i_mode's top 4 bits, just shifted right by 12.
+/// Directory-entry file-type codes. These are a separate enumeration from
+/// inode mode bits; for example, a directory is code 2 here and S_IFDIR in mode.
 pub const EXT_FT_UNKNOWN: u8 = 0;
 pub const EXT_FT_REG_FILE: u8 = 1;
 pub const EXT_FT_DIR: u8 = 2;
@@ -531,7 +555,12 @@ impl Dirent {
 pub fn walk_directory(dev: &mut dyn BlockDevice, dir_inode: &Inode) -> Vec<Dirent> {
     let mut entries = Vec::new();
 
-    for (i, &block_n) in dir_inode.block_pointers.iter().enumerate().take(12) {
+    for (i, &block_n) in dir_inode
+        .block_pointers
+        .iter()
+        .enumerate()
+        .take(DIRECT_BLOCK_COUNT)
+    {
         if block_n == 0 {
             continue;
         }
@@ -539,7 +568,7 @@ pub fn walk_directory(dev: &mut dyn BlockDevice, dir_inode: &Inode) -> Vec<Diren
         let block = read_block(dev, block_n);
 
         let mut offset = 0usize;
-        while offset + 8 <= block.len() {
+        while offset + DIRECTORY_HEADER_BYTES <= block.len() {
             let (entry, next_offset) = Dirent::parse_at(&block, offset);
             if entry.is_live() {
                 let name_str = core::str::from_utf8(&entry.name).unwrap_or("<non-utf8>");
@@ -580,12 +609,12 @@ pub fn lookup_in_dir(dev: &mut dyn BlockDevice, dir_inode: &Inode, name: &[u8]) 
 // ============================================================
 
 /// Read a regular file's bytes via its direct block pointers
-/// (block_pointers[0..12]). For Lesson 14: doesn't follow
-/// indirect/double/triple — files we care about (ELF binaries) fit
-/// in 12 KiB.
+/// (block_pointers[0..12]). Reads at most 12 KiB with the fixed 1 KiB helper.
+/// The first zero pointer ends the read, so sparse-file holes truncate output.
+/// Indirect blocks are ignored; a larger inode size can return a short Vec.
 pub fn read_file_data(dev: &mut dyn BlockDevice, file_inode: &Inode) -> Vec<u8> {
     let mut data = Vec::new();
-    for &block_n in file_inode.block_pointers.iter().take(12) {
+    for &block_n in file_inode.block_pointers.iter().take(DIRECT_BLOCK_COUNT) {
         if block_n == 0 {
             break;
         }
@@ -601,9 +630,9 @@ pub fn read_file_data(dev: &mut dyn BlockDevice, file_inode: &Inode) -> Vec<u8> 
 /// superblock + block group 0 descriptor. All reads go through
 /// methods on this struct, which lock `dev` for the duration.
 ///
-/// For our 1 MB disk there's one block group, so storing `bgd0` is
-/// enough. Multi-group disks would store a Vec<BlockGroupDescriptor>
-/// instead.
+/// Only group 0 is retained. Mount checks the magic, but does not reject
+/// unsupported block sizes, groups or feature bits. The read helpers assume
+/// the small generated test images; this is not general ext2 validation.
 pub struct Ext2 {
     dev: Mutex<Box<dyn BlockDevice>>,
     sb: Superblock,
@@ -703,9 +732,8 @@ impl Filesystem for Ext2 {
         let entries = self.walk_directory(&dir);
         let mut out = Vec::new();
         for entry in entries {
-            // Skip . and .. — they're conventional, not real entries
-            // for VFS to walk through. The kernel knows implicitly
-            // that "/" resolves to itself.
+            // Omit the on-disk self/parent entries from cached listings.
+            // Path lookup uses lookup() separately and can still resolve them.
             if entry.name == b"." || entry.name == b".." {
                 continue;
             }
@@ -749,19 +777,20 @@ pub fn read_block_group_descriptor(
 ) -> BlockGroupDescriptor {
     let bgdt_block = sb.first_data_block + 1;
     let bgdt_byte = bgdt_block as u64 * sb.block_size as u64;
-    let entry_byte = bgdt_byte + (group_index as u64) * 32;
+    let entry_byte = bgdt_byte + (group_index as u64) * GROUP_DESCRIPTOR_BYTES as u64;
 
     println!(
         "[ext2] reading block group descriptor {} (BGDT block {}, byte {})",
         group_index, bgdt_block, entry_byte
     );
 
-    // The 32-byte entry may straddle a sector boundary. For our disk
-    // (entry at byte 2048, sectors are 512 B), it doesn't. Read the
-    // containing sector, index into it.
-    let sector = (entry_byte / 512) as u64;
-    let offset_in_sector = (entry_byte % 512) as usize;
+    // Standard 32-byte descriptors divide a 512-byte sector exactly.
+    // Read the containing sector and select this descriptor's byte range.
+    let sector = (entry_byte / SECTOR_BYTES as u64) as u64;
+    let offset_in_sector = (entry_byte % SECTOR_BYTES as u64) as usize;
     let sector_bytes = dev.read_sector(sector);
 
-    BlockGroupDescriptor::parse(&sector_bytes[offset_in_sector..offset_in_sector + 32])
+    BlockGroupDescriptor::parse(
+        &sector_bytes[offset_in_sector..offset_in_sector + GROUP_DESCRIPTOR_BYTES],
+    )
 }

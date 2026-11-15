@@ -563,6 +563,11 @@ A milestone is a "demo-able" checkpoint. Worth a commit + tag + log entry.
 
 ## Progress Log
 
+### 2026-11-15 — Readability audit: ext2 adapter units and limits
+- Named disk/metadata widths and direct/indirect pointer positions. Corrected directory type-code and descriptor-boundary explanations against the Linux ext2 definitions.
+- Documented fixed-block-size, group-0, direct-block and sparse-read limitations without changing behavior. Existing QEMU file-read test passes for the supported image.
+- Serialized ext2 field offsets and remaining network/ARM areas still need review; physical Pi validation stays pending.
+
 ### 2026-11-15 — Readability audit: VFS cache and descriptors
 - Named internal directory-record widths and parser boundaries, reused ROOT_INO, and clarified file/socket handle ownership and cursor sharing.
 - Corrected stale claims about path lookup and cache hits. Documented cached-only writes, shared inode-number namespace and retained cache entries across mount replacement.
