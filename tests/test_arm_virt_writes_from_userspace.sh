@@ -9,7 +9,8 @@ fixture_bin=$(mktemp /tmp/mini-os-arm-user.XXXXXX.bin)
 out=$(mktemp /tmp/mini-os-test-arm-virt-user.XXXXXX)
 qemu=${QEMU_SYSTEM_ARM:-/tmp/gabix-qemu-arm/root/usr/bin/qemu-system-arm}
 rust_sysroot=$(rustc --print sysroot)
-llvm_objcopy="$rust_sysroot/lib/rustlib/x86_64-unknown-linux-gnu/bin/llvm-objcopy"
+rust_host=$(rustc -vV | sed -n 's/^host: //p')
+llvm_objcopy="$rust_sysroot/lib/rustlib/$rust_host/bin/llvm-objcopy"
 
 rustc \
     --target armv7a-none-eabihf \

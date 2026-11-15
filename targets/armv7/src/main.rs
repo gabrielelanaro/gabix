@@ -13,6 +13,7 @@ mod platform;
 #[cfg(feature = "raspi2b")]
 mod raspi2b;
 mod scheduler;
+mod process;
 mod syscall;
 mod user;
 #[cfg(feature = "pi-uart-user")]
@@ -72,6 +73,7 @@ global_asm!(
     rust_entry = sym arm_kernel_entry,
     irq_entry = sym arm_irq_entry,
     svc_entry = sym arm_svc_entry,
+    memory_abort_entry = sym arm_memory_abort_entry,
     semihosting = const SEMIHOSTING,
 );
 
@@ -86,6 +88,7 @@ global_asm!(
     rust_entry = sym arm_kernel_entry,
     irq_entry = sym arm_irq_entry,
     svc_entry = sym arm_svc_entry,
+    memory_abort_entry = sym arm_memory_abort_entry,
     semihosting = const SEMIHOSTING,
 );
 
@@ -142,6 +145,7 @@ extern "C" fn arm_kernel_entry() {
         }
         virt::timer::init();
         verify_timer_preemption(&mut console);
+        verify_process_isolation(&mut console);
         if let Some(mut block) = virt::block::VirtioBlock::probe() {
             if let Some(sector) = block.try_read_sector(1) {
                 if sector.starts_with(b"GABIXARM") {
@@ -246,6 +250,7 @@ extern "C" fn arm_kernel_entry() {
         {
             raspi2b::timer::init();
             verify_timer_preemption(&mut console);
+            verify_process_isolation(&mut console);
         }
         #[cfg(any(not(feature = "pi-uart-user"), feature = "pi-hardware"))]
         if let Some(mut usb) = raspi2b::usb::Dwc2::initialize() {
@@ -451,6 +456,22 @@ fn allocation_error(_: Layout) -> ! {
     loop {
         core::hint::spin_loop();
     }
+}
+
+unsafe fn verify_process_isolation(console: &mut Pl011) {
+    #[cfg(feature = "pi-hardware")]
+    raspi2b::reset::arm_deadman(15);
+    if process::verify_isolation() {
+        write_line(console, b"gabix arm isolated userspace processes passed");
+        write_line(console, b"gabix arm user faults contained; peer process survived");
+        #[cfg(all(feature = "pi-hardware", not(any(feature = "pi-network-dev", feature = "pi-network-pre-timer-probe", feature = "pi-network-no-irq-dev"))))]
+        raspi2b::reset::stop_deadman();
+    } else { write_line(console, b"gabix arm process isolation FAILED"); }
+}
+
+#[no_mangle]
+unsafe extern "C" fn arm_memory_abort_entry(address: u32, status: u32, saved_status: u32, instruction: u32) -> ! {
+    process::handle_memory_abort(address, status, saved_status, instruction != 0)
 }
 
 /// The physical watchdog returns a stalled test to the UART loader.

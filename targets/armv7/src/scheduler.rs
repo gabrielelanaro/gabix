@@ -21,12 +21,14 @@ struct Task {
     context: TaskContext,
     state: TaskState,
     entry: Option<fn()>,
+    process: Option<usize>,
 }
 impl Task {
     const EMPTY: Self = Self {
         context: TaskContext::empty(),
         state: TaskState::Empty,
         entry: None,
+        process: None,
     };
 }
 #[repr(C, align(8))]
@@ -59,6 +61,9 @@ unsafe fn restore_irqs(were_enabled: bool) {
 pub unsafe fn preempt_on_timer() {
     if CURRENT_TASK < MAX_TASKS {
         PREEMPTIONS.fetch_add(1, Ordering::Relaxed);
+        if let Some(id) = current_process() {
+            crate::process::record_preemption(id);
+        }
         yield_now();
     }
 }
@@ -110,12 +115,14 @@ pub unsafe fn run_until_finished() {
             ran_task = true;
             CURRENT_TASK = id;
             (*task).state = TaskState::Running;
+            crate::memory::activate_process((*task).process);
             // Keep raw pointers, not live mutable Rust references, across a switch.
             switch(
                 core::ptr::addr_of_mut!(DISPATCHER),
                 core::ptr::addr_of!((*task).context),
             );
             CURRENT_TASK = MAX_TASKS;
+            crate::memory::activate_process(None);
         }
         if !ran_task {
             restore_irqs(were_enabled);
@@ -237,4 +244,51 @@ pub unsafe fn timer_preempts_tasks() -> bool {
         && PREEMPTIONS.load(Ordering::SeqCst) >= 8
         && TASKS[0].state == TaskState::Finished
         && TASKS[1].state == TaskState::Finished
+}
+
+/// The current process identity comes from scheduler-owned state, never userspace.
+pub unsafe fn current_process() -> Option<usize> {
+    if CURRENT_TASK < MAX_TASKS {
+        TASKS[CURRENT_TASK].process
+    } else {
+        None
+    }
+}
+
+/// Discard only finished tasks, before starting another boot-check batch.
+pub unsafe fn reset_finished_tasks() {
+    let enabled = mask_irqs();
+    assert!(CURRENT_TASK == MAX_TASKS);
+    let tasks = TASKS;
+    assert!(tasks
+        .iter()
+        .all(|task| matches!(task.state, TaskState::Empty | TaskState::Finished)));
+    TASKS = [Task::EMPTY; MAX_TASKS];
+    restore_irqs(enabled);
+}
+
+pub unsafe fn spawn_process(id: usize) -> Option<usize> {
+    let enabled = mask_irqs();
+    let result = spawn(crate::process::enter_current_process);
+    if let Some(slot) = result {
+        TASKS[slot].process = Some(id);
+    }
+    restore_irqs(enabled);
+    result
+}
+
+/// Exit/fault discards the current kernel call chain. Its stack stays allocated
+/// until all tasks stop and reset_finished_tasks is called.
+pub unsafe fn finish_current_process() -> ! {
+    mask_irqs();
+    assert!(current_process().is_some());
+    let task = core::ptr::addr_of_mut!(TASKS)
+        .cast::<Task>()
+        .add(CURRENT_TASK);
+    (*task).state = TaskState::Finished;
+    switch(
+        core::ptr::addr_of_mut!((*task).context),
+        core::ptr::addr_of!(DISPATCHER),
+    );
+    unreachable!("finished process resumed");
 }

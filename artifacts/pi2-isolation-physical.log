@@ -1,0 +1,37 @@
+UART reboot from isolation kernel: USER UPLOAD OK; GABIX LOADER READY
+UPLOAD CRC OK
+UPLOAD OK
+HANDOFF ADDRESS 0x00100000
+HANDOFF LENGTH 0x0000EF08
+HANDOFF FIRST WORD 0xF10C00C0
+HANDOFF SCTLR 0x00C50878
+HANDOFF CPSR 0x600001DA
+HANDOFF BRANCH
+gabix raspi2b booted
+gabix raspi2b smp enabled
+gabix raspi2b memory mapped
+gabix raspi2b heap allocated
+gabix arm scheduler trace 10 20 11 21 12 22
+gabix arm scheduler tasks finished
+gabix arm timer preempted two non-yielding tasks
+gabix isolation address=0x0 access=0 outcomes=[Exited(0), Exited(0)] ticks=[487, 488]
+gabix isolation address=0x2200000 access=0 outcomes=[Fault { address: 35651584, status: 13, instruction: false }, Exited(0)] ticks=[513, 514]
+gabix isolation address=0x2200000 access=1 outcomes=[Fault { address: 35651584, status: 2061, instruction: false }, Exited(0)] ticks=[527, 527]
+gabix isolation address=0x100000 access=0 outcomes=[Fault { address: 1048576, status: 13, instruction: false }, Exited(0)] ticks=[527, 527]
+gabix isolation address=0x411ffdf0 access=2 outcomes=[Fault { address: 1092615664, status: 13, instruction: true }, Exited(0)] ticks=[527, 527]
+gabix arm isolated userspace processes passed
+gabix arm user faults contained; peer process survived
+gabix raspi2b usb enumerated
+gabix raspi2b usb network configured
+gabix raspi2b ethernet link down
+gabix raspi2b waiting for ethernet link
+gabix raspi2b ethernet link up
+gabix raspi2b dhcp discover
+gabix raspi2b dhcp tx ok
+gabix raspi2b dhcp discover
+gabix raspi2b dhcp tx ok
+gabix raspi2b dhcp configured
+gabix raspi2b timer advanced
+GABIX USER READY
+Mac → Pi: isolated processes and UART reload passed
+Pi → Mac: isolated processes and UART reload passed

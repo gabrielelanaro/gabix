@@ -13,6 +13,14 @@ pub struct UserFrame {
 }
 
 pub unsafe fn dispatch(frame: &mut UserFrame) {
+    if let Some(id) = crate::scheduler::current_process() {
+        match frame.registers[7] {
+            SYS_EXIT => crate::process::exit_current(frame.registers[0]),
+            39 => { frame.registers[0] = id as u32 + 1; return; } // getpid
+            SYS_REBOOT => { frame.registers[0] = u32::MAX; return; }
+            _ => {}
+        }
+    }
     let result = match frame.registers[7] {
         SYS_WRITE => write(frame.registers[0], frame.registers[1], frame.registers[2]),
         SYS_EXIT => exit(frame),
@@ -47,6 +55,8 @@ unsafe fn exit(_frame: &mut UserFrame) -> u32 {
 }
 
 unsafe fn write(fd: u32, address: u32, len: u32) -> u32 {
+    if crate::scheduler::current_process().is_some()
+        && !crate::memory::process_range_is_valid(address, len) { return u32::MAX; }
     let end = address.saturating_add(len);
     if fd != 1 || len > 4096 || address < 0x4100_0000 || end > 0x4120_0000 {
         return u32::MAX;

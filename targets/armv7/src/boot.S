@@ -110,29 +110,33 @@ _start:
     b .Lpark
 
 .Lprefetch_abort:
-    mrc p15, 0, r4, c5, c0, 1
-    mrc p15, 0, r5, c6, c0, 2
-    mov r2, #0x50
-    bl .Lfault_putc
-    mov r6, r4
-    bl .Lfault_hex32
-    mov r2, #0x40
-    bl .Lfault_putc
-    mov r6, r5
-    bl .Lfault_hex32
+    cpsid i
+    sub lr, lr, #4
+    srsdb sp!, #0x13
+    cps #0x13
+    push {{r0-r12, lr}}
+    mrc p15, 0, r0, c6, c0, 2    @ IFAR: rejected instruction address
+    mrc p15, 0, r1, c5, c0, 1    @ IFSR: instruction fault kind
+    ldr r2, [sp, #60]
+    mov r3, #1                  @ instruction-fetch fault
+    bic sp, sp, #7
+    bl {memory_abort_entry}
     b .Lpark
 
 .Ldata_abort:
-    mrc p15, 0, r4, c5, c0, 0
-    mrc p15, 0, r5, c6, c0, 0
-    mov r2, #0x44
-    bl .Lfault_putc
-    mov r6, r4
-    bl .Lfault_hex32
-    mov r2, #0x40
-    bl .Lfault_putc
-    mov r6, r5
-    bl .Lfault_hex32
+    @ Abort mode has a banked return address/status. Store them directly on
+    @ the faulting task's SVC stack; no shared abort stack is needed.
+    cpsid i
+    sub lr, lr, #8
+    srsdb sp!, #0x13
+    cps #0x13
+    push {{r0-r12, lr}}
+    mrc p15, 0, r0, c6, c0, 0    @ DFAR: address the process tried to access
+    mrc p15, 0, r1, c5, c0, 0    @ DFSR: fault kind and read/write bit
+    ldr r2, [sp, #60]            @ saved CPSR after 14 regs and return PC
+    bic sp, sp, #7
+    mov r3, #0                  @ data-access fault
+    bl {memory_abort_entry}        @ terminates user process; kernel fault halts
     b .Lpark
 
 .Lfault_putc:
