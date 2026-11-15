@@ -32,7 +32,8 @@ will be checked alongside the implementation they exercise.
   - [x] Basic register transport: named vendor-request fields; SETUP/data contract
   - [x] Firmware pages, mailbox ownership, and power-off sequence: named fields and ordering explanations (physical check pending)
   - [x] Station phases, retry timings, and basic management-frame tags
-  - [ ] Packet descriptors, calibration, remaining frame/security fields
+  - [x] Packet descriptor fields, queue/rate selection and USB PID toggling
+  - [ ] Calibration, remaining frame/security fields
 - [ ] Pi USB controller, hub enumeration, Ethernet, and RNDIS
   - [x] LAN9512 register transport, PHY access and SMSC frame headers
   - [x] Ethernet selection and QEMU RNDIS setup/frame fields
@@ -334,3 +335,23 @@ sections 1.2 and 15, and [Cortex-A7 TRM](https://documentation-service.arm.com/s
 table 4-8. DWC2 FIFO/HCFG field encodings use the Linux hardware header linked
 above. QEMU USB UDP regression and managed Wi-Fi release build pass. Physical
 cache/FIFO/clock behavior still needs validation with the Pi connected.
+
+## Wi-Fi packet descriptors
+
+Named the adapter's receive-header fields and the transmit fields that select
+ownership, frame boundaries, queue, cipher, sequence handling and rate. The data
+path's old `0x40` is the aggregation-break bit; its best-effort queue selector is
+zero. Comments explain driver-information/padding skips and the descriptor XOR
+checksum. USB PID toggling retains the existing DWC2 encoding.
+References: OpenBSD [r92creg.h](https://github.com/openbsd/src/blob/master/sys/dev/ic/r92creg.h)
+and [if_urtwn.c](https://github.com/openbsd/src/blob/master/sys/dev/usb/if_urtwn.c),
+plus Realtek's Linux [RX/TX descriptor fields](https://github.com/torvalds/linux/blob/master/drivers/net/wireless/realtek/rtlwifi/rtl8192cu/trx.h).
+
+Managed Wi-Fi release build passes. A temporary host harness extracted the old
+and new transmit-buffer construction directly from source and compared 95,664
+cases: lengths 24..2016, four frame types, protected/unprotected, unicast/multicast,
+and three sequence values. Descriptor and payload bytes match. The harness is
+ignored under `target/runs/readability`; it performs no device operations. This
+proves those encodings are unchanged, not that radio operation has been retested.
+Receive arithmetic was reviewed against the reference fields; physical checks
+remain pending.

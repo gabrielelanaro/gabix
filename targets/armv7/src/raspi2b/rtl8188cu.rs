@@ -172,6 +172,49 @@ mod fw {
     pub const MAILBOX_POLL_US: u32 = 10;
 }
 
+// Adapter packet descriptors precede the 802.11 frame in USB bulk transfers.
+// These fields belong to the dongle; DWC2's USB channel has a separate setup.
+mod rx_descriptor {
+    pub const BYTES: usize = 24;
+    pub const PACKET_LENGTH_MASK: u32 = 0x3fff;
+    pub const CRC_ERROR: u32 = 1 << 14;
+    pub const INTEGRITY_CHECK_ERROR: u32 = 1 << 15;
+    pub const DRIVER_INFO_SHIFT: u32 = 16;
+    pub const DRIVER_INFO_MASK: u32 = 0xf;
+    pub const DRIVER_INFO_UNIT_BYTES: usize = 8;
+    pub const PADDING_SHIFT: u32 = 24;
+    pub const PADDING_MASK: u32 = 3;
+    pub const SOFTWARE_DECRYPTION_REQUIRED: u32 = 1 << 27;
+}
+
+mod tx_descriptor {
+    pub const BYTES: usize = 32;
+    pub const USB_BUFFER_BYTES: usize = 2048;
+    pub const FRAME_OFFSET_SHIFT: u32 = 16;
+    pub const MULTICAST: u32 = 1 << 24;
+    pub const LAST_SEGMENT: u32 = 1 << 26;
+    pub const FIRST_SEGMENT: u32 = 1 << 27;
+    pub const OWNED_BY_ADAPTER: u32 = 1 << 31;
+    pub const AGGREGATION_BREAK: u32 = 1 << 6;
+    pub const BEST_EFFORT_QUEUE: u32 = 0 << 8;
+    pub const MANAGEMENT_QUEUE: u32 = 0x12 << 8;
+    pub const RATE_TABLE_80211B: u32 = 6 << 16;
+    pub const CIPHER_AES: u32 = 3 << 22;
+    pub const SEQUENCE_ENABLE: u16 = 1 << 15;
+    pub const HARDWARE_SEQUENCE: u32 = 1 << 7;
+    pub const USE_DRIVER_RATE: u32 = 1 << 8;
+    pub const DATA_FALLBACK_LIMIT: u32 = 0x1f << 8;
+    pub const RTS_FALLBACK_LIMIT: u32 = 0xf << 13;
+    pub const CHECKSUM_BYTES: core::ops::Range<usize> = 28..30;
+}
+
+const WIFI_HEADER_BYTES: usize = 24;
+const WIFI_FRAME_TYPE_MASK: u8 = 0x0c;
+const WIFI_DATA_FRAME: u8 = 0x08;
+const WIFI_PROTECTED_FRAME: u8 = 0x40;
+// DWC2 encodes DATA0 as 0 and DATA1 as 2; XOR toggles the USB packet PID.
+const USB_DATA_PID_TOGGLE: u32 = 2;
+
 // Realtek vendor control requests: register address in wValue, zero wIndex,
 // byte count in wLength. USB encodes both 16-bit fields least-significant first.
 const USB_VENDOR_DEVICE_READ: u8 = 0xc0;
@@ -752,21 +795,28 @@ impl Rtl8188cu {
     /// Validate the adapter descriptor before exposing its 802.11 payload.
     pub fn receive_frame<'b>(&mut self, buffer: &'b mut [u8]) -> Option<ReceivedFrame<'b>> {
         let length = self.receive(buffer)?;
-        if length < 24 {
+        if length < rx_descriptor::BYTES {
             return None;
         }
         let status = u32::from_le_bytes(buffer[..4].try_into().unwrap());
-        if status & 0xc000 != 0 {
+        if status & (rx_descriptor::CRC_ERROR | rx_descriptor::INTEGRITY_CHECK_ERROR) != 0 {
             return None;
-        } // CRC or integrity-check failure.
-        let packet_length = (status & 0x3fff) as usize;
-        let offset = 24 + (((status >> 16) & 15) as usize) * 8 + ((status >> 24) & 3) as usize;
+        }
+        let packet_length = (status & rx_descriptor::PACKET_LENGTH_MASK) as usize;
+        // Skip the fixed descriptor, optional driver/PHY information and
+        // alignment padding to reach the first byte of the 802.11 frame.
+        let driver_info_bytes = ((status >> rx_descriptor::DRIVER_INFO_SHIFT)
+            & rx_descriptor::DRIVER_INFO_MASK) as usize
+            * rx_descriptor::DRIVER_INFO_UNIT_BYTES;
+        let padding_bytes =
+            ((status >> rx_descriptor::PADDING_SHIFT) & rx_descriptor::PADDING_MASK) as usize;
+        let offset = rx_descriptor::BYTES + driver_info_bytes + padding_bytes;
         if offset + packet_length > length {
             return None;
         }
         Some(ReceivedFrame {
             bytes: &buffer[offset..offset + packet_length],
-            hardware_decrypted: status & 0x08000000 == 0,
+            hardware_decrypted: status & rx_descriptor::SOFTWARE_DECRYPTION_REQUIRED == 0,
         })
     }
 
@@ -785,7 +835,7 @@ impl Rtl8188cu {
             .max(1)
             .div_ceil(self.endpoints.max_packet_size as usize);
         if packets & 1 != 0 {
-            self.rx_pid ^= 2;
+            self.rx_pid ^= USB_DATA_PID_TOGGLE;
         }
         Some(length)
     }
@@ -942,36 +992,67 @@ impl Rtl8188cu {
     pub fn transmit(&mut self, frame: &[u8]) -> Result<(), Error> {
         self.phase = "transmit";
         #[repr(align(64))]
-        struct Packet([u8; 2048]);
-        if frame.len() < 24 || frame.len() > 2016 {
+        struct Packet([u8; tx_descriptor::USB_BUFFER_BYTES]);
+        if frame.len() < WIFI_HEADER_BYTES
+            || frame.len() > tx_descriptor::USB_BUFFER_BYTES - tx_descriptor::BYTES
+        {
             return Err(Error::Configuration);
         }
-        let data_frame = frame[0] & 0x0c == 0x08;
+        let data_frame = frame[0] & WIFI_FRAME_TYPE_MASK == WIFI_DATA_FRAME;
         // Management uses the high queue/first pipe; data uses normal/second.
         let pipe = usize::from(data_frame);
-        let queue = if data_frame { 0x40 } else { 0x1200 };
-        let mut packet = Packet([0; 2048]);
-        let descriptor = &mut packet.0[..32];
-        let flags =
-            0x8c200000 | frame.len() as u32 | if frame[4] & 1 != 0 { 0x01000000 } else { 0 };
+        let queue_flags = if data_frame {
+            tx_descriptor::BEST_EFFORT_QUEUE | tx_descriptor::AGGREGATION_BREAK
+        } else {
+            tx_descriptor::MANAGEMENT_QUEUE
+        };
+        let mut packet = Packet([0; tx_descriptor::USB_BUFFER_BYTES]);
+        let descriptor = &mut packet.0[..tx_descriptor::BYTES];
+        // Word 0 gives the payload length and offset, and hands the complete
+        // single-segment frame to the adapter. Address 1 begins at frame[4].
+        let flags = tx_descriptor::OWNED_BY_ADAPTER
+            | tx_descriptor::FIRST_SEGMENT
+            | tx_descriptor::LAST_SEGMENT
+            | (tx_descriptor::BYTES as u32) << tx_descriptor::FRAME_OFFSET_SHIFT
+            | frame.len() as u32
+            | if frame[4] & 1 != 0 {
+                tx_descriptor::MULTICAST
+            } else {
+                0
+            };
         descriptor[..4].copy_from_slice(&flags.to_le_bytes());
-        let cipher = if frame[1] & 0x40 != 0 { 3 << 22 } else { 0 };
-        descriptor[4..8].copy_from_slice(&(0x00060000u32 | queue | cipher).to_le_bytes());
+        let cipher = if frame[1] & WIFI_PROTECTED_FRAME != 0 {
+            tx_descriptor::CIPHER_AES
+        } else {
+            0
+        };
+        descriptor[4..8].copy_from_slice(
+            &(tx_descriptor::RATE_TABLE_80211B | queue_flags | cipher).to_le_bytes(),
+        );
         let sequence = u16::from_le_bytes([frame[22], frame[23]]) >> 4;
         // The adapter assigns non-QoS sequence numbers across both queues.
         // HWSEQEN is in the sequence field; HWSEQ selects it in control word 4.
-        descriptor[14..16].copy_from_slice(&(sequence | 0x8000).to_le_bytes());
-        descriptor[16..20].copy_from_slice(&0x180u32.to_le_bytes()); // HW sequence, CCK1.
+        descriptor[14..16]
+            .copy_from_slice(&(sequence | tx_descriptor::SEQUENCE_ENABLE).to_le_bytes());
+        descriptor[16..20].copy_from_slice(
+            &(tx_descriptor::HARDWARE_SEQUENCE | tx_descriptor::USE_DRIVER_RATE).to_le_bytes(),
+        );
+        // The zero-initialized rate field in word 5 selects CCK1 (1 Mbps).
         if data_frame {
             // Match the reference driver's data/RTS rate fallback limits.
-            descriptor[20..24].copy_from_slice(&0x0001ff00u32.to_le_bytes());
+            descriptor[20..24].copy_from_slice(
+                &(tx_descriptor::DATA_FALLBACK_LIMIT | tx_descriptor::RTS_FALLBACK_LIMIT)
+                    .to_le_bytes(),
+            );
         }
+        // XOR all sixteen little-endian words while the checksum field is
+        // zero, then fill that field so XOR over the complete header is zero.
         let checksum = descriptor.chunks_exact(2).fold(0u16, |sum, word| {
             sum ^ u16::from_le_bytes([word[0], word[1]])
         });
-        descriptor[28..30].copy_from_slice(&checksum.to_le_bytes());
-        packet.0[32..32 + frame.len()].copy_from_slice(frame);
-        let length = frame.len() + 32;
+        descriptor[tx_descriptor::CHECKSUM_BYTES].copy_from_slice(&checksum.to_le_bytes());
+        packet.0[tx_descriptor::BYTES..tx_descriptor::BYTES + frame.len()].copy_from_slice(frame);
+        let length = frame.len() + tx_descriptor::BYTES;
         let endpoint = self.endpoints.outputs[pipe];
         let sent = unsafe {
             self.usb.bulk_out(
@@ -986,7 +1067,7 @@ impl Rtl8188cu {
             return Err(Error::UsbTransmit(self.usb.channel_status()));
         }
         if length.div_ceil(self.endpoints.max_packet_size as usize) & 1 != 0 {
-            self.tx_pid[pipe] ^= 2;
+            self.tx_pid[pipe] ^= USB_DATA_PID_TOGGLE;
         }
         // A short USB packet terminates each adapter transmission. An exact
         // multiple of the endpoint size therefore needs a zero-length packet.
@@ -1003,7 +1084,7 @@ impl Rtl8188cu {
             {
                 return Err(Error::Configuration);
             }
-            self.tx_pid[pipe] ^= 2;
+            self.tx_pid[pipe] ^= USB_DATA_PID_TOGGLE;
         }
         Ok(())
     }

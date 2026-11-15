@@ -563,6 +563,11 @@ A milestone is a "demo-able" checkpoint. Worth a commit + tag + log entry.
 
 ## Progress Log
 
+### 2026-11-15 — Readability audit: Wi-Fi packet descriptors
+- Named receive length/error/padding/decryption fields and transmit ownership, segment, queue, cipher, rate and checksum fields. Separated the data aggregation flag from queue selection; preserved every encoded value.
+- Managed Wi-Fi release build passes. An ignored host harness compared the actual old/new transmit-buffer snippets across 95,664 combinations of lengths, frame types, protection/multicast bits and sequence fields; every byte matched.
+- Physical radio validation remains pending while the Pi is disconnected. Calibration and remaining security/frame fields are still open.
+
 ### 2026-11-15 — Readability audit: USB startup and DMA memory
 - Named root-port delays, controller clock choices, FIFO word regions and DMA address fields. Explained controller register roles and cache maintenance, including Cortex-A7's clean-and-invalidate behavior.
 - Existing Pi QEMU UDP echo passes and managed Wi-Fi release build passes. Hardware-specific cache/FIFO/clock behavior remains pending physical verification; no device operations were performed.
