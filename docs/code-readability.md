@@ -1539,3 +1539,18 @@ select another SD kernel before UART recovery.
 Managed Ethernet, managed Wi-Fi release, raspi2b, virt and pre-timer diagnostic
 builds pass. No physical boot/lease/confirmation test was performed. Remaining
 orchestration details and lesson-reference consistency still need review.
+
+### DHCP progress logging
+
+`record_network_progress` uses named snapshot fields for state, DHCP attempts,
+transmit failures and remaining lease seconds. Attempts include request/renewal
+traffic, as shown by `network.rs::poll` and OFFER handling. Named thresholds
+retain powers-of-two/every-64 summary selection and the two-second lease-increase
+threshold. The snapshot updates on every poll, even when no message is emitted.
+Comments identify foreground-only access and persistence across service restarts.
+
+The managed kernel build passes. Logging text, conditions and flush policy are
+unchanged. Hardware logging checks remain pending. The untracked Wi-Fi tour
+currently links its old snippets to the specific tested commit, rather than the
+current readability edits; that historical distinction needs to remain explicit
+when reviewing learning references.

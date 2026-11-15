@@ -744,14 +744,36 @@ static mut LINK_STATUS: u32 = LINK_UNKNOWN;
 static mut NEXT_LINK_CHECK_MILLIS: u64 = 0;
 #[cfg(feature = "pi-managed")]
 fn record_network_progress(session: &DhcpSession) {
-    static mut PREVIOUS: (u32, u32, u32, u64) = (u32::MAX, 0, 0, 0);
+    const ATTEMPT_SUMMARY_INTERVAL: u32 = 64;
+    const LEASE_INCREASE_THRESHOLD_SECONDS: u64 = 2;
+
+    struct ProgressSnapshot {
+        state_code: u32,
+        dhcp_attempts: u32,
+        transmit_failures: u32,
+        lease_remaining_seconds: u64,
+    }
+    // An impossible initial state code forces the first call to record the state.
+    // This static snapshot requires the same exclusive foreground access as the
+    // network service. It persists when userspace exits and the service restarts.
+    static mut PREVIOUS: ProgressSnapshot = ProgressSnapshot {
+        state_code: u32::MAX,
+        dhcp_attempts: 0,
+        transmit_failures: 0,
+        lease_remaining_seconds: 0,
+    };
     let state = session.state as u32;
     let remaining = session.lease_remaining();
     unsafe {
         let previous = &mut *core::ptr::addr_of_mut!(PREVIOUS);
-        let attempt_summary = session.attempts != previous.1
-            && (session.attempts.is_power_of_two() || session.attempts % 64 == 0);
-        if state != previous.0 || remaining > previous.3.saturating_add(2) {
+        let attempt_summary = session.attempts != previous.dhcp_attempts
+            && (session.attempts.is_power_of_two() || session.attempts % ATTEMPT_SUMMARY_INTERVAL == 0);
+        // Log early retry counts at powers of two, then every 64 attempts.
+        // State changes and lease increases above two seconds get an immediate
+        // flush; ordinary retry/failure summaries use the routine flush policy.
+        if state != previous.state_code
+            || remaining > previous.lease_remaining_seconds.saturating_add(LEASE_INCREASE_THRESHOLD_SECONDS)
+        {
             let label = match session.state {
                 network::LeaseState::Selecting => "discovering",
                 network::LeaseState::Requesting => "requesting",
@@ -769,12 +791,18 @@ fn record_network_progress(session: &DhcpSession) {
                 session.discovery_reason
             ));
             flush_diagnostics(true);
-        } else if attempt_summary || session.tx_failures != previous.2 {
+        } else if attempt_summary || session.tx_failures != previous.transmit_failures {
             diagnostics::event(format_args!(
                 "dhcp attempts={} transmit_failures={}",
                 session.attempts, session.tx_failures
             ));
         }
-        *previous = (state, session.attempts, session.tx_failures, remaining);
+        // Compare against the preceding poll, including polls that emitted no log.
+        *previous = ProgressSnapshot {
+            state_code: state,
+            dhcp_attempts: session.attempts,
+            transmit_failures: session.tx_failures,
+            lease_remaining_seconds: remaining,
+        };
     }
 }

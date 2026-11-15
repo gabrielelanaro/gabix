@@ -563,6 +563,11 @@ A milestone is a "demo-able" checkpoint. Worth a commit + tag + log entry.
 
 ## Progress Log
 
+### 2026-11-15 — Readability audit: DHCP progress snapshots
+- Replaced positional logging-state fields with named fields and named the retry/lease reporting thresholds; explained snapshot updates and service-restart lifetime.
+- Managed kernel build passes; log text and conditions are preserved. Physical checks remain pending.
+- Learning-reference consistency review remains open; the existing untracked Wi-Fi tour cites historical, physically tested snippets.
+
 ### 2026-11-15 — Readability audit: ARM boot network policy
 - Named boot network timing/identity constants and documented partial enumeration, device preference, retained DHCP sessions and trial-watchdog handling.
 - Clarified that boot confirmation checks device initialization, without requiring DHCP or a host round trip; policy is unchanged.
