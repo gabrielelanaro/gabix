@@ -1,7 +1,7 @@
 //! Bounded development installer. Packages contain expected-old and new sectors.
 //! Preflight checks every record before any write; boot-file writes come last.
 use crate::raspi2b::sdhci::SdCard;
-use gabix_kernel::boot_record::{crc32, BootRecord};
+use gabix_kernel::boot_record::{crc32, BootRecord, PARTITION_TYPE};
 use gabix_kernel::device::WritableBlockDevice;
 
 pub const KERNEL_START: u64 = 4_882_432;
@@ -35,6 +35,8 @@ mod package_field {
 }
 const MAX_LOADER_SECTORS: usize = 512; // 256 KiB, below the loader's RAM handoff.
 
+/// Installer inspection allowlist: MBR, fixed FAT partition and kernel region.
+/// This does not check card capacity; the subsequent device read can still fail.
 pub fn readable(lba: u64) -> bool {
     lba == 0
         || (FAT_START..FAT_START + FAT_SECTORS).contains(&lba)
@@ -42,7 +44,9 @@ pub fn readable(lba: u64) -> bool {
 }
 
 /// Validate the whole package against the current card, then write in order.
-/// Callers must supply stable staged bytes and serialize all card mutation.
+/// Callers must supply stable staged bytes, a valid non-overlapping staging
+/// extent, and serialize all card mutation. The Ethernet receiver supplies its
+/// fixed staging area; this helper does not independently bound package_start.
 /// Failure may leave an applied prefix; sectors already equal to new are accepted
 /// on retry. This is not a transactional or power-loss-atomic operation.
 pub fn apply(card: &mut SdCard, package_start: u64, bytes: u32) -> Option<u32> {
@@ -70,6 +74,8 @@ pub fn apply(card: &mut SdCard, package_start: u64, bytes: u32) -> Option<u32> {
     }
     let boot = BootFile::read(card)?;
     let existing = read(card, KERNEL_START)?;
+    // An undecodable record is treated as a fresh install. Active-copy protection
+    // below applies only when an existing record decodes successfully.
     let active = BootRecord::decode(&existing, KERNEL_SECTORS);
     let mut last = None;
     for index in 0..count {
@@ -133,11 +139,12 @@ fn allowed(
         return Some(PHASE_BOOT_RECORD);
     }
     if lba == 0 {
+        // Preserve every other byte and replace only the third primary entry.
         let mut expected = *mbr;
-        expected[478..494].fill(0);
-        expected[482] = 0xda;
-        expected[486..490].copy_from_slice(&(KERNEL_START as u32).to_le_bytes());
-        expected[490..494].copy_from_slice(&(KERNEL_SECTORS as u32).to_le_bytes());
+        expected[mbr_field::KERNEL_ENTRY].fill(0);
+        expected[mbr_field::KERNEL_TYPE] = PARTITION_TYPE;
+        expected[mbr_field::KERNEL_START].copy_from_slice(&(KERNEL_START as u32).to_le_bytes());
+        expected[mbr_field::KERNEL_SIZE].copy_from_slice(&(KERNEL_SECTORS as u32).to_le_bytes());
         return (*new == expected).then_some(PHASE_PARTITION_TABLE);
     }
     if boot.sectors[..boot.count].contains(&lba) {
@@ -174,19 +181,33 @@ fn package_record(
     }
     Some((lba, old, new))
 }
+// Primary-entry byte ranges in sector 0, matching the host installer's layout.
+mod mbr_field {
+    pub const DISK_SIGNATURE: core::ops::Range<usize> = 440..444;
+    pub const EXISTING_PARTITIONS: core::ops::Range<usize> = 446..478;
+    pub const KERNEL_ENTRY: core::ops::Range<usize> = 478..494;
+    pub const KERNEL_TYPE: usize = 482;
+    pub const KERNEL_START: core::ops::Range<usize> = 486..490;
+    pub const KERNEL_SIZE: core::ops::Range<usize> = 490..494;
+    pub const UNUSED_ENTRY: core::ops::Range<usize> = 494..510;
+    pub const SIGNATURE: core::ops::Range<usize> = 510..512;
+}
+
+// Exact identity/layout fingerprint of the development card, including CHS bytes.
+// Boot code and bytes outside these fields are not part of this identity check.
 fn known_mbr(mbr: &[u8; 512]) -> bool {
-    let expected: [u8; 32] = [
+    const EXPECTED_FIRST_TWO_PARTITIONS: [u8; 32] = [
         0, 0, 1, 128, 12, 3, 224, 255, 0, 64, 0, 0, 0, 0, 16, 0, 0, 3, 224, 255, 131, 3, 224, 255,
         0, 64, 16, 0, 0, 64, 58, 0,
     ];
-    mbr[440..444] == [0x8d, 0x2d, 0x1b, 0x41]
-        && mbr[446..478] == expected
-        && mbr[494..510] == [0; 16]
-        && mbr[510..] == [0x55, 0xaa]
-        && (mbr[478..494] == [0; 16]
-            || (mbr[482] == 0xda
-                && word(mbr, 486) as u64 == KERNEL_START
-                && word(mbr, 490) as u64 == KERNEL_SECTORS))
+    mbr[mbr_field::DISK_SIGNATURE] == [0x8d, 0x2d, 0x1b, 0x41]
+        && mbr[mbr_field::EXISTING_PARTITIONS] == EXPECTED_FIRST_TWO_PARTITIONS
+        && mbr[mbr_field::UNUSED_ENTRY] == [0; 16]
+        && mbr[mbr_field::SIGNATURE] == [0x55, 0xaa]
+        && (mbr[mbr_field::KERNEL_ENTRY] == [0; 16]
+            || (mbr[mbr_field::KERNEL_TYPE] == PARTITION_TYPE
+                && word(mbr, mbr_field::KERNEL_START.start) as u64 == KERNEL_START
+                && word(mbr, mbr_field::KERNEL_SIZE.start) as u64 == KERNEL_SECTORS))
 }
 fn read(card: &mut SdCard, lba: u64) -> Option<[u8; 512]> {
     unsafe { card.try_read_sector(lba) }

@@ -74,6 +74,7 @@ will be checked alongside the implementation they exercise.
   - [x] Loader startup GPIO/UART fields and inherited CPU-state contract
   - [x] Installer package fields, fixed kernel extents and ordered write phases
   - [x] Installer FAT32 field layout and loader-chain limits
+  - [x] Installer MBR identity, publication boundary and caller bounds
 - [ ] ARM VirtIO adapters and hardware probes
   - [x] QEMU VirtIO network: queue roles, feature words, packet metadata and buffer reuse
   - [x] QEMU VirtIO block: feature negotiation, descriptor roles, memory ordering and polling contract
@@ -1264,3 +1265,23 @@ high four bits and pass free/reserved/bad values back to the caller.
 The managed kernel build passes. No package was applied; this source/compile
 check does not test malformed FAT layouts or physical writes. MBR identity and
 remaining installer bounds review remain open, along with physical Pi validation.
+
+### Installer partition identity and bounds
+
+`sd_install.rs` names MBR ranges and the exact first-two-partition fingerprint,
+and reuses boot_record::PARTITION_TYPE. The accepted table update replaces only
+the third primary entry, preserving every other byte from the current MBR.
+known_mbr checks a development-card signature/layout fingerprint; it does not
+validate the boot code or every reserved byte. Numeric comparisons are unchanged.
+
+The source now states that an undecodable existing boot record is treated as a
+fresh install, so active-copy protection is conditional on successful decoding.
+The readable allowlist selects fixed regions without checking capacity itself.
+apply relies on a valid, stable, non-overlapping staging extent from its caller;
+sd_transfer's INSTALL branch supplies its fixed DATA_SECTOR after verified upload.
+The helper does not independently bound arbitrary package_start values.
+
+The managed kernel build passes. This source review exposes current constraints;
+it adds no validation or physical-install evidence. Existing layout remains
+card-specific and partially applied installations remain possible on failure.
+Management/transfer review and disconnected-Pi validation remain open.

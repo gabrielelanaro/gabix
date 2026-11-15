@@ -563,6 +563,11 @@ A milestone is a "demo-able" checkpoint. Worth a commit + tag + log entry.
 
 ## Progress Log
 
+### 2026-11-15 — Readability audit: installer partition boundaries
+- Named MBR fields and development-card fingerprint; documented third-entry-only publication, conditional active-copy protection and caller-owned staging bounds.
+- Managed kernel build passes with unchanged comparisons/control flow. No SD writes were performed.
+- Installer source review is recorded; transfer/management/diagnostics, memory assumptions and physical Pi verification remain open.
+
 ### 2026-11-15 — Readability audit: installer FAT lookup
 - Named FAT32 boot/directory fields, attributes, chain masks and root-search limit. Explained existing allocation cap and incomplete geometry/cross-link validation, preserving values and behavior.
 - Managed kernel build passes; no package was applied or hardware written.
