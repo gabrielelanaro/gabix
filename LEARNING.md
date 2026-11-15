@@ -563,6 +563,11 @@ A milestone is a "demo-able" checkpoint. Worth a commit + tag + log entry.
 
 ## Progress Log
 
+### 2026-11-15 — Readability audit: USB transfer API
+- Replaced internal direction/retry booleans with named enum choices. Named channel error flags, transfer attempt limit and remaining-byte field; explained DMA submission and the polling helper.
+- Existing Pi QEMU UDP echo regression passes, and the managed Wi-Fi release kernel builds. Transfer order and retry behavior are preserved. Physical checks await the disconnected Pi.
+- USB initialization, hub enumeration and cache/address handling remain open; the broader audit continues.
+
 ### 2026-11-15 — Readability audit: SD capacity and clock divider
 - Named the card capacity fields and extracted their sector-count calculation into `sectors_from_csd`. Named the divider fields and explained where their bits go in the controller register; arithmetic and access order are unchanged.
 - Existing Pi QEMU partition-to-userspace regression passes. The Pi is disconnected; physical timing, write/read-back and reboot checks remain pending.

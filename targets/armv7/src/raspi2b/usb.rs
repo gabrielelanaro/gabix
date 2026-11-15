@@ -1,3 +1,8 @@
+//! DWC2 USB host transfers use channel 0 and DMA buffers in RAM.
+//! The CPU supplies the buffer address, packet count and endpoint, then polls
+//! channel status until the controller releases the buffer. Global USB IRQ
+//! signaling stays disabled; status-register bits still record transfer events.
+
 use core::arch::asm;
 
 const BASE: usize = 0x3f98_0000;
@@ -81,12 +86,34 @@ const INTERRUPT_CHANNEL_HALTED: u32 = 1 << 1;
 const INTERRUPT_STALL: u32 = 1 << 3;
 const INTERRUPT_NAK: u32 = 1 << 4;
 const INTERRUPT_TRANSACTION_ERROR: u32 = 1 << 7;
-const INTERRUPT_ERRORS: u32 = (1 << 2) | (1 << 7) | (1 << 8) | (1 << 10);
+const INTERRUPT_AHB_ERROR: u32 = 1 << 2;
+const INTERRUPT_BABBLE_ERROR: u32 = 1 << 8;
+const INTERRUPT_DATA_TOGGLE_ERROR: u32 = 1 << 10;
+const INTERRUPT_ERRORS: u32 = INTERRUPT_AHB_ERROR
+    | INTERRUPT_TRANSACTION_ERROR
+    | INTERRUPT_BABBLE_ERROR
+    | INTERRUPT_DATA_TOGGLE_ERROR;
 const PID_DATA1: u32 = 2;
 const PID_SETUP: u32 = 3;
 const PID_SHIFT: u32 = 29;
 const PACKET_COUNT_SHIFT: u32 = 19;
+const TRANSFER_SIZE_MASK: u32 = 0x7ffff;
+const TRANSFER_ATTEMPT_LIMIT: usize = 1000;
 const POLL_LIMIT: usize = 1_000_000;
+
+#[derive(Clone, Copy, PartialEq)]
+enum Direction {
+    HostToDevice,
+    DeviceToHost,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum RetryPolicy {
+    // Control requests and outgoing bulk data may retry NAK/transaction errors.
+    RetryTransient,
+    // Incoming bulk polling returns when the device has no packet available.
+    ReturnOnNak,
+}
 const DATA_CACHE_LINE_SIZE: usize = 64;
 
 #[repr(C, align(64))]
@@ -389,11 +416,11 @@ impl Dwc2 {
             endpoint,
             ENDPOINT_TYPE_BULK,
             max_packet_size,
-            false,
+            Direction::HostToDevice,
             data_pid,
             bytes.as_ptr(),
             bytes.len(),
-            true,
+            RetryPolicy::RetryTransient,
         )
     }
 
@@ -410,11 +437,11 @@ impl Dwc2 {
             endpoint,
             ENDPOINT_TYPE_BULK,
             max_packet_size,
-            true,
+            Direction::DeviceToHost,
             data_pid,
             bytes.as_mut_ptr(),
             bytes.len(),
-            false,
+            RetryPolicy::ReturnOnNak,
         )
     }
 
@@ -434,11 +461,11 @@ impl Dwc2 {
             0,
             ENDPOINT_TYPE_CONTROL,
             max_packet_size as u16,
-            false,
+            Direction::HostToDevice,
             PID_SETUP,
             core::ptr::addr_of!(SETUP.0).cast::<u8>(),
             8,
-            true,
+            RetryPolicy::RetryTransient,
         )?;
 
         core::ptr::write_bytes(core::ptr::addr_of_mut!(DATA.0).cast::<u8>(), 0, 256);
@@ -447,14 +474,14 @@ impl Dwc2 {
             0,
             ENDPOINT_TYPE_CONTROL,
             max_packet_size as u16,
-            true,
+            Direction::DeviceToHost,
             PID_DATA1,
             core::ptr::addr_of!(DATA.0).cast::<u8>(),
             // DWC2 IN DMA requires room for whole USB packets even when
             // wLength asks for a smaller register value. DATA has 256 bytes;
             // the validated EP0 packet sizes divide that capacity exactly.
             out.len().div_ceil(max_packet_size as usize) * max_packet_size as usize,
-            true,
+            RetryPolicy::RetryTransient,
         )?;
         if received > out.len() {
             return None;
@@ -467,11 +494,11 @@ impl Dwc2 {
             0,
             ENDPOINT_TYPE_CONTROL,
             max_packet_size as u16,
-            false,
+            Direction::HostToDevice,
             PID_DATA1,
             core::ptr::addr_of!(DATA.0).cast::<u8>(),
             0,
-            true,
+            RetryPolicy::RetryTransient,
         )?;
         Some(received)
     }
@@ -488,22 +515,22 @@ impl Dwc2 {
             0,
             ENDPOINT_TYPE_CONTROL,
             max_packet_size as u16,
-            false,
+            Direction::HostToDevice,
             PID_SETUP,
             core::ptr::addr_of!(SETUP.0).cast::<u8>(),
             8,
-            true,
+            RetryPolicy::RetryTransient,
         )?;
         transfer(
             address,
             0,
             ENDPOINT_TYPE_CONTROL,
             max_packet_size as u16,
-            true,
+            Direction::DeviceToHost,
             PID_DATA1,
             core::ptr::addr_of!(DATA.0).cast::<u8>(),
             0,
-            true,
+            RetryPolicy::RetryTransient,
         )?;
         Some(())
     }
@@ -524,11 +551,11 @@ impl Dwc2 {
             0,
             ENDPOINT_TYPE_CONTROL,
             max_packet_size as u16,
-            false,
+            Direction::HostToDevice,
             PID_SETUP,
             core::ptr::addr_of!(SETUP.0).cast::<u8>(),
             8,
-            true,
+            RetryPolicy::RetryTransient,
         )?;
         for (offset, byte) in bytes.iter().enumerate() {
             core::ptr::write_volatile(
@@ -541,22 +568,22 @@ impl Dwc2 {
             0,
             ENDPOINT_TYPE_CONTROL,
             max_packet_size as u16,
-            false,
+            Direction::HostToDevice,
             PID_DATA1,
             core::ptr::addr_of!(DATA.0).cast::<u8>(),
             bytes.len(),
-            true,
+            RetryPolicy::RetryTransient,
         )?;
         transfer(
             address,
             0,
             ENDPOINT_TYPE_CONTROL,
             max_packet_size as u16,
-            true,
+            Direction::DeviceToHost,
             PID_DATA1,
             core::ptr::addr_of!(DATA.0).cast::<u8>(),
             0,
-            true,
+            RetryPolicy::RetryTransient,
         )?;
         Some(())
     }
@@ -607,20 +634,23 @@ unsafe fn transfer(
     endpoint: u8,
     endpoint_type: u32,
     max_packet_size: u16,
-    direction_in: bool,
+    direction: Direction,
     pid: u32,
     buffer: *const u8,
     length: usize,
-    retry_transient: bool,
+    retry_policy: RetryPolicy,
 ) -> Option<usize> {
+    let direction_in = direction == Direction::DeviceToHost;
+    let retry_transient = retry_policy == RetryPolicy::RetryTransient;
     let packet_size = max_packet_size as usize;
     let packet_count = if length == 0 {
         1
     } else {
         length.div_ceil(packet_size)
     };
-    for _ in 0..1000 {
+    for _ in 0..TRANSFER_ATTEMPT_LIMIT {
         prepare_dma_buffer(buffer, length, direction_in);
+        // Clear the previous attempt's latched events by writing ones.
         write32(CHANNEL_BASE + HCINT, u32::MAX);
         write32(
             CHANNEL_BASE + HCINTMSK,
@@ -630,22 +660,24 @@ unsafe fn transfer(
                 | INTERRUPT_STALL
                 | INTERRUPT_ERRORS,
         );
+        // HCDMA receives a bus address. The controller reads/writes RAM itself.
         write32(CHANNEL_BASE + HCDMA, dma_address(buffer));
         write32(
             CHANNEL_BASE + HCTSIZ,
             length as u32 | (packet_count as u32) << PACKET_COUNT_SHIFT | pid << PID_SHIFT,
         );
-        let direction = if direction_in {
+        let direction_bits = if direction_in {
             ENDPOINT_DIRECTION_IN
         } else {
             0
         };
+        // Enabling the channel starts the configured transfer.
         write32(
             CHANNEL_BASE + HCCHAR,
             CHANNEL_ENABLE
                 | (address as u32) << DEVICE_ADDRESS_SHIFT
                 | endpoint_type
-                | direction
+                | direction_bits
                 | (endpoint as u32) << ENDPOINT_NUMBER_SHIFT
                 | max_packet_size as u32,
         );
@@ -702,8 +734,10 @@ unsafe fn transfer(
         }
         // OUT completion confirms the whole submitted payload. DWC2 leaves
         // the OUT byte-count field unchanged; only IN reports residual bytes.
-        if !direction_in { return Some(length); }
-        let remaining = (read32(CHANNEL_BASE + HCTSIZ) & 0x7ffff) as usize;
+        if !direction_in {
+            return Some(length);
+        }
+        let remaining = (read32(CHANNEL_BASE + HCTSIZ) & TRANSFER_SIZE_MASK) as usize;
         return Some(length.saturating_sub(remaining));
     }
     None
@@ -874,6 +908,8 @@ fn dma_address(buffer: *const u8) -> u32 {
     }
 }
 
+// Busy-poll a condition for a bounded number of attempts. POLL_LIMIT counts
+// register checks; it is not a duration and does not put the task to sleep.
 unsafe fn wait_until(mut condition: impl FnMut() -> bool) -> Option<()> {
     for _ in 0..POLL_LIMIT {
         if condition() {

@@ -36,7 +36,8 @@ will be checked alongside the implementation they exercise.
 - [ ] Pi USB controller, hub enumeration, Ethernet, and RNDIS
   - [x] LAN9512 register transport, PHY access and SMSC frame headers
   - [x] Ethernet selection and QEMU RNDIS setup/frame fields
-  - [ ] USB controller/hubs
+  - [x] USB transfer direction/retry API, DMA submission and polling contract
+  - [ ] USB controller initialization, cache/address handling and hubs
 - [ ] Pi SD controller, mailbox, timer, reset, and hardware random generator
   - [x] Timer: source rates, interrupt routing/acknowledgement, rollover-safe uptime read
   - [x] Random generator: enable/warm-up, FIFO word count, whole-nonce timeout
@@ -295,3 +296,18 @@ The existing Pi QEMU partition-to-userspace check passes after these changes;
 it exercises the emulated card format, without proving physical clock timing
 or every supported capacity format. The user has disconnected the Pi, so
 physical validation remains pending.
+
+## USB channel transfers
+
+Internal transfer calls use `Direction` and `RetryPolicy` instead of two boolean
+arguments. Named the existing attempt limit, residual-byte mask and individual
+error flags. Comments connect the RAM buffer to HCDMA, the channel-enable write
+to transfer submission, and the bounded polling loop to status reads. Existing
+halt and cache-maintenance order is preserved.
+Register field reference: Linux [DWC2 hw.h](https://github.com/torvalds/linux/blob/master/drivers/usb/dwc2/hw.h), HCCHAR, HCINTMSK and HCTSIZ definitions.
+
+The existing Pi QEMU UDP echo regression passes through USB control and bulk
+transfers. The managed Wi-Fi release kernel also builds. QEMU does not exercise
+the physical adapter or the Pi cache path; physical validation remains pending
+while the Pi is disconnected. Initialization, hub descriptors and DMA address/
+cache explanations still need review.
