@@ -563,6 +563,11 @@ A milestone is a "demo-able" checkpoint. Worth a commit + tag + log entry.
 
 ## Progress Log
 
+### 2026-11-15 — Readability audit: x86 VirtIO block driver
+- Named queue/vector selection, MSI-X entry offsets, feature words, sector size and enable/reset values. Reused the shared frame size for DMA buffers.
+- Rewrote outdated initialization/read documentation: reads check the used ring and sleep between interrupts; initial zero status does not prove completion; each read retains three frames. Removed disabled prints and unsupported claims about device thread scheduling and register-read timing.
+- Existing x86 QEMU known-block test passes. Runtime ordering, allocations, status values and notifications are unchanged. Network initialization and other architecture areas remain open; physical Pi validation remains pending.
+
 ### 2026-11-15 — Readability audit: x86 VirtIO queues
 - Named ring offsets, entry sizes and block-request lengths; reused the shared frame size. The write flag explicitly means the device writes. Removed disabled diagnostic print blocks while retaining the active debug-state API.
 - Corrected ring-size arithmetic in comments, alignment requirements, completion-length semantics and volatile/atomic ordering explanations. Documented serialized submission and separate notification. Operations and atomic orderings remain unchanged.

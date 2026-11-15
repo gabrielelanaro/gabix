@@ -1,4 +1,18 @@
 use super::*;
+use gabix_kernel::memory::FRAME_SIZE;
+
+const REQUEST_QUEUE: u16 = 0;
+const REQUEST_INTERRUPT_ENTRY: u16 = 0;
+const MSIX_ADDRESS_HIGH_OFFSET: u64 = 4;
+const MSIX_MESSAGE_DATA_OFFSET: u64 = 8;
+const MSIX_VECTOR_CONTROL_OFFSET: u64 = 12;
+const MSIX_VECTOR_UNMASKED: u32 = 0;
+const FEATURE_WORD_LOW: u32 = 0;
+const FEATURE_WORD_HIGH: u32 = 1;
+const FEATURE_VERSION_1_IN_HIGH_WORD: u32 = (VIRTIO_F_VERSION_1 >> 32) as u32;
+const DEVICE_RESET: u8 = 0;
+const QUEUE_ENABLED: u16 = 1;
+const SECTOR_BYTES: usize = 512;
 
 // ============================================================
 // VirtioBlk — the device driver state
@@ -22,8 +36,8 @@ pub struct VirtioBlk {
     /// Multiplier (in bytes) for computing the per-queue notify offset.
     /// Read from the notification capability's body.
     notify_off_multiplier: u32,
-    /// The virtqueue, owned by the device after `setup_queue` runs.
-    /// `read_sector` and future I/O methods unwrap this.
+    /// Driver-owned queue storage shared with the device after setup.
+    /// Submitted buffers stay reserved until their completion arrives.
     queue: Option<VirtQueue>,
     msix: MsixCap,
 }
@@ -33,8 +47,8 @@ impl VirtioBlk {
     /// map the common config region into kernel memory, and return a
     /// `VirtioBlk` ready for the handshake.
     ///
-    /// Returns `None` if no virtio-blk is attached or it lacks a common
-    /// config capability (which would be a spec violation).
+    /// Requires a block device with common/notification regions and MSI-X.
+    /// Returns `None` if discovery cannot find any required capability.
     pub fn probe() -> Option<Self> {
         let (bus, device, func) = pci::find_virtio_blk()?;
         let caps = parse_virtio_capabilities(bus, device, func);
@@ -78,16 +92,11 @@ impl VirtioBlk {
         })
     }
 
-    /// Step 9.1: allocate and configure the virtqueue, stashing it inside
-    /// the device handle. After this call, `read_sector` (and future I/O
-    /// methods) can use `self.queue.as_mut().unwrap()`.
-    ///
-    /// This wraps what used to be the two-step `VirtQueue::new` +
-    /// `configure_queue` dance in main.rs. Callers don't need to know
-    /// the queue exists.
+    /// Allocate the request queue and route its completions through MSI-X.
+    /// The handle retains the queue for subsequent sector reads.
     pub fn setup_queue(&mut self, queue_size: u16) {
         let queue = VirtQueue::new(queue_size);
-        self.configure_queue_at(0, &queue, "virtio-blk request");
+        self.configure_queue_at(REQUEST_QUEUE, &queue, "virtio-blk request");
         self.configure_queue_interrupt();
         self.queue = Some(queue);
     }
@@ -97,35 +106,33 @@ impl VirtioBlk {
         let entry = self.msix.table_virt;
         unsafe {
             write_volatile(entry as *mut u32, crate::arch::x86_64::apic::MSI_ADDRESS);
-            write_volatile((entry + 4) as *mut u32, 0);
+            write_volatile((entry + MSIX_ADDRESS_HIGH_OFFSET) as *mut u32, 0);
             write_volatile(
-                (entry + 8) as *mut u32,
+                (entry + MSIX_MESSAGE_DATA_OFFSET) as *mut u32,
                 crate::arch::x86_64::interrupts::VIRTIO_BLK_VECTOR as u32,
             );
-            write_volatile((entry + 12) as *mut u32, 0);
+            write_volatile(
+                (entry + MSIX_VECTOR_CONTROL_OFFSET) as *mut u32,
+                MSIX_VECTOR_UNMASKED,
+            );
         }
-        self.write_common_u16(COMMON_QUEUE_SELECT, 0);
-        self.write_common_u16(COMMON_QUEUE_MSIX_VECTOR, 0);
+        self.write_common_u16(COMMON_QUEUE_SELECT, REQUEST_QUEUE);
+        self.write_common_u16(COMMON_QUEUE_MSIX_VECTOR, REQUEST_INTERRUPT_ENTRY);
         let assigned = self.read_common_u16(COMMON_QUEUE_MSIX_VECTOR);
-        assert_eq!(assigned, 0, "virtio-blk rejected MSI-X vector 0");
+        assert_eq!(
+            assigned, REQUEST_INTERRUPT_ENTRY,
+            "virtio-blk rejected MSI-X vector 0"
+        );
         println!("[virtio] MSI-X queue 0 -> table 0 -> vector 0x21");
     }
 
-    /// Step 9.2: read one 512-byte sector from the disk. Synchronous —
-    /// returns when the device responds. Allocates DMA buffers per call
-    /// (~12 KB leaked; future optimization: buffer pool).
+    /// Read one sector synchronously: submit header/data/status descriptors,
+    /// then check completion after each interrupt wakeup. Copy the data only
+    /// after the device returns the chain and reports success.
     ///
-    /// The full dance, hidden from callers:
-    ///   1. Allocate header/data/status DMA buffers (BlkBuffers)
-    ///   2. Write the request header (type=IN, sector)
-    ///   3. Build the 3-descriptor chain
-    ///   4. Submit the chain (avail->idx advances with Release)
-    ///   5. Kick the device
-    ///   6. Poll for completion (Acquire on used->idx)
-    ///   7. Assert status == OK
-    ///   8. Free the descriptors
-    ///   9. Copy the 512 bytes out of the DMA buffer into a stack array
-    pub fn read_sector(&mut self, sector: u64) -> [u8; 512] {
+    /// Each call allocates three frames (12 KiB) that are currently retained.
+    /// Repeated reads therefore consume memory; buffer reclamation is pending.
+    pub fn read_sector(&mut self, sector: u64) -> [u8; SECTOR_BYTES] {
         println!("[virtio] read_sector({})", sector);
         let buffers = BlkBuffers::new();
         let req = VirtioBlkReq::new_read(sector);
@@ -172,8 +179,8 @@ impl VirtioBlk {
         queue.free_descriptor(mid);
         queue.free_descriptor(tail);
 
-        let mut block = [0u8; 512];
-        let data_view = buffers.read_data_prefix(512);
+        let mut block = [0u8; SECTOR_BYTES];
+        let data_view = buffers.read_data_prefix(SECTOR_BYTES);
         block.copy_from_slice(&data_view);
         block
     }
@@ -184,7 +191,7 @@ impl VirtioBlk {
     fn read_common_u8(&self, offset: u8) -> u8 {
         // SAFETY: the common config region was mapped via `map_mmio` and
         // points at device registers. Volatile read is required so the
-        // compiler doesn't elide or reorder the load.
+        // compiler retains the register access. Queue ordering is handled separately.
         unsafe { read_volatile((self.common_virt + offset as u64) as *const u8) }
     }
 
@@ -247,28 +254,21 @@ impl VirtioBlk {
 
     // ---------- Handshake phases (one method per Lesson 6 step) ----------
 
-    /// Step 6.2: reset, ACKNOWLEDGE, DRIVER.
-    ///
-    /// - Reset (write 0) clears any prior state. The device returns to fresh.
-    /// - ACKNOWLEDGE tells the device "the guest knows about you."
-    /// - DRIVER tells the device "the guest has a driver for this kind of
-    ///   device" (in our case, virtio-blk).
-    ///
-    /// After this returns, the device is in the DRIVER state — ready for
-    /// feature negotiation (step 6.3) but not yet ready for I/O.
+    /// Reset the device, acknowledge discovery, then identify driver support.
+    /// Each status write retains the bits from earlier initialization steps.
     pub fn reset_and_acknowledge(&self) {
         let before = self.read_status();
         println!("[virtio]   device_status before reset: 0x{:02X}", before);
 
         // Reset
-        self.write_status(0);
+        self.write_status(DEVICE_RESET);
         let after_reset = self.read_status();
         println!(
             "[virtio]   device_status after reset:  0x{:02X}",
             after_reset
         );
         assert_eq!(
-            after_reset, 0,
+            after_reset, DEVICE_RESET,
             "device didn't reset cleanly — hardware may need a moment"
         );
 
@@ -286,25 +286,14 @@ impl VirtioBlk {
         );
     }
 
-    /// Step 6.3: feature negotiation.
-    ///
-    /// The device advertises which features it supports via
-    /// `device_feature`. The driver picks the subset it can use and
-    /// writes that to `driver_feature`. Both halves (low 32, high 32)
-    /// must be written via the corresponding `*_select` index. After
-    /// writing, the driver sets FEATURES_OK and re-reads the status —
-    /// if the device didn't accept the proposed subset, it clears
-    /// FEATURES_OK and the driver must retry or give up.
-    ///
-    /// mini-os currently supports only `VIRTIO_F_VERSION_1` (modern
-    /// transport compliance, bit 32 = bit 0 of the high half). Real
-    /// Linux claims more (flush, discard, write zeroes) for performance
-    /// and correctness.
+    /// Read both feature words and offer the supported modern-transport bit.
+    /// FEATURES_OK readback confirms that the device accepted our selection.
+    /// This driver does not request optional block features.
     pub fn negotiate_features(&self) {
         // Read what the device supports, both halves
-        self.write_common_u32(COMMON_DEVICE_FEATURE_SELECT, 0);
+        self.write_common_u32(COMMON_DEVICE_FEATURE_SELECT, FEATURE_WORD_LOW);
         let device_features_low = self.read_common_u32(COMMON_DEVICE_FEATURE);
-        self.write_common_u32(COMMON_DEVICE_FEATURE_SELECT, 1);
+        self.write_common_u32(COMMON_DEVICE_FEATURE_SELECT, FEATURE_WORD_HIGH);
         let device_features_high = self.read_common_u32(COMMON_DEVICE_FEATURE);
 
         println!(
@@ -321,8 +310,8 @@ impl VirtioBlk {
         // advertises it — claiming an unsupported feature would make
         // FEATURES_OK fail.
         let supported_low: u32 = 0;
-        let supported_high: u32 = if device_features_high & 0x1 != 0 {
-            0x1
+        let supported_high: u32 = if device_features_high & FEATURE_VERSION_1_IN_HIGH_WORD != 0 {
+            FEATURE_VERSION_1_IN_HIGH_WORD
         } else {
             0
         };
@@ -331,7 +320,7 @@ impl VirtioBlk {
         println!(
             "[virtio]   driver features high: 0x{:08X}{}",
             supported_high,
-            if supported_high & 0x1 != 0 {
+            if supported_high & FEATURE_VERSION_1_IN_HIGH_WORD != 0 {
                 " (VIRTIO_F_VERSION_1)"
             } else {
                 ""
@@ -339,9 +328,9 @@ impl VirtioBlk {
         );
 
         // Write the negotiated subset
-        self.write_common_u32(COMMON_DRIVER_FEATURE_SELECT, 0);
+        self.write_common_u32(COMMON_DRIVER_FEATURE_SELECT, FEATURE_WORD_LOW);
         self.write_common_u32(COMMON_DRIVER_FEATURE, supported_low);
-        self.write_common_u32(COMMON_DRIVER_FEATURE_SELECT, 1);
+        self.write_common_u32(COMMON_DRIVER_FEATURE_SELECT, FEATURE_WORD_HIGH);
         self.write_common_u32(COMMON_DRIVER_FEATURE, supported_high);
 
         // Set FEATURES_OK
@@ -361,16 +350,7 @@ impl VirtioBlk {
         );
     }
 
-    /// Step 6.4: DRIVER_OK — the final "go" bit.
-    ///
-    /// Once DRIVER_OK is set, the device is in operational state. The
-    /// device may start using configured virtqueues (Lesson 7 sets those
-    /// up). Before this bit, configuring queues is safe — the device
-    /// ignores them.
-    ///
-    /// Reads back the status after writing to check for FAILED or
-    /// DEVICE_NEEDS_RESET. If either is set, the device couldn't enter
-    /// operational state — we'd have to investigate.
+    /// Set DRIVER_OK to permit device operation, then check status for errors.
     pub fn set_driver_ok(&self) {
         self.write_status(
             STATUS_ACKNOWLEDGE | STATUS_DRIVER | STATUS_FEATURES_OK | STATUS_DRIVER_OK,
@@ -393,19 +373,8 @@ impl VirtioBlk {
         println!("[virtio] device is live — ready for virtqueue setup");
     }
 
-    /// Step 7.2: configure virtqueue 0 (the request queue) in common config.
-    ///
-    /// Writes the seven queue fields in the order the spec requires:
-    ///   1. queue_select = 0  — target the request queue
-    ///   2. queue_size = N    — negotiate down from device max to our size
-    ///   3. queue_desc        — physical address of descriptor table
-    ///   4. queue_avail       — physical address of available ring
-    ///   5. queue_used        — physical address of used ring
-    ///   6. queue_enable = 1  — "I'm done, activate"
-    ///
-    /// The device treats `queue_enable` as the commit bit — before that
-    /// write it ignores the queue entirely. Reading back `queue_enable`
-    /// and seeing 1 confirms acceptance.
+    /// Select a queue, set its size and three physical addresses, then enable it.
+    /// The caller must keep that storage allocated while the queue is enabled.
     pub fn configure_queue_at(&self, queue_index: u16, queue: &VirtQueue, label: &str) {
         println!(
             "[virtio] configuring virtqueue {} ({}) in common config",
@@ -430,14 +399,13 @@ impl VirtioBlk {
         );
         self.write_common_u16(COMMON_QUEUE_SIZE, queue.queue_size());
 
-        // 3-5. Write the three region addresses. The device reads these
-        // once at queue_enable time and DMAs from them forever after.
+        // 3-5. Supply the addresses of the shared queue storage.
         self.write_common_u64(COMMON_QUEUE_DESC, queue.desc_phys());
         self.write_common_u64(COMMON_QUEUE_AVAIL, queue.avail_phys());
         self.write_common_u64(COMMON_QUEUE_USED, queue.used_phys());
 
-        // 6. Enable. The device checks all the above only at this point.
-        self.write_common_u16(COMMON_QUEUE_ENABLE, 1);
+        // 6. Enable this configured queue.
+        self.write_common_u16(COMMON_QUEUE_ENABLE, QUEUE_ENABLED);
 
         // Verify acceptance — read-back should be 1.
         let enable_readback = self.read_common_u16(COMMON_QUEUE_ENABLE);
@@ -446,27 +414,16 @@ impl VirtioBlk {
             enable_readback
         );
         assert_eq!(
-            enable_readback, 1,
+            enable_readback, QUEUE_ENABLED,
             "device rejected queue configuration — queue_enable didn't stick"
         );
         println!("[virtio] virtqueue {} active", queue_index);
     }
 
-    /// Step 7.5: kick — wake the device so it processes new submissions.
-    ///
-    /// Writes the queue index (0 for virtio-blk's request queue) to the
-    /// notification register. The address is computed from the
-    /// notification capability base plus the per-queue offset:
-    ///
-    ///   notify_addr = notify_cap_base + queue_notify_off * multiplier
-    ///
-    /// `queue_notify_off` is read from common config — it's the device's
-    /// way of saying "for this queue, write the kick at this offset."
-    /// `multiplier` is a constant from the notification capability body,
-    /// usually 0 (meaning "ignore queue_notify_off, just write at base").
-    ///
-    /// After this store, the device wakes (in QEMU, that's a host-side
-    /// thread switch) and processes everything in the available ring.
+    /// Notify the device that the request queue has available work.
+    /// Its register address is notify_base + queue_notify_off * multiplier.
+    /// The selected queue's offset and the capability multiplier come from
+    /// the device. A zero multiplier uses the notification region's base.
     pub fn kick(&self) {
         // Per-queue offset for this queue, as advertised by the device.
         let queue_notify_off = self.read_common_u16(COMMON_QUEUE_NOTIFY_OFF) as u64;
@@ -477,18 +434,13 @@ impl VirtioBlk {
         // Writing the queue index (0) is the spec-defined kick action.
         // Volatile so the compiler can't elide the store.
         unsafe {
-            write_volatile(notify_addr as *mut u16, 0);
+            write_volatile(notify_addr as *mut u16, REQUEST_QUEUE);
         }
-
-        // println!(
-        //     "[virtio] kick: wrote queue 0 to notify register at virt 0x{:X} (notify_off={} * mult={})",
-        //     notify_addr, queue_notify_off, self.notify_off_multiplier
-        // );
     }
 }
 
 impl crate::drivers::BlockDevice for VirtioBlk {
-    fn read_sector(&mut self, sector: u64) -> [u8; 512] {
+    fn read_sector(&mut self, sector: u64) -> [u8; SECTOR_BYTES] {
         VirtioBlk::read_sector(self, sector)
     }
 }
@@ -535,16 +487,10 @@ impl VirtioBlkReq {
     }
 }
 
-/// DMA-able buffer set for one virtio-blk request: header, data, status.
-///
-/// Each buffer is allocated as its own 4 KiB frame from the frame
-/// allocator — wasteful (16 B header in a 4096 B frame) but the
-/// simplest path to a physical address. Linux's `kmalloc` would
-/// sub-allocate these into a shared page; that's a future optimization.
-///
-/// Frames are tracked (not exposed publicly) so a future `Drop` impl
-/// can return them to the frame allocator. For now the kernel lives
-/// forever, so we leak — fine for early-boot code.
+/// Three DMA buffers: request header, sector bytes, and completion status.
+/// Each uses one allocator frame so its physical address is directly available.
+/// The saved frame numbers support future reclamation; currently there is no
+/// Drop implementation, so every request retains its three frames.
 pub struct BlkBuffers {
     /// Virtual addresses — kernel-side access via the direct map.
     pub header_virt: u64,
@@ -575,25 +521,22 @@ impl BlkBuffers {
             crate::frame_allocator::allocate().expect("out of frames for blk status byte");
 
         let offset = crate::memory::phys_offset();
-        let header_phys = header_frame * 4096;
-        let data_phys = data_frame * 4096;
-        let status_phys = status_frame * 4096;
+        let header_phys = header_frame * FRAME_SIZE;
+        let data_phys = data_frame * FRAME_SIZE;
+        let status_phys = status_frame * FRAME_SIZE;
 
         let header_virt = header_phys + offset;
         let data_virt = data_phys + offset;
         let status_virt = status_phys + offset;
 
-        // Zero everything. The header is overwritten below; the data
-        // buffer needs to start zeroed so verification can distinguish
-        // "device wrote zeros" from "stale allocator garbage"; the
-        // status byte starts at 0 so we can detect device failure to
-        // respond.
+        // Clear the newly allocated buffers. A zero status also means success;
+        // completion is detected through the used ring, never this initial byte.
         // SAFETY: all three frames freshly allocated, reachable via
         // the direct map, no aliases.
         unsafe {
-            core::ptr::write_bytes(header_virt as *mut u8, 0, 4096);
-            core::ptr::write_bytes(data_virt as *mut u8, 0, 4096);
-            core::ptr::write_bytes(status_virt as *mut u8, 0, 4096);
+            core::ptr::write_bytes(header_virt as *mut u8, 0, FRAME_SIZE as usize);
+            core::ptr::write_bytes(data_virt as *mut u8, 0, FRAME_SIZE as usize);
+            core::ptr::write_bytes(status_virt as *mut u8, 0, FRAME_SIZE as usize);
         }
 
         Self {
@@ -635,7 +578,10 @@ impl BlkBuffers {
         let mut v = alloc::vec::Vec::with_capacity(n);
         // SAFETY: data_virt points at a 4096-byte buffer; n is bounded
         // by the caller (we'll assert).
-        assert!(n <= 4096, "read_data_prefix asked for too many bytes");
+        assert!(
+            n <= FRAME_SIZE as usize,
+            "read_data_prefix asked for too many bytes"
+        );
         unsafe {
             for i in 0..n {
                 v.push(core::ptr::read_volatile(

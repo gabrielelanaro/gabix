@@ -85,6 +85,7 @@ will be checked alongside the implementation they exercise.
   - [x] PCI bus-0 discovery, BAR fields and configuration access contract
   - [x] VirtIO capability regions and MSI-X table/control parsing
   - [x] Shared x86 VirtIO queue layout, submission/completion contracts and descriptor permissions
+  - [x] x86 block initialization, interrupt routing, synchronous read and DMA-buffer contract
 - [ ] x86 scheduling, process lifecycle, file operations, and network stack
 - [ ] Learning snippets and test helpers affected by the edits
 
@@ -626,3 +627,16 @@ Existing x86 disk-read and network-frame QEMU tests pass. These cover the curren
 device configuration and ordinary submissions, without establishing malformed
 queue safety or concurrent-producer support. Submission requires serialization.
 Reference: [VirtIO 1.2 sections 2.7 and 5.2.6](https://docs.oasis-open.org/virtio/virtio/v1.2/virtio-v1.2.html).
+
+### x86 VirtIO block driver
+
+`src/drivers/virtio/block.rs` names queue selection, MSI-X routing offsets,
+feature words and buffer sizes. Comments explain the interrupt-assisted read
+loop, completion status, notification address and retained allocations. Each
+read still retains three frames; this readability pass does not reclaim them
+or change request behavior. The existing known-block QEMU test passes.
+
+The transport/queue references above apply to these fields. Review covered the
+whole block source; x86 networking initialization remains pending. This test
+exercises the attached QEMU disk, without proving error-device handling or
+physical Pi operation.
