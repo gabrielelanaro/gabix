@@ -563,6 +563,11 @@ A milestone is a "demo-able" checkpoint. Worth a commit + tag + log entry.
 
 ## Progress Log
 
+### 2026-11-15 — Readability audit: ARM boot UART and console
+- Named GPIO function selection, UART register offsets, FIFO/control fields, baud divisors and semihosting values. Explained console polling, caller-owned setup, discarded receive errors and unbounded transmit waits.
+- Existing QEMU userspace-write test and Pi hardware/UART-user builds pass; values and ordering are preserved.
+- Memory ownership/cache assumptions and remaining loader/management areas stay open. Actual pin routing and receive validation await the disconnected Pi.
+
 ### 2026-11-15 — Readability audit: ARM exception frames
 - Named modes, saved-status offset, return-address adjustments and call alignment in boot.S. Explained SVC/IRQ restoration and non-returning abort frames, preserving values and instruction order.
 - Recorded existing aligned-stack/no-nested-SVC assumptions and absent VFP/NEON preservation. Existing QEMU isolation and task/preemption tests plus Pi hardware build pass.

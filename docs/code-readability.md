@@ -66,7 +66,8 @@ will be checked alongside the implementation they exercise.
   - [x] ARM syscall frame, dispatch, output bounds and exit paths
   - [x] ARM scheduler task states, process switching and static-stack lifetime
   - [x] ARM exception frame offsets, mode changes and return adjustments
-  - [ ] Boot peripheral setup and memory ownership/cache assumptions
+  - [x] Boot GPIO/UART registers and polling console contracts
+  - [ ] Memory ownership/cache assumptions
 - [ ] ARM loader, SD update/install, authenticated management, and diagnostics
 - [ ] ARM VirtIO adapters and hardware probes
   - [x] QEMU VirtIO network: queue roles, feature words, packet metadata and buffer reuse
@@ -1142,3 +1143,24 @@ Reference: [Arm Cortex-A programmer's guide, exception handling](https://documen
 chapter 12, for saved status and exception return adjustments. Existing QEMU
 isolation and task/preemption tests pass through these wrappers, and the Pi
 hardware build passes. Physical Pi execution remains pending.
+
+### ARM boot serial setup and console
+
+`targets/armv7/src/boot.S` names the GPIO14/15 function fields, PL011 register
+offsets, FIFO/enable fields, existing baud divisors and semihosting exit values.
+GPIO alternate-function 0 routes TXD0/RXD0. Divisors retain 1 and 40; the code
+does not query UARTCLK, so comments avoid asserting a universal baud rate.
+The initialization order and emitted values remain unchanged.
+
+`console.rs` names word-indexed flags and FIFO bits. Its contracts state that
+initialization is external, handles do not serialize access, receives discard
+error bits, and transmit polls without timeout until FIFO room exists. Returning
+from write_byte means enqueued, with no wait for physical transmission to finish.
+The safe constructor accepts arbitrary bases; validity remains a caller
+requirement, not a checked guarantee.
+
+References: [Arm PL011 register definitions](https://github.com/ARM-software/arm-trusted-firmware/blob/master/include/drivers/arm/pl011.h)
+and [BCM2835 peripherals, GPIO and UART chapters](https://pip-assets.raspberrypi.com/categories/579-raspberry-pi-zero/documents/RP-008249-DS-1-bcm2835-peripherals.pdf).
+The existing QEMU userspace-write test passes; Pi hardware and UART-user builds
+pass. Physical pin routing, baud rate and receive behavior remain pending Pi
+verification while the board is disconnected.

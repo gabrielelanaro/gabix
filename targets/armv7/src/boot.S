@@ -26,6 +26,26 @@
     .equ FAULT_IS_INSTRUCTION, 1
     .equ FAULT_IS_DATA, 0
 
+    .equ GPIO_FUNCTION_SELECT_1, 0x04
+    .equ GPIO14_15_FUNCTION_MASK, ((7 << 12) | (7 << 15))
+    .equ GPIO14_15_ALT0_UART, ((4 << 12) | (4 << 15))
+    .equ UART_FLAGS, 0x18
+    .equ UART_BAUD_INTEGER, 0x24
+    .equ UART_BAUD_FRACTION, 0x28
+    .equ UART_LINE_CONTROL, 0x2c
+    .equ UART_CONTROL, 0x30
+    .equ UART_INTERRUPT_CLEAR, 0x44
+    .equ UART_CLEAR_ALL_INTERRUPTS, 0x7ff
+    .equ UART_TX_FIFO_FULL, (1 << 5)
+    .equ UART_EIGHT_BITS_WITH_FIFO, ((3 << 5) | (1 << 4))
+    .equ UART_ENABLE_TX_RX, ((1 << 0) | (1 << 8) | (1 << 9))
+    @ Preserved boot divisors; the effective baud rate depends on UARTCLK.
+    .equ BOOT_BAUD_INTEGER, 1
+    .equ BOOT_BAUD_FRACTION, 40
+    .equ SEMIHOST_EXIT_EXTENDED, 0x20
+    .equ SEMIHOST_SVC, 0x123456
+    .equ SEMIHOST_APPLICATION_EXIT, 0x20026
+
 _start:
     cpsid if
 
@@ -67,39 +87,41 @@ _start:
     strlo r2, [r0], #4
     blo .Lzero_bss
 
+    @ Route GPIO14/15 to UART TXD0/RXD0 using alternate function 0.
     .if CONFIGURE_GPIO
     ldr r4, =GPIO_BASE
-    ldr r0, [r4, #4]
-    ldr r1, =0x0003f000
+    ldr r0, [r4, #GPIO_FUNCTION_SELECT_1]
+    ldr r1, =GPIO14_15_FUNCTION_MASK
     bic r0, r0, r1
-    ldr r1, =0x00024000
+    ldr r1, =GPIO14_15_ALT0_UART
     orr r0, r0, r1
-    str r0, [r4, #4]
+    str r0, [r4, #GPIO_FUNCTION_SELECT_1]
     .endif
 
+    @ Disable UART, clear pending interrupt flags, then set baud/line format.
     ldr r4, =UART_BASE
     mov r0, #0
-    str r0, [r4, #0x30]
-    ldr r0, =0x7ff
-    str r0, [r4, #0x44]
-    mov r0, #1
-    str r0, [r4, #0x24]
-    mov r0, #40
-    str r0, [r4, #0x28]
+    str r0, [r4, #UART_CONTROL]
+    ldr r0, =UART_CLEAR_ALL_INTERRUPTS
+    str r0, [r4, #UART_INTERRUPT_CLEAR]
+    mov r0, #BOOT_BAUD_INTEGER
+    str r0, [r4, #UART_BAUD_INTEGER]
+    mov r0, #BOOT_BAUD_FRACTION
+    str r0, [r4, #UART_BAUD_FRACTION]
     @ Eight data bits plus the 16-byte FIFOs. The UART userspace loader polls
     @ RX, so the FIFO absorbs short host-side bursts between reads.
-    mov r0, #0x70
-    str r0, [r4, #0x2c]
-    ldr r0, =0x301
-    str r0, [r4, #0x30]
+    mov r0, #UART_EIGHT_BITS_WITH_FIFO
+    str r0, [r4, #UART_LINE_CONTROL]
+    ldr r0, =UART_ENABLE_TX_RX
+    str r0, [r4, #UART_CONTROL]
 
     bl {rust_entry}
 
 .Lexit:
     .if SEMIHOSTING
-    mov r0, #0x20
+    mov r0, #SEMIHOST_EXIT_EXTENDED
     adr r1, .Lexit_block
-    svc #0x123456
+    svc #SEMIHOST_SVC
     .endif
     b .Lpark
 
@@ -159,8 +181,8 @@ _start:
 .Lfault_putc:
     ldr r0, =UART_BASE
 .Lfault_wait:
-    ldr r1, [r0, #0x18]
-    tst r1, #(1 << 5)
+    ldr r1, [r0, #UART_FLAGS]
+    tst r1, #UART_TX_FIFO_FULL
     bne .Lfault_wait
     str r2, [r0]
     bx lr
@@ -217,7 +239,7 @@ _start:
     .align 2
 .Lexit_block:
     .if SEMIHOSTING
-    .word 0x20026
+    .word SEMIHOST_APPLICATION_EXIT
     .word 0
     .endif
 
