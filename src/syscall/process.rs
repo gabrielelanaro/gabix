@@ -4,6 +4,12 @@ use super::user::read_user_path;
 use crate::arch::x86_64::syscall as syscall_arch;
 use crate::println;
 
+// The syscall register carries signed -1 as an unsigned 64-bit value.
+const WAIT_ANY_CHILD: u64 = (-1i64) as u64;
+const RFLAGS_RESERVED_ONE: u64 = 1 << 1;
+const RFLAGS_INTERRUPTS_ENABLED: u64 = 1 << 9;
+const INITIAL_USER_RFLAGS: u64 = RFLAGS_RESERVED_ONE | RFLAGS_INTERRUPTS_ENABLED;
+
 pub(super) fn getpid() -> u64 {
     let pid = crate::task::current_pid();
     println!("[syscall] sys_getpid -> {}", pid);
@@ -25,12 +31,15 @@ pub(super) fn exit(exit_code: u64) -> u64 {
     panic!("sys_exit: zombie task was rescheduled (this should never happen)");
 }
 
+/// Wait for any child (-1) or one positive PID. Zero and process-group
+/// selectors are unsupported. The optional result is our raw i64 exit code,
+/// rather than Linux's packed int wait status; its pointer is unchecked.
 pub(super) fn wait(target_pid_raw: u64, exit_status_ptr: u64) -> u64 {
     use crate::process::Pid;
     use crate::task::{WaitResult, WaitTarget};
 
     let parent_pid = crate::task::current_pid();
-    let target = if target_pid_raw == u64::MAX {
+    let target = if target_pid_raw == WAIT_ANY_CHILD {
         WaitTarget::Any
     } else if target_pid_raw > 0 {
         WaitTarget::Specific(Pid::new(target_pid_raw))
@@ -79,6 +88,9 @@ pub(super) fn fork() -> u64 {
         crate::arch::interrupts::disable();
     }
 
+    // Copy the global syscall-entry snapshot with interrupts disabled.
+    // Entry enables interrupts before dispatch, so this local critical section
+    // alone does not prove the snapshot survived an earlier task switch.
     let saved_callee_saves = SavedCalleeSaves {
         rbx: syscall_arch::USER_RBX_SAVE.load(core::sync::atomic::Ordering::SeqCst),
         rbp: syscall_arch::USER_RBP_SAVE.load(core::sync::atomic::Ordering::SeqCst),
@@ -117,6 +129,9 @@ pub(super) fn exec_elf(path_ptr: u64) -> u64 {
         }
     };
 
+    // Successful exec starts a new instruction stream with a fresh stack.
+    // RCX and R11 carry SYSRETQ's user RIP and flags; this path never returns
+    // to the original syscall call site. Arguments/environment are not loaded.
     let entry = context.entry;
     let stack_top = context.stack_top;
     let name = path.rsplit('/').next().unwrap_or(path.as_str());
@@ -133,7 +148,7 @@ pub(super) fn exec_elf(path_ptr: u64) -> u64 {
             "cli",
             "sysretq",
             in("rcx") entry,
-            in("r11") 0x202u64,
+            in("r11") INITIAL_USER_RFLAGS,
             rsp = in(reg) stack_top,
             options(noreturn),
         );

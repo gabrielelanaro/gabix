@@ -7,7 +7,7 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
 
-use super::user::is_user_range;
+use super::user::is_low_half_range;
 
 pub(super) fn transmit_tcp(outbound: net::tcp::Outbound) -> bool {
     if net_device::resolve_next_hop(outbound.dst_ip).is_none() {
@@ -114,7 +114,7 @@ struct PollFd {
 }
 
 fn read_sockaddr(ptr: u64, len: u64) -> Option<net::socket::Endpoint> {
-    if len < 16 || !is_user_range(ptr, 16) {
+    if len < 16 || !is_low_half_range(ptr, 16) {
         return None;
     }
     let bytes = unsafe { core::slice::from_raw_parts(ptr as *const u8, 16) };
@@ -131,11 +131,11 @@ fn write_sockaddr(ptr: u64, len_ptr: u64, endpoint: net::socket::Endpoint) -> bo
     if ptr == 0 && len_ptr == 0 {
         return true;
     }
-    if !is_user_range(len_ptr, 4) {
+    if !is_low_half_range(len_ptr, 4) {
         return false;
     }
     let capacity = unsafe { *(len_ptr as *const u32) } as u64;
-    if capacity < 16 || !is_user_range(ptr, 16) {
+    if capacity < 16 || !is_low_half_range(ptr, 16) {
         return false;
     }
     let out = unsafe { core::slice::from_raw_parts_mut(ptr as *mut u8, 16) };
@@ -219,7 +219,7 @@ pub(super) fn accept(fd: u64) -> u64 {
 }
 
 pub(super) fn sendto(fd: u64, buf: u64, len: u64, _flags: u64, addr: u64, addr_len: u64) -> u64 {
-    if !is_user_range(buf, len) {
+    if !is_low_half_range(buf, len) {
         return u64::MAX;
     }
     let Some(dst) = read_sockaddr(addr, addr_len) else {
@@ -261,7 +261,7 @@ struct UserNetworkConfig {
 /// Operation 0 copies the device MAC address to user memory. Operation 1
 /// installs the lease fields supplied by the DHCP client.
 pub(super) fn net_configure(config_ptr: u64, operation: u64) -> u64 {
-    if !is_user_range(config_ptr, core::mem::size_of::<UserNetworkConfig>() as u64) {
+    if !is_low_half_range(config_ptr, core::mem::size_of::<UserNetworkConfig>() as u64) {
         return u64::MAX;
     }
     let config = unsafe { &mut *(config_ptr as *mut UserNetworkConfig) };
@@ -293,7 +293,7 @@ pub(super) fn net_configure(config_ptr: u64, operation: u64) -> u64 {
 }
 
 pub(super) fn recvfrom(fd: u64, buf: u64, len: u64, _flags: u64, addr: u64, addr_len: u64) -> u64 {
-    if !is_user_range(buf, len) {
+    if !is_low_half_range(buf, len) {
         return u64::MAX;
     }
     let Some(socket) = crate::task::with_current_fd_table(|fdt| fdt.get_socket(fd)) else {
@@ -338,7 +338,7 @@ pub(super) fn poll(fds_ptr: u64, nfds: u64, timeout: u64) -> u64 {
         Some(bytes) => bytes,
         None => return u64::MAX,
     };
-    if !is_user_range(fds_ptr, bytes) {
+    if !is_low_half_range(fds_ptr, bytes) {
         return u64::MAX;
     }
 

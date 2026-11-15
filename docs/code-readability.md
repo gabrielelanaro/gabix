@@ -96,6 +96,8 @@ will be checked alongside the implementation they exercise.
   - [x] x86 block initialization, interrupt routing, synchronous read and DMA-buffer contract
   - [x] x86 network initialization, queue/interrupt selection and buffer lifetime
 - [ ] x86 scheduling, process lifecycle, file operations, and network stack
+  - [x] Syscall user-range/path helpers, file/time handlers and process-entry conventions
+  - [ ] Socket ABI handlers and scheduler/process lifecycle internals
 - [ ] Learning snippets and test helpers affected by the edits
 
 ## First slice: Wi-Fi power-on
@@ -781,3 +783,26 @@ and [Program Loading](https://gabi.xinuos.com/elf/07-pheader.html).
 The existing exec-replacement QEMU test passes through initial ELF boot and
 loading the replacement program. It does not establish malformed-file handling
 or full address-space replacement; those require separate correctness work.
+
+### Syscall user pointers, files, time and process entry
+
+Renamed `is_user_range` to `is_low_half_range` at every syscall call site.
+Its contract now states its actual checks: addition overflow and the numeric
+low-half bound. It does not establish page presence, user permissions,
+writability, alignment or Rust slice validity. Path decoding constructs a
+256-byte slice before searching for NUL; the full range must be readable.
+The current handlers still rely on those unchecked memory requirements.
+
+File handlers name stdout/stderr and explain cached inode writes and shared
+file cursors. Time conversion derives nanoseconds per tick from named units
+while preserving 100 Hz and 10,000,000 ns/tick. Process handlers name the
+wait-any sentinel and initial user flags, explain the raw i64 wait result and
+unchecked result pointer, and describe the SYSRETQ arguments for successful
+exec. The fork snapshot comes from global entry storage: disabling interrupts
+inside fork does not establish that the snapshot survived earlier preemption.
+That scheduler/entry interaction remains open correctness work.
+
+Existing wait-status and monotonic-time QEMU tests pass. No pointer validation,
+fork snapshot synchronization or syscall ABI behavior was changed. These tests
+exercise supported calls with valid memory; they do not validate bad-pointer
+handling or resolve the documented concurrency limitations.

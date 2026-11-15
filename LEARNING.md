@@ -563,6 +563,11 @@ A milestone is a "demo-able" checkpoint. Worth a commit + tag + log entry.
 
 ## Progress Log
 
+### 2026-11-15 — Readability audit: syscall memory and process contracts
+- Renamed the numeric address predicate to is_low_half_range throughout syscall handlers and documented its missing mapping/permission checks. Explained path scan bounds, cached file writes and shared file cursors.
+- Named standard output/error descriptors, time-conversion units, wait-any sentinel and exec flags. Documented the raw wait-status ABI, unchecked result pointer and global fork-snapshot concurrency limitation.
+- Existing wait-status and timer QEMU tests pass. Values and behavior are preserved. Socket handler internals and scheduler/process lifecycle review remain; physical Pi validation remains pending while disconnected.
+
 ### 2026-11-15 — Readability audit: x86 executable loading
 - Named ELF64 header/program-entry offsets and used shared frame sizes in segment/stack mapping. Clarified file stride, zero-fill, page permissions and cloned address-space behavior against the parser and loader.
 - Corrected claims about validation and rw- stacks: current code trusts several file fields, maps pages executable, and retains old user mappings outside replacement ranges. Those limitations are unchanged and documented for separate correctness work.
