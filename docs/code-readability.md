@@ -50,6 +50,7 @@ will be checked alongside the implementation they exercise.
   - [x] DHCP options/header fields and ARM lease retry policy; stack dispatch contracts
   - [ ] Remaining Wi-Fi/WPA2 fields
 - [ ] Shared ELF, partitions, ext2, memory, loader protocol, and boot records
+  - [x] UART upload decoder: header fields, incremental storage events, checksum and timeout ownership
   - [x] Shared frame bitmap and both heap wrappers: frame/address units, availability bits, IRQ locking
   - [x] Shared ext2 boot reader: disk fields, inode/group arithmetic, directory records and direct-block limit
   - [x] ARM ELF32 parser: named header offsets, segment/callback contracts; x86 ELF introduction corrected (remaining x86 parser review pending)
@@ -213,3 +214,14 @@ initialization example is corrected. The x86 boot-memory adapter was reviewed
 and retained: its names already express the memory-map-to-frame conversion.
 Existing ARM virt QEMU heap allocation and frame-reuse tests pass separately.
 The linked-list library's internal splitting/merging was not changed.
+
+## UART upload protocol
+
+Named header byte ranges and CRC parameters. The event documentation makes
+partial payload writes explicit and calls out that Complete carries the final
+byte, which the caller must still store. Timeout timing belongs to the transport;
+the decoder resets active uploads and accepts a new marker after failures.
+The matching sender is `scripts/upload-pi2-kernel.py` (little-endian three-word
+header and Python binascii CRC32). Existing decoder tests pass (5), including
+fixed CRC vectors, timeout recovery and rejection cases; uploader tests pass (9).
+No UART or Pi access occurred in this check.
