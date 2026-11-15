@@ -67,7 +67,7 @@ will be checked alongside the implementation they exercise.
   - [x] ARM scheduler task states, process switching and static-stack lifetime
   - [x] ARM exception frame offsets, mode changes and return adjustments
   - [x] Boot GPIO/UART registers and polling console contracts
-  - [ ] Memory ownership/cache assumptions
+  - [x] Memory ownership/cache assumptions (caller requirements and limits recorded)
 - [ ] ARM loader, SD update/install, authenticated management, and diagnostics
   - [x] Loader/kernel RAM handoff fields and trial-confirmation contracts
   - [x] Loader SD selection, streaming read and UART recovery contracts
@@ -1406,3 +1406,26 @@ and examines a page even for size zero. These existing limitations are preserved
 Cargo check passes. This slice changes comments only, so behavioral tests were
 not repeated. The source-contract review is checked off; the implementation gaps
 are recorded rather than claimed repaired. ARM memory/cache review remains open.
+
+### ARM table ownership and cache assumptions
+
+`memory.rs` names section access/TEX positions and shareable/cacheable/bufferable
+bits. Composed descriptors retain their values. Reference: [Armv7-A architecture
+manual, short-descriptor attributes](https://documentation-service.arm.com/static/5f8daeb7f86e16515cdb8c4e),
+including Table B3-10 for TEX/C/B with TRE=0.
+
+Contracts state that static tables are unlocked and require caller exclusion.
+Bootstrap maps every section, with hard-coded RAM attributes independent of
+physical capacity. Its initial table is not explicitly data-cache-cleaned before
+installation, and SCTLR bits beyond M/C are inherited. Process table preparation
+cleans descriptor memory, while privileged cacheable identity aliases to process
+RAM remain alongside noncacheable user aliases. Callers must avoid conflicting
+accesses; payload cache cleanup is not performed by table construction. Code
+synchronization invalidates instructions without cleaning a dirty data alias.
+Table activation uses local invalidation and assumes a prepared table/single core.
+
+Existing QEMU process-isolation test and Pi hardware build pass. These checks do
+not establish cache coherency for arbitrary entry states or hardware aliases.
+The review documents existing requirements; physical cache-sensitive checks remain
+pending while the Pi is disconnected. Remaining probes/orchestration and learning
+references still require review.

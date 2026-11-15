@@ -563,6 +563,11 @@ A milestone is a "demo-able" checkpoint. Worth a commit + tag + log entry.
 
 ## Progress Log
 
+### 2026-11-15 — Readability audit: ARM memory ownership/cache
+- Named descriptor subfields and documented static-table exclusion, inherited control state, bootstrap visibility and cached/noncacheable alias requirements.
+- Existing QEMU isolation test and Pi hardware build pass with unchanged descriptor values and instruction order. Hardware cache assumptions remain unverified in this slice.
+- Checked off ARM memory source-contract review; remaining probes/orchestration, lesson references and physical validation stay open.
+
 ### 2026-11-15 — Readability audit: x86 mapper ownership
 - Corrected overly strong safety claims about single-core exclusion, mapper ownership and direct-map frame copying. Documented aliasing/synchronization requirements and MMIO lookup/insertion assumptions.
 - Cargo check passes; comment-only edits preserve behavior. Existing safe-API ownership gaps are recorded, not repaired by this audit.
