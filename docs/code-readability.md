@@ -77,6 +77,7 @@ will be checked alongside the implementation they exercise.
   - [x] Installer MBR identity, publication boundary and caller bounds
   - [x] SD transfer request fields and staging-header layout
   - [x] SD upload chunk/retry state and pending-kernel publication
+  - [x] Management status payload field names and snapshot semantics
 - [ ] ARM VirtIO adapters and hardware probes
   - [x] QEMU VirtIO network: queue roles, feature words, packet metadata and buffer reuse
   - [x] QEMU VirtIO block: feature negotiation, descriptor roles, memory ordering and polling contract
@@ -1321,3 +1322,19 @@ are evaluated earlier. Read-back failure can follow a successful metadata write.
 The managed kernel build passes. These edits preserve behavior; physical retry,
 interrupted upload and reboot checks are pending while the Pi is disconnected.
 Status payload, authentication and diagnostics review remain open.
+
+### Management status payload
+
+`sd_transfer::status_field` names version-1 payload offsets, address ranges,
+byte length and reserved padding. Values match `scripts/pi2-manage.py::status`:
+32-bit counters/flags, 64-bit times/log indices, and raw network addresses.
+All offsets and serialized values retain their existing values.
+
+Source comments explain mixed snapshot times: network_status caches network
+fields, while a STATUS request updates storage counters. Failure to read/decode
+the boot record leaves its prior status fields intact (initially zero), without
+a validity indicator. This limitation is preserved and made explicit.
+
+Managed and plain SD-transfer builds pass, covering both authentication feature
+branches. No physical status request was sent while the Pi is disconnected.
+Authentication, journal behavior and remaining audit areas stay open.

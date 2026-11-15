@@ -49,12 +49,55 @@ const ORDER: u32 = 2;
 const IO_ERROR: u32 = 3;
 const CHECKSUM: u32 = 4;
 
+// Version-1 diagnostic payload consumed by scripts/pi2-manage.py.
+// Integers are little-endian. Bytes 38..40 and 168..176 remain reserved/zero.
+mod status_field {
+    pub const BYTES: usize = 176;
+    pub const FORMAT_VERSION: u32 = 1;
+    pub const VERSION: usize = 0;
+    pub const DHCP_STATE: usize = 4;
+    pub const LINK: usize = 8;
+    pub const DHCP_ATTEMPTS: usize = 40;
+    pub const NETWORK_TX_FAILURES: usize = 44;
+    pub const RECEIVED_FRAMES: usize = 48;
+    pub const REJECTED_DHCP: usize = 52;
+    pub const LEASE_LOSSES: usize = 56;
+    pub const LEASE_SECONDS: usize = 60;
+    pub const UPTIME_MS: usize = 72;
+    pub const BOOT_NUMBER: usize = 80;
+    pub const NEWEST_LOG: usize = 88;
+    pub const OLDEST_LOG: usize = 96;
+    pub const LOG_WRITE_ERRORS: usize = 104;
+    pub const DROPPED_LOG_LINES: usize = 108;
+    pub const CORRUPT_LOG_RECORDS: usize = 112;
+    pub const AUTH_REJECTIONS: usize = 116;
+    pub const REQUESTS: usize = 120;
+    pub const TX_FAILURES: usize = 124;
+    pub const LAST_REQUEST_MS: usize = 128;
+    pub const ACTIVE_COPY: usize = 136;
+    pub const PENDING_COPY: usize = 140;
+    pub const ATTEMPTED_MASK: usize = 144;
+    pub const RESET_STATUS: usize = 148;
+    pub const KERNEL_CRC: usize = 152;
+    pub const KERNEL_LIMIT_BYTES: usize = 156;
+    pub const LOG_CAPACITY_SECTORS: usize = 160;
+    pub const AUTH_ENABLED: usize = 164;
+    pub const IP: core::ops::Range<usize> = 12..16;
+    pub const SUBNET_MASK: core::ops::Range<usize> = 16..20;
+    pub const GATEWAY: core::ops::Range<usize> = 20..24;
+    pub const DHCP_SERVER: core::ops::Range<usize> = 24..28;
+    pub const DNS: core::ops::Range<usize> = 28..32;
+    pub const LEASE_ADDRESSES: core::ops::Range<usize> = 16..32;
+    pub const MAC: core::ops::Range<usize> = 32..38;
+    pub const LEASE_REMAINING_SECONDS: core::ops::Range<usize> = 64..72;
+}
+
 pub struct Receiver {
     card: SdCard,
     pub journal: crate::diagnostics::Journal,
     #[cfg(feature = "pi-managed")]
     authentication: crate::management_auth::Authentication,
-    status: [u8; 176],
+    status: [u8; status_field::BYTES],
     requests: u32,
     tx_failures: u32,
     last_request: u64,
@@ -149,7 +192,7 @@ impl Receiver {
             journal,
             #[cfg(feature = "pi-managed")]
             authentication,
-            status: [0; 176],
+            status: [0; status_field::BYTES],
             requests: 0,
             tx_failures: 0,
             last_request: 0,
@@ -235,8 +278,8 @@ impl Receiver {
         let mut reply_data_len = 0;
         if operation == STATUS && data.is_empty() {
             self.fill_storage_status();
-            reply[20..196].copy_from_slice(&self.status);
-            reply_data_len = 176;
+            reply[HEADER_LEN..HEADER_LEN + status_field::BYTES].copy_from_slice(&self.status);
+            reply_data_len = status_field::BYTES;
             status = OK;
         } else if operation == READ_LOG && data.is_empty() {
             let sequence = (value as u64) << 32 | argument as u64;
@@ -473,51 +516,66 @@ impl Receiver {
         }
     }
 
+    /// Refresh cached network fields. STATUS combines this snapshot with current
+    /// storage counters; the two groups need not describe the same instant.
     pub fn network_status(&mut self, session: &crate::network::DhcpSession, link: u32) {
         let put = |bytes: &mut [u8], at: usize, value: u32| {
             bytes[at..at + 4].copy_from_slice(&value.to_le_bytes())
         };
-        put(&mut self.status, 0, 1);
-        put(&mut self.status, 4, session.state as u32);
-        put(&mut self.status, 8, link);
-        self.status[12..16].copy_from_slice(&session.address());
+        put(
+            &mut self.status,
+            status_field::VERSION,
+            status_field::FORMAT_VERSION,
+        );
+        put(
+            &mut self.status,
+            status_field::DHCP_STATE,
+            session.state as u32,
+        );
+        put(&mut self.status, status_field::LINK, link);
+        self.status[status_field::IP].copy_from_slice(&session.address());
         if let Some(lease) = session.lease {
-            self.status[16..20].copy_from_slice(&lease.subnet_mask);
-            self.status[20..24].copy_from_slice(&lease.gateway);
-            self.status[24..28].copy_from_slice(&lease.server);
-            self.status[28..32].copy_from_slice(&lease.dns);
-            put(&mut self.status, 60, lease.lease_seconds);
+            self.status[status_field::SUBNET_MASK].copy_from_slice(&lease.subnet_mask);
+            self.status[status_field::GATEWAY].copy_from_slice(&lease.gateway);
+            self.status[status_field::DHCP_SERVER].copy_from_slice(&lease.server);
+            self.status[status_field::DNS].copy_from_slice(&lease.dns);
+            put(
+                &mut self.status,
+                status_field::LEASE_SECONDS,
+                lease.lease_seconds,
+            );
         } else {
-            self.status[16..32].fill(0);
-            put(&mut self.status, 60, 0);
+            self.status[status_field::LEASE_ADDRESSES].fill(0);
+            put(&mut self.status, status_field::LEASE_SECONDS, 0);
         }
-        self.status[32..38].copy_from_slice(&session.mac_address());
+        self.status[status_field::MAC].copy_from_slice(&session.mac_address());
         for (at, value) in [
-            (40, session.attempts),
-            (44, session.tx_failures),
-            (48, session.received_frames),
-            (52, session.rejected_dhcp),
-            (56, session.lease_losses),
+            (status_field::DHCP_ATTEMPTS, session.attempts),
+            (status_field::NETWORK_TX_FAILURES, session.tx_failures),
+            (status_field::RECEIVED_FRAMES, session.received_frames),
+            (status_field::REJECTED_DHCP, session.rejected_dhcp),
+            (status_field::LEASE_LOSSES, session.lease_losses),
         ] {
             put(&mut self.status, at, value);
         }
-        self.status[64..72].copy_from_slice(&session.lease_remaining().to_le_bytes());
+        self.status[status_field::LEASE_REMAINING_SECONDS]
+            .copy_from_slice(&session.lease_remaining().to_le_bytes());
     }
 
     fn fill_storage_status(&mut self) {
         let now = crate::raspi2b::timer::uptime_millis();
         for (at, value) in [
-            (72, now),
-            (80, self.journal.boot),
-            (88, self.journal.sequence),
+            (status_field::UPTIME_MS, now),
+            (status_field::BOOT_NUMBER, self.journal.boot),
+            (status_field::NEWEST_LOG, self.journal.sequence),
             (
-                96,
+                status_field::OLDEST_LOG,
                 self.journal
                     .sequence
                     .saturating_sub(crate::diagnostics::SECTOR_COUNT - 1)
                     .max(1),
             ),
-            (128, self.last_request),
+            (status_field::LAST_REQUEST_MS, self.last_request),
         ] {
             self.status[at..at + 8].copy_from_slice(&value.to_le_bytes());
         }
@@ -526,29 +584,43 @@ impl Receiver {
         #[cfg(not(feature = "pi-managed"))]
         let (rejected, authenticated) = (0, 0);
         for (at, value) in [
-            (104, self.journal.write_errors),
-            (108, self.journal.dropped_lines),
-            (112, self.journal.corrupt_records),
-            (116, rejected),
-            (120, self.requests),
-            (124, self.tx_failures),
-            (148, crate::raspi2b::reset::status()),
-            (156, gabix_kernel::loader_protocol::MAX_KERNEL_SIZE),
-            (160, crate::diagnostics::SECTOR_COUNT as u32),
-            (164, authenticated),
+            (status_field::LOG_WRITE_ERRORS, self.journal.write_errors),
+            (status_field::DROPPED_LOG_LINES, self.journal.dropped_lines),
+            (
+                status_field::CORRUPT_LOG_RECORDS,
+                self.journal.corrupt_records,
+            ),
+            (status_field::AUTH_REJECTIONS, rejected),
+            (status_field::REQUESTS, self.requests),
+            (status_field::TX_FAILURES, self.tx_failures),
+            (status_field::RESET_STATUS, crate::raspi2b::reset::status()),
+            (
+                status_field::KERNEL_LIMIT_BYTES,
+                gabix_kernel::loader_protocol::MAX_KERNEL_SIZE,
+            ),
+            (
+                status_field::LOG_CAPACITY_SECTORS,
+                crate::diagnostics::SECTOR_COUNT as u32,
+            ),
+            (status_field::AUTH_ENABLED, authenticated),
         ] {
             self.status[at..at + 4].copy_from_slice(&value.to_le_bytes());
         }
+        // If reading/decoding fails, preserve the previous boot fields (initially
+        // zero). The current format has no validity flag for these cached values.
         if let Some(record) = unsafe { self.card.try_read_sector(crate::sd_install::KERNEL_START) }
             .and_then(|b| {
                 gabix_kernel::boot_record::BootRecord::decode(&b, crate::sd_install::KERNEL_SECTORS)
             })
         {
             for (at, value) in [
-                (136, record.active_copy as u32),
-                (140, record.pending_copy),
-                (144, record.attempted_mask),
-                (152, record.copies[record.active_copy].image_crc32),
+                (status_field::ACTIVE_COPY, record.active_copy as u32),
+                (status_field::PENDING_COPY, record.pending_copy),
+                (status_field::ATTEMPTED_MASK, record.attempted_mask),
+                (
+                    status_field::KERNEL_CRC,
+                    record.copies[record.active_copy].image_crc32,
+                ),
             ] {
                 self.status[at..at + 4].copy_from_slice(&value.to_le_bytes());
             }
