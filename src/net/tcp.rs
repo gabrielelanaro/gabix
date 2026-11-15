@@ -21,6 +21,35 @@ const MAX_RTO_TICKS: usize = 6000;
 const SEND_MSS: usize = 1460;
 const CONGESTION_WINDOW_SEGMENTS: usize = 4;
 
+// RFC 9293 section 3.1: byte ranges in the fixed TCP header.
+mod header_field {
+    pub const SOURCE_PORT: core::ops::Range<usize> = 0..2;
+    pub const DESTINATION_PORT: core::ops::Range<usize> = 2..4;
+    pub const SEQUENCE: core::ops::Range<usize> = 4..8;
+    pub const ACKNOWLEDGMENT: core::ops::Range<usize> = 8..12;
+    pub const DATA_OFFSET: usize = 12;
+    pub const FLAGS: usize = 13;
+    pub const WINDOW: core::ops::Range<usize> = 14..16;
+    pub const CHECKSUM: core::ops::Range<usize> = 16..18;
+}
+const HEADER_WORD_BYTES: usize = 4;
+const DATA_OFFSET_SHIFT: u32 = 4;
+// Advertised values are fixed policy here, independent of receive-queue usage.
+const ADVERTISED_RECEIVE_WINDOW: u16 = 4096;
+const ADVERTISED_MSS: u16 = 1460;
+const MSS_OPTION_KIND: u8 = 2;
+const MSS_OPTION_BYTES: usize = 4;
+const SYN_HEADER_BYTES: usize = TCP_HEADER_LEN + MSS_OPTION_BYTES;
+
+// IPv4 pseudo-header used only for checksum calculation, not transmitted here.
+mod pseudo_header {
+    pub const BYTE_LEN: usize = 12;
+    pub const SOURCE_IP: core::ops::Range<usize> = 0..4;
+    pub const DESTINATION_IP: core::ops::Range<usize> = 4..8;
+    pub const PROTOCOL: usize = 9;
+    pub const TCP_LENGTH: core::ops::Range<usize> = 10..12;
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TcpState {
     Closed,
@@ -53,22 +82,30 @@ pub struct TcpSegment<'a> {
 }
 
 impl<'a> TcpSegment<'a> {
+    /// Validate minimum/header lengths and the checksum over all supplied
+    /// bytes. Options are skipped using Data Offset; their contents and lengths
+    /// are not interpreted or negotiated here.
     pub fn parse(bytes: &'a [u8], src_ip: [u8; 4], dst_ip: [u8; 4]) -> Option<Self> {
         if bytes.len() < TCP_HEADER_LEN || tcp_checksum(src_ip, dst_ip, bytes) != 0 {
             return None;
         }
-        let header_len = ((bytes[12] >> 4) as usize) * 4;
+        let header_len =
+            ((bytes[header_field::DATA_OFFSET] >> DATA_OFFSET_SHIFT) as usize) * HEADER_WORD_BYTES;
         if header_len < TCP_HEADER_LEN || header_len > bytes.len() {
             return None;
         }
         Some(Self {
             header: TcpHeader {
-                src_port: u16::from_be_bytes([bytes[0], bytes[1]]),
-                dst_port: u16::from_be_bytes([bytes[2], bytes[3]]),
-                sequence: u32::from_be_bytes(bytes[4..8].try_into().ok()?),
-                acknowledgment: u32::from_be_bytes(bytes[8..12].try_into().ok()?),
-                flags: bytes[13],
-                window: u16::from_be_bytes([bytes[14], bytes[15]]),
+                src_port: u16::from_be_bytes(bytes[header_field::SOURCE_PORT].try_into().ok()?),
+                dst_port: u16::from_be_bytes(
+                    bytes[header_field::DESTINATION_PORT].try_into().ok()?,
+                ),
+                sequence: u32::from_be_bytes(bytes[header_field::SEQUENCE].try_into().ok()?),
+                acknowledgment: u32::from_be_bytes(
+                    bytes[header_field::ACKNOWLEDGMENT].try_into().ok()?,
+                ),
+                flags: bytes[header_field::FLAGS],
+                window: u16::from_be_bytes(bytes[header_field::WINDOW].try_into().ok()?),
                 header_len,
             },
             payload: &bytes[header_len..],
@@ -86,7 +123,7 @@ pub fn write_segment(
     payload: &[u8],
 ) -> Option<usize> {
     let header_len = if flags & FLAG_SYN != 0 {
-        24
+        SYN_HEADER_BYTES
     } else {
         TCP_HEADER_LEN
     };
@@ -95,28 +132,34 @@ pub fn write_segment(
         return None;
     }
     out[..length].fill(0);
-    out[0..2].copy_from_slice(&endpoints.local_port.to_be_bytes());
-    out[2..4].copy_from_slice(&endpoints.remote_port.to_be_bytes());
-    out[4..8].copy_from_slice(&sequence.to_be_bytes());
-    out[8..12].copy_from_slice(&acknowledgment.to_be_bytes());
-    out[12] = ((header_len / 4) as u8) << 4;
-    out[13] = flags;
-    out[14..16].copy_from_slice(&4096u16.to_be_bytes());
-    if header_len == 24 {
-        out[20..24].copy_from_slice(&[2, 4, 0x05, 0xb4]);
+    out[header_field::SOURCE_PORT].copy_from_slice(&endpoints.local_port.to_be_bytes());
+    out[header_field::DESTINATION_PORT].copy_from_slice(&endpoints.remote_port.to_be_bytes());
+    out[header_field::SEQUENCE].copy_from_slice(&sequence.to_be_bytes());
+    out[header_field::ACKNOWLEDGMENT].copy_from_slice(&acknowledgment.to_be_bytes());
+    out[header_field::DATA_OFFSET] = ((header_len / HEADER_WORD_BYTES) as u8) << DATA_OFFSET_SHIFT;
+    out[header_field::FLAGS] = flags;
+    out[header_field::WINDOW].copy_from_slice(&ADVERTISED_RECEIVE_WINDOW.to_be_bytes());
+    if header_len == SYN_HEADER_BYTES {
+        let mss_bytes = ADVERTISED_MSS.to_be_bytes();
+        out[TCP_HEADER_LEN..SYN_HEADER_BYTES].copy_from_slice(&[
+            MSS_OPTION_KIND,
+            MSS_OPTION_BYTES as u8,
+            mss_bytes[0],
+            mss_bytes[1],
+        ]);
     }
     out[header_len..length].copy_from_slice(payload);
     let sum = tcp_checksum(endpoints.local_ip, endpoints.remote_ip, &out[..length]);
-    out[16..18].copy_from_slice(&sum.to_be_bytes());
+    out[header_field::CHECKSUM].copy_from_slice(&sum.to_be_bytes());
     Some(length)
 }
 
 fn tcp_checksum(src_ip: [u8; 4], dst_ip: [u8; 4], bytes: &[u8]) -> u16 {
-    let mut pseudo = [0u8; 12];
-    pseudo[0..4].copy_from_slice(&src_ip);
-    pseudo[4..8].copy_from_slice(&dst_ip);
-    pseudo[9] = PROTOCOL_TCP;
-    pseudo[10..12].copy_from_slice(&(bytes.len() as u16).to_be_bytes());
+    let mut pseudo = [0u8; pseudo_header::BYTE_LEN];
+    pseudo[pseudo_header::SOURCE_IP].copy_from_slice(&src_ip);
+    pseudo[pseudo_header::DESTINATION_IP].copy_from_slice(&dst_ip);
+    pseudo[pseudo_header::PROTOCOL] = PROTOCOL_TCP;
+    pseudo[pseudo_header::TCP_LENGTH].copy_from_slice(&(bytes.len() as u16).to_be_bytes());
     checksum::internet_checksum_parts(&[&pseudo, bytes])
 }
 

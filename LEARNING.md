@@ -563,6 +563,11 @@ A milestone is a "demo-able" checkpoint. Worth a commit + tag + log entry.
 
 ## Progress Log
 
+### 2026-11-15 — Readability audit: TCP packet layout
+- Named TCP header ranges, Data Offset units, fixed window/MSS values and IPv4 checksum pseudo-header fields. Verified layout against RFC 9293; serialized values are unchanged.
+- Clarified the parser's option-skipping contract. Existing QEMU TCP echo test passes through handshake and data transfer.
+- TCP state/retransmission and remaining ARM/page-table review remain open. Physical Pi verification stays pending while disconnected.
+
 ### 2026-11-15 — Readability audit: UDP queues and runtime network state
 - Documented weak port bindings, shared socket ownership, unbounded datagram queues, single receive waiter, poll-waiter registration and lock release before wakeup.
 - Clarified ARP learning/cache limits and network configuration's stored lease metadata and destination filter. Comments follow the existing implementation; no behavior changed.

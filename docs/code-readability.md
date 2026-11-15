@@ -105,6 +105,8 @@ will be checked alongside the implementation they exercise.
   - [x] x86 ext2 serialized superblock, group, inode and directory field offsets
   - [x] Network-device ownership, receive dispatch and ARP wait contracts
   - [x] UDP queue/waiter ownership, runtime ARP cache and network configuration
+  - [x] TCP wire header, SYN MSS option and IPv4 checksum pseudo-header
+  - [ ] TCP state transitions, send/receive ownership and retransmission
 - [ ] Learning snippets and test helpers affected by the edits
 
 ## First slice: Wi-Fi power-on
@@ -964,3 +966,17 @@ and document the current destination filter. These are source-derived contracts;
 no behavior changed. Cargo check passes. Existing behavioral tests were not
 repeated for this comment-only slice, and no queue bound, aging or concurrency
 repair is claimed.
+
+### TCP wire fields
+
+`src/net/tcp.rs` names fixed header ranges, Data Offset word units and shift,
+receive-window policy, SYN MSS option fields, and IPv4 checksum pseudo-header
+fields. The advertised 4096-byte window and 1460-byte MSS are unchanged; the
+latter still encodes as 05 b4. The parser checks checksum and overall header
+length, then skips option bytes without negotiating their contents.
+
+Wire layout reference: [RFC 9293 sections 3.1–3.2](https://www.rfc-editor.org/rfc/rfc9293.html#section-3.1).
+Existing QEMU TCP echo passes through SYN/ACK exchange and payload transfer.
+This covers the changed encoder/parser in the passive connection path; state
+transitions and retransmission logic remain a separate review. No protocol
+behavior or new tests were added.
