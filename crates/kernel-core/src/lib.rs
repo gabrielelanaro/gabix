@@ -19,6 +19,8 @@ pub mod net;
 /// Byte-oriented console supplied by a platform adapter.
 #[cfg(feature = "kernel")]
 pub trait BootConsole {
+    /// Submit one byte. Completion timing and delivery guarantees belong to the
+    /// platform adapter; this interface has no error or flush operation.
     fn write_byte(&mut self, byte: u8);
 }
 

@@ -563,6 +563,11 @@ A milestone is a "demo-able" checkpoint. Worth a commit + tag + log entry.
 
 ## Progress Log
 
+### 2026-11-15 — Readability audit: shared interfaces/reset
+- Documented sector-read error differences, frame/console interface limits and force-unlock caller requirements; named i8042 reset fields.
+- Offline x86 cargo check passes. No behavior changes, reset or hardware activity.
+- Remaining inventory/reference checks continue; physical Pi validation remains pending.
+
 ### 2026-11-15 — Readability audit: UART smoke/platform exit
 - Named standalone GPIO/UART setup and heartbeat counts; documented clock assumptions and FIFO configuration.
 - Named ARM semihosting exit fields and clarified that virt reset exits the emulator.

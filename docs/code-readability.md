@@ -1592,3 +1592,20 @@ the power-manager watchdog implementation.
 Standalone UART smoke and ARM virt builds pass. These checks establish assembly
 and build compatibility; no physical UART run or new semihosting runtime test
 was performed. Remaining source inventory and learning-reference review continue.
+
+### Shared device boundaries and x86 reset
+
+`device.rs` documents logical-sector indexing and the read trait's missing error
+channel, grounded in SdCard's zero fallback and ARM VirtIO's expect. Frame copying
+checks capacity only; receive's None provides no error detail or latency bound.
+BootConsole has no error/flush operation. These are existing interface limits.
+IrqMutex force-unlock documentation describes abandoning existing guards and
+references, including exclusion of other CPUs; the method itself does not stop
+execution or mask interrupts. Spin locks have no poisoning state.
+
+`reboot.rs` names the shared i8042 status/command port, input-buffer flag and reset
+pulse command, documenting its unbounded wait and lack of storage flush/fallback.
+References: [Linux reboot.c](https://raw.githubusercontent.com/torvalds/linux/master/arch/x86/kernel/reboot.c)
+and [i8042 status definitions](https://raw.githubusercontent.com/torvalds/linux/master/include/linux/i8042.h).
+Offline x86 cargo check passes. Behavior is unchanged; no reset was executed.
+Source inventory and learning-reference consistency review remain open.
