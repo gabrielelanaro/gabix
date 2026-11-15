@@ -1,8 +1,8 @@
 //! VGA text-mode buffer driver.
 //!
-//! The VGA hardware reads from a 4000-byte region at physical address
-//! 0xB8000 sixty times per second and displays whatever is there. We just
-//! write bytes; the hardware does the rest.
+//! This driver assumes an already configured 80x25 text display and access to
+//! its character buffer at 0xB8000. It updates cells without programming display
+//! timing, selecting a font or changing the video mode.
 //!
 //! Layout: 25 rows × 80 columns × 2 bytes/cell = 4000 bytes. Each cell is
 //! one ASCII byte followed by one color attribute byte.
@@ -12,6 +12,8 @@ use core::fmt;
 use core::ptr;
 use lazy_static::lazy_static;
 
+const TEXT_BUFFER_ADDRESS: usize = 0xb8000;
+const REPLACEMENT_GLYPH: u8 = 0xfe; // Glyph appearance depends on the loaded font.
 const BUFFER_HEIGHT: usize = 25;
 const BUFFER_WIDTH: usize = 80;
 
@@ -105,13 +107,13 @@ impl Writer {
         }
     }
 
-    /// Write a string. Non-ASCII or non-printable bytes become a placeholder
-    /// (■) because the VGA font only has ASCII glyphs.
+    /// Write printable ASCII and newlines. Each other input byte becomes glyph
+    /// 0xfe; a multi-byte UTF-8 character therefore produces multiple replacements.
     pub fn write_string(&mut self, s: &str) {
         for byte in s.bytes() {
             match byte {
                 0x20..=0x7e | b'\n' => self.write_byte(byte),
-                _ => self.write_byte(0xfe),
+                _ => self.write_byte(REPLACEMENT_GLYPH),
             }
         }
     }
@@ -162,7 +164,7 @@ lazy_static! {
     pub static ref WRITER: IrqMutex<Writer> = IrqMutex::new(Writer {
         column_position: 0,
         color_code: ColorCode::new(Color::Yellow, Color::Black),
-        buffer: unsafe { &mut *(0xb8000 as *mut Buffer) },
+        buffer: unsafe { &mut *(TEXT_BUFFER_ADDRESS as *mut Buffer) },
     });
 }
 
@@ -170,6 +172,8 @@ lazy_static! {
 /// Locks the global WRITER and forwards the format args.
 ///
 /// Also mirrors to the serial port so output can be captured outside QEMU.
+/// The two writes take separate locks; another task/interrupt can print between
+/// them, so VGA and serial ordering need not match across concurrent calls.
 #[doc(hidden)]
 pub fn _print(args: fmt::Arguments) {
     use core::fmt::Write;

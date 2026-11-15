@@ -1554,3 +1554,23 @@ unchanged. Hardware logging checks remain pending. The untracked Wi-Fi tour
 currently links its old snippets to the specific tested commit, rather than the
 current readability edits; that historical distinction needs to remain explicit
 when reviewing learning references.
+
+### x86 console and QEMU exit contracts
+
+`serial.rs` now states that constructing a COM1 handle leaves UART configuration
+unchanged and that writes skip transmitter-status polling. Removed the claim
+that QEMU writes are infinitely fast. `vga_buffer.rs` states the assumed display
+mode and mapped character buffer; removed fixed-refresh and ASCII-only-font
+claims. It names the buffer address and replacement glyph and explains that
+UTF-8 replacement happens per byte. VGA and serial writes use separate locks,
+so their ordering across concurrent print calls can differ.
+
+`qemu_exit.rs` documents exact expected process statuses without claiming all
+other failures are distinguishable by parity. The port's effect without the
+configured device is machine-dependent. Formula reference:
+[QEMU debugexit.c](https://raw.githubusercontent.com/qemu/qemu/master/hw/misc/debugexit.c).
+The current helper panics if execution continues after its port write.
+
+Offline x86 cargo check with qemu-exit passes. These comment and constant-name
+changes preserve behavior; behavioral tests were not repeated. UART smoke and
+platform exit helpers remain to be reviewed before the source inventory closes.

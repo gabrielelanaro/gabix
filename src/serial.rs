@@ -11,7 +11,7 @@ use lazy_static::lazy_static;
 use x86_64::instructions::port::Port;
 
 /// I/O port base for COM1 (the first serial port, historically the
-/// "modem port"). On PC-compatible hardware this is fixed at 0x3F8.
+/// "modem port"). This driver assumes the conventional 0x3F8 mapping.
 const COM1_BASE: u16 = 0x3F8;
 
 pub struct SerialPort {
@@ -19,6 +19,7 @@ pub struct SerialPort {
 }
 
 impl SerialPort {
+    /// Construct a port handle; baud rate, line format and UART control are unchanged.
     pub const fn new() -> Self {
         SerialPort {
             data: Port::new(COM1_BASE),
@@ -26,10 +27,9 @@ impl SerialPort {
     }
 
     pub fn write_byte(&mut self, byte: u8) {
-        // We skip checking the "transmit holding register empty" status bit.
-        // On real hardware at a slow baud rate this could drop bytes when
-        // sending faster than the line can transmit. On QEMU's emulated
-        // UART, writes are infinitely fast, so it's fine.
+        // Submit directly to the data register without polling transmitter status.
+        // This driver relies on the UART setup inherited from boot and does not
+        // guarantee delivery when the transmitter/backend cannot accept a byte.
         unsafe { self.data.write(byte) };
     }
 }

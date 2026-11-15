@@ -563,6 +563,11 @@ A milestone is a "demo-able" checkpoint. Worth a commit + tag + log entry.
 
 ## Progress Log
 
+### 2026-11-15 — Readability audit: x86 console contracts
+- Corrected serial delivery, VGA mode/font and QEMU exit-status claims; named the VGA address and replacement glyph and documented separate output locks.
+- Offline x86 cargo check passes. Behavior is unchanged; no redundant behavioral tests were added.
+- Source inventory follow-up includes UART smoke/platform helpers and learning-reference consistency; physical Pi validation remains pending.
+
 ### 2026-11-15 — Readability audit: DHCP progress snapshots
 - Replaced positional logging-state fields with named fields and named the retry/lease reporting thresholds; explained snapshot updates and service-restart lifetime.
 - Managed kernel build passes; log text and conditions are preserved. Physical checks remain pending.
