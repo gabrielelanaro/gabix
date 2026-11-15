@@ -1,0 +1,179 @@
+# Code readability audit
+
+Goal: a reader can explain each hardware or protocol operation from its call
+site, then follow the helper to the exact bytes or register access.
+
+## Rules for this pass
+
+- Name register addresses, meaningful bit fields, protocol tags, units, and
+  bounded retry policies. Keep reference-manual names in comments where useful.
+- State what an operation changes and why its ordering matters. Define an
+  unfamiliar hardware term when it is first used in an execution sequence.
+- Make set/clear operations and polling expectations explicit at call sites.
+- Preserve behavior, including access widths, ordering, waits, and errors.
+- Keep literal calibration data as reference tables. Document provenance and
+  interpretation instead of giving every table entry an invented name.
+- Mark unknown register semantics honestly. A descriptive-sounding guess is
+  worse than an explicit reference-prescribed value.
+- Ordinary arithmetic, array indices, and already-clear code do not need
+  constants or narration. Avoid changing them just to remove all numerals.
+
+## Audit coverage
+
+Unchecked entries are pending review, not claims that every file needs edits.
+There are 141 source files across the three source roots at the start of this
+pass, including assembly and bring-up probes. Scripts and behavioral fixtures
+will be checked alongside the implementation they exercise.
+
+- [ ] Pi Wi-Fi driver: power, register transport, firmware, packet descriptors,
+  calibration, and station transitions
+  - [x] `power_on`: named addresses/bits/delays; numbered operation explanations
+  - [x] Register polling: explicit `BitState::Set` / `Clear`; bounded USB reads
+  - [x] Basic register transport: named vendor-request fields; SETUP/data contract
+  - [x] Firmware pages, mailbox ownership, and power-off sequence: named fields and ordering explanations (physical check pending)
+  - [x] Station phases, retry timings, and basic management-frame tags
+  - [ ] Packet descriptors, calibration, remaining frame/security fields
+- [ ] Pi USB controller, hub enumeration, Ethernet, and RNDIS
+- [ ] Pi SD controller, mailbox, timer, reset, and hardware random generator
+  - [x] Timer: source rates, interrupt routing/acknowledgement, rollover-safe uptime read
+  - [x] Random generator: enable/warm-up, FIFO word count, whole-nonce timeout
+  - [x] Mailbox: request layout, power flags, reply fields, RAM/cache ownership
+  - [ ] SD, reset
+- [ ] ARM boot, page tables, interrupts, scheduling, processes, and syscalls
+- [ ] ARM loader, SD update/install, authenticated management, and diagnostics
+- [ ] ARM VirtIO adapters and hardware probes
+- [ ] Shared network parsers and state machines, including WPA2
+  - [x] Ethernet, ARP, IPv4, ICMP, UDP, and checksum helpers: wire layouts, abbreviations, meaningful field values, and split-buffer checksum explanation
+  - [x] DHCP options/header fields and ARM lease retry policy; stack dispatch contracts
+  - [ ] Remaining Wi-Fi/WPA2 fields
+- [ ] Shared ELF, partitions, ext2, memory, loader protocol, and boot records
+  - [x] Shared ext2 boot reader: disk fields, inode/group arithmetic, directory records and direct-block limit
+  - [x] ARM ELF32 parser: named header offsets, segment/callback contracts; x86 ELF introduction corrected (remaining x86 parser review pending)
+  - [x] MBR primary-entry lookup and offset adapter: named layout fields and explicit validation limits
+- [ ] x86 boot, paging, context switching, interrupts, PIC/PIT/APIC, and syscalls
+  - [x] PIT: named control-word fields and corrected the mode description
+- [ ] x86 PCI and VirtIO drivers
+- [ ] x86 scheduling, process lifecycle, file operations, and network stack
+- [ ] Learning snippets and test helpers affected by the edits
+
+## First slice: Wi-Fi power-on
+
+`rtl8188cu.rs` names the constants in `power`, retaining the source-register
+aliases. `power_on` shows eight operations in their existing order. The
+register helper states that each read is a USB control transfer, so the
+poll interval is additional delay and is not the total time per attempt.
+
+Primary reference: OpenBSD `urtwn_r92c_power_on` in
+[if_urtwn.c](https://github.com/openbsd/src/blob/master/sys/dev/usb/if_urtwn.c)
+and register definitions in
+[r92creg.h](https://github.com/openbsd/src/blob/master/sys/dev/ic/r92creg.h).
+The final write to register `0xfe10` is kept as an explicitly undocumented
+reference step. Its internal meaning has not been established.
+
+Validation: managed ARM release build passes. Actual Pi upload/read-back and
+remote reboot passed: Wi-Fi/DHCP returned, persistent logs survived, stale
+reboot requests were rejected. Installed image CRC32 `defc3948` (236,284 bytes).
+
+## x86 timer and shared packet parsing
+
+The PIT previously wrote `0x36` while its comment described mode 2. Named
+control fields now describe the actual mode 3 square-wave configuration;
+the emitted byte stays `0x36`. Reference: Intel 8254 datasheet, Control Word
+Format and Mode 3 ([PDF](https://www.scs.stanford.edu/10wi-cs140/pintos/specs/8254.pdf)).
+Existing x86 timer behavioral test passes.
+
+The x86 build also exposed an existing `FrameDevice::transmit` mismatch:
+the shared trait returned `bool`, while VirtIO returned `()`. The adapter now
+returns `true` after its already-existing device completion. This is a build
+repair discovered during verification, separate from naming changes. The
+shared trait documents that local completion does not prove remote delivery.
+
+Shared Ethernet/ARP/IP/ICMP/UDP headers now document their wire layouts.
+UDP names the omitted-checksum and computed-zero encodings. IPv4 names its
+version and header-word count. The checksum helper explains retaining a
+high byte across buffer splits. Existing x86 and ARM QEMU UDP regression runs both passed, covering the
+changed helpers and VirtIO completion path.
+
+
+## Firmware, station, and DHCP follow-up
+
+Firmware loading now names the header, banked write window, USB chunk sizes,
+checksum/ready flags, and mailbox payload layout. Power-off retains the
+reference operation order and labels opaque reference configurations honestly.
+The station code names retry intervals and explains its connection phases.
+Management-frame tags are shared with the frame parser.
+
+Existing Wi-Fi frame tests (2), WPA2 tests (2), ARM DHCP lifecycle tests (2),
+and x86 DHCP integration passed. Managed ARM release builds pass, including
+power-off. The attempted upload stopped at the authentication challenge before
+sending kernel data. The user subsequently confirmed the Pi is disconnected.
+These changes have **not** received the required new physical validation;
+the earlier power-on-only run remains the last validated hardware version.
+
+## Pi timer and random generator
+
+The timer names its crystal-derived count rate, scheduler tick rate, IRQ
+routing, and microsecond conversions. Comments explain acknowledgement and
+reading a changing 64-bit counter through two 32-bit registers. Register
+reference: [BCM2836 ARM-local peripherals, section 4.11](https://datasheets.raspberrypi.com/bcm2836/bcm2836-peripherals.pdf).
+
+The random generator names its warm-up count, available-word field and
+one-second timeout. The timeout covers a whole nonce; each DATA read consumes
+one word. The all-zero rejection remains only a basic failure check.
+Reference: [Linux bcm2835-rng.c](https://github.com/torvalds/linux/blob/master/drivers/char/hw_random/bcm2835-rng.c), initialization and read routines.
+Physical validation is pending reconnection of the Pi.
+
+Validation: managed Wi-Fi release build and the existing Raspberry Pi QEMU
+scheduler test pass. The latter checks timer preemption of two non-yielding
+tasks, task completion, and the cooperative scheduling trace. It does not
+exercise the physical random generator.
+
+## Pi firmware mailbox
+
+`mailbox.rs` now names the eight-word request fields and the separate power-on
+and wait-for-stability bits. The helper name describes the ID/value exchange.
+Comments explain the shared request buffer, response overwriting, channel bits,
+cache publication/invalidation, and iteration-bounded polling. Unmatched replies
+are still discarded, and callers still must serialize access to the shared
+buffer. Layout, alignment, response checks and cache instructions are unchanged.
+
+Reference: [Raspberry Pi firmware mailbox property interface](https://github.com/raspberrypi/firmware/wiki/Mailbox-property-interface), buffer/tag formats, power state and clock rate.
+The existing QEMU USB enumeration check passed after this change; it exercises
+the USB power-on request. Physical USB/SD clock-query validation remains pending.
+
+## Shared partition lookup
+
+The MBR parser names the signature, entry count and sector-address width.
+Its documentation separates whole-disk sector numbers from filesystem-relative
+numbers. It explicitly states existing limits: primary entries only, no length
+or overlap validation, and no upper bound in the offset adapter. Overflow still
+returns zero-filled data through the existing errorless read interface.
+Reference: [UEFI 2.10, section 5.2.1](https://uefi.org/specs/UEFI/2.10/05_GUID_Partition_Table_Format.html), legacy MBR layout tables.
+The existing host `mbr_partitions` test passes: it selects the Linux entry and
+reads a known payload through the translated sector address. No disk was written.
+
+## ARM executable loading
+
+ELF32 header offsets and segment fields now have names; the callback contract
+explains file bounds, memory zero-fill responsibility, and partial effects on
+failure. The ARM loader names its existing image lower bound and stack reserve,
+and explains why it clears memory before copying file bytes. The x86 ELF
+introduction was corrected: e_phoff locates the program-header table, which
+need not immediately follow the file header. Its detailed parser audit remains.
+References: [ELF Header](https://gabi.xinuos.com/elf/02-eheader.html) and
+[Program Loading](https://gabi.xinuos.com/elf/07-pheader.html), System V gABI.
+Existing Pi QEMU userspace boot test passes: it reads an ELF from the SD image,
+loads its segments, and reaches the userspace write syscall. Physical checks
+remain pending; validation policy and memory protections were not expanded.
+
+## Shared ext2 boot reader
+
+Named superblock, inode, group-descriptor and directory-record offsets, plus
+sector/block sizes and pointer counts. Comments follow name → inode number →
+group/table slot → direct blocks, and explain record padding and sparse holes.
+The existing twelve-block truncation and incomplete corrupt-image validation
+are documented explicitly; behavior is preserved.
+Reference: [Linux fs/ext2/ext2.h](https://github.com/torvalds/linux/blob/master/fs/ext2/ext2.h), on-disk structures and direct/indirect pointer constants.
+The existing Pi QEMU partition test passed through MBR translation, ext2 file
+loading and a userspace write syscall. This covers the combined parser changes;
+it does not establish support for large files or malformed images.

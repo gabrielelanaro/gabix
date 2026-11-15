@@ -6,6 +6,12 @@ Approach: follow the "Writing an OS in Rust" tutorial (phil-opp.com) as the spin
 
 ## Roadmap
 
+### Didactic code readability (current cleanup goal)
+- [ ] Audit hardware and protocol operations across shared, x86, and ARM code; give constants, helper calls, and sequencing explanations meaningful names
+- [ ] Verify each changed area with existing relevant checks and physical Pi runs for hardware paths
+
+Coverage and evidence: [code readability audit](docs/code-readability.md).
+
 ### x86 / ARM feature parity (current objective)
 - [x] Cooperative ARM kernel tasks: private stacks, round-robin yield, completion; verify QEMU and physical Pi
 - [x] Timer-driven ARM preemption and interrupt-safe scheduler state (single-core kernel tasks)
@@ -556,6 +562,52 @@ A milestone is a "demo-able" checkpoint. Worth a commit + tag + log entry.
 ---
 
 ## Progress Log
+
+### 2026-11-15 — Readability changes grouped for review
+- Saved separate commits for the VirtIO return-type repair (`ad479cc`), network fields/DHCP (`0d48765`), disk/ELF parsing (`776e3fa`), timer/mailbox/random generator (`3866d46`), and Wi-Fi sequences (`ac9934f`).
+- Commit descriptions distinguish passed host/QEMU checks from pending physical verification. No new Pi deployment was attempted while the board is disconnected.
+- The audit remains active. Lesson artifacts remain separate working-tree changes; no generated logs, firmware, images, or credentials were staged.
+
+### 2026-11-15 — Readability audit: shared ext2 reader
+- Named disk-layout fields and explained inode/group indexing, padded directory records, direct block pointers, and sparse holes.
+- Documented existing twelve-block truncation and limited malformed-image checking; retained behavior and linked the Linux disk structures in the audit record.
+- Existing Pi QEMU partition/file/userspace regression passes. Broader audit and physical verification remain pending.
+
+### 2026-11-15 — Readability audit: ARM ELF loading
+- Named ELF32 header/segment offsets and documented the segment callback's memory responsibilities and partial effects. Named ARM image/stack bounds and explained zero initialization before copying file bytes.
+- Corrected the x86 ELF introduction's claim that program headers immediately follow the file header; their location is supplied by e_phoff.
+- Existing Pi QEMU userspace test passes through SD file loading and a userspace write syscall. Physical validation and the remaining codebase audit stay pending; behavior and roadmap milestones are unchanged.
+
+### 2026-11-15 — Readability audit: shared partition lookup
+- Named MBR signature/count/address-width fields and explained disk-relative versus partition-relative sectors.
+- Documented the existing lookup and adapter limits without expanding behavior: no extended-partition traversal, length/overlap validation, or adapter upper bound; overflow still yields zero-filled data.
+- Existing host partition-selection/translated-read test passes. The broader audit remains active; no physical disk writes or roadmap completion changes.
+
+### 2026-11-15 — Readability audit: firmware mailbox
+- Named request lengths, power flags, response offsets and bus-address fields in the Pi mailbox adapter; explained RAM ownership, cache operations, and shared-buffer serialization.
+- Preserved the eight-word message, cache instructions, reply checks and bounded polling. Verified field meanings against the Raspberry Pi firmware property-interface documentation.
+- Existing QEMU USB enumeration passes, including the power-on mailbox request. Physical verification remains pending while the Pi is disconnected; broader audit checkboxes remain open.
+
+### 2026-11-15 — Readability audit: firmware, DHCP, and Pi timing
+- Named firmware-loader fields, mailbox payload sizes, shutdown operations, Wi-Fi station retry policies, DHCP option tags, and lease deadlines. Preserved operation order, access widths, and timing values.
+- Clarified Pi timer clock/routing/acknowledgement and the hardware random generator's warm-up, FIFO count, and whole-nonce deadline using primary references recorded in `docs/code-readability.md`.
+- Existing Wi-Fi frame/WPA2 and ARM DHCP lifecycle checks pass; x86 DHCP integration passes. The managed Wi-Fi release build and Pi QEMU scheduler/preemption regression also pass after the timer/random-generator edits.
+- The attempted hardware update failed at its authentication challenge before kernel data was sent. The user confirmed the Pi is disconnected; new physical validation is pending. The earlier successful power-on-only physical run remains separate evidence.
+- The codebase-wide audit remains active, with pending areas recorded in the audit checklist. No roadmap completion checkbox changed.
+
+### 2026-11-15 — Didactic implementation audit started
+- Created an active codebase-wide readability goal and coverage checklist in `docs/code-readability.md`.
+- Wi-Fi `power_on` now uses named register addresses, masks, delays, explicit set/clear polling, and explanations for each ordered step. Vendor USB request arguments are named; undocumented reference writes are identified honestly.
+- Physical Pi validation passed: upload/read-back of the new image, SD reboot, Wi-Fi/DHCP return, persistent logs, and stale-request rejection. CRC32 `defc3948`.
+- Started the broader pass with x86 PIT control fields and shared packet-header layouts/checksum semantics. The PIT comment incorrectly described mode 2; the preserved `0x36` command selects mode 3. The x86 timer test passes.
+- Verification found an existing VirtIO `FrameDevice::transmit` return-type mismatch; the adapter now reports success after its existing completion wait. Existing x86 and ARM QEMU UDP echo checks both passed.
+- The broader goal remains active; unchecked audit entries are still pending. No feature-parity milestone is being claimed by this cleanup.
+
+
+### 2026-11-15 — Wi-Fi connection lesson
+- Added lesson 7.07: an isometric step-through of the installed Pi Wi-Fi startup, with explicit firmware/Rust responsibilities, DHCP timing, and a simulated failure activity.
+- Added a matching code tour and short reference, linked from the course map. The lesson distinguishes physical test results from remaining router-outage and group-rekey checks.
+- No kernel changes or roadmap checkbox changes. Learner understanding remains to be checked through the exercises.
 
 ### 2026-11-15 — Wi-Fi register transport and adapter firmware
 - **Physical identity:** RTL8188C, SYS_CFG `04400735`, standard USB board; eFuse identity and power-on sequence verified through the existing UART recovery flow.
