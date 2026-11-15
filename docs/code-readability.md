@@ -38,7 +38,7 @@ will be checked alongside the implementation they exercise.
   - [x] Ethernet selection and QEMU RNDIS setup/frame fields
   - [x] USB transfer direction/retry API, DMA submission and polling contract
   - [x] USB setup requests, hub-port enumeration, descriptor fields and control stages
-  - [ ] USB controller initialization and cache/address handling
+  - [x] USB controller initialization and cache/address handling (physical check pending)
 - [ ] Pi SD controller, mailbox, timer, reset, and hardware random generator
   - [x] Timer: source rates, interrupt routing/acknowledgement, rollover-safe uptime read
   - [x] Random generator: enable/warm-up, FIFO word count, whole-nonce timeout
@@ -323,3 +323,14 @@ and [chapter 11 hub definitions](https://github.com/torvalds/linux/blob/master/i
 The existing Pi QEMU UDP echo regression passes and the managed Wi-Fi release
 kernel builds. That QEMU setup attaches USB Ethernet directly, so physical hub
 enumeration remains unverified by this run. No Pi writes or resets occurred.
+
+Controller startup follow-up names root-port timing, host clock selectors,
+FIFO regions and DMA address fields. Cache comments identify the ARM maintenance
+instructions and explain whole-line ownership and the completion barrier.
+The Cortex-A7's local DCIMVAC operation includes cleaning; callers must avoid
+dirtying buffer cache lines during DMA. All existing operations remain in order.
+References: [BCM2835 ARM Peripherals](https://www.raspberrypi.org/app/uploads/2012/02/BCM2835-ARM-Peripherals.pdf)
+sections 1.2 and 15, and [Cortex-A7 TRM](https://documentation-service.arm.com/static/602cf701083323480d479d18)
+table 4-8. DWC2 FIFO/HCFG field encodings use the Linux hardware header linked
+above. QEMU USB UDP regression and managed Wi-Fi release build pass. Physical
+cache/FIFO/clock behavior still needs validation with the Pi connected.

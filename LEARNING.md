@@ -563,6 +563,11 @@ A milestone is a "demo-able" checkpoint. Worth a commit + tag + log entry.
 
 ## Progress Log
 
+### 2026-11-15 — Readability audit: USB startup and DMA memory
+- Named root-port delays, controller clock choices, FIFO word regions and DMA address fields. Explained controller register roles and cache maintenance, including Cortex-A7's clean-and-invalidate behavior.
+- Existing Pi QEMU UDP echo passes and managed Wi-Fi release build passes. Hardware-specific cache/FIFO/clock behavior remains pending physical verification; no device operations were performed.
+- USB source review subitems are now covered. The broader codebase audit and physical validation remain open.
+
 ### 2026-11-15 — Readability audit: USB enumeration and control stages
 - Named setup request types/actions, hub-port features, descriptor selectors, endpoint fields and buffer limits. Added comments identifying SETUP/DATA/STATUS stages and the current descriptor parser's selection limits.
 - Existing Pi QEMU UDP echo passes; managed Wi-Fi release build passes. QEMU uses a directly attached Ethernet device, so the hub path still needs physical validation when the Pi returns.

@@ -8,11 +8,13 @@ use core::arch::asm;
 const BASE: usize = 0x3f98_0000;
 const SYSTEM_TIMER_LOW: *const u32 = 0x3f00_3004 as *const u32;
 
-const GAHBCFG: usize = 0x008;
+// Register names follow the controller manual: G* are global core registers,
+// H* are host registers, and HC* configure/status one host channel.
+const GAHBCFG: usize = 0x008; // AHB bus configuration (DMA and IRQ controls).
 #[cfg(feature = "pi-hardware")]
-const GUSBCFG: usize = 0x00c;
+const GUSBCFG: usize = 0x00c; // USB physical interface and host/device mode.
 #[cfg(feature = "pi-hardware")]
-const GRSTCTL: usize = 0x010;
+const GRSTCTL: usize = 0x010; // Core reset and FIFO flush requests.
 const GINTSTS: usize = 0x014;
 #[cfg(feature = "pi-hardware")]
 const GRXFSIZ: usize = 0x024;
@@ -22,14 +24,14 @@ const GNPTXFSIZ: usize = 0x028;
 const GHWCFG3: usize = 0x04c;
 #[cfg(feature = "pi-hardware")]
 const HPTXFSIZ: usize = 0x100;
-const HCFG: usize = 0x400;
-const HPRT: usize = 0x440;
+const HCFG: usize = 0x400; // Host clock/speed configuration.
+const HPRT: usize = 0x440; // Root-port status, power and reset.
 const CHANNEL_BASE: usize = 0x500;
-const HCCHAR: usize = 0x00;
-const HCINT: usize = 0x08;
+const HCCHAR: usize = 0x00; // Channel endpoint, direction and enable/halt bits.
+const HCINT: usize = 0x08; // Latched channel events, acknowledged by writing one.
 const HCINTMSK: usize = 0x0c;
-const HCTSIZ: usize = 0x10;
-const HCDMA: usize = 0x14;
+const HCTSIZ: usize = 0x10; // Byte count, packet count and packet identifier.
+const HCDMA: usize = 0x14; // DMA buffer's bus address.
 #[cfg(feature = "pi-hardware")]
 const PCGCCTL: usize = 0xe00;
 
@@ -115,6 +117,25 @@ enum RetryPolicy {
     ReturnOnNak,
 }
 const DATA_CACHE_LINE_SIZE: usize = 64;
+const ROOT_POWER_SETTLE_US: u32 = 100_000;
+const ROOT_RESET_HOLD_US: u32 = 50_000;
+const ROOT_RESET_RECOVERY_US: u32 = 20_000;
+#[cfg(not(feature = "pi-hardware"))]
+const HOST_FS_LS_CLOCK_48_MHZ: u32 = 1;
+
+#[cfg(feature = "pi-hardware")]
+mod hardware_setup {
+    pub const CONNECTION_TIMEOUT_US: u32 = 1_000_000;
+    pub const CORE_RESET_SETTLE_US: u32 = 100_000;
+    pub const HOST_MODE_SETTLE_US: u32 = 50_000;
+    pub const FIFO_FLUSH_SETTLE_US: u32 = 1;
+    pub const HOST_FS_LS_CLOCK_30_OR_60_MHZ: u32 = 0;
+    pub const FIFO_DEPTH_SHIFT: u32 = 16;
+    pub const FIFO_REGION_WORDS: u32 = 1024;
+    pub const FIFO_REGION_COUNT: u32 = 3;
+    pub const RAM_ADDRESS_MASK: u32 = 0x3fff_ffff;
+    pub const VIDEOCORE_BUS_ALIAS: u32 = 0xc000_0000;
+}
 
 // USB setup-packet values, independent of the DWC2 register encodings above.
 mod request {
@@ -229,21 +250,23 @@ impl Dwc2 {
                 GAHBCFG,
                 (read32(GAHBCFG) | AHB_DMA_ENABLE) & !AHB_GLOBAL_INTERRUPT_ENABLE,
             );
-            write32(HCFG, 1);
+            write32(HCFG, HOST_FS_LS_CLOCK_48_MHZ);
         }
 
         write32(HPRT, port_value() | PORT_POWER);
         #[cfg(feature = "pi-hardware")]
-        wait_for_us(1_000_000, || read32(HPRT) & PORT_CONNECTED != 0)?;
+        wait_for_us(hardware_setup::CONNECTION_TIMEOUT_US, || {
+            read32(HPRT) & PORT_CONNECTED != 0
+        })?;
         #[cfg(not(feature = "pi-hardware"))]
         if port_value() & PORT_CONNECTED == 0 {
             return None;
         }
-        delay_us(100_000);
+        delay_us(ROOT_POWER_SETTLE_US);
         write32(HPRT, port_value() | PORT_POWER | PORT_RESET);
-        delay_us(50_000);
+        delay_us(ROOT_RESET_HOLD_US);
         write32(HPRT, port_value() & !PORT_RESET | PORT_POWER);
-        delay_us(20_000);
+        delay_us(ROOT_RESET_RECOVERY_US);
         wait_until(|| read32(HPRT) & PORT_ENABLE != 0)?;
         Some(Self)
     }
@@ -922,6 +945,9 @@ unsafe fn stop_channel_before_returning() {
     }
 }
 
+// OUT: write dirty CPU cache lines back before the controller reads RAM.
+// IN: clean and invalidate before DMA, then invalidate again after completion.
+// Callers must keep the buffer's cache lines free of CPU writes during DMA.
 unsafe fn prepare_dma_buffer(buffer: *const u8, length: usize, direction_in: bool) {
     #[cfg(feature = "pi-hardware")]
     if length != 0 {
@@ -954,6 +980,8 @@ enum CacheOperation {
 
 #[cfg(feature = "pi-hardware")]
 unsafe fn cache_lines(buffer: *const u8, length: usize, operation: CacheOperation) {
+    // Maintenance works on entire cache lines, including the partial lines
+    // at either end of the buffer. Round the start down and the end up.
     let mut line = buffer as usize & !(DATA_CACHE_LINE_SIZE - 1);
     let end = (buffer as usize)
         .saturating_add(length)
@@ -962,20 +990,28 @@ unsafe fn cache_lines(buffer: *const u8, length: usize, operation: CacheOperatio
     while line < end {
         match operation {
             CacheOperation::Clean => {
+                // DCCMVAC: clean by address to the point of coherency.
                 asm!("mcr p15, 0, {address}, c7, c10, 1", address = in(reg) line as u32);
             }
             CacheOperation::Invalidate => {
+                // DCIMVAC: invalidate by address to the point of coherency.
+                // Cortex-A7 upgrades this to clean-and-invalidate locally;
+                // the CPU must not dirty these lines while DMA owns them.
                 asm!("mcr p15, 0, {address}, c7, c6, 1", address = in(reg) line as u32);
             }
             CacheOperation::CleanInvalidate => {
+                // DCCIMVAC: clean and invalidate by address.
                 asm!("mcr p15, 0, {address}, c7, c14, 1", address = in(reg) line as u32);
             }
         }
         line += DATA_CACHE_LINE_SIZE;
     }
+    // Complete the cache maintenance before subsequent memory/device access.
     asm!("dsb sy");
 }
 
+// Reusing status bits in a port write can acknowledge changes or disable the
+// port. Clear those action bits before composing a power/reset update.
 unsafe fn port_value() -> u32 {
     read32(HPRT) & !PORT_WRITE_TO_CLEAR
 }
@@ -989,6 +1025,7 @@ unsafe fn delay_us(microseconds: u32) {
 
 #[cfg(feature = "pi-hardware")]
 unsafe fn initialize_hardware() -> Option<()> {
+    use hardware_setup::*;
     super::mailbox::power_on_usb()?;
 
     let mut usb_config = read32(GUSBCFG);
@@ -997,7 +1034,7 @@ unsafe fn initialize_hardware() -> Option<()> {
     wait_until(|| read32(GRSTCTL) & RESET_AHB_IDLE != 0)?;
     write32(GRSTCTL, read32(GRSTCTL) | RESET_CORE_SOFT);
     wait_until(|| read32(GRSTCTL) & RESET_CORE_SOFT == 0)?;
-    delay_us(100_000);
+    delay_us(CORE_RESET_SETTLE_US);
 
     usb_config = read32(GUSBCFG);
     usb_config &= !(USB_PHY_INTERFACE_16_BIT
@@ -1007,33 +1044,39 @@ unsafe fn initialize_hardware() -> Option<()> {
         | USB_FORCE_DEVICE_MODE);
     usb_config |= USB_FORCE_HOST_MODE;
     write32(GUSBCFG, usb_config);
-    delay_us(50_000);
+    delay_us(HOST_MODE_SETTLE_US);
 
     let ahb_config = (read32(GAHBCFG) | AHB_DMA_ENABLE | AHB_WAIT_AXI_WRITES)
         & !AHB_MAX_BURST_MASK
         & !AHB_GLOBAL_INTERRUPT_ENABLE;
     write32(GAHBCFG, ahb_config);
+    // Clear the power/clock gating control so the USB core can run.
     write32(PCGCCTL, 0);
-    write32(HCFG, 0);
+    write32(HCFG, HOST_FS_LS_CLOCK_30_OR_60_MHZ);
 
     // FIFO sizes and addresses are measured in 32-bit words. The reset
     // receive depth exceeds the BCM2836 controller's available FIFO RAM.
     // Give receive, non-periodic transmit, and periodic transmit distinct
     // 1024-word regions within its reported capacity.
-    let fifo_words = read32(GHWCFG3) >> 16;
-    if fifo_words < 3072 {
+    let fifo_words = read32(GHWCFG3) >> FIFO_DEPTH_SHIFT;
+    if fifo_words < FIFO_REGION_COUNT * FIFO_REGION_WORDS {
         return None;
     }
-    write32(GRXFSIZ, 1024);
-    write32(GNPTXFSIZ, (1024 << 16) | 1024);
-    write32(HPTXFSIZ, (1024 << 16) | 2048);
+    // RX starts at word zero. TX registers combine depth (high half) with
+    // the starting word offset (low half).
+    let transmit_depth = FIFO_REGION_WORDS << FIFO_DEPTH_SHIFT;
+    let nonperiodic_start = FIFO_REGION_WORDS;
+    let periodic_start = 2 * FIFO_REGION_WORDS;
+    write32(GRXFSIZ, FIFO_REGION_WORDS);
+    write32(GNPTXFSIZ, transmit_depth | nonperiodic_start);
+    write32(HPTXFSIZ, transmit_depth | periodic_start);
 
     write32(GRSTCTL, RESET_TX_FIFO | RESET_TX_FIFO_ALL);
     wait_until(|| read32(GRSTCTL) & RESET_TX_FIFO == 0)?;
-    delay_us(1);
+    delay_us(FIFO_FLUSH_SETTLE_US);
     write32(GRSTCTL, RESET_RX_FIFO);
     wait_until(|| read32(GRSTCTL) & RESET_RX_FIFO == 0)?;
-    delay_us(1);
+    delay_us(FIFO_FLUSH_SETTLE_US);
     Some(())
 }
 
@@ -1052,7 +1095,9 @@ unsafe fn wait_for_us(microseconds: u32, mut condition: impl FnMut() -> bool) ->
 fn dma_address(buffer: *const u8) -> u32 {
     #[cfg(feature = "pi-hardware")]
     {
-        (buffer as u32 & 0x3fff_ffff) | 0xc000_0000
+        // Buffers use identity-mapped low RAM. Preserve its physical offset
+        // and select the VideoCore bus alias used by this DMA controller.
+        (buffer as u32 & hardware_setup::RAM_ADDRESS_MASK) | hardware_setup::VIDEOCORE_BUS_ALIAS
     }
     #[cfg(not(feature = "pi-hardware"))]
     {
