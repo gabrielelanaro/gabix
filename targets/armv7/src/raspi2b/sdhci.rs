@@ -20,6 +20,28 @@ mod card_command {
     pub const APPLICATION_PREFIX: u16 = 55;
 }
 
+// Card-Specific Data (CSD) field positions after restoring the response shift.
+mod csd_field {
+    pub const FORMAT_SHIFT: u32 = 126;
+    pub const STANDARD_CAPACITY: u128 = 0;
+    pub const HIGH_CAPACITY: u128 = 1;
+    pub const READ_BLOCK_EXPONENT_SHIFT: u32 = 80;
+    pub const READ_BLOCK_EXPONENT_MASK: u128 = 0xf;
+    pub const STANDARD_SIZE_SHIFT: u32 = 62;
+    pub const STANDARD_SIZE_MASK: u128 = 0xfff;
+    pub const SIZE_MULTIPLIER_SHIFT: u32 = 47;
+    pub const SIZE_MULTIPLIER_MASK: u128 = 7;
+    pub const HIGH_CAPACITY_SIZE_SHIFT: u32 = 48;
+    pub const HIGH_CAPACITY_SIZE_MASK: u128 = 0x3f_ffff;
+    pub const SECTORS_PER_CAPACITY_UNIT: u64 = 1024; // 512 KiB / 512 bytes.
+}
+
+const CLOCK_DIVIDER_MAX: u32 = 0x3ff;
+const CLOCK_DIVIDER_LOW_MASK: u32 = 0xff;
+const CLOCK_DIVIDER_LOW_BITS: u32 = 8;
+const CLOCK_DIVIDER_LOW_REGISTER_SHIFT: u32 = 8;
+const CLOCK_DIVIDER_HIGH_REGISTER_SHIFT: u32 = 6;
+
 const RESET_ALL: u8 = 1;
 const POWER_ON_3V3: u8 = 0x0f;
 const DATA_TIMEOUT_2_POW_27: u8 = 0x0e;
@@ -154,16 +176,7 @@ impl SdCard {
             csd |= (read32(RESPONSE_0 + index * 4) as u128) << (index * 32);
         }
         csd <<= 8;
-        let sector_count = match csd >> 126 {
-            0 => {
-                let read_block_length = ((csd >> 80) & 0xf) as u32;
-                let size = ((csd >> 62) & 0xfff) as u64 + 1;
-                let multiplier = ((csd >> 47) & 7) as u32 + 2;
-                size.checked_shl(multiplier + read_block_length)? / SECTOR_BYTES as u64
-            }
-            1 => (((csd >> 48) & 0x3fffff) as u64 + 1) * 1024,
-            _ => return None, // SDUC addressing is not implemented.
-        };
+        let sector_count = sectors_from_csd(csd)?;
         if sector_count == 0 {
             return None;
         }
@@ -227,6 +240,35 @@ impl SdCard {
         }
         wait_interrupt(INTERRUPT_TRANSFER_COMPLETE)?;
         Some(sector)
+    }
+}
+
+// Convert the card's encoded capacity into the 512-byte sectors used by our
+// block-device API. Both formats store a size minus one.
+fn sectors_from_csd(csd: u128) -> Option<u64> {
+    match csd >> csd_field::FORMAT_SHIFT {
+        csd_field::STANDARD_CAPACITY => {
+            let block_size_exponent = ((csd >> csd_field::READ_BLOCK_EXPONENT_SHIFT)
+                & csd_field::READ_BLOCK_EXPONENT_MASK) as u32;
+            let size_units = ((csd >> csd_field::STANDARD_SIZE_SHIFT)
+                & csd_field::STANDARD_SIZE_MASK) as u64
+                + 1;
+            // C_SIZE_MULT encodes a multiplier of 2^(field + 2) blocks.
+            let block_count_exponent = ((csd >> csd_field::SIZE_MULTIPLIER_SHIFT)
+                & csd_field::SIZE_MULTIPLIER_MASK) as u32
+                + 2;
+            Some(
+                size_units.checked_shl(block_count_exponent + block_size_exponent)?
+                    / SECTOR_BYTES as u64,
+            )
+        }
+        csd_field::HIGH_CAPACITY => {
+            let size_units = ((csd >> csd_field::HIGH_CAPACITY_SIZE_SHIFT)
+                & csd_field::HIGH_CAPACITY_SIZE_MASK) as u64
+                + 1;
+            Some(size_units * csd_field::SECTORS_PER_CAPACITY_UNIT)
+        }
+        _ => None, // SDUC addressing is not implemented.
     }
 }
 
@@ -380,16 +422,19 @@ unsafe fn set_clock(source_hz: u32, maximum_hz: u32) -> Option<()> {
     // never exceeds the requested rate; encode its ten bits across CONTROL1.
     // Default-speed cards permit up to 25 MHz; initialization permits 400 kHz.
     let divider = source_hz.div_ceil(maximum_hz.checked_mul(2)?).max(1);
-    if divider > 0x3ff {
+    if divider > CLOCK_DIVIDER_MAX {
         return None;
     }
-    let divider = (((divider & 0xff) << 8) | ((divider >> 8) << 6)) as u16;
+    // Divider bits 7:0 go to register bits 15:8; bits 9:8 go to bits 7:6.
+    let low_bits = (divider & CLOCK_DIVIDER_LOW_MASK) << CLOCK_DIVIDER_LOW_REGISTER_SHIFT;
+    let high_bits = (divider >> CLOCK_DIVIDER_LOW_BITS) << CLOCK_DIVIDER_HIGH_REGISTER_SHIFT;
+    let encoded_divider = (low_bits | high_bits) as u16;
     write16(CLOCK_CONTROL, 0);
-    write16(CLOCK_CONTROL, divider | CLOCK_INTERNAL_ENABLE);
+    write16(CLOCK_CONTROL, encoded_divider | CLOCK_INTERNAL_ENABLE);
     wait_until(|| read16(CLOCK_CONTROL) & CLOCK_INTERNAL_STABLE != 0)?;
     write16(
         CLOCK_CONTROL,
-        divider | CLOCK_INTERNAL_ENABLE | CLOCK_SD_ENABLE,
+        encoded_divider | CLOCK_INTERNAL_ENABLE | CLOCK_SD_ENABLE,
     );
     Some(())
 }

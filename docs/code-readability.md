@@ -43,7 +43,7 @@ will be checked alongside the implementation they exercise.
   - [x] Mailbox: request layout, power flags, reply fields, RAM/cache ownership
   - [x] Reset/watchdog: protected-write key, countdown units and field limits
   - [x] SD command indices, reset/power fields, sector units and polling contract
-  - [ ] SD capacity extraction and clock-divider bit packing
+  - [x] SD capacity extraction and clock-divider bit packing
 - [ ] ARM boot, page tables, interrupts, scheduling, processes, and syscalls
   - [x] Kernel task context switch and scheduler frame creation: named saved-word layout, user-bank offset and IRQ mask
   - [ ] Boot/exception assembly, process operations, memory and syscalls
@@ -284,5 +284,14 @@ Comments explain application-command prefixes and status polling with CPU IRQ
 signaling disabled. Commands, access widths, copies and timeouts are preserved.
 References: Linux [sd.h](https://github.com/torvalds/linux/blob/master/include/linux/mmc/sd.h), [mmc.h](https://github.com/torvalds/linux/blob/master/include/linux/mmc/mmc.h), and [sdhci.h](https://github.com/torvalds/linux/blob/master/drivers/mmc/host/sdhci.h).
 Existing Pi QEMU partition-to-userspace regression passes. It validates the SD
-read path; physical write/read-back and reboot remain pending. Capacity-field
-extraction and divider packing still need the same readability review.
+read path; physical write/read-back and reboot remain pending.
+
+Capacity decoding now names the Card-Specific Data fields and explains how
+each format produces a count of 512-byte sectors. Clock setup names the two
+parts of the ten-bit divider and shows their destination register bits.
+Arithmetic, register writes and clock-enable order are preserved. Capacity
+reference: Linux [mmc_decode_csd](https://github.com/torvalds/linux/blob/master/drivers/mmc/core/sd.c).
+The existing Pi QEMU partition-to-userspace check passes after these changes;
+it exercises the emulated card format, without proving physical clock timing
+or every supported capacity format. The user has disconnected the Pi, so
+physical validation remains pending.

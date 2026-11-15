@@ -563,6 +563,11 @@ A milestone is a "demo-able" checkpoint. Worth a commit + tag + log entry.
 
 ## Progress Log
 
+### 2026-11-15 — Readability audit: SD capacity and clock divider
+- Named the card capacity fields and extracted their sector-count calculation into `sectors_from_csd`. Named the divider fields and explained where their bits go in the controller register; arithmetic and access order are unchanged.
+- Existing Pi QEMU partition-to-userspace regression passes. The Pi is disconnected; physical timing, write/read-back and reboot checks remain pending.
+- Marked this SD audit subitem reviewed. The broader readability goal and hardware validation remain open.
+
 ### 2026-11-15 — Readability audit: SD command path
 - Named SD commands, controller setup fields, sector/word units and card-ready state. Explained application-command prefixes and polling of latched interrupt-status bits.
 - Existing Pi QEMU partition-to-userspace regression passes. Preserved operation order and values; physical writes remain untested after these edits.
