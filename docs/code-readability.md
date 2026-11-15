@@ -1498,3 +1498,24 @@ limited meanings, now described beside their code.
 
 All eight existing build scripts pass. No hardware run was performed. USB/LAN
 probe coverage, remaining orchestration and lesson-reference review remain open.
+
+### USB and LAN9512 diagnostic probes
+
+Reviewed enumeration, configuration, transmit and receive probe sources and their
+assembly entries. Named hub class, mode/reset/stack values, settling and receive
+intervals, packet counts, probe EtherTypes and DHCP transaction/address values.
+Assembly watchdog countdowns remain ten seconds for enumeration and fifteen for
+LAN9512, covering initialization and all subsequent output/polling together.
+
+Comments specify that configuration selects the first hub child without searching
+by ID; enumeration can print completion after a reported hub error. TX/RX wait a
+fixed five seconds without checking link status there. TX success counts driver
+USB bulk submissions, with peer receipt requiring a separate capture. Repeated RX
+counts before ARP filtering, and RX NONE can follow skipped frames. The ARP reply
+variant retains its fixed 10.0.2.15 address. Output strings and control flow are
+preserved, including these diagnostic limitations.
+
+All nine existing build scripts pass: enumeration, configure, transmit, receive,
+DHCP-size, DHCP-packet, ARP-receive, ARP-reply and repeated-receive. No physical
+network test was performed. Remaining orchestration and learning-reference review
+continue; hardware verification remains pending while the Pi is disconnected.

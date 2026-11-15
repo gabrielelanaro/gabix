@@ -10,6 +10,8 @@ use core::panic::PanicInfo;
 
 core::arch::global_asm!(include_str!("pi2_usb_enumeration_probe.S"));
 
+const USB_HUB_DEVICE_CLASS: u8 = 9;
+
 const UART_BASE: usize = 0x3f20_1000;
 const UART_FLAGS: usize = UART_BASE + 0x18;
 const UART_TX_FULL: u32 = 1 << 5;
@@ -30,7 +32,7 @@ extern "C" fn pi2_usb_enumeration_probe_main() -> ! {
     };
     write_device(b"NET8 ROOT ", root);
 
-    if root.device_class == 9 {
+    if root.device_class == USB_HUB_DEVICE_CLASS {
         let result = unsafe {
             usb.visit_hub_children(root, |port, child| {
                 write_bytes(b"NET8 PORT ");
@@ -46,6 +48,7 @@ extern "C" fn pi2_usb_enumeration_probe_main() -> ! {
             write_byte(b'\n');
         }
     }
+    // Completion also follows a reported hub error; the inventory can be partial.
     write_line(b"NET8 INVENTORY COMPLETE");
     wait_for_reset();
 }

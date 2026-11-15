@@ -22,14 +22,21 @@ use gabix_kernel::device::FrameDevice;
 
 core::arch::global_asm!(include_str!("pi2_lan9512_transmit_probe.S"));
 
+const USB_HUB_DEVICE_CLASS: u8 = 9;
+
 const UART_BASE: usize = 0x3f20_1000;
 const UART_FLAGS: usize = UART_BASE + 0x18;
 const UART_TX_FULL: u32 = 1 << 5;
+const LINK_SETTLE_DELAY_MICROS: u32 = 5_000_000;
+const PROBE_FRAME_COUNT: u8 = 16;
 const SYSTEM_TIMER_LOW: *const u32 = 0x3f00_3004 as *const u32;
 #[cfg(feature = "pi-network-dhcp-size-probe")]
-const FRAME_LEN: usize = 293;
+const FRAME_LEN: usize = 293; // Historical DHCP-size comparison payload.
 #[cfg(not(feature = "pi-network-dhcp-size-probe"))]
-const FRAME_LEN: usize = 60;
+const FRAME_LEN: usize = 60; // Ethernet minimum excluding the hardware-added FCS.
+const PROBE_ETHERTYPE: [u8; 2] = [0x88, 0xb5];
+#[cfg(feature = "pi-network-dhcp-packet-probe")]
+const PROBE_DHCP_TRANSACTION_ID: u32 = 0x4741_4258;
 
 #[no_mangle]
 extern "C" fn pi2_lan9512_transmit_probe_main() -> ! {
@@ -49,7 +56,8 @@ extern "C" fn pi2_lan9512_transmit_probe_main() -> ! {
     let Some(root) = (unsafe { usb.enumerate_root() }) else {
         fail(b"NET10 ROOT FAILED");
     };
-    let network_device = if root.device_class == 9 {
+    // This diagnostic selects the first enumerated child, without searching by device ID.
+    let network_device = if root.device_class == USB_HUB_DEVICE_CLASS {
         let child = match unsafe { usb.enumerate_hub_child_diagnostic(root) } {
             Ok(child) => child,
             Err(error) => {
@@ -74,14 +82,15 @@ extern "C" fn pi2_lan9512_transmit_probe_main() -> ! {
     write_byte(b'\n');
     write_line(b"NET10 LAN9512 CONFIG OK");
     write_line(b"NET10 WAITING FOR LINK");
-    delay_us(5_000_000);
+    // Fixed settling delay; this probe does not read PHY link status here.
+    delay_us(LINK_SETTLE_DELAY_MICROS);
 
     let mut transmitted = 0;
 
     #[cfg(feature = "pi-network-dhcp-packet-probe")]
     {
-        let session = network_protocol::DhcpSession::new(mac, 0x4741_4258);
-        for _ in 0..16 {
+        let session = network_protocol::DhcpSession::new(mac, PROBE_DHCP_TRANSACTION_ID);
+        for _ in 0..PROBE_FRAME_COUNT {
             if session.send_discover(&mut network) {
                 transmitted += 1;
             }
@@ -93,15 +102,16 @@ extern "C" fn pi2_lan9512_transmit_probe_main() -> ! {
         let mut frame = [0u8; FRAME_LEN];
         frame[..6].fill(0xff);
         frame[6..12].copy_from_slice(&mac);
-        frame[12..14].copy_from_slice(&[0x88, 0xb5]);
+        frame[12..14].copy_from_slice(&PROBE_ETHERTYPE);
         frame[14..31].copy_from_slice(b"GABIX-NET10-PROBE");
-        for sequence in 0..16 {
+        for sequence in 0..PROBE_FRAME_COUNT {
             frame[31] = sequence;
             if unsafe { network.transmit_frame(&frame) } {
                 transmitted += 1;
             }
         }
     }
+    // Counts successful USB bulk submissions; peer receipt requires a host capture.
     write_bytes(b"NET10 TX SUCCEEDED ");
     write_hex_u8(transmitted);
     write_byte(b'\n');

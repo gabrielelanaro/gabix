@@ -21,9 +21,19 @@ use gabix_kernel::net::stack::{NetworkInterface, MAX_FRAME_LEN};
 
 core::arch::global_asm!(include_str!("pi2_lan9512_receive_probe.S"));
 
+const USB_HUB_DEVICE_CLASS: u8 = 9;
+
 const UART_BASE: usize = 0x3f20_1000;
 const UART_FLAGS: usize = UART_BASE + 0x18;
 const UART_TX_FULL: u32 = 1 << 5;
+const LINK_SETTLE_DELAY_MICROS: u32 = 5_000_000;
+#[cfg(feature = "pi-network-repeated-receive-probe")]
+const PROBE_FRAME_COUNT: usize = 16;
+const RECEIVE_WINDOW_MICROS: u32 = 5_000_000;
+#[cfg(feature = "pi-network-arp-receive-probe")]
+const ARP_ETHERTYPE: [u8; 2] = [0x08, 0x06];
+#[cfg(feature = "pi-network-arp-reply-probe")]
+const PROBE_IPV4_ADDRESS: [u8; 4] = [10, 0, 2, 15];
 const SYSTEM_TIMER_LOW: *const u32 = 0x3f00_3004 as *const u32;
 
 #[no_mangle]
@@ -44,7 +54,8 @@ extern "C" fn pi2_lan9512_receive_probe_main() -> ! {
     let Some(root) = (unsafe { usb.enumerate_root() }) else {
         fail(b"NET11 ROOT FAILED");
     };
-    let network_device = if root.device_class == 9 {
+    // This diagnostic selects the first enumerated child, without searching by device ID.
+    let network_device = if root.device_class == USB_HUB_DEVICE_CLASS {
         let child = match unsafe { usb.enumerate_hub_child_diagnostic(root) } {
             Ok(child) => child,
             Err(error) => {
@@ -69,24 +80,26 @@ extern "C" fn pi2_lan9512_receive_probe_main() -> ! {
     write_byte(b'\n');
     write_line(b"NET11 LAN9512 CONFIG OK");
     write_line(b"NET11 WAITING FOR LINK");
-    delay_us(5_000_000);
+    // Fixed settling delay; this probe does not read PHY link status here.
+    delay_us(LINK_SETTLE_DELAY_MICROS);
 
     write_line(b"NET11 RX POLL");
     let started = timer_now();
     #[cfg(feature = "pi-network-repeated-receive-probe")]
     let mut received = 0usize;
-    while timer_now().wrapping_sub(started) < 5_000_000 {
+    while timer_now().wrapping_sub(started) < RECEIVE_WINDOW_MICROS {
         if let Some(frame) = network.receive() {
             let bytes = frame.bytes();
             #[cfg(feature = "pi-network-repeated-receive-probe")]
             {
+                // Count all received frames before the optional ARP filter.
                 received += 1;
-                if received < 16 {
+                if received < PROBE_FRAME_COUNT {
                     continue;
                 }
             }
             #[cfg(feature = "pi-network-arp-receive-probe")]
-            if bytes.get(12..14) != Some(&[0x08, 0x06]) {
+            if bytes.get(12..14) != Some(&ARP_ETHERTYPE) {
                 continue;
             }
             write_bytes(b"NET11 RX LEN ");
@@ -103,7 +116,7 @@ extern "C" fn pi2_lan9512_receive_probe_main() -> ! {
             write_byte(b'\n');
             #[cfg(feature = "pi-network-arp-reply-probe")]
             {
-                let interface = NetworkInterface::new(mac, [10, 0, 2, 15]);
+                let interface = NetworkInterface::new(mac, PROBE_IPV4_ADDRESS);
                 let mut reply = [0u8; MAX_FRAME_LEN];
                 let Some(length) = interface.reply(bytes, &mut reply) else {
                     fail(b"NET11 ARP REPLY BUILD FAILED");
@@ -123,6 +136,7 @@ extern "C" fn pi2_lan9512_receive_probe_main() -> ! {
         write_hex_u16(received as u16);
         write_byte(b'\n');
     }
+    // No frame reached the reporting path; filters/count threshold may have skipped frames.
     write_line(b"NET11 RX NONE");
     wait_for_reset();
 }
