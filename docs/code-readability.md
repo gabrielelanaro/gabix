@@ -39,7 +39,8 @@ will be checked alongside the implementation they exercise.
   - [x] Packet RAM page links, queue reservations, boundaries and page sizes
   - [x] Indirect RF register transport and 20 MHz channel selection
   - [x] Station power groups, retry/contention settings and ACK diagnostic filter
-  - [ ] Remaining radio initialization and shared frame/security fields
+  - [x] Receiver startup sequence, RF interface controls and scan filters
+  - [ ] Remaining analog preset naming and shared frame/security fields
 - [ ] Pi USB controller, hub enumeration, Ethernet, and RNDIS
   - [x] LAN9512 register transport, PHY access and SMSC frame headers
   - [x] Ethernet selection and QEMU RNDIS setup/frame fields
@@ -463,3 +464,21 @@ compiled the actual old/new station-setup methods and compared channels 0..14
 with power values 0, 63 and 64. All 45 result/trace comparisons match. Channel
 selection itself was stubbed (covered separately above); physical association
 and packet transmission remain pending.
+
+## Receiver startup
+
+Separated startup's programming, RF interface, calibration and passive-scan
+stages with source comments. Named board selection, RF interface fields,
+receiver enable bits, LC calibration control/timing, MAC/filter registers,
+appended receive metadata and aggregation control. Documented radio-table delay
+markers. Analog/clock preset words retain their existing values and widths.
+References: OpenBSD [rtwn.c](https://github.com/openbsd/src/blob/master/sys/dev/ic/rtwn.c)
+initialization and [r92creg.h](https://github.com/openbsd/src/blob/master/sys/dev/ic/r92creg.h)
+RF/interface and receive-control definitions.
+
+Managed Wi-Fi release build passes. An ignored recording harness compiled the
+actual old/new startup methods with the repository programming tables. Successful
+startup and unsupported-board rejection produced identical results, register
+traces, helper-call order and saved channel value. RF access/calibration helpers
+were recorded stubs; their internal paths are checked separately above. Physical
+passive reception and association remain pending.

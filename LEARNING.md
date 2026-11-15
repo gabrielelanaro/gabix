@@ -563,6 +563,11 @@ A milestone is a "demo-able" checkpoint. Worth a commit + tag + log entry.
 
 ## Progress Log
 
+### 2026-11-15 — Readability audit: receiver startup
+- Divided receiver startup into programming, RF interface, calibration and scan-filter stages. Named board selection, interface controls, calibration timing, receive filters and appended status fields; documented radio-table delay markers.
+- Managed Wi-Fi release build passes. An ignored host harness compared the actual old/new methods and programming tables: complete successful startup and unsupported-board traces match, including recorded helper calls.
+- Physical reception remains pending. Some analog presets retain reference literals with an explicit sequencing comment; their register naming and the shared protocol audit remain open.
+
 ### 2026-11-15 — Readability audit: station transmit setup
 - Named factory power groups, retry/contention fields, address/filter registers and ACK observation settings. Kept timing presets explicit without inventing undocumented units.
 - Managed Wi-Fi release build passes. An ignored host harness compared the old/new station-setup methods for channels 0..14 and power indices 0/63/64; all 45 results and register traces match.

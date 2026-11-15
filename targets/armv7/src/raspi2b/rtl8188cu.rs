@@ -172,6 +172,41 @@ mod fw {
     pub const MAILBOX_POLL_US: u32 = 10;
 }
 
+mod receiver_setup {
+    pub const BOARD_TYPE_ROM_BYTE: usize = 0x79;
+    pub const BOARD_TYPE_SHIFT: u32 = 5;
+    pub const STANDARD_USB_BOARD: u8 = 0;
+    pub const GAIN_TABLE_REGISTER: u16 = 0x0c78;
+    pub const TABLE_WRITE_SETTLE_US: u32 = 1;
+    pub const RF_INTERFACE_SWITCH: u16 = 0x0870;
+    pub const RF_INTERFACE_OUTPUT: u16 = 0x0860;
+    pub const RF_ENVIRONMENT: u32 = 1 << 4;
+    pub const RF_ENVIRONMENT_OUTPUT_ENABLE: u32 = 1 << 20;
+    pub const RF_ADDRESS_LENGTH: u32 = 1 << 10;
+    pub const RF_DATA_LENGTH: u32 = 1 << 11;
+    pub const RF_INTERFACE_SETTLE_US: u32 = 50;
+    pub const RADIO_TABLE_WRITE_SETTLE_US: u32 = 5;
+    pub const BASEBAND_MODE: u16 = 0x0800;
+    pub const ENABLE_CCK: u32 = 1 << 24;
+    pub const ENABLE_OFDM: u32 = 1 << 25;
+    pub const PAUSE_ALL_QUEUES: u8 = 0xff;
+    pub const START_LC_CALIBRATION: u32 = 1 << 15;
+    pub const LC_SETTLE_US: u32 = 100_000;
+    pub const STATION_ADDRESS: u16 = 0x0610;
+    pub const DRIVER_INFO_SIZE: u16 = 0x060f;
+    pub const DRIVER_INFO_EIGHT_BYTE_UNITS: u8 = 4;
+    pub const NO_LINK: u8 = 0;
+    pub const ADDRESS_ACCEPTANCE_BITS: u32 = 0x0f; // RCR AAP/APM/AM/AB.
+    pub const ACCEPT_MANAGEMENT: u32 = 1 << 13;
+    pub const HT_CONTROL_LOCATION: u32 = 1 << 14; // RCR_HTC_LOC_CTRL.
+    pub const APPEND_PHY_STATUS: u32 = 1 << 28;
+    pub const APPEND_INTEGRITY_CHECK: u32 = 1 << 29;
+    pub const APPEND_MESSAGE_INTEGRITY_CODE: u32 = 1 << 30;
+    pub const MULTICAST_MASK_REGISTERS: [u16; 2] = [0x0620, 0x0624];
+    pub const MANAGEMENT_SUBTYPE_FILTER: u16 = 0x06a0;
+    pub const RECEIVE_DMA_AGGREGATION: u16 = 1 << 2;
+}
+
 // Station configuration combines factory power indices with MAC timing/filter
 // policy. Values below retain the existing conservative, non-QoS setup.
 mod station {
@@ -874,15 +909,19 @@ impl Rtl8188cu {
     /// Initialize one-chain baseband/RF for passive reception on 2.4 GHz.
     /// Transmit queues remain paused until association code configures them.
     pub fn initialize_receiver(&mut self, identity: &Identity) -> Result<(), Error> {
+        use receiver_setup::*;
+
         self.phase = "receiver";
         // The tables below describe the standard USB dongle board.
-        if identity.rom[0x79] >> 5 != 0 {
+        if identity.rom[BOARD_TYPE_ROM_BYTE] >> BOARD_TYPE_SHIFT != STANDARD_USB_BOARD {
             return Err(Error::UnsupportedChip(identity.system_config));
         }
+        // 1. Apply the reference MAC/baseband/gain programming sequence.
         for &(register, value) in tables::MAC {
             self.write8(register, value)?;
         }
-        self.update16(0x0002, 0, 0x2003)?;
+        // Preserve the reference analog/clock presets and their access widths.
+        self.update16(fw::SYSTEM_FUNCTIONS, 0, 0x2003)?;
         self.write16(0x0028, 0xdb83)?;
         self.write8(0x001f, 7)?;
         self.write8(0x0002, 0x17)?;
@@ -891,21 +930,23 @@ impl Rtl8188cu {
         self.write8(0x0025, 0x80)?;
         for &(register, value) in tables::BASEBAND {
             self.write32(register, value)?;
-            delay_us(1);
+            delay_us(TABLE_WRITE_SETTLE_US);
         }
         for &value in tables::GAIN {
-            self.write32(0x0c78, value)?;
-            delay_us(1);
+            self.write32(GAIN_TABLE_REGISTER, value)?;
+            delay_us(TABLE_WRITE_SETTLE_US);
         }
-        let environment = self.read32(0x0870)? & 0x10;
-        self.update32(0x0860, 0, 0x00100000)?;
-        delay_us(50);
-        self.update32(0x0860, 0, 0x10)?;
-        delay_us(50);
-        self.update32(0x0824, 0x400, 0)?;
-        delay_us(50);
-        self.update32(0x0824, 0x800, 0)?;
-        delay_us(50);
+        // 2. Temporarily control the RF interface while applying its table.
+        let environment = self.read32(RF_INTERFACE_SWITCH)? & RF_ENVIRONMENT;
+        self.update32(RF_INTERFACE_OUTPUT, 0, RF_ENVIRONMENT_OUTPUT_ENABLE)?;
+        delay_us(RF_INTERFACE_SETTLE_US);
+        self.update32(RF_INTERFACE_OUTPUT, 0, RF_ENVIRONMENT)?;
+        delay_us(RF_INTERFACE_SETTLE_US);
+        self.update32(radio_access::READ_COMMAND, RF_ADDRESS_LENGTH, 0)?;
+        delay_us(RF_INTERFACE_SETTLE_US);
+        self.update32(radio_access::READ_COMMAND, RF_DATA_LENGTH, 0)?;
+        delay_us(RF_INTERFACE_SETTLE_US);
+        // Table pseudo-addresses 0xf9..0xfe/0xffe encode delays in microseconds.
         for &(register, value) in tables::RADIO {
             match register {
                 0xfe | 0xffe => delay_us(50_000),
@@ -916,31 +957,45 @@ impl Rtl8188cu {
                 0xf9 => delay_us(1),
                 _ => {
                     self.radio_write(register as u8, value)?;
-                    delay_us(5);
+                    delay_us(RADIO_TABLE_WRITE_SETTLE_US);
                 }
             }
         }
-        self.update32(0x0870, 0x10, environment)?;
-        self.channel_register = self.radio_read(0x18)?;
-        self.update32(0x0800, 0, 0x03000000)?; // Enable CCK and OFDM receivers.
-        self.write8(0x0522, 0xff)?; // Pause transmit queues during passive scan.
+        self.update32(RF_INTERFACE_SWITCH, RF_ENVIRONMENT, environment)?;
+        self.channel_register = self.radio_read(channel_config::RADIO_CHANNEL_BANDWIDTH)?;
+        self.update32(BASEBAND_MODE, 0, ENABLE_CCK | ENABLE_OFDM)?;
+        self.write8(station::TRANSMIT_PAUSE, PAUSE_ALL_QUEUES)?;
+        // 3. Calibrate with transmit queues paused, then apply USB presets.
         self.calibrate_iq()?;
-        self.radio_write(0x18, self.channel_register | 0x8000)?; // LC calibration.
-        delay_us(100_000);
+        self.radio_write(
+            channel_config::RADIO_CHANNEL_BANDWIDTH,
+            self.channel_register | START_LC_CALIBRATION,
+        )?;
+        delay_us(LC_SETTLE_US);
         self.write8(0xfe40, 0xe0)?;
         self.write8(0xfe41, 0x8d)?;
         self.write8(0xfe42, 0x80)?;
-        self.write(0x0610, &identity.mac)?;
-        self.write8(0x060f, 4)?; // Four 8-byte PHY status words before each frame.
-        self.write8(0x0102, 0)?; // Monitor network type.
-        self.write32(0x0608, 0x7000600f)?; // Management frames + PHY status.
-        self.write32(0x0620, u32::MAX)?;
-        self.write32(0x0624, u32::MAX)?;
-        self.write16(0x06a0, 0xffff)?;
-        self.write16(0x06a2, 0)?;
-        self.write16(0x06a4, 0)?;
-        self.update16(0x010c, 4, 0)?; // Receive one USB frame without aggregation.
-        self.set_channel(1)
+        // 4. Set our MAC and enable management reception for passive scanning.
+        self.write(STATION_ADDRESS, &identity.mac)?;
+        self.write8(DRIVER_INFO_SIZE, DRIVER_INFO_EIGHT_BYTE_UNITS)?;
+        self.write8(station::NETWORK_TYPE, NO_LINK)?;
+        self.write32(
+            station::RECEIVE_CONFIG,
+            ADDRESS_ACCEPTANCE_BITS
+                | ACCEPT_MANAGEMENT
+                | HT_CONTROL_LOCATION
+                | APPEND_PHY_STATUS
+                | APPEND_INTEGRITY_CHECK
+                | APPEND_MESSAGE_INTEGRITY_CODE,
+        )?;
+        for register in MULTICAST_MASK_REGISTERS {
+            self.write32(register, u32::MAX)?;
+        }
+        self.write16(MANAGEMENT_SUBTYPE_FILTER, station::ALL_SUBTYPES)?;
+        self.write16(station::CONTROL_SUBTYPE_FILTER, 0)?;
+        self.write16(station::DATA_SUBTYPE_FILTER, 0)?;
+        self.update16(packet_memory::DMA_QUEUE_MAP, RECEIVE_DMA_AGGREGATION, 0)?; // Receive one USB frame without aggregation.
+        self.set_channel(channel_config::FIRST_CHANNEL)
     }
 
     fn update32(&mut self, register: u16, clear: u32, set: u32) -> Result<(), Error> {
