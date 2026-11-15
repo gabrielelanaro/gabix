@@ -20,7 +20,7 @@ site, then follow the helper to the exact bytes or register access.
 
 ## Audit coverage
 
-Unchecked entries are pending review, not claims that every file needs edits.
+Unchecked parent entries retain outstanding validation requirements; checked subitems record source review. Source inventory and affected-reference review are complete at the local-validation checkpoint below.
 There are 141 source files across the three source roots at the start of this
 pass, including assembly and bring-up probes. Scripts and behavioral fixtures
 will be checked alongside the implementation they exercise.
@@ -129,7 +129,7 @@ will be checked alongside the implementation they exercise.
   - [x] TCP wire header, SYN MSS option and IPv4 checksum pseudo-header
   - [x] TCP active-open send accounting, ACK removal and retransmission timing
   - [x] TCP state transitions and passive socket ownership
-- [ ] Learning snippets and test helpers affected by the edits
+- [x] Learning snippets and test helpers affected by the edits (renamed API/constant scan and targeted contract corrections; historical listings retain their original scope)
 
 ## First slice: Wi-Fi power-on
 
@@ -1722,3 +1722,25 @@ corrects the old claim that the Pi timer is polled. Source locations accompany
 the updated explanation. Changed HTML files parse; whitespace checks pass.
 These are affected-reference fixes, not a rewrite of historical course material.
 Physical Pi validation remains pending.
+
+## Local-validation checkpoint — 2026-11-15
+
+Source inventory, meaningful hardware/protocol naming and helper-contract review
+are complete for this pass. Existing implementation defects and caller assumptions
+remain explicitly documented; this readability task does not claim to repair them.
+Affected-reference checks cover renamed Rust APIs/constants and the concrete
+mailbox, USB, Ethernet and VFS contract mismatches found during review. Historical
+course listings are not promised to be current compilable copies of every module.
+
+Final local checks: 10 shared-library tests with wifi-security pass (including
+RFC3394 unwrap/corruption and handshake/key-reinstallation cases); two standalone
+Wi-Fi frame tests pass; ARM QEMU isolation and task/preemption behavioral checks
+pass. The 16 uploader/registry checks also passed at the preceding checkpoint.
+Build evidence for affected x86 and Pi feature configurations is recorded above.
+
+The objective remains incomplete because the physical gate above has not run on
+the current revision. The user has disconnected the Pi. Further validation needs
+a powered, reachable device and the appropriate recovery path; no running hardware
+test is being awaited. Preserve the installed working image until a current RAM
+trial and layout checks establish the safe next step. Raw results remain ignored;
+focused commits and this evidence record are retained for review.

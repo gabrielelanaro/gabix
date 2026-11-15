@@ -7,7 +7,7 @@ Approach: follow the "Writing an OS in Rust" tutorial (phil-opp.com) as the spin
 ## Roadmap
 
 ### Didactic code readability (current cleanup goal)
-- [ ] Audit hardware and protocol operations across shared, x86, and ARM code; give constants, helper calls, and sequencing explanations meaningful names
+- [x] Audit hardware and protocol operations across shared, x86, and ARM code; give constants, helper calls, and sequencing explanations meaningful names
 - [ ] Verify each changed area with existing relevant checks and physical Pi runs for hardware paths
 
 Coverage and evidence: [code readability audit](docs/code-readability.md).
@@ -562,6 +562,12 @@ A milestone is a "demo-able" checkpoint. Worth a commit + tag + log entry.
 ---
 
 ## Progress Log
+
+### 2026-11-15 — Readability audit: local validation checkpoint
+- Completed the source-review milestone across shared, x86 and ARM code; recorded unchanged facade files and corrected affected renamed API/constant references. Checked the source-audit roadmap item only.
+- Current verification passes: 10 shared-library tests with Wi-Fi security enabled, two Wi-Fi frame tests, ARM QEMU process isolation and scheduler/preemption tests. Earlier current-revision uploader/registry checks passed 16 tests.
+- The physical-validation roadmap item stays open. Pi is disconnected; no current hardware upload, reboot, Wi-Fi connection or SD write has been performed.
+- Next required work: reconnect the Pi and execute the explicit physical validation gate in docs/code-readability.md, confirming image identity and card layout before any write. Historical course listings beyond references affected by this cleanup remain historical material, not a new full-course rewrite.
 
 ### 2026-11-15 — Readability audit: mailbox/VirtIO references
 - Scanned removed constant names and updated five VirtIO references; replaced the mailbox lesson's outdated helper with current source and polling explanation.
