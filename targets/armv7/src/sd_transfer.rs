@@ -11,6 +11,22 @@ const MAX_BYTES: u32 = ((END_SECTOR - DATA_SECTOR) * 512) as u32;
 const DISK_MAGIC: &[u8; 8] = b"GABIXNET";
 const WIRE_MAGIC: &[u8; 4] = b"GBSD";
 const HEADER_LEN: usize = 20;
+// Little-endian UDP header; requests and replies share these positions.
+mod wire_field {
+    pub const OPERATION: usize = 4;
+    pub const SESSION: usize = 8;
+    pub const ARGUMENT: usize = 12;
+    pub const VALUE_OR_STATUS: usize = 16;
+}
+const REPLY_OPERATION_BIT: u32 = 1 << 31;
+// First 24 bytes of the staging header sector; CRC covers the first 20.
+mod disk_field {
+    pub const LENGTH: usize = 8;
+    pub const IMAGE_CRC: usize = 12;
+    pub const COMPLETE: usize = 16;
+    pub const HEADER_CRC: usize = 20;
+    pub const HEADER_BYTES: usize = 24;
+}
 const BEGIN: u32 = 1;
 const DATA: u32 = 2;
 const FINISH: u32 = 3;
@@ -20,6 +36,11 @@ const INSTALL: u32 = 6;
 const READ_SECTOR: u32 = 7;
 const CARD_INFO: u32 = 8;
 const BEGIN_KERNEL: u32 = 9;
+#[cfg(feature = "pi-managed")]
+const AUTH_CHALLENGE: u32 = 10;
+const STATUS: u32 = 11;
+const READ_LOG: u32 = 12;
+const REBOOT: u32 = 13;
 const OK: u32 = 0;
 const INVALID: u32 = 1;
 const ORDER: u32 = 2;
@@ -69,7 +90,9 @@ impl Receiver {
             return None;
         }
         let header = card.try_read_sector(HEADER_SECTOR)?;
-        let owned = header[..8] == *DISK_MAGIC && word(&header, 20) == crc32(&header[..20]);
+        // A valid header identifies previously claimed staging storage. It does
+        // not recheck the payload CRC here; verified is restored from its flag.
+        let owned = header[..8] == *DISK_MAGIC && word(&header, disk_field::HEADER_CRC) == crc32(&header[..disk_field::HEADER_CRC]);
         if !owned {
             // First use requires an empty region, not merely an empty header.
             for sector in HEADER_SECTOR..END_SECTOR {
@@ -81,11 +104,11 @@ impl Receiver {
                 }
             }
         }
-        let length = if owned { word(&header, 8) } else { 0 };
-        if owned && (length == 0 || length > MAX_BYTES || word(&header, 16) > 1) {
+        let length = if owned { word(&header, disk_field::LENGTH) } else { 0 };
+        if owned && (length == 0 || length > MAX_BYTES || word(&header, disk_field::COMPLETE) > 1) {
             return None;
         }
-        let verified = owned && word(&header, 16) == 1;
+        let verified = owned && word(&header, disk_field::COMPLETE) == 1;
         let journal =
             crate::diagnostics::Journal::open(&mut card, crate::raspi2b::timer::uptime_millis())?;
         #[cfg(feature = "pi-managed")]
@@ -126,7 +149,7 @@ impl Receiver {
             repeated_errors: 0,
             session: 0,
             length,
-            expected_crc: if owned { word(&header, 12) } else { 0 },
+            expected_crc: if owned { word(&header, disk_field::IMAGE_CRC) } else { 0 },
             next: if verified { length } else { 0 },
             verified,
             failed: false,
@@ -146,9 +169,9 @@ impl Receiver {
         {
             // A public challenge exposes only the persistent boot number and
             // counter. Every diagnostic/read/write/reboot command requires HMAC.
-            if packet.len() == 20 && &packet[..4] == WIRE_MAGIC && word(packet, 4) == 10 {
+            if packet.len() == 20 && &packet[..4] == WIRE_MAGIC && word(packet, wire_field::OPERATION) == 10 {
                 reply[..20].copy_from_slice(packet);
-                reply[4..8].copy_from_slice(&(10u32 | 0x80000000).to_le_bytes());
+                reply[4..8].copy_from_slice(&(AUTH_CHALLENGE | REPLY_OPERATION_BIT).to_le_bytes());
                 reply[16..20].fill(0);
                 reply[20..28].copy_from_slice(&self.authentication.boot.to_le_bytes());
                 reply[28..36].copy_from_slice(&self.authentication.sequence.to_le_bytes());
@@ -187,26 +210,26 @@ impl Receiver {
         }
         self.requests = self.requests.saturating_add(1);
         self.last_request = crate::raspi2b::timer::uptime_millis();
-        let operation = word(packet, 4);
-        let session = word(packet, 8);
-        let argument = word(packet, 12);
-        let value = word(packet, 16);
+        let operation = word(packet, wire_field::OPERATION);
+        let session = word(packet, wire_field::SESSION);
+        let argument = word(packet, wire_field::ARGUMENT);
+        let value = word(packet, wire_field::VALUE_OR_STATUS);
         let data = &packet[HEADER_LEN..];
         let mut status = INVALID;
         let mut reply_data_len = 0;
-        if operation == 11 && data.is_empty() {
+        if operation == STATUS && data.is_empty() {
             self.fill_storage_status();
             reply[20..196].copy_from_slice(&self.status);
             reply_data_len = 176;
             status = OK;
-        } else if operation == 12 && data.is_empty() {
+        } else if operation == READ_LOG && data.is_empty() {
             let sequence = (value as u64) << 32 | argument as u64;
             if let Some(bytes) = self.journal.read(&mut self.card, sequence) {
                 reply[20..532].copy_from_slice(&bytes);
                 reply_data_len = 512;
                 status = OK;
             }
-        } else if operation == 13 && data.is_empty() {
+        } else if operation == REBOOT && data.is_empty() {
             crate::diagnostics::line(b"management reboot requested");
             self.maintenance(true);
             if self.journal.flush(&mut self.card, self.last_request) {
@@ -399,10 +422,10 @@ impl Receiver {
         }
         reply[..4].copy_from_slice(WIRE_MAGIC);
         for (offset, value) in [
-            (4, operation | 0x80000000),
-            (8, session),
-            (12, argument),
-            (16, status),
+            (wire_field::OPERATION, operation | REPLY_OPERATION_BIT),
+            (wire_field::SESSION, session),
+            (wire_field::ARGUMENT, argument),
+            (wire_field::VALUE_OR_STATUS, status),
         ] {
             reply[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
         }
@@ -551,11 +574,11 @@ impl Receiver {
         }
         let mut header = [0; 512];
         header[..8].copy_from_slice(DISK_MAGIC);
-        header[8..12].copy_from_slice(&self.length.to_le_bytes());
-        header[12..16].copy_from_slice(&self.expected_crc.to_le_bytes());
-        header[16..20].copy_from_slice(&(complete as u32).to_le_bytes());
-        let checksum = crc32(&header[..20]);
-        header[20..24].copy_from_slice(&checksum.to_le_bytes());
+        header[disk_field::LENGTH..disk_field::IMAGE_CRC].copy_from_slice(&self.length.to_le_bytes());
+        header[disk_field::IMAGE_CRC..disk_field::COMPLETE].copy_from_slice(&self.expected_crc.to_le_bytes());
+        header[disk_field::COMPLETE..disk_field::HEADER_CRC].copy_from_slice(&(complete as u32).to_le_bytes());
+        let checksum = crc32(&header[..disk_field::HEADER_CRC]);
+        header[disk_field::HEADER_CRC..disk_field::HEADER_BYTES].copy_from_slice(&checksum.to_le_bytes());
         self.card.write_sector(HEADER_SECTOR, &header).is_ok()
             && unsafe { self.card.try_read_sector(HEADER_SECTOR) } == Some(header)
     }

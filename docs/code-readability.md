@@ -75,6 +75,7 @@ will be checked alongside the implementation they exercise.
   - [x] Installer package fields, fixed kernel extents and ordered write phases
   - [x] Installer FAT32 field layout and loader-chain limits
   - [x] Installer MBR identity, publication boundary and caller bounds
+  - [x] SD transfer request fields and staging-header layout
 - [ ] ARM VirtIO adapters and hardware probes
   - [x] QEMU VirtIO network: queue roles, feature words, packet metadata and buffer reuse
   - [x] QEMU VirtIO block: feature negotiation, descriptor roles, memory ordering and polling contract
@@ -1285,3 +1286,18 @@ The managed kernel build passes. This source review exposes current constraints;
 it adds no validation or physical-install evidence. Existing layout remains
 card-specific and partially applied installations remain possible on failure.
 Management/transfer review and disconnected-Pi validation remain open.
+
+### SD transfer wire and staging fields
+
+`sd_transfer.rs` names the common request/reply word positions, reply-operation
+bit, management operation numbers and persisted staging-header fields. Wire
+positions match `scripts/pi2-sd-transfer.py`'s `<4sIIII` header and response-bit
+check. The 24-byte disk header retains its length, image CRC, complete flag and
+CRC over the preceding 20 bytes. Values and packet decisions are unchanged.
+
+Initialization now explicitly states that a valid header identifies claimed
+staging storage and restores its verified flag without re-reading the payload
+CRC at that point. State transitions, status-payload layout and authentication
+remain separate review items. The managed kernel build passes. Existing physical
+management tests require a reachable Pi and were not run while it is disconnected;
+no device writes were made.

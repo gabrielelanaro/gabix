@@ -563,6 +563,11 @@ A milestone is a "demo-able" checkpoint. Worth a commit + tag + log entry.
 
 ## Progress Log
 
+### 2026-11-15 — Readability audit: SD transfer fields
+- Named request/reply fields, management operation numbers and persisted staging-header offsets; matched the wire format to the host uploader.
+- Clarified restored verification state. Managed kernel build passes with unchanged values/behavior; no physical transfer or SD write was performed.
+- Transfer state/status, authentication/diagnostics and other audit areas remain open. Physical checks await the disconnected Pi.
+
 ### 2026-11-15 — Readability audit: installer partition boundaries
 - Named MBR fields and development-card fingerprint; documented third-entry-only publication, conditional active-copy protection and caller-owned staging bounds.
 - Managed kernel build passes with unchanged comparisons/control flow. No SD writes were performed.
