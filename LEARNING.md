@@ -563,6 +563,11 @@ A milestone is a "demo-able" checkpoint. Worth a commit + tag + log entry.
 
 ## Progress Log
 
+### 2026-11-15 — Readability audit: ARM boot network policy
+- Named boot network timing/identity constants and documented partial enumeration, device preference, retained DHCP sessions and trial-watchdog handling.
+- Clarified that boot confirmation checks device initialization, without requiring DHCP or a host round trip; policy is unchanged.
+- Five relevant build configurations pass, including managed Wi-Fi release. Physical checks remain pending; orchestration details and lesson-reference review continue.
+
 ### 2026-11-15 — Readability audit: USB/LAN diagnostic probes
 - Named probe packet/timing and assembly setup values; explained first-child selection, partial enumeration, USB submission counts and receive filtering.
 - All nine existing build variants pass. Output, control flow and values are preserved; physical hardware remains disconnected.

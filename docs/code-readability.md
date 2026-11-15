@@ -81,10 +81,12 @@ will be checked alongside the implementation they exercise.
   - [x] Management authentication envelope and replay/cache contracts
   - [x] Diagnostic queue, ring-record fields and flush/failure semantics
   - [x] UART service-loop watchdog timing and polling contracts
+  - [x] Foreground network polling, boot device selection and trial-confirmation policy
 - [ ] ARM VirtIO adapters and hardware probes
   - [x] QEMU VirtIO network: queue roles, feature words, packet metadata and buffer reuse
   - [x] QEMU VirtIO block: feature negotiation, descriptor roles, memory ordering and polling contract
   - [x] QEMU virt timer/GIC: named interrupt fields, counter interval and acknowledgement sequence
+  - [x] Bring-up probes: atomic, boot/BSS/allocator, USB enumeration and LAN9512 diagnostics
 - [ ] Shared network parsers and state machines, including WPA2
   - [x] Ethernet, ARP, IPv4, ICMP, UDP, and checksum helpers: wire layouts, abbreviations, meaningful field values, and split-buffer checksum explanation
   - [x] DHCP options/header fields and ARM lease retry policy; stack dispatch contracts
@@ -1519,3 +1521,21 @@ All nine existing build scripts pass: enumeration, configure, transmit, receive,
 DHCP-size, DHCP-packet, ARP-receive, ARP-reply and repeated-receive. No physical
 network test was performed. Remaining orchestration and learning-reference review
 continue; hardware verification remains pending while the Pi is disconnected.
+
+### ARM boot network orchestration
+
+`main.rs` names boot watchdog duration, DHCP transaction ID, USB hub/Wi-Fi IDs,
+Ethernet settling time, Pi boot network windows, pre-timer packet count, Linux
+partition type and post-user DHCP retry interval. Build branches retain their
+values and operation order. Comments explain partial hub enumeration results,
+Wi-Fi preference, retaining an unfinished DHCP session for later service, and
+preserving the trial watchdog after individual boot tests pass.
+
+Trial confirmation currently requires a network device object and SD receiver;
+it does not require a DHCP lease or host round trip. The comment now states this
+policy explicitly. A watchdog reset enters the installed boot flow, which may
+select another SD kernel before UART recovery.
+
+Managed Ethernet, managed Wi-Fi release, raspi2b, virt and pre-timer diagnostic
+builds pass. No physical boot/lease/confirmation test was performed. Remaining
+orchestration details and lesson-reference consistency still need review.
