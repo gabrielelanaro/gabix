@@ -86,7 +86,8 @@ will be checked alongside the implementation they exercise.
   - [x] Boot orchestration, GDT/TSS contracts and initial user entry
   - [x] SYSCALL/SYSRET entry, saved argument offsets and STAR selector setup
   - [x] Page-table dimensions, frame arithmetic and clone/copy explanations
-  - [ ] Page-table ownership/synchronization contracts and interrupt wrappers
+  - [x] Interrupt/exception wrapper explanations, stack offsets and fault-bit names (existing exception defects recorded below)
+  - [ ] Page-table ownership/synchronization contracts
 - [x] x86 PCI and VirtIO drivers (source review; existing QEMU checks pass)
   - [x] PCI bus-0 discovery, BAR fields and configuration access contract
   - [x] VirtIO capability regions and MSI-X table/control parsing
@@ -732,3 +733,29 @@ not establish exclusive ownership or add locking to per-address-space operations
 Existing fork-resumption and exec-replacement QEMU tests pass; raw output stays
 under ignored `target/runs/readability/`. Synchronization and aliasing review
 remains open, as does physical validation of earlier Pi changes.
+
+### x86 interrupt and exception wrappers
+
+`src/arch/x86_64/interrupts.rs` uses named stack-word sizes, padding and
+frame offsets. Timer-vector selection uses the PIC definition; fault-bit
+printing uses the installed x86_64 crate's `PageFaultErrorCode` names.
+Instruction order, padding amounts, vectors and printed bit values are preserved.
+Comments trace timer register saves through the scheduler and distinguish the
+network interrupt's wakeup from receive processing in the network task.
+
+Stack layout was checked against Intel SDM Vol. 3A section 6.14.2,
+[64-Bit Mode Stack Frame](https://cdrdv2-public.intel.com/835754/253668-sdm-vol-3a.pdf).
+The review exposed existing correctness limitations, now stated in the source:
+
+- Breakpoint entry calls Rust without preserving caller-saved registers.
+- Page-fault entry subtracts eight bytes from an already aligned 48-byte CPU
+  frame, misaligning its C call. This change names the existing padding and
+  records the defect; it does not repair the entry sequence.
+- The fatal page-fault diagnostic unconditionally reads the original demo's
+  user address, which may be unmapped and cause another fault.
+- Interrupt wrappers preserve no SIMD/floating-point state.
+
+Existing timer and UDP echo QEMU checks cover ordinary boot, timer progression
+and network delivery. They do not exercise breakpoint or page-fault recovery,
+prove SIMD preservation, or resolve these recorded defects. Exception repairs
+need focused behavioral tests in a separate correctness change.

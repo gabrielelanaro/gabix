@@ -563,6 +563,11 @@ A milestone is a "demo-able" checkpoint. Worth a commit + tag + log entry.
 
 ## Progress Log
 
+### 2026-11-15 — Readability audit: x86 interrupt entry
+- Named exception stack offsets/padding and reused PIC timer-vector and crate fault-bit definitions. Explained register saving, return through IRETQ and deferred network-task processing; removed stale ABI and NAPI claims.
+- Checked CPU frame layout against Intel SDM 3A section 6.14.2. Recorded existing defects: breakpoint caller-register clobber, page-fault call misalignment, an unconditional demo-memory read and missing SIMD preservation. Behavior remains unchanged; these require separate correctness work.
+- Existing timer and UDP echo QEMU checks pass. They do not validate exception recovery. Page-table ownership, process code and ARM review remain open; physical Pi validation remains pending while disconnected.
+
 ### 2026-11-15 — Readability audit: x86 page-table dimensions and copying
 - Named page-table entry count and high-half boundary; frame strides, copying and clearing use the shared frame size. Loop bounds and copied bytes are unchanged.
 - Corrected stale fork/unmap explanations and clarified that address-space handles can refer to existing tables. Documented shared writable kernel state, shared huge pages, mapping errors and caller serialization requirements.
