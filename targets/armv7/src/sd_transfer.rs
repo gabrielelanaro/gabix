@@ -1,4 +1,4 @@
-//! One bounded file transfer into the known recovery image's unused SD gap.
+//! Bounded Ethernet uploads into staging storage or the inactive kernel copy.
 //! UDP retries acknowledge only sectors already written and read back.
 use crate::raspi2b::sdhci::SdCard;
 use gabix_kernel::device::WritableBlockDevice;
@@ -16,6 +16,10 @@ const DATA: u32 = 2;
 const FINISH: u32 = 3;
 const READ: u32 = 4;
 const OPEN: u32 = 5;
+const INSTALL: u32 = 6;
+const READ_SECTOR: u32 = 7;
+const CARD_INFO: u32 = 8;
+const BEGIN_KERNEL: u32 = 9;
 const OK: u32 = 0;
 const INVALID: u32 = 1;
 const ORDER: u32 = 2;
@@ -31,6 +35,8 @@ pub struct Receiver {
     verified: bool,
     failed: bool,
     peer: Option<([u8; 4], u16)>,
+    data_sector: u64,
+    kernel_target: Option<(u64, usize)>,
 }
 
 impl Receiver {
@@ -45,7 +51,9 @@ impl Receiver {
         ];
         if mbr[440..444] != [0x8d, 0x2d, 0x1b, 0x41]
             || mbr[446..478] != expected
-            || mbr[478..510] != [0; 32]
+            || (mbr[478..510] != [0; 32]
+                && gabix_kernel::boot_record::find_partition(&mbr, card.sector_count())
+                    != Some((4882432, 262144)))
             || mbr[510..] != [0x55, 0xaa]
         {
             return None;
@@ -77,6 +85,8 @@ impl Receiver {
             verified,
             failed: false,
             peer: None,
+            data_sector: DATA_SECTOR,
+            kernel_target: None,
         })
     }
 
@@ -98,6 +108,21 @@ impl Receiver {
         let mut reply_data_len = 0;
         if self.failed {
             status = IO_ERROR;
+        } else if operation == CARD_INFO && data.is_empty() {
+            reply[20..28].copy_from_slice(&self.card.sector_count().to_le_bytes());
+            reply_data_len = 8;
+            status = OK;
+        } else if operation == READ_SECTOR
+            && data.is_empty()
+            && crate::sd_install::readable(argument as u64)
+        {
+            if let Some(sector) = unsafe { self.card.try_read_sector(argument as u64) } {
+                reply[20..532].copy_from_slice(&sector);
+                reply_data_len = 512;
+                status = OK;
+            } else {
+                status = IO_ERROR;
+            }
         } else if operation == OPEN && data.is_empty() && session != 0 && self.verified {
             self.peer = Some(peer);
             self.session = session;
@@ -105,30 +130,47 @@ impl Receiver {
             reply[24..28].copy_from_slice(&self.expected_crc.to_le_bytes());
             reply_data_len = 8;
             status = OK;
-        } else if operation == BEGIN
+        } else if matches!(operation, BEGIN | BEGIN_KERNEL)
             && data.is_empty()
             && session != 0
             && argument > 0
-            && argument <= MAX_BYTES
+            && argument
+                <= if operation == BEGIN_KERNEL {
+                    gabix_kernel::loader_protocol::MAX_KERNEL_SIZE
+                } else {
+                    MAX_BYTES
+                }
         {
             if self.peer == Some(peer) && self.session == session {
-                status = if self.length == argument && self.expected_crc == value {
+                status = if self.length == argument
+                    && self.expected_crc == value
+                    && self.kernel_target.is_some() == (operation == BEGIN_KERNEL)
+                {
                     OK
                 } else {
                     INVALID
                 };
             } else {
-                self.peer = Some(peer);
-                self.session = session;
-                self.length = argument;
-                self.expected_crc = value;
-                self.next = 0;
-                self.verified = false;
-                status = if self.save_header(false) {
-                    OK
+                let target = if operation == BEGIN_KERNEL {
+                    self.inactive_kernel(argument)
                 } else {
-                    IO_ERROR
+                    Some((DATA_SECTOR, None))
                 };
+                if let Some((data_sector, kernel_target)) = target {
+                    self.data_sector = data_sector;
+                    self.kernel_target = kernel_target;
+                    self.peer = Some(peer);
+                    self.session = session;
+                    self.length = argument;
+                    self.expected_crc = value;
+                    self.next = 0;
+                    self.verified = false;
+                    status = if self.save_header(false) {
+                        OK
+                    } else {
+                        IO_ERROR
+                    };
+                }
             }
         } else if self.peer == Some(peer) && self.session == session {
             match operation {
@@ -141,7 +183,7 @@ impl Receiver {
                             // A lost ACK must not cause another flash write.
                             status = match unsafe {
                                 self.card
-                                    .try_read_sector(DATA_SECTOR + argument as u64 / 512)
+                                    .try_read_sector(self.data_sector + argument as u64 / 512)
                             } {
                                 Some(stored) if stored[..data.len()] == *data => OK,
                                 Some(_) => CHECKSUM,
@@ -150,7 +192,7 @@ impl Receiver {
                         } else if !self.verified {
                             let mut sector = [0; 512];
                             sector[..data.len()].copy_from_slice(data);
-                            let lba = DATA_SECTOR + argument as u64 / 512;
+                            let lba = self.data_sector + argument as u64 / 512;
                             status = if self.card.write_sector(lba, &sector).is_ok()
                                 && unsafe { self.card.try_read_sector(lba) } == Some(sector)
                             {
@@ -164,13 +206,23 @@ impl Receiver {
                         status = CHECKSUM;
                     }
                 }
+                INSTALL if data.is_empty() && self.verified && self.kernel_target.is_none() => {
+                    status = if crate::sd_install::apply(&mut self.card, DATA_SECTOR, self.length)
+                        .is_some()
+                    {
+                        OK
+                    } else {
+                        INVALID
+                    };
+                }
                 FINISH if data.is_empty() && self.next == self.length => {
                     let mut crc = !0;
                     status = OK;
                     for offset in (0..self.length).step_by(512) {
-                        if let Some(sector) =
-                            unsafe { self.card.try_read_sector(DATA_SECTOR + offset as u64 / 512) }
-                        {
+                        if let Some(sector) = unsafe {
+                            self.card
+                                .try_read_sector(self.data_sector + offset as u64 / 512)
+                        } {
                             crc = update_crc(
                                 crc,
                                 &sector[..(self.length - offset).min(512) as usize],
@@ -197,7 +249,7 @@ impl Receiver {
                 {
                     status = match unsafe {
                         self.card
-                            .try_read_sector(DATA_SECTOR + argument as u64 / 512)
+                            .try_read_sector(self.data_sector + argument as u64 / 512)
                     } {
                         Some(sector) => {
                             reply_data_len = (self.length - argument).min(512) as usize;
@@ -226,7 +278,49 @@ impl Receiver {
         Some(HEADER_LEN + reply_data_len)
     }
 
+    pub fn confirm_boot(&mut self) -> bool {
+        crate::boot_trial::confirm(&mut self.card)
+    }
+
+    fn inactive_kernel(&mut self, length: u32) -> Option<(u64, Option<(u64, usize)>)> {
+        use gabix_kernel::boot_record::{find_partition, BootRecord};
+        unsafe {
+            let mbr = self.card.try_read_sector(0)?;
+            let (start, count) = find_partition(&mbr, self.card.sector_count())?;
+            let record = BootRecord::decode(&self.card.try_read_sector(start)?, count)?;
+            let index = 1 - record.active_copy;
+            let copy = record.copies[index];
+            if length as u64 > copy.capacity_sectors * 512 {
+                return None;
+            }
+            Some((start + copy.offset_sectors, Some((start, index))))
+        }
+    }
+
     fn save_header(&mut self, complete: bool) -> bool {
+        if let Some((start, index)) = self.kernel_target {
+            use gabix_kernel::boot_record::{find_partition, BootRecord, NO_COPY};
+            return (|| unsafe {
+                let mbr = self.card.try_read_sector(0)?;
+                let (actual, count) = find_partition(&mbr, self.card.sector_count())?;
+                if actual != start {
+                    return None;
+                }
+                let mut record = BootRecord::decode(&self.card.try_read_sector(start)?, count)?;
+                if record.active_copy == index {
+                    return None;
+                }
+                record.copies[index].image_bytes = if complete { self.length } else { 0 };
+                record.copies[index].image_crc32 = if complete { self.expected_crc } else { 0 };
+                record.pending_copy = if complete { index as u32 } else { NO_COPY };
+                record.attempted_mask = 0;
+                record.running_copy = NO_COPY;
+                let bytes = record.encode();
+                self.card.write_sector(start, &bytes).ok()?;
+                (self.card.try_read_sector(start)? == bytes).then_some(())
+            })()
+            .is_some();
+        }
         let mut header = [0; 512];
         header[..8].copy_from_slice(DISK_MAGIC);
         header[8..12].copy_from_slice(&self.length.to_le_bytes());

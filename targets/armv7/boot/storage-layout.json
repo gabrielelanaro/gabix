@@ -1,7 +1,7 @@
 {
   "version": 1,
   "sector_size": 512,
-  "status": "planned-not-installed",
+  "status": "installed-2026-11-15",
   "observed_card_sectors": 15523840,
   "preserved_partitions": [
     {"index": 0, "type": 12, "start_sector": 16384, "sector_count": 1048576},

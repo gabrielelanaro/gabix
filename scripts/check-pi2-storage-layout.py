@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate the proposed kernel-storage layout against an existing image's MBR.
+"""Validate the kernel-storage layout against an existing image's MBR.
 
 Read-only: this command never changes the image, card, or partition table.
 """
@@ -24,6 +24,10 @@ def validate(layout, mbr, card_sectors):
             expected = preserved[index]
             if (entry[4], existing_start, existing_length) != (expected['type'], expected['start_sector'], expected['sector_count']):
                 raise ValueError(f'Partition {index+1} differs from the preserved layout')
+        elif index == partition['index']:
+            if any(entry) and (entry[4], existing_start, existing_length) != (partition['type'], start, length):
+                raise ValueError('Kernel partition entry is occupied by another layout')
+            continue
         elif any(entry):
             raise ValueError(f'Partition {index+1} is occupied; refusing to assign it')
         if existing_length and start < existing_start + existing_length and existing_start < start + length:
@@ -53,7 +57,7 @@ def main():
         mbr = image.read(512)
     layout = json.loads(args.layout.read_text())
     start, end = validate(layout, mbr, args.card_sectors)
-    print(f'PASS: proposed sectors [{start}, {end}) fit without moving existing partitions; no writes performed')
+    print(f'PASS: sectors [{start}, {end}) fit without moving existing partitions; no writes performed')
     for copy in layout['kernel_partition']['copies']:
         print(f"Kernel {copy['name']}: start={start+copy['offset_sectors']}, capacity={copy['capacity_sectors']*512//(1024*1024)} MiB")
     print(f'Minimum image size: {end*512} bytes')

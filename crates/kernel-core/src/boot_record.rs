@@ -2,6 +2,9 @@
 //! Extents are relative to the kernel partition, so relocation changes the MBR.
 pub const MAGIC: &[u8; 8] = b"GABIXBT1";
 pub const PARTITION_TYPE: u8 = 0xda;
+pub const NO_COPY: u32 = u32::MAX;
+pub const HANDOFF_ADDRESS: usize = 0x0006_0000;
+pub const HANDOFF_MAGIC: u32 = 0x4742_5848;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct KernelCopy {
@@ -15,6 +18,9 @@ pub struct KernelCopy {
 pub struct BootRecord {
     pub active_copy: usize,
     pub copies: [KernelCopy; 2],
+    pub pending_copy: u32,
+    pub attempted_mask: u32,
+    pub running_copy: u32,
 }
 
 impl BootRecord {
@@ -47,10 +53,72 @@ impl BootRecord {
         if copies[active_copy].image_bytes == 0 {
             return None;
         }
+        let pending_copy = u32_at(bytes, 64);
+        let attempted_mask = u32_at(bytes, 68);
+        let running_copy = u32_at(bytes, 72);
+        if (pending_copy > 1 && pending_copy != NO_COPY)
+            || attempted_mask > 3
+            || (running_copy > 1 && running_copy != NO_COPY)
+        {
+            return None;
+        }
         Some(Self {
             active_copy,
             copies,
+            pending_copy,
+            attempted_mask,
+            running_copy,
         })
+    }
+
+    pub fn encode(&self) -> [u8; 512] {
+        let mut bytes = [0; 512];
+        bytes[..8].copy_from_slice(MAGIC);
+        bytes[8..12].copy_from_slice(&1u32.to_le_bytes());
+        bytes[12..16].copy_from_slice(&(self.active_copy as u32).to_le_bytes());
+        for (offset, copy) in [(16, self.copies[0]), (40, self.copies[1])] {
+            bytes[offset..offset + 8].copy_from_slice(&copy.offset_sectors.to_le_bytes());
+            bytes[offset + 8..offset + 16].copy_from_slice(&copy.capacity_sectors.to_le_bytes());
+            bytes[offset + 16..offset + 20].copy_from_slice(&copy.image_bytes.to_le_bytes());
+            bytes[offset + 20..offset + 24].copy_from_slice(&copy.image_crc32.to_le_bytes());
+        }
+        bytes[64..68].copy_from_slice(&self.pending_copy.to_le_bytes());
+        bytes[68..72].copy_from_slice(&self.attempted_mask.to_le_bytes());
+        bytes[72..76].copy_from_slice(&self.running_copy.to_le_bytes());
+        let crc = crc32(&bytes[..508]);
+        bytes[508..].copy_from_slice(&crc.to_le_bytes());
+        bytes
+    }
+
+    /// Record an attempt on disk before execution. A reset leaves this bit set,
+    /// so the next loader invocation advances to the remaining copy.
+    pub fn next_attempt(&mut self) -> Option<usize> {
+        for index in [
+            self.pending_copy,
+            self.active_copy as u32,
+            (1 - self.active_copy) as u32,
+        ] {
+            if index <= 1
+                && self.attempted_mask & (1 << index) == 0
+                && self.copies[index as usize].image_bytes != 0
+            {
+                self.attempted_mask |= 1 << index;
+                self.running_copy = index;
+                return Some(index as usize);
+            }
+        }
+        None
+    }
+
+    pub fn confirm(&mut self, index: u32) -> bool {
+        if index > 1 || self.running_copy != index || self.attempted_mask & (1 << index) == 0 {
+            return false;
+        }
+        self.active_copy = index as usize;
+        self.pending_copy = NO_COPY;
+        self.running_copy = NO_COPY;
+        self.attempted_mask = 0;
+        true
     }
 }
 
@@ -126,6 +194,8 @@ mod tests {
             bytes[offset + 8..offset + 16].copy_from_slice(&65536u64.to_le_bytes());
             bytes[offset + 16..offset + 20].copy_from_slice(&68028u32.to_le_bytes());
         }
+        bytes[64..68].copy_from_slice(&NO_COPY.to_le_bytes());
+        bytes[72..76].copy_from_slice(&NO_COPY.to_le_bytes());
         seal(&mut bytes);
         bytes
     }
@@ -152,6 +222,19 @@ mod tests {
         bad[12..16].copy_from_slice(&2u32.to_le_bytes());
         seal(&mut bad);
         assert!(BootRecord::decode(&bad, 262144).is_none());
+    }
+    #[test]
+    fn test_failed_trial_uses_previous_then_recovery() {
+        let mut state = BootRecord::decode(&record(), 262144).unwrap();
+        state.pending_copy = 1;
+        assert_eq!(state.next_attempt(), Some(1));
+        let mut rebooted = BootRecord::decode(&state.encode(), 262144).unwrap();
+        assert_eq!(rebooted.next_attempt(), Some(0));
+        let mut rebooted = BootRecord::decode(&rebooted.encode(), 262144).unwrap();
+        assert_eq!(rebooted.next_attempt(), None);
+        assert!(rebooted.confirm(0));
+        assert_eq!(rebooted.active_copy, 0);
+        assert_eq!(rebooted.next_attempt(), Some(0));
     }
     #[test]
     fn test_partition_rejects_overlap_and_card_overrun() {
