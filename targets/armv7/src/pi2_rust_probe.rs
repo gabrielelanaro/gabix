@@ -9,6 +9,7 @@ const UART_BASE: usize = 0x3f20_1000;
 const UART_FLAGS: usize = UART_BASE + 0x18;
 const UART_TX_FULL: u32 = 1 << 5;
 
+// R reports reaching Rust and writing UART; E reports panic. No BSS clearing occurs in this entry.
 #[no_mangle]
 extern "C" fn pi2_rust_probe_main() -> ! {
     write_byte(b'R');

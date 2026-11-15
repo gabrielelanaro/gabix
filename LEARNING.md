@@ -563,6 +563,11 @@ A milestone is a "demo-able" checkpoint. Worth a commit + tag + log entry.
 
 ## Progress Log
 
+### 2026-11-15 — Readability audit: boot/BSS/allocator probes
+- Reviewed eight diagnostic programs, named mode/reset/stack values and explained the scope of each UART result.
+- Corrected a false five-second comment for the existing 80-tick watchdog countdown (about 1.2 ms); preserved all timing values and instruction order.
+- All eight existing build scripts pass. Physical checks remain pending; USB/LAN probes, orchestration and learning-reference coverage remain open.
+
 ### 2026-11-15 — Readability audit: atomic diagnostic probes
 - Named reset/mode/timing fields and explained UART markers, inherited entry state and the limited single-operation scope of both atomic probes.
 - Both release probe build scripts pass. Values and instruction order are preserved; no physical Pi test was performed.

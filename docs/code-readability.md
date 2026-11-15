@@ -1477,3 +1477,24 @@ The simpler atomic probe inherits exception routing entirely.
 Both existing probe build scripts pass in release mode. Instruction arguments
 retain their values; no physical probe was run while the Pi is disconnected.
 Remaining diagnostic probes and lesson-reference coverage are still open.
+
+### Boot, BSS and allocator diagnostic probes
+
+Reviewed handoff, Rust-entry, SVC-mode, BSS, Rust-BSS, large-BSS, allocator-init
+and allocator probes. Named CPU modes, stack addresses and watchdog fields using
+the same meanings as the previously reviewed boot/reset modules. The Rust-entry
+probe's old “five-second” comment was wrong: its preserved 80 ticks correspond to
+about 1.2 ms at 65536 ticks/s. Rust-BSS uses the same short countdown; allocator
+and large-BSS probes use five seconds. BSS requests reset after its output with
+10 ticks. These differences are preserved and may affect diagnostic reliability.
+
+The handoff probe writes P then returns through incoming LR. The SVC probe checks
+CPU mode without invoking an SVC instruction. Small BSS checks cover all sixteen
+words, while large-BSS checks only six positions in a 1 MiB array. Allocator-init
+only returns from initialization; allocator additionally checks one Box value
+and never reaches its destructor. Entry relies on configured UART and a single
+executing core; mode conversion handles HYP only. These outputs have deliberately
+limited meanings, now described beside their code.
+
+All eight existing build scripts pass. No hardware run was performed. USB/LAN
+probe coverage, remaining orchestration and lesson-reference review remain open.

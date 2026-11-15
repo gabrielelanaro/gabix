@@ -12,6 +12,8 @@ const UART_BASE: usize = 0x3f20_1000;
 const UART_FLAGS: usize = UART_BASE + 0x18;
 const UART_TX_FULL: u32 = 1 << 5;
 
+// S/M/I report SMP-bit readback, identity-map probe and return from allocator
+// initialization. This probe makes no allocation.
 #[no_mangle]
 extern "C" fn pi2_allocator_init_probe_main() -> ! {
     let smp_enabled = unsafe { memory::enable_smp() };
