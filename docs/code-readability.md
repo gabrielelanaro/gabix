@@ -43,7 +43,8 @@ will be checked alongside the implementation they exercise.
   - [x] Analog preset registers and reference USB-interference sequence
   - [x] Management-frame address ranges shared with the station adapter
   - [x] WPA2 fixed message fields, reply nonce selection and derived key ranges
-  - [ ] Remaining shared security fields and cryptographic helpers
+  - [x] Key-data element fields and RFC 3394 unwrap loop
+  - [ ] Remaining shared security helper APIs and derivation policy
 - [ ] Pi USB controller, hub enumeration, Ethernet, and RNDIS
   - [x] LAN9512 register transport, PHY access and SMSC frame headers
   - [x] Ethernet selection and QEMU RNDIS setup/frame fields
@@ -534,3 +535,16 @@ Existing synthetic handshake and RFC 3394 tests both pass; their fixture bytes
 were preserved. The managed Wi-Fi release kernel builds. No new Pi run was
 performed because the board is disconnected. Key-data element parsing and
 cryptographic helper internals remain for subsequent review.
+
+### WPA2 key-data decoding and unwrap
+
+Named selectors, lengths, key ranges and masks in `net/wpa2.rs`. RFC 3394 unwrap
+now names its integrity accumulator, data units and step counter while retaining
+operation order and error clearing. The existing two WPA2 tests pass unchanged;
+the managed Wi-Fi release build passes. Physical validation remains pending.
+
+References: [RFC 3394 sections 2.2.2 and 2.2.3.1](https://www.rfc-editor.org/rfc/rfc3394.html#section-2.2.2)
+for unwrap and its integrity value; [hostap WPA definitions](https://raw.githubusercontent.com/vanhoefm/hostap-wpa3/master/src/common/wpa_common.h)
+for RSN key-data selectors and group TX/RX flag naming. The prior
+`GROUP_MESSAGE_1_WITH_INSTALL` name was corrected to `WITH_TX_RX`; the accepted
+value remains 0x13c2. This change does not expand the supported protocol.

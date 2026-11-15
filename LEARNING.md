@@ -563,6 +563,11 @@ A milestone is a "demo-able" checkpoint. Worth a commit + tag + log entry.
 
 ## Progress Log
 
+### 2026-11-15 — Readability audit: WPA2 key-data decoding
+- Named RSN key-data selectors, element lengths, PMKID/group-key ranges and key-ID masks. Explained RFC 3394 unwrap steps using named data units and an integrity value; preserved the failure-path clearing of recovered bytes.
+- Corrected the group-message flag name to TX/RX: hostap distinguishes its group meaning from the pairwise install bit. Numeric values and accepted packets are unchanged.
+- Existing handshake and RFC 3394 tests pass with unchanged fixtures; managed Wi-Fi release build passes. Physical validation remains pending while the Pi is disconnected. Continue the broader architecture/protocol audit.
+
 ### 2026-11-15 — Readability audit: WPA2 handshake fields
 - Named EAPOL key-field ranges, accepted message words and the three derived key ranges. Reply construction explicitly selects the station nonce or a zero nonce.
 - Both existing WPA2 tests pass, including authenticated handshake/retransmission behavior and RFC 3394 unwrap/corruption checks. Managed Wi-Fi release build passes. Synthetic fixtures remain unchanged.

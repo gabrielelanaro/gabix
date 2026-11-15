@@ -34,7 +34,7 @@ const PAIRWISE_MESSAGE_2: u16 = 0x010a;
 const PAIRWISE_MESSAGE_3: u16 = 0x13ca;
 const PAIRWISE_MESSAGE_4: u16 = 0x030a;
 const GROUP_MESSAGE_1: u16 = 0x1382;
-const GROUP_MESSAGE_1_WITH_INSTALL: u16 = 0x13c2;
+const GROUP_MESSAGE_1_WITH_TX_RX: u16 = 0x13c2;
 const GROUP_MESSAGE_2: u16 = 0x0302;
 
 // The derived pairwise transient key contains three separate 16-byte keys:
@@ -42,6 +42,28 @@ const GROUP_MESSAGE_2: u16 = 0x0302;
 const MESSAGE_AUTHENTICATION_KEY: core::ops::Range<usize> = 0..16;
 const KEY_ENCRYPTION_KEY: core::ops::Range<usize> = 16..32;
 const UNICAST_ENCRYPTION_KEY: core::ops::Range<usize> = 32..48;
+
+// Key-data elements: ID, body length, then a four-byte RSN selector.
+// Selectors follow hostap's RSN_KEY_DATA_* definitions in wpa_common.h.
+const ELEMENT_HEADER_BYTES: usize = 2;
+const RSN_ELEMENT: u8 = 48;
+const VENDOR_ELEMENT: u8 = 0xdd;
+const KEY_DATA_SELECTOR: core::ops::Range<usize> = 2..6;
+const PMKID_SELECTOR: [u8; 4] = [0, 15, 172, 4];
+const GROUP_KEY_SELECTOR: [u8; 4] = [0, 15, 172, 1];
+const PMKID_BODY_BYTES: usize = 20;
+const PMKID: core::ops::Range<usize> = 6..22;
+const GROUP_KEY_BODY_BYTES: usize = 22;
+const GROUP_KEY_FLAGS: usize = 6;
+const GROUP_KEY_ID_MASK: u8 = 0b11;
+const GROUP_KEY_ALLOWED_FLAGS: u8 = 0b111;
+const GROUP_KEY_BYTES: core::ops::Range<usize> = 8..24;
+
+// RFC 3394 uses 64-bit data units and six rounds of 128-bit AES operations.
+const WRAP_UNIT_BYTES: usize = 8;
+const WRAP_ROUNDS: usize = 6;
+const MIN_WRAPPED_BYTES: usize = 3 * WRAP_UNIT_BYTES;
+const WRAP_INTEGRITY_VALUE: [u8; WRAP_UNIT_BYTES] = [0xa6; WRAP_UNIT_BYTES];
 
 #[derive(Clone, Copy)]
 enum ReplyNonce {
@@ -151,7 +173,7 @@ impl Supplicant {
         match flags {
             PAIRWISE_MESSAGE_1 => self.message1(packet, replay, out),
             PAIRWISE_MESSAGE_3 => self.message3(packet, replay, out),
-            GROUP_MESSAGE_1 | GROUP_MESSAGE_1_WITH_INSTALL => {
+            GROUP_MESSAGE_1 | GROUP_MESSAGE_1_WITH_TX_RX => {
                 self.group_message1(packet, replay, out)
             }
             _ => Err(Error::Unsupported),
@@ -166,24 +188,26 @@ impl Supplicant {
         // the configured PMK before debugging the reply's radio delivery.
         let mut data = &packet[KEY_DATA_OFFSET..];
         while !data.is_empty() {
-            if data.len() < 2 {
+            if data.len() < ELEMENT_HEADER_BYTES {
                 return Err(Error::KeyData);
             }
             let length = data[1] as usize;
-            let ie = data.get(..2 + length).ok_or(Error::KeyData)?;
-            if ie[0] == 0xdd && ie.get(2..6) == Some(&[0, 15, 172, 4]) {
-                if length != 20 {
+            let ie = data
+                .get(..ELEMENT_HEADER_BYTES + length)
+                .ok_or(Error::KeyData)?;
+            if ie[0] == VENDOR_ELEMENT && ie.get(KEY_DATA_SELECTOR) == Some(&PMKID_SELECTOR) {
+                if length != PMKID_BODY_BYTES {
                     return Err(Error::KeyData);
                 }
                 let mut mac = <Hmac<Sha1> as hmac::KeyInit>::new_from_slice(&self.pmk).unwrap();
                 mac.update(b"PMK Name");
                 mac.update(&self.access_point);
                 mac.update(&self.station);
-                mac.verify_truncated_left(&ie[6..22])
+                mac.verify_truncated_left(&ie[PMKID])
                     .map_err(|_| Error::PmkMismatch)?;
                 self.pmk_confirmed = true;
             }
-            data = &data[2 + length..];
+            data = &data[ELEMENT_HEADER_BYTES + length..];
         }
         if packet[NONCE].iter().all(|b| *b == 0) {
             return Err(Error::Nonce);
@@ -416,6 +440,7 @@ fn derive_ptk(
 }
 fn verify_mic(key: &[u8], packet: &[u8]) -> Result<(), Error> {
     let mut mac = <Hmac<Sha1> as hmac::KeyInit>::new_from_slice(key).unwrap();
+    // Compute authentication with the packet's MIC field treated as zero.
     mac.update(&packet[..MIC.start]);
     mac.update(&[0; 16]);
     mac.update(&packet[MIC.end..]);
@@ -425,28 +450,36 @@ fn verify_mic(key: &[u8], packet: &[u8]) -> Result<(), Error> {
 
 /// RFC 3394 section 2.2.2; AES primitive comes from RustCrypto.
 fn unwrap_key(key: &[u8], wrapped: &[u8], out: &mut [u8]) -> Result<usize, Error> {
-    if wrapped.len() < 24 || wrapped.len() % 8 != 0 || wrapped.len() - 8 > out.len() {
+    // One integrity unit precedes at least two data units.
+    if wrapped.len() < MIN_WRAPPED_BYTES
+        || wrapped.len() % WRAP_UNIT_BYTES != 0
+        || wrapped.len() - WRAP_UNIT_BYTES > out.len()
+    {
         return Err(Error::KeyData);
     }
     let cipher = Aes128::new_from_slice(key).map_err(|_| Error::KeyData)?;
-    let length = wrapped.len() - 8;
-    let blocks = length / 8;
-    let mut a: [u8; 8] = wrapped[..8].try_into().unwrap();
-    out[..length].copy_from_slice(&wrapped[8..]);
-    for round in (0..6).rev() {
-        for i in (1..=blocks).rev() {
+    let length = wrapped.len() - WRAP_UNIT_BYTES;
+    let data_units = length / WRAP_UNIT_BYTES;
+    // RFC 3394 calls this evolving integrity value A, and the output units R[i].
+    let mut integrity: [u8; WRAP_UNIT_BYTES] = wrapped[..WRAP_UNIT_BYTES].try_into().unwrap();
+    out[..length].copy_from_slice(&wrapped[WRAP_UNIT_BYTES..]);
+    for round in (0..WRAP_ROUNDS).rev() {
+        for unit in (1..=data_units).rev() {
+            let step = (data_units * round + unit) as u64;
+            let unit_range = (unit - 1) * WRAP_UNIT_BYTES..unit * WRAP_UNIT_BYTES;
+            // Undo one wrap step: decrypt (A XOR step) followed by R[unit].
             let mut block = [0u8; 16];
-            block[..8].copy_from_slice(
-                &(u64::from_be_bytes(a) ^ (blocks * round + i) as u64).to_be_bytes(),
-            );
-            block[8..].copy_from_slice(&out[(i - 1) * 8..i * 8]);
+            block[..WRAP_UNIT_BYTES]
+                .copy_from_slice(&(u64::from_be_bytes(integrity) ^ step).to_be_bytes());
+            block[WRAP_UNIT_BYTES..].copy_from_slice(&out[unit_range.clone()]);
             let mut block = Array::from(block);
             cipher.decrypt_block(&mut block);
-            a.copy_from_slice(&block[..8]);
-            out[(i - 1) * 8..i * 8].copy_from_slice(&block[8..]);
+            integrity.copy_from_slice(&block[..WRAP_UNIT_BYTES]);
+            out[unit_range].copy_from_slice(&block[WRAP_UNIT_BYTES..]);
         }
     }
-    if a != [0xa6; 8] {
+    // Only release the recovered data when the integrity value matches.
+    if integrity != WRAP_INTEGRITY_VALUE {
         out[..length].fill(0);
         return Err(Error::KeyData);
     }
@@ -457,26 +490,35 @@ fn parse_key_data(mut bytes: &[u8], require_rsn: bool) -> Result<(u8, [u8; 16]),
     let mut gtk = None;
     while !bytes.is_empty() {
         // IEEE key-data padding begins with 0xdd followed by zero bytes.
-        if bytes[0] == 0xdd && bytes[1..].iter().all(|b| *b == 0) {
+        if bytes[0] == VENDOR_ELEMENT && bytes[1..].iter().all(|b| *b == 0) {
             break;
         }
-        if bytes.len() < 2 {
+        if bytes.len() < ELEMENT_HEADER_BYTES {
             return Err(Error::KeyData);
         }
         let length = bytes[1] as usize;
-        let ie = bytes.get(..2 + length).ok_or(Error::KeyData)?;
-        if ie[0] == 48 {
+        let ie = bytes
+            .get(..ELEMENT_HEADER_BYTES + length)
+            .ok_or(Error::KeyData)?;
+        if ie[0] == RSN_ELEMENT {
             if rsn || ie != RSN {
                 return Err(Error::Unsupported);
             }
             rsn = true;
-        } else if ie[0] == 0xdd && ie.get(2..6) == Some(&[0, 15, 172, 1]) {
-            if gtk.is_some() || length != 22 || ie[6] & !7 != 0 {
+        } else if ie[0] == VENDOR_ELEMENT && ie.get(KEY_DATA_SELECTOR) == Some(&GROUP_KEY_SELECTOR)
+        {
+            if gtk.is_some()
+                || length != GROUP_KEY_BODY_BYTES
+                || ie[GROUP_KEY_FLAGS] & !GROUP_KEY_ALLOWED_FLAGS != 0
+            {
                 return Err(Error::KeyData);
             }
-            gtk = Some((ie[6] & 3, ie[8..24].try_into().unwrap()));
+            gtk = Some((
+                ie[GROUP_KEY_FLAGS] & GROUP_KEY_ID_MASK,
+                ie[GROUP_KEY_BYTES].try_into().unwrap(),
+            ));
         }
-        bytes = &bytes[2 + length..];
+        bytes = &bytes[ELEMENT_HEADER_BYTES + length..];
     }
     if require_rsn && !rsn {
         return Err(Error::KeyData);
