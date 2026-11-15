@@ -74,7 +74,7 @@ impl FrameDevice for VirtioNet {
         self.mac
     }
 
-    fn transmit(&mut self, eth_frame: &[u8]) {
+    fn transmit(&mut self, eth_frame: &[u8]) -> bool {
         const ETHERNET_MIN_TX_BUFFER: usize = 64;
         assert!(
             eth_frame.len() >= ETHERNET_HEADER_LEN,
@@ -138,6 +138,8 @@ impl FrameDevice for VirtioNet {
             completion.1,
             VIRTIO_NET_HDR_LEN + tx_len
         );
+        // The used-ring completion confirms the device consumed our buffers.
+        true
     }
 
     fn receive(&mut self) -> Option<EthernetFrame> {

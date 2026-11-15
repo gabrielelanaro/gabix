@@ -50,6 +50,8 @@ impl EthernetFrame {
 /// Raw Ethernet frame transport implemented by a network driver.
 pub trait FrameDevice: Send {
     fn mac_address(&self) -> [u8; 6];
+    /// Return whether the driver completed its local submission successfully.
+    /// This does not confirm that the remote computer received the frame.
     fn transmit(&mut self, frame: &[u8]) -> bool;
     fn receive(&mut self) -> Option<EthernetFrame>;
 }
