@@ -164,6 +164,22 @@ impl Dwc2 {
         &mut self,
         hub: UsbDevice,
     ) -> Result<UsbDevice, HubEnumerationError> {
+        let mut first = None;
+        self.visit_hub_children(hub, |_, device| {
+            first = Some(device);
+            false
+        })?;
+        first.ok_or(HubEnumerationError::EnumerateChild)
+    }
+
+    /// Enumerate directly attached hub children with distinct USB addresses.
+    /// Return true from `visit` to inspect the next port, or false to stop.
+    /// Call once after root enumeration; resetting ports interrupts their devices.
+    pub unsafe fn visit_hub_children(
+        &mut self,
+        hub: UsbDevice,
+        mut visit: impl FnMut(u8, UsbDevice) -> bool,
+    ) -> Result<(), HubEnumerationError> {
         if hub.device_class != 9 {
             return Err(HubEnumerationError::NotHub);
         }
@@ -184,6 +200,7 @@ impl Dwc2 {
 
         let mut connected = false;
         let mut enabled = false;
+        let mut found = false;
         for port in 1..=ports {
             let mut status = [0u8; 4];
             self.control_read(hub, 0xa3, 0, 0, port as u16, &mut status)
@@ -204,11 +221,21 @@ impl Dwc2 {
             }
             enabled = true;
             let _ = self.control_write_no_data(hub, 0x23, 1, 20, port as u16);
-            if let Some(device) = self.enumerate_device(2) {
-                return Ok(device);
+            // Address 1 belongs to the hub. Each child keeps its own address
+            // while later ports are reset and enumerated at address zero.
+            if port >= 127 {
+                break;
+            }
+            if let Some(device) = self.enumerate_device(port + 1) {
+                found = true;
+                if !visit(port, device) {
+                    return Ok(());
+                }
             }
         }
-        if !connected {
+        if found {
+            Ok(())
+        } else if !connected {
             Err(HubEnumerationError::NoConnectedChild)
         } else if !enabled {
             Err(HubEnumerationError::NoEnabledChild)

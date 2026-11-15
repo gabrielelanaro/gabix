@@ -36,6 +36,7 @@ through UART reboot/upload. Preserve the working server as the recovery image.
 - [x] Permanent SD boot with two 32 MiB copies, trial confirmation, watchdog fallback, UART recovery, and a preserved recovery image
 - [x] Router preparation: authenticated Ethernet management/reboot, persistent buffered logs, DHCP retry/renewal diagnostics; physical outage and reboot checks
 - [ ] Verify the managed Pi on the actual FRITZ!Box LAN after moving the cable
+- [ ] USB Wi-Fi feasibility: initialize the detected Realtek 0bda:8176 adapter, receive beacons, then implement association/security before reusing DHCP and management
 
 ### TCP arc — the connection-oriented transport
 - [x] Lesson 31 TCP segment, three-way handshake, and first byte exchanged
@@ -555,6 +556,12 @@ A milestone is a "demo-able" checkpoint. Worth a commit + tag + log entry.
 ---
 
 ## Progress Log
+
+### 2026-11-15 — Physical USB Wi-Fi inventory
+- **Observed on Pi:** Root hub 0424:9514, Ethernet 0424:ec00 on hub port 1, and Wi-Fi candidate 0bda:8176 on hub port 4. The Linux [rtl8192cu device table](https://github.com/torvalds/linux/blob/master/drivers/net/wireless/realtek/rtlwifi/rtl8192cu/sw.c) identifies this ID as an 8188CU single-stream dongle. Exact chip revision still needs register identification.
+- **Built:** Extended `Dwc2::visit_hub_children` in targets/armv7/src/raspi2b/usb.rs to enumerate direct children with distinct addresses. The existing pi2_usb_enumeration_probe now reports every discovered child; normal Ethernet enumeration stops at its first child as before. This remains a boot-time diagnostic, not a hotplug manager or recursive hub walker.
+- **Physical test:** Uploaded the diagnostic into RAM over UART. It printed both device IDs and completed; its watchdog restarted the installed SD kernel. The diagnostic contains no SD writes. Raw evidence remains in ignored target/runs/20261115-wifi/. Managed build and existing Raspberry Pi USB QEMU regression passed.
+- **Next trials:** (1) Read USB endpoints, chip revision, and EEPROM/eFuse identity. (2) Implement power/firmware/radio initialization and receive beacons to list nearby network names without credentials. (3) Implement association and WPA2 authentication/key installation, keeping credentials outside Git. (4) Feed received network packets through the shared FrameDevice interface and verify DHCP, management, reboot, and reconnect after an access-point outage. Linux rtl8192cu and rtl8xxxu provide implementation references; their drivers require Linux infrastructure and cannot be loaded directly by Gabix. No radio initialization, network scan, or Wi-Fi association has been tested yet.
 
 ### 2026-11-15 — Router readiness and persistent diagnostics
 - **Built:** Managed Pi profile with HMAC-SHA256 authentication for status, logs, sector access, uploads, installation, and reboot. Requests/replies use a persistent boot number and command counter; duplicate requests reuse the prior reply. The private key stays outside Git at ~/.config/gabix/pi2-management.key. New recovery images use owner-only read permissions.
