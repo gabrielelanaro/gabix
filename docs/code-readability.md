@@ -81,6 +81,7 @@ will be checked alongside the implementation they exercise.
   - [x] MBR primary-entry lookup and offset adapter: named layout fields and explicit validation limits
 - [ ] x86 boot, paging, context switching, interrupts, PIC/PIT/APIC, and syscalls
   - [x] PIT: named control-word fields and corrected the mode description
+  - [x] PIC masks and local APIC enable/address/acknowledgement fields
 - [x] x86 PCI and VirtIO drivers (source review; existing QEMU checks pass)
   - [x] PCI bus-0 discovery, BAR fields and configuration access contract
   - [x] VirtIO capability regions and MSI-X table/control parsing
@@ -655,3 +656,15 @@ The existing x86 QEMU network-frame test passes. Combined with the prior disk
 and network checks, this completes source review of the PCI/VirtIO driver group.
 Other source groups and physical Pi validation remain pending. The previously
 recorded VirtIO 1.2 and Linux MSI-X references cover the named fields.
+
+### x86 interrupt controllers
+
+Named APIC enable fields, mapping mask/size, spurious-vector setting and EOI
+value. MSI address documentation identifies physical destination APIC ID 0.
+Initialization preserves mode bits and requires xAPIC already selected. PIC
+comments now match its timer-only unmasking, expressed with named masks.
+The existing x86 QEMU timer test passes; it also boots through disk loading.
+Spurious-interrupt delivery and alternative APIC modes are not tested by it.
+
+References: [Linux APIC definitions](https://raw.githubusercontent.com/torvalds/linux/master/arch/x86/include/asm/apicdef.h)
+and [x86 MSI message layout](https://raw.githubusercontent.com/torvalds/linux/master/arch/x86/include/asm/msi.h).
