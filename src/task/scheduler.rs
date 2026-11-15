@@ -14,7 +14,7 @@
 //! See `docs/context-switch.html` for the visual walkthrough of how
 //! the saved state and the switch work.
 
-use crate::arch::x86_64::context::{fork_trampoline, switch, TaskContext};
+use crate::arch::x86_64::context::{fork_trampoline, saved_stack, switch, TaskContext};
 use crate::frame_allocator;
 use crate::irq_mutex::IrqMutex;
 use crate::memory;
@@ -124,7 +124,7 @@ impl Task {
         // switch() right before the `ret` instruction.
         //
         // Layout (from high address down):
-        //   stack_top - 16: entry_fn address   ← popped by `ret` into RIP
+        //   stack_top - 16: trampoline address   ← popped by `ret` into RIP
         //   stack_top - 24: 0 (saved RBX)      ← popped by `pop rbx`
         //   stack_top - 32: 0 (saved RBP)      ← popped by `pop rbp`
         //   stack_top - 40: 0 (saved R12)      ← popped by `pop r12`
@@ -137,19 +137,21 @@ impl Task {
         //
         // write_volatile so the compiler doesn't elide these writes (it
         // can't see that the context-switch routine will later read them).
-        let init_rsp = stack_top - 64;
+        let init_rsp = stack_top - saved_stack::SWITCH_BYTES - saved_stack::RUST_ENTRY_GAP_BYTES;
         let base_ptr = init_rsp as *mut u64;
         unsafe {
-            core::ptr::write_volatile(base_ptr.add(0), 0); // saved R15
-            core::ptr::write_volatile(base_ptr.add(1), 0); // saved R14
-            core::ptr::write_volatile(base_ptr.add(2), 0); // saved R13
-            core::ptr::write_volatile(base_ptr.add(3), 0); // saved R12
-            core::ptr::write_volatile(base_ptr.add(4), 0); // saved RBP
-            core::ptr::write_volatile(base_ptr.add(5), 0); // saved RBX
-                                                           // Note: switch's `ret` lands in `trampoline`, not the user's
-                                                           // entry_fn directly. The trampoline enables interrupts then
-                                                           // looks up entry_fn from this task's struct.
-            core::ptr::write_volatile(base_ptr.add(6), trampoline as *const () as u64);
+            core::ptr::write_volatile(base_ptr.add(saved_stack::R15), 0); // saved R15
+            core::ptr::write_volatile(base_ptr.add(saved_stack::R14), 0); // saved R14
+            core::ptr::write_volatile(base_ptr.add(saved_stack::R13), 0); // saved R13
+            core::ptr::write_volatile(base_ptr.add(saved_stack::R12), 0); // saved R12
+            core::ptr::write_volatile(base_ptr.add(saved_stack::RBP), 0); // saved RBP
+            core::ptr::write_volatile(base_ptr.add(saved_stack::RBX), 0); // saved RBX
+            // `ret` starts the trampoline, which enables interrupts and calls
+            // the entry_fn stored in this task.
+            core::ptr::write_volatile(
+                base_ptr.add(saved_stack::RETURN_ADDRESS),
+                trampoline as *const () as u64,
+            );
             // RIP -> trampoline
         }
 
@@ -472,23 +474,35 @@ pub fn spawn_fork_child(parent_pid: Pid, saved_callee_saves: SavedCalleeSaves) -
     //
     // After switch()'s ret, RSP = stack_top. fork_trampoline reads the
     // extra slots via [rsp - 64], [rsp - 72], [rsp - 80].
-    let init_rsp = stack_top - 56;
+    let init_rsp = stack_top - saved_stack::SWITCH_BYTES;
     let base_ptr = init_rsp as *mut u64;
     unsafe {
         // Callee-saved area (consumed by switch's pop instructions).
-        core::ptr::write_volatile(base_ptr.add(0), saved_callee_saves.r15);
-        core::ptr::write_volatile(base_ptr.add(1), saved_callee_saves.r14);
-        core::ptr::write_volatile(base_ptr.add(2), saved_callee_saves.r13);
-        core::ptr::write_volatile(base_ptr.add(3), saved_callee_saves.r12);
-        core::ptr::write_volatile(base_ptr.add(4), saved_callee_saves.rbp);
-        core::ptr::write_volatile(base_ptr.add(5), saved_callee_saves.rbx);
-        core::ptr::write_volatile(base_ptr.add(6), fork_trampoline as *const () as u64);
+        core::ptr::write_volatile(base_ptr.add(saved_stack::R15), saved_callee_saves.r15);
+        core::ptr::write_volatile(base_ptr.add(saved_stack::R14), saved_callee_saves.r14);
+        core::ptr::write_volatile(base_ptr.add(saved_stack::R13), saved_callee_saves.r13);
+        core::ptr::write_volatile(base_ptr.add(saved_stack::R12), saved_callee_saves.r12);
+        core::ptr::write_volatile(base_ptr.add(saved_stack::RBP), saved_callee_saves.rbp);
+        core::ptr::write_volatile(base_ptr.add(saved_stack::RBX), saved_callee_saves.rbx);
+        core::ptr::write_volatile(
+            base_ptr.add(saved_stack::RETURN_ADDRESS),
+            fork_trampoline as *const () as u64,
+        );
 
         // Extra user-state slots below init_rsp. NOT touched by switch();
         // read by fork_trampoline after ret via fixed offsets from RSP.
-        core::ptr::write_volatile(base_ptr.sub(1), saved_callee_saves.user_rip);
-        core::ptr::write_volatile(base_ptr.sub(2), saved_callee_saves.user_rflags);
-        core::ptr::write_volatile(base_ptr.sub(3), saved_callee_saves.user_rsp);
+        core::ptr::write_volatile(
+            base_ptr.sub(saved_stack::USER_RIP_BELOW_FRAME),
+            saved_callee_saves.user_rip,
+        );
+        core::ptr::write_volatile(
+            base_ptr.sub(saved_stack::USER_FLAGS_BELOW_FRAME),
+            saved_callee_saves.user_rflags,
+        );
+        core::ptr::write_volatile(
+            base_ptr.sub(saved_stack::USER_RSP_BELOW_FRAME),
+            saved_callee_saves.user_rsp,
+        );
     }
 
     // Deep-clone the current (parent's) address space into a fresh AS

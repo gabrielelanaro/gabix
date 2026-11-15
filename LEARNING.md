@@ -563,6 +563,11 @@ A milestone is a "demo-able" checkpoint. Worth a commit + tag + log entry.
 
 ## Progress Log
 
+### 2026-11-15 — Readability audit: x86 saved task stacks
+- Shared named saved-register slots and stack sizes between context switching and scheduler stack construction. Fork assembly uses named operands derived from the same layout. Corrected the new-task diagram to identify its trampoline return address.
+- Existing fork test passes: both parent and child resume. Initial test launch failed before boot on its local forwarding port; rerun with port access passed. Register order, stack offsets, alignment and return instructions are preserved.
+- Scheduler lifecycle and interrupt/exception entry code still require review; physical Pi checks for earlier changes remain pending.
+
 ### 2026-11-15 — Readability audit: x86 interrupt controllers
 - Named APIC base mask, global/software enable fields, spurious-vector value and acknowledgement. Separated MSI address encoding from the CPU's mapped APIC registers and documented the existing APIC-ID-0/xAPIC assumptions.
 - Named PIC masks and corrected its stale overview: initialization enables timer IRQ 0. Existing x86 QEMU timer test passes through boot, disk loading and advancing time. Controller values and ordering are unchanged.

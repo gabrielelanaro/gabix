@@ -82,6 +82,7 @@ will be checked alongside the implementation they exercise.
 - [ ] x86 boot, paging, context switching, interrupts, PIC/PIT/APIC, and syscalls
   - [x] PIT: named control-word fields and corrected the mode description
   - [x] PIC masks and local APIC enable/address/acknowledgement fields
+  - [x] Task context switch and matching new-task/fork stack construction
 - [x] x86 PCI and VirtIO drivers (source review; existing QEMU checks pass)
   - [x] PCI bus-0 discovery, BAR fields and configuration access contract
   - [x] VirtIO capability regions and MSI-X table/control parsing
@@ -668,3 +669,16 @@ Spurious-interrupt delivery and alternative APIC modes are not tested by it.
 
 References: [Linux APIC definitions](https://raw.githubusercontent.com/torvalds/linux/master/arch/x86/include/asm/apicdef.h)
 and [x86 MSI message layout](https://raw.githubusercontent.com/torvalds/linux/master/arch/x86/include/asm/msi.h).
+
+### x86 saved task stacks
+
+`context::saved_stack` names register-word positions, the return address, initial
+alignment gap and extra fork state. `Task::new`, `spawn_fork_child` and the fork
+assembly consume those names. The existing six-pop/return instruction sequence
+and all numeric offsets are preserved. Comments distinguish the Rust trampoline
+entry from the fork assembly entry and correct the initial-stack diagram.
+
+`test_fork_resumes_both_processes.sh` passes after granting its QEMU process
+access to the configured local forwarding port; the first launch failed before
+boot. Evidence covers startup and parent/child resumption, not the full remaining
+scheduler and exception-entry review.
