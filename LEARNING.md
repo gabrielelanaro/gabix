@@ -563,6 +563,11 @@ A milestone is a "demo-able" checkpoint. Worth a commit + tag + log entry.
 
 ## Progress Log
 
+### 2026-11-15 — Readability audit: ARM user entry
+- Named processor modes and the flat-image entry field; explained user stack setup, saved processor status and the final exception return instruction.
+- Documented bootstrap ELF-loader permission, entry validation, partial-failure and cache-synchronization limits without changing behavior.
+- Existing QEMU userspace-write test passes. Remaining ARM exception/process and memory ownership work stays open; physical Pi checks remain pending.
+
 ### 2026-11-15 — Readability audit: ARM process probe
 - Named the shared Rust/assembly probe fields, access kinds, syscall numbers, stack offsets, timer threshold and fault-status bits. Explained stopped-process setup requirements; values and behavior are preserved.
 - Existing QEMU isolation test passes all five scenarios; Pi hardware build passes. No new tests or tracked run artifacts were added.

@@ -62,6 +62,7 @@ will be checked alongside the implementation they exercise.
   - [x] Kernel task context switch and scheduler frame creation: named saved-word layout, user-bank offset and IRQ mask
   - [x] ARM memory control bits, table dimensions and range-helper contracts
   - [x] Fixed-process isolation probe ABI and fault-status checks
+  - [x] ARM user-entry mode changes and bootstrap ELF-loader contracts
   - [ ] Boot/exception assembly, process operations, memory ownership/cache assumptions and syscalls
 - [ ] ARM loader, SD update/install, authenticated management, and diagnostics
 - [ ] ARM VirtIO adapters and hardware probes
@@ -1059,3 +1060,23 @@ source/build evidence for the Pi; the disconnected board has not run this edit.
 The fixed probe ABI still has paired Rust/assembly definitions, linked by source
 comments and exercised by the existing test. General process lifecycle review
 remains open.
+
+### ARM user entry and bootstrap ELF loading
+
+`targets/armv7/src/user.rs` names the three processor status values and flat
+header entry-word offset. Assembly comments trace the r0/r1 arguments, user
+stack setup through System mode, SPSR_svc setup in Supervisor mode and exception
+return into user code. Instruction order and numeric values are unchanged.
+References: [Arm CPSR mode values](https://arm-software.github.io/CMSIS_6/v6.2.0/Core_A/group__CMSIS__CPSR__M.html)
+and [Arm exception return](https://support.arm.com/documentation/dui0471/m/handling-processor-exceptions/return-from-an-exception-handler?lang=en).
+
+Source contracts state that the flat header checks only its magic. ELF loading
+grants section-wide user read/write permission, ignores segment permission
+flags, returns the parsed entry without checking its destination, and can leave
+partial copies/mappings on failure. Instruction-cache synchronization is a
+caller requirement; load_elf does not perform it. User entry initializes the
+stack and processor status, while other registers keep their current values.
+
+The existing QEMU userspace-write test passes through the flat-header and user
+entry path. ELF loading received comments only; this test does not establish
+malformed-ELF safety. Physical Pi checks remain pending.
