@@ -563,6 +563,11 @@ A milestone is a "demo-able" checkpoint. Worth a commit + tag + log entry.
 
 ## Progress Log
 
+### 2026-11-15 — Readability audit: ARM VirtIO networking
+- Named transmit storage consistently alongside receive storage, descriptor roles, modern feature-word selection, and packet/header sizes. Explained zeroed transmit metadata, buffer publication, completion polling and receive-buffer reuse.
+- Existing QEMU UDP echo test passes; its peer also completes DHCP and verifies reply addresses, payload and checksums. Driver behavior and memory-barrier placement remain unchanged. Transmit still waits without a timeout.
+- Continue with remaining ARM architecture/probe code and x86 drivers. Physical Pi validation for earlier hardware changes remains pending.
+
 ### 2026-11-15 — Readability audit: ARM VirtIO block requests
 - Named feature-word selection, modern transport version, request queue, sector size and descriptor roles. Descriptor flags now state that the device writes the buffer. Explained publication ordering and the synchronous completion poll, including its existing lack of timeout.
 - Existing QEMU ARM block-read and ext2-file-read tests both pass. This driver belongs to QEMU virt; it is separate from the Pi SD driver. Numeric register values, request layout and polling behavior are preserved.

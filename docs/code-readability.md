@@ -63,6 +63,7 @@ will be checked alongside the implementation they exercise.
   - [ ] Boot/exception assembly, process operations, memory and syscalls
 - [ ] ARM loader, SD update/install, authenticated management, and diagnostics
 - [ ] ARM VirtIO adapters and hardware probes
+  - [x] QEMU VirtIO network: queue roles, feature words, packet metadata and buffer reuse
   - [x] QEMU VirtIO block: feature negotiation, descriptor roles, memory ordering and polling contract
   - [x] QEMU virt timer/GIC: named interrupt fields, counter interval and acknowledgement sequence
 - [ ] Shared network parsers and state machines, including WPA2
@@ -571,3 +572,17 @@ read tests pass (`test_arm_virt_reads_block.sh`, `test_arm_virt_reads_file.sh`).
 Reference: [VirtIO 1.2](https://docs.oasis-open.org/virtio/virtio/v1.2/virtio-v1.2.html),
 sections 2.7, 4.2 and 5.2. This QEMU driver does not operate the physical Pi SD
 controller; these checks do not replace the pending physical Pi checks.
+
+### ARM VirtIO network buffers
+
+`targets/armv7/src/virt/network.rs` now names both TX and RX storage consistently,
+identifies descriptor roles, and explains the transfer of buffer ownership.
+Transmit remains synchronous with an unbounded poll; receive checks once and
+returns `None` when empty. The existing QEMU UDP echo test passes, including its
+DHCP exchange and reply payload/checksum verification. This is QEMU-specific
+evidence, independent of the pending Pi Wi-Fi hardware checks.
+
+Reference: [VirtIO 1.2 section 5.1.6](https://docs.oasis-open.org/virtio/virtio/v1.2/virtio-v1.2.html)
+for the modern packet header, zeroed transmit fields and single receive buffer
+when mergeable buffers are not negotiated. Numeric values, descriptor access
+permissions, copy lengths and barrier positions are preserved.
