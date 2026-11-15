@@ -563,6 +563,11 @@ A milestone is a "demo-able" checkpoint. Worth a commit + tag + log entry.
 
 ## Progress Log
 
+### 2026-11-15 — Readability audit: socket syscall ABI
+- Named socket-address fields and sizes, protocol selection, poll wait modes, configuration operations and active-open sequence parameters. Explained byte order, raw-memory requirements and receive/output ordering.
+- Documented the existing single-global-active-connection limitation and deterministic initial sequence calculation. Values and behavior remain unchanged.
+- Existing poll and passive TCP echo QEMU tests pass; active-open connection behavior is outside those checks. Scheduler/process lifecycle and other remaining areas still need review; Pi testing remains pending while disconnected.
+
 ### 2026-11-15 — Readability audit: syscall memory and process contracts
 - Renamed the numeric address predicate to is_low_half_range throughout syscall handlers and documented its missing mapping/permission checks. Explained path scan bounds, cached file writes and shared file cursors.
 - Named standard output/error descriptors, time-conversion units, wait-any sentinel and exec flags. Documented the raw wait-status ABI, unchecked result pointer and global fork-snapshot concurrency limitation.

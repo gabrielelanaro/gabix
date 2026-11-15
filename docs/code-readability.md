@@ -97,7 +97,8 @@ will be checked alongside the implementation they exercise.
   - [x] x86 network initialization, queue/interrupt selection and buffer lifetime
 - [ ] x86 scheduling, process lifecycle, file operations, and network stack
   - [x] Syscall user-range/path helpers, file/time handlers and process-entry conventions
-  - [ ] Socket ABI handlers and scheduler/process lifecycle internals
+  - [x] Socket ABI fields, protocol selection, configuration operations and polling contracts
+  - [ ] Scheduler/process lifecycle internals
 - [ ] Learning snippets and test helpers affected by the edits
 
 ## First slice: Wi-Fi power-on
@@ -806,3 +807,24 @@ Existing wait-status and monotonic-time QEMU tests pass. No pointer validation,
 fork snapshot synchronization or syscall ABI behavior was changed. These tests
 exercise supported calls with valid memory; they do not validate bad-pointer
 handling or resolve the documented concurrency limitations.
+
+### Socket syscall ABI and waiting
+
+`src/syscall/socket.rs` names sockaddr_in field ranges, total size and socket
+length width, retaining native-endian family and network-endian port/IP bytes.
+Protocol selection reuses shared IPv4 protocol constants. Named values cover
+poll wait modes, listen backlog cap, configuration operations, fixed active-open
+port and the existing deterministic sequence-number calculation. The poll
+closure result is named `ready_count`, matching its Option<count> value.
+
+Comments identify existing constraints: raw user storage must be accessible;
+short sender-address buffers are rejected; a receive can consume the datagram
+before sender-address output fails; active-open TCP uses one global descriptor
+number without a process identity. These behaviors and all numerical values
+are unchanged. The sequence calculation is predictable, not a source of
+cryptographic randomness.
+
+Reference: Linux UAPI [in.h](https://raw.githubusercontent.com/torvalds/linux/master/include/uapi/linux/in.h)
+for sockaddr_in layout and protocol numbers. Existing QEMU poll and passive TCP
+echo checks pass; the latter covers bind/listen/accept and payload exchange,
+not the separate global active-open connection path. No new tests were added.

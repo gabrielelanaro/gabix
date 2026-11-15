@@ -1,4 +1,7 @@
 //! Socket and network-configuration syscall handlers.
+//!
+//! User pointers receive numeric-bound checks only; callers must currently
+//! supply mapped, accessible storage with the alignment required by each type.
 
 use crate::net;
 use crate::net::device as net_device;
@@ -8,6 +11,30 @@ use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
 
 use super::user::is_low_half_range;
+
+// Linux sockaddr_in byte layout. Family uses native byte order; port and
+// IPv4 address use network byte order. The final eight bytes are padding.
+mod sockaddr_in {
+    pub const BYTE_LEN: usize = 16;
+    pub const FAMILY: core::ops::Range<usize> = 0..2;
+    pub const PORT: core::ops::Range<usize> = 2..4;
+    pub const ADDRESS: core::ops::Range<usize> = 4..8;
+}
+const SOCKET_LENGTH_BYTES: u64 = core::mem::size_of::<u32>() as u64;
+const DEFAULT_PROTOCOL: u64 = 0;
+const IPV4_UNSPECIFIED: [u8; 4] = [0; 4];
+const IPV4_LIMITED_BROADCAST: [u8; 4] = [255; 4];
+const NO_ACTIVE_TCP_FD: u64 = u64::MAX;
+const ACTIVE_TCP_LOCAL_PORT: u16 = 49152;
+// Existing deterministic initial sequence-number calculation. Timer ticks
+// are predictable; this provides no cryptographic randomness.
+const INITIAL_SEQUENCE_MULTIPLIER: u32 = 1103515245;
+const INITIAL_SEQUENCE_OFFSET: u32 = 0x31c0_ffee;
+const MAX_LISTEN_BACKLOG: u64 = 128;
+const POLL_IMMEDIATE: u64 = 0;
+const POLL_WAIT_FOREVER: u64 = (-1i64) as u64;
+const NET_CONFIG_READ_MAC: u64 = 0;
+const NET_CONFIG_INSTALL_LEASE: u64 = 1;
 
 pub(super) fn transmit_tcp(outbound: net::tcp::Outbound) -> bool {
     if net_device::resolve_next_hop(outbound.dst_ip).is_none() {
@@ -23,7 +50,9 @@ pub(super) fn transmit_tcp(outbound: net::tcp::Outbound) -> bool {
     )
 }
 
-pub(super) static ACTIVE_TCP_FD: AtomicU64 = AtomicU64::new(u64::MAX);
+// A single global active-open connection, identified only by descriptor number.
+// The current design does not distinguish equal FD numbers in different tasks.
+pub(super) static ACTIVE_TCP_FD: AtomicU64 = AtomicU64::new(NO_ACTIVE_TCP_FD);
 
 pub(super) fn connect(fd: u64, address: u64, address_len: u64) -> u64 {
     if crate::task::with_current_fd_table(|table| table.get_tcp_socket(fd)).is_none() {
@@ -33,32 +62,32 @@ pub(super) fn connect(fd: u64, address: u64, address_len: u64) -> u64 {
         return u64::MAX;
     };
     let local_ip = net::source_ip();
-    if local_ip == [0; 4] {
+    if local_ip == IPV4_UNSPECIFIED {
         return u64::MAX;
     }
     if ACTIVE_TCP_FD
-        .compare_exchange(u64::MAX, fd, Ordering::AcqRel, Ordering::Acquire)
+        .compare_exchange(NO_ACTIVE_TCP_FD, fd, Ordering::AcqRel, Ordering::Acquire)
         .is_err()
     {
         return u64::MAX;
     }
     let isn = (crate::arch::timer_ticks() as u32)
-        .wrapping_mul(1103515245)
-        .wrapping_add(0x31c0_ffee);
+        .wrapping_mul(INITIAL_SEQUENCE_MULTIPLIER)
+        .wrapping_add(INITIAL_SEQUENCE_OFFSET);
     let Some(syn) = net::tcp::active_open(
         net::tcp::Endpoints {
             local_ip,
             remote_ip: remote.ip,
-            local_port: 49152,
+            local_port: ACTIVE_TCP_LOCAL_PORT,
             remote_port: remote.port,
         },
         isn,
     ) else {
-        ACTIVE_TCP_FD.store(u64::MAX, Ordering::Release);
+        ACTIVE_TCP_FD.store(NO_ACTIVE_TCP_FD, Ordering::Release);
         return u64::MAX;
     };
     if !transmit_tcp(syn) {
-        ACTIVE_TCP_FD.store(u64::MAX, Ordering::Release);
+        ACTIVE_TCP_FD.store(NO_ACTIVE_TCP_FD, Ordering::Release);
         return u64::MAX;
     }
     while net::tcp::state() != net::tcp::TcpState::Established {
@@ -113,38 +142,45 @@ struct PollFd {
     revents: i16,
 }
 
+// The numeric range check does not verify that these bytes are mapped and
+// readable. The ABI decoder currently relies on that caller requirement.
 fn read_sockaddr(ptr: u64, len: u64) -> Option<net::socket::Endpoint> {
-    if len < 16 || !is_low_half_range(ptr, 16) {
+    if len < sockaddr_in::BYTE_LEN as u64 || !is_low_half_range(ptr, sockaddr_in::BYTE_LEN as u64) {
         return None;
     }
-    let bytes = unsafe { core::slice::from_raw_parts(ptr as *const u8, 16) };
-    if u16::from_ne_bytes([bytes[0], bytes[1]]) != AF_INET as u16 {
+    let bytes = unsafe { core::slice::from_raw_parts(ptr as *const u8, sockaddr_in::BYTE_LEN) };
+    if u16::from_ne_bytes(bytes[sockaddr_in::FAMILY].try_into().unwrap()) != AF_INET as u16 {
         return None;
     }
     Some(net::socket::Endpoint {
-        port: u16::from_be_bytes([bytes[2], bytes[3]]),
-        ip: [bytes[4], bytes[5], bytes[6], bytes[7]],
+        port: u16::from_be_bytes(bytes[sockaddr_in::PORT].try_into().unwrap()),
+        ip: bytes[sockaddr_in::ADDRESS].try_into().unwrap(),
     })
 }
 
+// Two null pointers request no sender address. Otherwise len_ptr must refer
+// to an aligned, writable u32 and ptr to a writable full sockaddr_in. Short
+// buffers are rejected rather than receiving a truncated address.
 fn write_sockaddr(ptr: u64, len_ptr: u64, endpoint: net::socket::Endpoint) -> bool {
     if ptr == 0 && len_ptr == 0 {
         return true;
     }
-    if !is_low_half_range(len_ptr, 4) {
+    if !is_low_half_range(len_ptr, SOCKET_LENGTH_BYTES) {
         return false;
     }
     let capacity = unsafe { *(len_ptr as *const u32) } as u64;
-    if capacity < 16 || !is_low_half_range(ptr, 16) {
+    if capacity < sockaddr_in::BYTE_LEN as u64
+        || !is_low_half_range(ptr, sockaddr_in::BYTE_LEN as u64)
+    {
         return false;
     }
-    let out = unsafe { core::slice::from_raw_parts_mut(ptr as *mut u8, 16) };
+    let out = unsafe { core::slice::from_raw_parts_mut(ptr as *mut u8, sockaddr_in::BYTE_LEN) };
     out.fill(0);
-    out[0..2].copy_from_slice(&(AF_INET as u16).to_ne_bytes());
-    out[2..4].copy_from_slice(&endpoint.port.to_be_bytes());
-    out[4..8].copy_from_slice(&endpoint.ip);
+    out[sockaddr_in::FAMILY].copy_from_slice(&(AF_INET as u16).to_ne_bytes());
+    out[sockaddr_in::PORT].copy_from_slice(&endpoint.port.to_be_bytes());
+    out[sockaddr_in::ADDRESS].copy_from_slice(&endpoint.ip);
     unsafe {
-        *(len_ptr as *mut u32) = 16;
+        *(len_ptr as *mut u32) = sockaddr_in::BYTE_LEN as u32;
     }
     true
 }
@@ -156,11 +192,15 @@ pub(super) fn socket(domain: u64, kind: u64, protocol: u64) -> u64 {
         return u64::MAX;
     }
     match base_kind {
-        SOCK_DGRAM if protocol == 0 || protocol == 17 => {
+        SOCK_DGRAM
+            if protocol == DEFAULT_PROTOCOL || protocol == net::ipv4::PROTOCOL_UDP as u64 =>
+        {
             let socket = net::socket::UdpSocket::new(kind & SOCK_NONBLOCK != 0);
             crate::task::with_current_fd_table(|fdt| fdt.open_socket(socket))
         }
-        SOCK_STREAM if protocol == 0 || protocol == 6 => {
+        SOCK_STREAM
+            if protocol == DEFAULT_PROTOCOL || protocol == net::ipv4::PROTOCOL_TCP as u64 =>
+        {
             let socket = net::tcp::TcpSocket::new();
             crate::task::with_current_fd_table(|fdt| fdt.open_tcp_socket(socket))
         }
@@ -172,7 +212,7 @@ pub(super) fn bind(fd: u64, addr: u64, addr_len: u64) -> u64 {
     let Some(endpoint) = read_sockaddr(addr, addr_len) else {
         return u64::MAX;
     };
-    if endpoint.ip != [0, 0, 0, 0] && endpoint.ip != net::source_ip() {
+    if endpoint.ip != IPV4_UNSPECIFIED && endpoint.ip != net::source_ip() {
         return u64::MAX;
     }
     let bound = crate::task::with_current_fd_table(|fdt| {
@@ -195,7 +235,10 @@ pub(super) fn listen(fd: u64, backlog: u64) -> u64 {
     let Some(socket) = crate::task::with_current_fd_table(|fdt| fdt.get_tcp_socket(fd)) else {
         return u64::MAX;
     };
-    if socket.listen(backlog.min(128) as usize).is_ok() {
+    if socket
+        .listen(backlog.min(MAX_LISTEN_BACKLOG) as usize)
+        .is_ok()
+    {
         0
     } else {
         u64::MAX
@@ -235,7 +278,7 @@ pub(super) fn sendto(fd: u64, buf: u64, len: u64, _flags: u64, addr: u64, addr_l
     // Resolve the next hop BEFORE taking the device lock. A cold ARP
     // cache means sleeping until the reply arrives, and the network task
     // needs that same lock to deliver the reply.
-    if dst.ip != [255; 4] && net_device::resolve_next_hop(dst.ip).is_none() {
+    if dst.ip != IPV4_LIMITED_BROADCAST && net_device::resolve_next_hop(dst.ip).is_none() {
         return u64::MAX;
     }
     let result = match net_device::with_net_device(|device| {
@@ -266,14 +309,16 @@ pub(super) fn net_configure(config_ptr: u64, operation: u64) -> u64 {
     }
     let config = unsafe { &mut *(config_ptr as *mut UserNetworkConfig) };
     match operation {
-        0 => match net_device::with_net_device(|device| device.mac()) {
+        NET_CONFIG_READ_MAC => match net_device::with_net_device(|device| device.mac()) {
             Some(mac) => {
                 config.mac = mac;
                 0
             }
             None => u64::MAX,
         },
-        1 if config.address != [0; 4] && config.subnet_mask != [0; 4] => {
+        NET_CONFIG_INSTALL_LEASE
+            if config.address != IPV4_UNSPECIFIED && config.subnet_mask != [0; 4] =>
+        {
             net::configure(net::NetworkConfig {
                 address: config.address,
                 subnet_mask: config.subnet_mask,
@@ -292,6 +337,10 @@ pub(super) fn net_configure(config_ptr: u64, operation: u64) -> u64 {
     }
 }
 
+/// Pop one UDP datagram. A short output buffer discards the remaining bytes.
+/// Sender-address validation happens after dequeue and payload copying, so an
+/// invalid address result can consume a datagram before returning an error.
+/// The flags argument is currently ignored.
 pub(super) fn recvfrom(fd: u64, buf: u64, len: u64, _flags: u64, addr: u64, addr_len: u64) -> u64 {
     if !is_low_half_range(buf, len) {
         return u64::MAX;
@@ -328,10 +377,12 @@ pub(super) fn recvfrom(fd: u64, buf: u64, len: u64, _flags: u64, addr: u64, addr
     }
 }
 
-/// Lesson 27 poll subset: UDP descriptors, POLLIN, and timeout 0 or -1.
+/// Poll subset: UDP descriptors, POLLIN, and timeout 0 or -1. No timed wait.
+/// Negative descriptors are ignored; unsupported/nonexistent descriptors report
+/// POLLNVAL. User storage must remain valid across any scheduler wait.
 pub(super) fn poll(fds_ptr: u64, nfds: u64, timeout: u64) -> u64 {
     const MAX_POLL_FDS: u64 = 64;
-    if nfds > MAX_POLL_FDS || (timeout != 0 && timeout != u64::MAX) {
+    if nfds > MAX_POLL_FDS || (timeout != POLL_IMMEDIATE && timeout != POLL_WAIT_FOREVER) {
         return u64::MAX;
     }
     let bytes = match nfds.checked_mul(core::mem::size_of::<PollFd>() as u64) {
@@ -356,7 +407,7 @@ pub(super) fn poll(fds_ptr: u64, nfds: u64, timeout: u64) -> u64 {
     let pid = crate::task::current_pid();
 
     loop {
-        let should_block = crate::arch::interrupts::without_interrupts(|| {
+        let ready_count = crate::arch::interrupts::without_interrupts(|| {
             for socket in sockets.iter().flatten() {
                 socket.remove_poll_waiter(pid);
             }
@@ -378,7 +429,7 @@ pub(super) fn poll(fds_ptr: u64, nfds: u64, timeout: u64) -> u64 {
                     ready += 1;
                 }
             }
-            if ready != 0 || timeout == 0 {
+            if ready != 0 || timeout == POLL_IMMEDIATE {
                 return Some(ready);
             }
 
@@ -392,7 +443,7 @@ pub(super) fn poll(fds_ptr: u64, nfds: u64, timeout: u64) -> u64 {
             crate::task::block_current();
             None
         });
-        if let Some(ready) = should_block {
+        if let Some(ready) = ready_count {
             return ready;
         }
         crate::task::yield_now();
