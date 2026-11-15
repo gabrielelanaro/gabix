@@ -563,6 +563,11 @@ A milestone is a "demo-able" checkpoint. Worth a commit + tag + log entry.
 
 ## Progress Log
 
+### 2026-11-15 — Readability audit: SD command path
+- Named SD commands, controller setup fields, sector/word units and card-ready state. Explained application-command prefixes and polling of latched interrupt-status bits.
+- Existing Pi QEMU partition-to-userspace regression passes. Preserved operation order and values; physical writes remain untested after these edits.
+- Capacity extraction and clock-divider packing remain open within the SD audit, alongside the broader pending areas.
+
 ### 2026-11-15 — Readability audit: Pi reset/watchdog
 - Named watchdog time units, protected-write key, reset bits and status address; documented countdown ordering and timeout field limits using the Linux reference driver.
 - Managed Pi release build passes. No live reset performed; physical verification and remaining audit areas stay pending.

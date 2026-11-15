@@ -1,4 +1,40 @@
+//! SD Host Controller Interface (SDHCI), using polled programmed I/O.
+//! The CPU sends a command and copies words through BUFFER_DATA. Status flags
+//! report progress; SIGNAL_ENABLE stays zero, so this path does not use IRQs.
+//! Register/command references: Linux drivers/mmc/host/sdhci.h and include/linux/mmc/{sd,mmc}.h.
+
 use gabix_kernel::device::{BlockDevice, BlockError, WritableBlockDevice};
+
+mod card_command {
+    pub const GO_IDLE: u16 = 0;
+    pub const ALL_SEND_CID: u16 = 2;
+    pub const SEND_RELATIVE_ADDRESS: u16 = 3;
+    pub const SELECT_CARD: u16 = 7;
+    pub const SEND_INTERFACE_CONDITION: u16 = 8;
+    pub const SEND_CSD: u16 = 9;
+    pub const SEND_STATUS: u16 = 13;
+    pub const SET_BLOCK_LENGTH: u16 = 16;
+    pub const READ_SINGLE_BLOCK: u16 = 17;
+    pub const WRITE_SINGLE_BLOCK: u16 = 24;
+    pub const APPLICATION_OPERATING_CONDITION: u16 = 41;
+    pub const APPLICATION_PREFIX: u16 = 55;
+}
+
+const RESET_ALL: u8 = 1;
+const POWER_ON_3V3: u8 = 0x0f;
+const DATA_TIMEOUT_2_POW_27: u8 = 0x0e;
+const INITIALIZATION_ATTEMPTS: usize = 1000;
+const INTERFACE_CONDITION_3V3_PATTERN: u32 = 0x1aa;
+const RELATIVE_ADDRESS_MASK: u32 = 0xffff_0000;
+const SECTOR_BYTES: usize = 512;
+const DATA_WORD_BYTES: usize = 4;
+const COMMAND_NUMBER_SHIFT: u32 = 8;
+const TRANSFER_SINGLE_BLOCK_WRITE_PIO: u16 = 0;
+const CARD_READY_FOR_DATA: u32 = 1 << 8;
+const CARD_STATE_SHIFT: u32 = 9;
+const CARD_STATE_MASK: u32 = 0xf;
+const CARD_STATE_TRANSFER: u32 = 4;
+const SYSTEM_TIMER_LOW: *const u32 = 0x3f00_3004 as *const u32;
 
 const BASE: usize = 0x3f30_0000;
 const BLOCK_SIZE: usize = 0x04;
@@ -55,22 +91,36 @@ pub struct SdCard {
 impl SdCard {
     pub unsafe fn initialize() -> Option<Self> {
         let source_clock_hz = super::mailbox::emmc_clock_rate()?;
-        write8(SOFTWARE_RESET, 1);
-        wait_until(|| read8(SOFTWARE_RESET) & 1 == 0)?;
+        write8(SOFTWARE_RESET, RESET_ALL);
+        wait_until(|| read8(SOFTWARE_RESET) & RESET_ALL == 0)?;
         write32(INTERRUPT_ENABLE, u32::MAX);
         write32(SIGNAL_ENABLE, 0);
-        write8(POWER_CONTROL, 0x0f);
-        write8(TIMEOUT_CONTROL, 0x0e); // Data timeout: 2^27 timeout-clock cycles.
+        write8(POWER_CONTROL, POWER_ON_3V3);
+        write8(TIMEOUT_CONTROL, DATA_TIMEOUT_2_POW_27); // Data timeout: 2^27 timeout-clock cycles.
         set_clock(source_clock_hz, IDENTIFICATION_CLOCK_HZ)?;
         wait_until(|| read32(PRESENT_STATE) & CARD_INSERTED != 0)?;
 
-        command(0, 0, RESPONSE_NONE)?;
-        let _ = command(8, 0x1aa, RESPONSE_48 | COMMAND_CRC | COMMAND_INDEX)?;
+        command(card_command::GO_IDLE, 0, RESPONSE_NONE)?;
+        let _ = command(
+            card_command::SEND_INTERFACE_CONDITION,
+            INTERFACE_CONDITION_3V3_PATTERN,
+            RESPONSE_48 | COMMAND_CRC | COMMAND_INDEX,
+        )?;
 
+        // ACMD41 is an application command: CMD55 must precede every attempt.
+        // The operating-conditions response (OCR) reports power-up readiness.
         let mut ocr = 0;
-        for _ in 0..1000 {
-            command(55, 0, RESPONSE_48 | COMMAND_CRC | COMMAND_INDEX)?;
-            ocr = command(41, OCR_VOLTAGE | OCR_HIGH_CAPACITY, RESPONSE_48)?;
+        for _ in 0..INITIALIZATION_ATTEMPTS {
+            command(
+                card_command::APPLICATION_PREFIX,
+                0,
+                RESPONSE_48 | COMMAND_CRC | COMMAND_INDEX,
+            )?;
+            ocr = command(
+                card_command::APPLICATION_OPERATING_CONDITION,
+                OCR_VOLTAGE | OCR_HIGH_CAPACITY,
+                RESPONSE_48,
+            )?;
             if ocr & OCR_READY != 0 {
                 break;
             }
@@ -79,15 +129,24 @@ impl SdCard {
             return None;
         }
 
-        command(2, 0, RESPONSE_LONG | COMMAND_CRC)?;
-        let relative_address =
-            command(3, 0, RESPONSE_48 | COMMAND_CRC | COMMAND_INDEX)? & 0xffff_0000;
+        // Request card identity, obtain its relative address, then read capacity
+        // before selecting the card for data transfers.
+        command(card_command::ALL_SEND_CID, 0, RESPONSE_LONG | COMMAND_CRC)?;
+        let relative_address = command(
+            card_command::SEND_RELATIVE_ADDRESS,
+            0,
+            RESPONSE_48 | COMMAND_CRC | COMMAND_INDEX,
+        )? & RELATIVE_ADDRESS_MASK;
         if relative_address == 0 {
             return None;
         }
         // CMD9 reads the Card-Specific Data register while the card is in
         // standby. Its capacity describes the whole card, not its partitions.
-        command(9, relative_address, RESPONSE_LONG | COMMAND_CRC)?;
+        command(
+            card_command::SEND_CSD,
+            relative_address,
+            RESPONSE_LONG | COMMAND_CRC,
+        )?;
         // SDHCI strips the final CRC byte from a 136-bit response. Restore
         // the bit positions used by the SD specification before extracting CSD.
         let mut csd = 0u128;
@@ -100,7 +159,7 @@ impl SdCard {
                 let read_block_length = ((csd >> 80) & 0xf) as u32;
                 let size = ((csd >> 62) & 0xfff) as u64 + 1;
                 let multiplier = ((csd >> 47) & 7) as u32 + 2;
-                size.checked_shl(multiplier + read_block_length)? / 512
+                size.checked_shl(multiplier + read_block_length)? / SECTOR_BYTES as u64
             }
             1 => (((csd >> 48) & 0x3fffff) as u64 + 1) * 1024,
             _ => return None, // SDUC addressing is not implemented.
@@ -109,7 +168,7 @@ impl SdCard {
             return None;
         }
         command(
-            7,
+            card_command::SELECT_CARD,
             relative_address,
             RESPONSE_48_BUSY | COMMAND_CRC | COMMAND_INDEX,
         )?;
@@ -117,7 +176,11 @@ impl SdCard {
 
         let high_capacity = ocr & OCR_HIGH_CAPACITY != 0;
         if !high_capacity {
-            command(16, 512, RESPONSE_48 | COMMAND_CRC | COMMAND_INDEX)?;
+            command(
+                card_command::SET_BLOCK_LENGTH,
+                SECTOR_BYTES as u32,
+                RESPONSE_48 | COMMAND_CRC | COMMAND_INDEX,
+            )?;
         }
         set_clock(source_clock_hz, TRANSFER_CLOCK_HZ)?;
         Some(Self {
@@ -131,7 +194,7 @@ impl SdCard {
         self.sector_count
     }
 
-    pub unsafe fn try_read_sector(&mut self, sector: u64) -> Option<[u8; 512]> {
+    pub unsafe fn try_read_sector(&mut self, sector: u64) -> Option<[u8; SECTOR_BYTES]> {
         if sector >= self.sector_count {
             return None;
         }
@@ -139,23 +202,27 @@ impl SdCard {
         let argument = if self.high_capacity {
             sector
         } else {
-            sector.checked_mul(512)?
+            sector.checked_mul(SECTOR_BYTES as u32)?
         };
         wait_until(|| read32(PRESENT_STATE) & (COMMAND_INHIBIT | DATA_INHIBIT) == 0)?;
-        write16(BLOCK_SIZE, 512);
+        write16(BLOCK_SIZE, SECTOR_BYTES as u16);
         write16(BLOCK_COUNT, 1);
         write32(INTERRUPT_STATUS, u32::MAX);
         write32(ARGUMENT, argument);
         write16(TRANSFER_MODE, TRANSFER_READ);
         write16(
             COMMAND,
-            (17 << 8) | RESPONSE_48 | COMMAND_CRC | COMMAND_INDEX | COMMAND_DATA,
+            (card_command::READ_SINGLE_BLOCK << COMMAND_NUMBER_SHIFT)
+                | RESPONSE_48
+                | COMMAND_CRC
+                | COMMAND_INDEX
+                | COMMAND_DATA,
         );
         wait_interrupt(INTERRUPT_COMMAND_COMPLETE)?;
         wait_interrupt(INTERRUPT_BUFFER_READ_READY)?;
 
-        let mut sector = [0u8; 512];
-        for chunk in sector.chunks_exact_mut(4) {
+        let mut sector = [0u8; SECTOR_BYTES];
+        for chunk in sector.chunks_exact_mut(DATA_WORD_BYTES) {
             chunk.copy_from_slice(&read32(BUFFER_DATA).to_le_bytes());
         }
         wait_interrupt(INTERRUPT_TRANSFER_COMPLETE)?;
@@ -166,13 +233,13 @@ impl SdCard {
 unsafe impl Send for SdCard {}
 
 impl BlockDevice for SdCard {
-    fn read_sector(&mut self, sector: u64) -> [u8; 512] {
-        unsafe { self.try_read_sector(sector).unwrap_or([0; 512]) }
+    fn read_sector(&mut self, sector: u64) -> [u8; SECTOR_BYTES] {
+        unsafe { self.try_read_sector(sector).unwrap_or([0; SECTOR_BYTES]) }
     }
 }
 
 impl WritableBlockDevice for SdCard {
-    fn write_sector(&mut self, sector: u64, data: &[u8; 512]) -> Result<(), BlockError> {
+    fn write_sector(&mut self, sector: u64, data: &[u8; SECTOR_BYTES]) -> Result<(), BlockError> {
         if sector >= self.sector_count {
             return Err(BlockError::AddressOutOfRange);
         }
@@ -182,26 +249,30 @@ impl WritableBlockDevice for SdCard {
             sector
         } else {
             sector
-                .checked_mul(512)
+                .checked_mul(SECTOR_BYTES as u32)
                 .ok_or(BlockError::AddressOutOfRange)?
         };
         unsafe {
             wait_data_idle()?;
-            write16(BLOCK_SIZE, 512);
+            write16(BLOCK_SIZE, SECTOR_BYTES as u16);
             write16(BLOCK_COUNT, 1);
             write32(INTERRUPT_STATUS, u32::MAX);
             write32(ARGUMENT, argument);
-            write16(TRANSFER_MODE, 0); // Single-block, host-to-card, programmed I/O.
+            write16(TRANSFER_MODE, TRANSFER_SINGLE_BLOCK_WRITE_PIO);
             write16(
                 COMMAND,
-                (24 << 8) | RESPONSE_48 | COMMAND_CRC | COMMAND_INDEX | COMMAND_DATA,
+                (card_command::WRITE_SINGLE_BLOCK << COMMAND_NUMBER_SHIFT)
+                    | RESPONSE_48
+                    | COMMAND_CRC
+                    | COMMAND_INDEX
+                    | COMMAND_DATA,
             );
             wait_interrupt_result(INTERRUPT_COMMAND_COMPLETE)?;
             check_card_status(read32(RESPONSE_0))?;
 
             // The controller requests one block. Each FIFO write supplies 4 bytes.
             wait_interrupt_result(INTERRUPT_BUFFER_WRITE_READY)?;
-            for bytes in data.chunks_exact(4) {
+            for bytes in data.chunks_exact(DATA_WORD_BYTES) {
                 write32(BUFFER_DATA, u32::from_le_bytes(bytes.try_into().unwrap()));
             }
             wait_interrupt_result(INTERRUPT_TRANSFER_COMPLETE)?;
@@ -216,13 +287,17 @@ impl WritableBlockDevice for SdCard {
                 write16(TRANSFER_MODE, 0);
                 write16(
                     COMMAND,
-                    (13 << 8) | RESPONSE_48 | COMMAND_CRC | COMMAND_INDEX,
+                    (card_command::SEND_STATUS << COMMAND_NUMBER_SHIFT)
+                        | RESPONSE_48
+                        | COMMAND_CRC
+                        | COMMAND_INDEX,
                 );
                 wait_interrupt_result(INTERRUPT_COMMAND_COMPLETE)?;
                 let status = read32(RESPONSE_0);
                 check_card_status(status)?;
-                let ready_for_data = status & (1 << 8) != 0;
-                let transfer_state = (status >> 9) & 0xf == 4;
+                let ready_for_data = status & CARD_READY_FOR_DATA != 0;
+                let transfer_state =
+                    (status >> CARD_STATE_SHIFT) & CARD_STATE_MASK == CARD_STATE_TRANSFER;
                 if ready_for_data && transfer_state {
                     return Ok(());
                 }
@@ -250,7 +325,7 @@ fn check_card_status(status: u32) -> Result<(), BlockError> {
 }
 
 unsafe fn microseconds() -> u32 {
-    core::ptr::read_volatile(0x3f00_3004 as *const u32)
+    core::ptr::read_volatile(SYSTEM_TIMER_LOW)
 }
 
 unsafe fn wait_data_idle() -> Result<(), BlockError> {
@@ -264,6 +339,8 @@ unsafe fn wait_data_idle() -> Result<(), BlockError> {
     Ok(())
 }
 
+/// Poll latched status despite the register's interrupt name. A written one
+/// acknowledges that status bit; no CPU interrupt handler participates here.
 unsafe fn wait_interrupt_result(mask: u32) -> Result<(), BlockError> {
     let started = microseconds();
     loop {
@@ -293,7 +370,7 @@ unsafe fn command(index: u16, argument: u32, flags: u16) -> Option<u32> {
     write32(INTERRUPT_STATUS, u32::MAX);
     write32(ARGUMENT, argument);
     write16(TRANSFER_MODE, 0);
-    write16(COMMAND, (index << 8) | flags);
+    write16(COMMAND, (index << COMMAND_NUMBER_SHIFT) | flags);
     wait_interrupt(INTERRUPT_COMMAND_COMPLETE)?;
     Some(read32(RESPONSE_0))
 }
@@ -321,6 +398,7 @@ unsafe fn wait_interrupt(mask: u32) -> Option<()> {
     wait_interrupt_result(mask).ok()
 }
 
+/// Busy-poll a register condition until it succeeds or one second elapses.
 unsafe fn wait_until(mut condition: impl FnMut() -> bool) -> Option<()> {
     let started = microseconds();
     while !condition() {

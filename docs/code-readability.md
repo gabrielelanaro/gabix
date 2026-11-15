@@ -42,7 +42,8 @@ will be checked alongside the implementation they exercise.
   - [x] Random generator: enable/warm-up, FIFO word count, whole-nonce timeout
   - [x] Mailbox: request layout, power flags, reply fields, RAM/cache ownership
   - [x] Reset/watchdog: protected-write key, countdown units and field limits
-  - [ ] SD
+  - [x] SD command indices, reset/power fields, sector units and polling contract
+  - [ ] SD capacity extraction and clock-divider bit packing
 - [ ] ARM boot, page tables, interrupts, scheduling, processes, and syscalls
   - [x] Kernel task context switch and scheduler frame creation: named saved-word layout, user-bank offset and IRQ mask
   - [ ] Boot/exception assembly, process operations, memory and syscalls
@@ -274,3 +275,14 @@ watchdog counts per second and short reboot delay. Documented the existing
 Reference: [Linux bcm2835_wdt.c](https://github.com/torvalds/linux/blob/master/drivers/watchdog/bcm2835_wdt.c), start/stop/restart sequences. Register values and barriers are unchanged.
 Managed Pi release build passes. No live reset was attempted: physical watchdog
 and reboot verification remains pending while the Pi is disconnected.
+
+## SD commands and programmed I/O
+
+Named card command indices, controller reset/power values, sector and FIFO
+word sizes, R1 ready/transfer fields and the initialization attempt limit.
+Comments explain application-command prefixes and status polling with CPU IRQ
+signaling disabled. Commands, access widths, copies and timeouts are preserved.
+References: Linux [sd.h](https://github.com/torvalds/linux/blob/master/include/linux/mmc/sd.h), [mmc.h](https://github.com/torvalds/linux/blob/master/include/linux/mmc/mmc.h), and [sdhci.h](https://github.com/torvalds/linux/blob/master/drivers/mmc/host/sdhci.h).
+Existing Pi QEMU partition-to-userspace regression passes. It validates the SD
+read path; physical write/read-back and reboot remain pending. Capacity-field
+extraction and divider packing still need the same readability review.
