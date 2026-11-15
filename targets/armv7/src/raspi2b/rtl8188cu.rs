@@ -172,6 +172,46 @@ mod fw {
     pub const MAILBOX_POLL_US: u32 = 10;
 }
 
+// Station configuration combines factory power indices with MAC timing/filter
+// policy. Values below retain the existing conservative, non-QoS setup.
+mod station {
+    pub const CCK_POWER_ROM_BASE: usize = 0x5a;
+    pub const CCK_POWER_MAX: u8 = 63;
+    pub const CCK1_POWER_REGISTER: u16 = 0x0e08;
+    pub const CCK1_POWER_MASK: u32 = 0xff00;
+    pub const CCK1_POWER_SHIFT: u32 = 8;
+    pub const CCK_OTHER_POWER_REGISTER: u16 = 0x086c;
+    pub const CCK_OTHER_POWER_MASK: u32 = 0xffff_ff00;
+    pub const REPEAT_IN_THREE_POWER_BYTES: u32 = 0x0101_0100;
+    pub const ACCESS_POINT_ADDRESS: u16 = 0x0618;
+    pub const NETWORK_TYPE: u16 = 0x0102;
+    pub const INFRASTRUCTURE: u8 = 2;
+    pub const DATA_SUBTYPE_FILTER: u16 = 0x06a4;
+    pub const ALL_SUBTYPES: u16 = 0xffff;
+    pub const RESPONSE_RATES: u16 = 0x0440;
+    pub const RESPONSE_RATE_MASK: u32 = 0x000f_ffff;
+    pub const RESPONSE_CCK_ONLY_1_MBPS: u32 = 0x000f_fff1;
+    pub const RETRY_LIMIT: u16 = 0x042a;
+    pub const LONG_RETRY_LIMIT: u16 = 48;
+    pub const SHORT_RETRY_LIMIT: u16 = 48 << 8;
+    pub const ACK_TIMEOUT: u16 = 0x0640;
+    pub const ACK_TIMEOUT_SETTING: u8 = 0x40;
+    // SPEC_SIFS, MAC_SPEC_SIFS, SIFS_CCK/OFDM, RESP_SIFS_CCK/OFDM.
+    pub const INTERFRAME_REGISTERS: [u16; 6] = [0x0428, 0x063a, 0x0514, 0x0516, 0x063c, 0x063e];
+    pub const INTERFRAME_TIMING_SETTING: u16 = 0x100a;
+    // Voice, video, best-effort and background access categories share settings.
+    pub const CONTENTION_REGISTERS: [u16; 4] = [0x0500, 0x0504, 0x0508, 0x050c];
+    pub const CONTENTION_AIFS: u32 = 0x2b;
+    pub const CONTENTION_MIN_EXPONENT: u32 = 4 << 8;
+    pub const CONTENTION_MAX_EXPONENT: u32 = 10 << 12;
+    pub const TRANSMIT_PAUSE: u16 = 0x0522;
+    pub const RESUME_ALL_QUEUES: u8 = 0;
+    pub const RECEIVE_CONFIG: u16 = 0x0608;
+    pub const ACCEPT_CONTROL_FRAMES: u32 = 1 << 12;
+    pub const CONTROL_SUBTYPE_FILTER: u16 = 0x06a2;
+    pub const ACK_SUBTYPE: u16 = 1 << 13;
+}
+
 // Chain-A radio registers are accessed indirectly through baseband registers.
 // USB addresses the baseband register; its value selects the RF register/data.
 mod radio_access {
@@ -1025,7 +1065,10 @@ impl Rtl8188cu {
         bssid: [u8; 6],
         channel: u8,
     ) -> Result<(), Error> {
+        use station::*;
+
         self.set_channel(channel)?;
+        // The ROM stores one CCK power index per channel group: 1..3, 4..9, 10..13.
         let group = if channel <= 3 {
             0
         } else if channel <= 9 {
@@ -1033,26 +1076,37 @@ impl Rtl8188cu {
         } else {
             2
         };
-        let power = identity.rom[0x5a + group];
-        if power > 63 {
+        let power = identity.rom[CCK_POWER_ROM_BASE + group];
+        if power > CCK_POWER_MAX {
             return Err(Error::InvalidRom);
         }
-        self.update32(0xe08, 0xff00, (power as u32) << 8)?;
-        self.update32(0x86c, 0xffffff00, (power as u32) * 0x01010100)?;
-        self.write(0x0618, &bssid)?;
-        self.write8(0x0102, 2)?; // Infrastructure station network type.
-        self.write16(0x06a4, 0xffff)?; // Admit data, including EAPOL.
-        self.update32(0x0440, 0x000fffff, 0x000ffff1)?;
-        self.write16(0x042a, 0x3030)?;
-        self.write8(0x0640, 0x40)?;
-        for register in [0x0428, 0x063a, 0x0514, 0x0516, 0x063c, 0x063e] {
-            self.write16(register, 0x100a)?;
+        self.update32(
+            CCK1_POWER_REGISTER,
+            CCK1_POWER_MASK,
+            (power as u32) << CCK1_POWER_SHIFT,
+        )?;
+        self.update32(
+            CCK_OTHER_POWER_REGISTER,
+            CCK_OTHER_POWER_MASK,
+            (power as u32) * REPEAT_IN_THREE_POWER_BYTES,
+        )?;
+        self.write(ACCESS_POINT_ADDRESS, &bssid)?;
+        self.write8(NETWORK_TYPE, INFRASTRUCTURE)?; // Infrastructure station network type.
+        self.write16(DATA_SUBTYPE_FILTER, ALL_SUBTYPES)?; // Admit data, including EAPOL.
+        self.update32(RESPONSE_RATES, RESPONSE_RATE_MASK, RESPONSE_CCK_ONLY_1_MBPS)?;
+        self.write16(RETRY_LIMIT, LONG_RETRY_LIMIT | SHORT_RETRY_LIMIT)?;
+        self.write8(ACK_TIMEOUT, ACK_TIMEOUT_SETTING)?;
+        for register in INTERFRAME_REGISTERS {
+            self.write16(register, INTERFRAME_TIMING_SETTING)?;
         }
         // Conservative contention settings for an initial non-QoS station.
-        for register in [0x0500, 0x0504, 0x0508, 0x050c] {
-            self.write32(register, 0x0000a42b)?;
+        for register in CONTENTION_REGISTERS {
+            self.write32(
+                register,
+                CONTENTION_AIFS | CONTENTION_MIN_EXPONENT | CONTENTION_MAX_EXPONENT,
+            )?;
         }
-        self.write8(0x0522, 0)
+        self.write8(TRANSMIT_PAUSE, RESUME_ALL_QUEUES)
     }
 
     /// Clear the hardware key table when starting a new association.
@@ -1073,8 +1127,8 @@ impl Rtl8188cu {
 
     /// Diagnostic receive filter for observing 802.11 acknowledgement frames.
     pub fn observe_acknowledgements(&mut self) -> Result<(), Error> {
-        self.update32(0x0608, 0, 1 << 12)?; // RCR_ACF: admit control frames.
-        self.write16(0x06a2, 1 << 13) // RXFLTMAP1: ACK subtype.
+        self.update32(station::RECEIVE_CONFIG, 0, station::ACCEPT_CONTROL_FRAMES)?;
+        self.write16(station::CONTROL_SUBTYPE_FILTER, station::ACK_SUBTYPE)
     }
 
     /// Register the station and broadcast rate tables with the adapter's MCU.

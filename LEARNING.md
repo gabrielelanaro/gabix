@@ -563,6 +563,11 @@ A milestone is a "demo-able" checkpoint. Worth a commit + tag + log entry.
 
 ## Progress Log
 
+### 2026-11-15 — Readability audit: station transmit setup
+- Named factory power groups, retry/contention fields, address/filter registers and ACK observation settings. Kept timing presets explicit without inventing undocumented units.
+- Managed Wi-Fi release build passes. An ignored host harness compared the old/new station-setup methods for channels 0..14 and power indices 0/63/64; all 45 results and register traces match.
+- Physical association/traffic validation remains pending. Receiver bring-up and the broader shared/x86/ARM audit remain open.
+
 ### 2026-11-15 — Readability audit: radio access and channels
 - Named indirect radio address/data fields, read-edge sequence, reply-register selection and settling delays. Explained coordinated 20 MHz channel settings across MAC/baseband/RF.
 - Managed Wi-Fi release build passes. An ignored host harness compared actual old/new radio-read/write and channel-selection methods across 813 synthetic cases; return values and register traces match.

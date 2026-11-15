@@ -38,6 +38,7 @@ will be checked alongside the implementation they exercise.
   - [x] Factory identity/eFuse decoding and read-completion polling
   - [x] Packet RAM page links, queue reservations, boundaries and page sizes
   - [x] Indirect RF register transport and 20 MHz channel selection
+  - [x] Station power groups, retry/contention settings and ACK diagnostic filter
   - [ ] Remaining radio initialization and shared frame/security fields
 - [ ] Pi USB controller, hub enumeration, Ethernet, and RNDIS
   - [x] LAN9512 register transport, PHY access and SMSC frame headers
@@ -447,3 +448,18 @@ compiled the actual old/new methods and compared all 256 register inputs and
 channels 0..14 with three register-value patterns (including both readback modes).
 All 813 result/trace comparisons pass. It does not model RF timing or radio
 behavior; physical checks remain pending.
+
+## Station transmit setup
+
+Named factory CCK power groups and register fields, access-point address/network
+type, response-rate selection, retry limits, contention fields and ACK diagnostic
+filters. Interframe/ACK timing presets retain their values without assigning
+unverified units. Reference: OpenBSD [r92creg.h](https://github.com/openbsd/src/blob/master/sys/dev/ic/r92creg.h)
+RRSR/RL/EDCA/MSR definitions and [rtwn.c](https://github.com/openbsd/src/blob/master/sys/dev/ic/rtwn.c)
+channel-group power selection.
+
+Managed Wi-Fi release build passes. A temporary recording-transport harness
+compiled the actual old/new station-setup methods and compared channels 0..14
+with power values 0, 63 and 64. All 45 result/trace comparisons match. Channel
+selection itself was stubbed (covered separately above); physical association
+and packet transmission remain pending.
