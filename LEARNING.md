@@ -563,6 +563,11 @@ A milestone is a "demo-able" checkpoint. Worth a commit + tag + log entry.
 
 ## Progress Log
 
+### 2026-11-15 — Readability audit: x86 VirtIO capability transport
+- Named VirtIO region offsets and MSI-X table/control fields. Explained table entry count and function masking; corrected the capability result's notification multiplier contract and the module overview.
+- Existing x86 QEMU disk-read and network-frame tests pass. Register reads/writes and unsupported/malformed-list handling are unchanged. The parser still assumes valid lengths and an acyclic list; these limits are explicit.
+- Queue mechanics and block/network initialization remain to review. Physical Pi validation for earlier changes remains pending.
+
 ### 2026-11-15 — Readability audit: x86 PCI discovery
 - Named bus/function scan limits, configuration fields, BAR masks/types and endpoint BAR count. Corrected stale discovery documentation, the obsolete below-1-MiB BAR description, and the distinction between PCI configuration and VirtIO status registers.
 - Existing x86 QEMU known-block test passes through discovery, BAR setup and the disk driver. Scan order, values and diagnostics remain unchanged; existing address packing and class-code lookup tables were already explained and remain literal.

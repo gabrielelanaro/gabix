@@ -83,6 +83,7 @@ will be checked alongside the implementation they exercise.
   - [x] PIT: named control-word fields and corrected the mode description
 - [ ] x86 PCI and VirtIO drivers
   - [x] PCI bus-0 discovery, BAR fields and configuration access contract
+  - [x] VirtIO capability regions and MSI-X table/control parsing
 - [ ] x86 scheduling, process lifecycle, file operations, and network stack
 - [ ] Learning snippets and test helpers affected by the edits
 
@@ -599,3 +600,15 @@ a bit-by-bit description; the class-code lookup remains a readable value table.
 The existing x86 known-block QEMU test passes. It exercises the configured QEMU
 device topology, not every PCI BAR encoding or bridge topology. Field meanings
 were checked against [Linux PCI register definitions](https://raw.githubusercontent.com/torvalds/linux/master/include/uapi/linux/pci_regs.h).
+
+### x86 VirtIO capability transport
+
+Named region-relative offsets and MSI-X table size, BAR index, address offset,
+entry size and control fields in `src/drivers/virtio/transport.rs`. The capability
+result documents the unused notification multiplier read on other capability
+types. The parser still trusts capability lengths and list termination.
+Existing x86 QEMU disk-read and network-frame tests pass; malformed-device cases
+are outside those checks. Queue setup and device initialization remain open.
+
+References: [Linux PCI MSI-X fields](https://raw.githubusercontent.com/torvalds/linux/master/include/uapi/linux/pci_regs.h)
+and [VirtIO 1.2 section 4.1.4](https://docs.oasis-open.org/virtio/virtio/v1.2/virtio-v1.2.html).

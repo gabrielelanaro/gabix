@@ -1,17 +1,11 @@
-//! virtio device driver — Lesson 6: capability list parsing and device init.
+//! Modern PCI VirtIO block and network drivers.
 //!
-//! Lesson 6 step 6.1: walk the PCI capability list of the virtio-blk device,
-//! parse the virtio-specific vendor capabilities, and print each region's
-//! location (BAR, offset, length).
+//! transport parses PCI capabilities into register-region locations; queue
+//! manages shared descriptor rings; block and network submit device requests.
 //!
-//! The PCI capability list lives in the upper half of config space (offsets
-//! 0x40-0xFF). Each capability is a small header (cap_id, next_ptr, length)
-//! followed by capability-specific body. virtio uses vendor-specific caps
-//! (cap_id = 0x09) with a sub-header that points at a memory region inside
-//! one of the device's BARs.
-//!
-//! The list is walked by reading the "capabilities pointer" at offset 0x34
-//! in the standard config header, then following next_ptr until it's 0.
+//! PCI capabilities start with an ID and next pointer. VirtIO's vendor-specific
+//! capabilities also supply a length, region type, BAR index and region offset.
+//! The linked list starts at configuration offset 0x34 and ends at pointer zero.
 
 extern crate alloc;
 
