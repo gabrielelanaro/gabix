@@ -103,6 +103,7 @@ will be checked alongside the implementation they exercise.
   - [x] VFS inode cache, internal directory encoding and descriptor ownership
   - [x] x86 ext2 adapter storage units, pointer roles and read limits
   - [x] x86 ext2 serialized superblock, group, inode and directory field offsets
+  - [x] Network-device ownership, receive dispatch and ARP wait contracts
 - [ ] Learning snippets and test helpers affected by the edits
 
 ## First slice: Wi-Fi power-on
@@ -924,3 +925,24 @@ directory payloads, unchecked record boundaries/geometry, and low-word-only
 file sizes. No validation policy changed. The existing QEMU file-read test
 passes through these parsers on the supported image; malformed-image handling
 is not established by that test. The broader audit remains incomplete.
+
+### Network service and ARP waiting
+
+`src/net/device.rs` names the ARP iteration limit, unregistered task sentinel,
+broadcast addresses and diagnostic row width. Values and control flow remain
+unchanged. Comments trace task registration/enabling, device-lock ownership,
+receive dispatch, and the separate ARP request/wait phases.
+
+The review corrects overstatements: try_lock bounds acquisition only; callbacks
+can wait. The receive path may transmit replies through the VirtIO driver,
+which uses enable_and_hlt, so an outer without_interrupts closure does not prove
+the entire drain atomic. A rejected Ethernet frame can make poll_rx return None
+with other queued frames remaining. UDP acceptance permits omitted checksums.
+The service wrapper discards the driver's transmit success flag; Some(()) on
+IPv4 send is not delivery confirmation. ARP's 500 iterations count wake/check
+cycles, not elapsed milliseconds, and miss paths enable interrupts on return.
+
+The existing QEMU UDP echo test passes across receive dispatch, socket delivery,
+ARP and reply transmission. It does not prove concurrency safety under every
+wake/transmit ordering or precise timeout duration. These documented limitations
+were preserved; no new tests or runtime policies were introduced.

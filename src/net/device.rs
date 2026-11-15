@@ -11,6 +11,13 @@ use alloc::boxed::Box;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 const ETHERNET_MTU: usize = 1500;
+const HEX_DUMP_BYTES_PER_LINE: usize = 16;
+const UNREGISTERED_NET_TASK: u64 = u64::MAX;
+// Counts cache-check/halt iterations, not elapsed milliseconds. Any interrupt
+// can wake HLT, and task scheduling can delay the next iteration.
+const ARP_WAIT_ITERATIONS: u32 = 500;
+const IPV4_LIMITED_BROADCAST: [u8; 4] = [255; 4];
+const ETHERNET_BROADCAST: [u8; 6] = [0xff; 6];
 
 /// One Ethernet frame returned by the device-facing network API.
 pub struct Frame {
@@ -48,7 +55,7 @@ impl Frame {
         let mut offset = 0;
         while offset < n {
             crate::print!("[net]   {:02x}: ", offset);
-            let line_end = core::cmp::min(offset + 16, n);
+            let line_end = core::cmp::min(offset + HEX_DUMP_BYTES_PER_LINE, n);
             for byte in &self.payload[offset..line_end] {
                 crate::print!("{:02x} ", byte);
             }
@@ -88,7 +95,8 @@ impl Ipv4Packet {
     }
 }
 
-/// A checksum-verified UDP datagram with its IPv4 endpoints.
+/// A UDP datagram accepted by the shared parser, paired with IPv4 endpoints.
+/// IPv4 UDP permits a zero checksum, so acceptance may omit checksum verification.
 pub struct UdpPacket {
     pub ip_header: Ipv4Header,
     pub header: UdpHeader,
@@ -115,19 +123,16 @@ pub fn install_net_device(device: NetDevice) {
     );
 }
 
+/// Run f while holding the device's plain spinlock. The callback must not
+/// reacquire this lock. Contended acquisition needs a scheduling context in
+/// which the current owner can resume; this helper does not disable interrupts.
 pub fn with_net_device<R>(f: impl FnOnce(&mut NetDevice) -> R) -> Option<R> {
     NET_DEVICE.lock().as_mut().map(f)
 }
 
-/// Non-spinning variant of [`with_net_device`]: returns `None` if the
-/// device is currently owned by another task (a sender mid-transmit).
-///
-/// The network task uses this because it runs its drain with interrupts
-/// disabled (so the empty-check and the block are atomic). A spinning
-/// lock there would be fatal: the timer couldn't preempt the spin, the
-/// task holding the device would never get the CPU back, and the system
-/// would deadlock. Every lock acquisition that *can* spin must happen
-/// with interrupts enabled so the timer can always break the cycle.
+/// Try one lock acquisition and return None if busy or no device is installed.
+/// The callback runs with exclusive device access. Its own operations may wait;
+/// try_lock only bounds the acquisition step, not the callback's runtime.
 pub fn try_with_net_device<R>(f: impl FnOnce(&mut NetDevice) -> R) -> Option<R> {
     NET_DEVICE
         .try_lock()
@@ -137,16 +142,18 @@ pub fn try_with_net_device<R>(f: impl FnOnce(&mut NetDevice) -> R) -> Option<R> 
 /// PID of the deferred network task, registered at spawn time. The RX
 /// interrupt reads this to know which task to wake. `u64::MAX` means "no
 /// network task exists". The ISR handles that by skipping the wake.
-static NET_TASK_PID: AtomicU64 = AtomicU64::new(u64::MAX);
+static NET_TASK_PID: AtomicU64 = AtomicU64::new(UNREGISTERED_NET_TASK);
 static NET_TASK_ENABLED: AtomicBool = AtomicBool::new(false);
 
 pub fn register_net_task(pid: crate::process::Pid) {
     NET_TASK_PID.store(pid.0, Ordering::Release);
 }
 
+/// Enable wakeups for an already registered task. This does not spawn one;
+/// calling before registration leaves the service disabled.
 pub fn ensure_network_task() {
     let raw = NET_TASK_PID.load(Ordering::Acquire);
-    if raw != u64::MAX {
+    if raw != UNREGISTERED_NET_TASK {
         NET_TASK_ENABLED.store(true, Ordering::Release);
         crate::task::wake(crate::process::Pid(raw));
     }
@@ -157,40 +164,21 @@ pub fn net_task_pid() -> Option<crate::process::Pid> {
         return None;
     }
     let raw = NET_TASK_PID.load(Ordering::Acquire);
-    if raw == u64::MAX {
+    if raw == UNREGISTERED_NET_TASK {
         None
     } else {
         Some(crate::process::Pid(raw))
     }
 }
 
-/// Deferred network task — Lesson 29's replacement for `network_worker`.
+/// Deferred receive service. Try to acquire the device, process frames until
+/// poll_rx returns None, check TCP retransmission, then mark this task Blocked.
+/// Contention leaves it runnable so the next scheduling turn can retry.
 ///
-/// The old worker looped forever: poll the RX ring, yield, repeat. It
-/// burned a schedule slice on every pass even when no frames existed.
-/// It drains the RX ring until empty, marks itself Blocked, and sleeps.
-/// The RX interrupt can wake it directly; the timer also wakes it as a
-/// bounded-latency backstop while virtio-net MSI-X remains unreliable in
-/// the current QEMU machine configuration.
-///
-/// Two rules keep this race-free:
-///
-/// 1. The drain and the block run with interrupts disabled, so the RX
-///    ISR can't fire in between. A frame arriving mid-drain is seen by
-///    the drain loop. A frame arriving after the drain pends its MSI in
-///    the APIC; the interrupt fires as soon as interrupts re-enable, and
-///    `wake` finds the task already Blocked. No lost wakeup.
-///
-/// 2. The device lock is taken with `try_lock`, never the spinning
-///    `lock`. A spinning wait with interrupts disabled would deadlock:
-///    the timer couldn't preempt, and whoever holds the device (a task
-///    mid-`sendto`) would never run again. On contention the task stays
-///    awake and retries next schedule — sends are short, so the retry
-///    lands almost immediately.
-///
-/// This is Linux's NAPI shape: the hardirq handler (our ISR) only
-/// schedules the poll; the poll (this task) runs in a context where
-/// printing, locking, and transmitting are all safe.
+/// The RX handler and timer wake this task when enabled. The outer drain/block
+/// section disables interrupts, but dispatched replies can call transmit; a
+/// driver may enable interrupts while waiting. This outer section alone is
+/// therefore insufficient to prove the whole receive path atomic.
 pub unsafe extern "C" fn network_task() {
     println!("[net] deferred RX task started");
     loop {
@@ -223,10 +211,14 @@ impl NetDevice {
         self.inner.mac_address()
     }
 
+    /// Submit a frame through the driver. This wrapper currently discards the
+    /// driver's success flag; callers cannot infer delivery from its return.
     pub fn send_frame(&mut self, eth_frame: &[u8]) {
         self.inner.transmit(eth_frame);
     }
 
+    /// Copy one frame's payload, capped at ETHERNET_MTU. None represents an
+    /// empty driver queue or a frame rejected during header parsing.
     pub fn recv_frame(&mut self) -> Option<Frame> {
         let raw = self.inner.receive()?;
         let bytes = raw.bytes();
@@ -262,6 +254,9 @@ impl NetDevice {
         Some(frame)
     }
 
+    /// Receive and dispatch one frame. Dispatch can update caches, deliver
+    /// socket data and transmit replies. None can also mean a consumed invalid
+    /// Ethernet frame, so it does not prove the underlying queue is empty.
     pub fn poll_rx(&mut self) -> Option<NetRxEvent> {
         let frame = self.recv_frame()?;
         Some(self.dispatch_frame(&frame))
@@ -336,8 +331,8 @@ impl NetDevice {
     ///
     /// Used where no network task exists (boot, before `network_task` is
     /// spawned), so this function drains the RX ring itself after every
-    /// wakeup. The RX MSI-X interrupt — or the 100 Hz timer as a
-    /// backstop — ends each `hlt`. Syscall-driven TX paths use
+    /// wakeup. Each iteration dispatches at most one frame. The RX MSI-X
+    /// interrupt or timer can end each HLT; the iteration bound is not a deadline. Syscall-driven TX paths use
     /// [`resolve_arp_blocking`] instead, which never holds the device
     /// lock while sleeping.
     pub fn resolve_arp(&mut self, ip: [u8; 4]) -> Option<[u8; 6]> {
@@ -355,7 +350,7 @@ impl NetDevice {
         );
         self.send_arp_request(ip);
 
-        for _ in 0..500u32 {
+        for _ in 0..ARP_WAIT_ITERATIONS {
             crate::arch::interrupts::disable();
             // Dispatch whatever arrived, then re-check the cache. The
             // reply we need may already sit in the RX used ring.
@@ -378,6 +373,10 @@ impl NetDevice {
         None
     }
 
+    /// Build a fixed-header IPv4 frame after a cache-only next-hop lookup.
+    /// A missing neighbor triggers ARP and returns None without sending the
+    /// IP packet. Some(()) means the frame was handed to send_frame, which
+    /// currently discards the driver's transmit result.
     pub fn send_ipv4_packet(
         &mut self,
         protocol: u8,
@@ -391,7 +390,7 @@ impl NetDevice {
             ETHERNET_MTU - IPV4_HEADER_LEN
         );
 
-        let broadcast = dst_ip == [255; 4];
+        let broadcast = dst_ip == IPV4_LIMITED_BROADCAST;
         let next_hop_ip = next_hop_for(dst_ip);
         // ARP is resolved before this function is called, either at boot
         // (gateway entry) or by `resolve_arp_blocking` on the syscall
@@ -400,7 +399,7 @@ impl NetDevice {
         // On a miss, send an ARP request to prime the cache and drop the
         // packet — the caller's retry or the next packet gets through.
         let next_hop_mac = if broadcast {
-            [0xff; 6]
+            ETHERNET_BROADCAST
         } else if let Some(mac) = arp::lookup(next_hop_ip) {
             mac
         } else {
@@ -473,10 +472,10 @@ impl NetDevice {
     }
 
     /// Send one ARP request for `target_ip`. Public so the blocking
-    /// resolver can prime the cache without owning the device.
+    /// resolver can transmit under a short device lock before waiting outside it.
     pub fn send_arp_request(&mut self, target_ip: [u8; 4]) {
         let packet = ArpPacket::request(self.mac(), net::source_ip(), target_ip);
-        self.send_arp_packet([0xff; 6], packet);
+        self.send_arp_packet(ETHERNET_BROADCAST, packet);
     }
 
     fn send_arp_reply(&mut self, request: &ArpPacket) {
@@ -688,11 +687,12 @@ pub fn resolve_next_hop(dst_ip: [u8; 4]) -> Option<[u8; 6]> {
     resolve_arp_blocking(next_hop_for(dst_ip))
 }
 
-/// Blocking ARP resolve that never holds the NET_DEVICE lock while
-/// sleeping. Sends one request, then `hlt`-sleeps until the network task
-/// (woken by the RX interrupt) delivers the reply into the cache. The
-/// 100 Hz timer is the backstop that re-checks the cache at least every
-/// 10 ms even if an interrupt is somehow missed.
+/// Send one request, release NET_DEVICE, then recheck the ARP cache after
+/// interrupt wakeups. The enabled network task must receive the reply. The
+/// 100 Hz timer provides wakeups, but scheduling and other interrupts make
+/// ARP_WAIT_ITERATIONS an iteration limit rather than an elapsed-time deadline.
+/// A cache-miss path enables interrupts before returning; it does not restore
+/// the caller's previous interrupt state.
 fn resolve_arp_blocking(ip: [u8; 4]) -> Option<[u8; 6]> {
     if let Some(mac) = arp::lookup(ip) {
         return Some(mac);
@@ -704,7 +704,7 @@ fn resolve_arp_blocking(ip: [u8; 4]) -> Option<[u8; 6]> {
     );
     let _ = with_net_device(|device| device.send_arp_request(ip));
 
-    for _ in 0..500u32 {
+    for _ in 0..ARP_WAIT_ITERATIONS {
         crate::arch::interrupts::disable();
         if let Some(mac) = arp::lookup(ip) {
             crate::arch::interrupts::enable();

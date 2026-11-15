@@ -563,6 +563,11 @@ A milestone is a "demo-able" checkpoint. Worth a commit + tag + log entry.
 
 ## Progress Log
 
+### 2026-11-15 — Readability audit: network service and ARP waits
+- Named ARP iteration limit, task sentinel, broadcast addresses and dump width. Clarified device locking, receive side effects, task enabling and ARP request/wait sequencing.
+- Corrected atomicity/timing claims against the actual driver and decoder paths. Documented discarded transmit results, invalid-frame drain termination and optional UDP checksums.
+- Existing QEMU UDP echo test passes. Behavior is unchanged; remaining network/ARM and page-table review plus physical Pi validation stay open.
+
 ### 2026-11-15 — Readability audit: ext2 serialized fields
 - Named the remaining superblock, group-descriptor, inode and directory field offsets, block-pointer stride and permission mask. Parsing values and widths are unchanged.
 - Clarified validation limits and removed obsolete lesson-stage claims. Existing QEMU file-read test passes for the supported image.
