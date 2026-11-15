@@ -37,7 +37,8 @@ will be checked alongside the implementation they exercise.
   - [x] LAN9512 register transport, PHY access and SMSC frame headers
   - [x] Ethernet selection and QEMU RNDIS setup/frame fields
   - [x] USB transfer direction/retry API, DMA submission and polling contract
-  - [ ] USB controller initialization, cache/address handling and hubs
+  - [x] USB setup requests, hub-port enumeration, descriptor fields and control stages
+  - [ ] USB controller initialization and cache/address handling
 - [ ] Pi SD controller, mailbox, timer, reset, and hardware random generator
   - [x] Timer: source rates, interrupt routing/acknowledgement, rollover-safe uptime read
   - [x] Random generator: enable/warm-up, FIFO word count, whole-nonce timeout
@@ -311,3 +312,14 @@ transfers. The managed Wi-Fi release kernel also builds. QEMU does not exercise
 the physical adapter or the Pi cache path; physical validation remains pending
 while the Pi is disconnected. Initialization, hub descriptors and DMA address/
 cache explanations still need review.
+
+Enumeration follow-up names standard/class request types, descriptor selectors,
+hub-port features/status, address limits, buffer sizes and endpoint fields.
+Control helpers explain SETUP, DATA and STATUS stages. The parser comment
+records its existing endpoint-selection limits. Request bytes, delays and
+selection behavior are unchanged. Primary references: Linux USB
+[chapter 9 definitions](https://github.com/torvalds/linux/blob/master/include/uapi/linux/usb/ch9.h)
+and [chapter 11 hub definitions](https://github.com/torvalds/linux/blob/master/include/uapi/linux/usb/ch11.h).
+The existing Pi QEMU UDP echo regression passes and the managed Wi-Fi release
+kernel builds. That QEMU setup attaches USB Ethernet directly, so physical hub
+enumeration remains unverified by this run. No Pi writes or resets occurred.

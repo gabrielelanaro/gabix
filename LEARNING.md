@@ -563,6 +563,11 @@ A milestone is a "demo-able" checkpoint. Worth a commit + tag + log entry.
 
 ## Progress Log
 
+### 2026-11-15 — Readability audit: USB enumeration and control stages
+- Named setup request types/actions, hub-port features, descriptor selectors, endpoint fields and buffer limits. Added comments identifying SETUP/DATA/STATUS stages and the current descriptor parser's selection limits.
+- Existing Pi QEMU UDP echo passes; managed Wi-Fi release build passes. QEMU uses a directly attached Ethernet device, so the hub path still needs physical validation when the Pi returns.
+- Initialization and DMA cache/address handling remain open within the USB audit. Behavior and protocol bytes are preserved.
+
 ### 2026-11-15 — Readability audit: USB transfer API
 - Replaced internal direction/retry booleans with named enum choices. Named channel error flags, transfer attempt limit and remaining-byte field; explained DMA submission and the polling helper.
 - Existing Pi QEMU UDP echo regression passes, and the managed Wi-Fi release kernel builds. Transfer order and retry behavior are preserved. Physical checks await the disconnected Pi.
