@@ -563,6 +563,11 @@ A milestone is a "demo-able" checkpoint. Worth a commit + tag + log entry.
 
 ## Progress Log
 
+### 2026-11-15 — Readability audit: VFS cache and descriptors
+- Named internal directory-record widths and parser boundaries, reused ROOT_INO, and clarified file/socket handle ownership and cursor sharing.
+- Corrected stale claims about path lookup and cache hits. Documented cached-only writes, shared inode-number namespace and retained cache entries across mount replacement.
+- Existing QEMU file-read test passes. Serialized format and runtime behavior are unchanged. Remaining filesystem adapter/network/ARM review and physical Pi verification stay open.
+
 ### 2026-11-15 — Readability audit: process table and task creation
 - Corrected stale ownership and fork comments: monotonic PID slots, shared open objects, low-half copy versus shared mappings, per-child stack placement and startup interrupt state now follow the source.
 - Documented existing name-truncation, kernel-task child-list and boot-mapper visibility limitations. This slice changes comments only; it does not repair those behaviors.

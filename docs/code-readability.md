@@ -100,6 +100,7 @@ will be checked alongside the implementation they exercise.
   - [x] Socket ABI fields, protocol selection, configuration operations and polling contracts
   - [x] Scheduler state selection, block/wake and lifecycle helper contracts
   - [x] Task creation, fork layout and process-table resource contracts (known limitations below)
+  - [x] VFS inode cache, internal directory encoding and descriptor ownership
 - [ ] Learning snippets and test helpers affected by the edits
 
 ## First slice: Wi-Fi power-on
@@ -872,3 +873,22 @@ The existing fork-shared-file-cursor QEMU test passes, observing inherited
 file access and cursor sharing. This slice changes comments only; it adds no
 runtime checks and does not establish safety for arbitrary process names or
 all kernel-task spawn contexts.
+
+### VFS cache and descriptor ownership
+
+`src/fs/mod.rs` names the one-byte name length, eight-byte inode and combined
+fixed width of its internal directory records. The directory parser names
+entry/name/inode boundaries; the byte format and truncation behavior remain
+unchanged. Path resolution uses the existing ROOT_INO constant.
+
+Corrected historical comments about missing path lookup, future fork inheritance
+and access modes that File does not store. The source now describes shared
+open objects, separate descriptor slots, cache retention after close, read-only
+filesystem trait methods, and path traversal before the final cache lookup.
+Existing namespace limitations are explicit: in-memory and disk inode numbers
+share a registry, and replacing a mount leaves cached objects from the old one.
+
+The existing QEMU file-read test passes through path resolution, open and read.
+It does not test mount replacement or the standalone cached-directory decoder;
+the latter's renamed width expressions retain 1 + name length + 8 and the same
+field slices. No disk-write or cache-invalidation behavior changed.

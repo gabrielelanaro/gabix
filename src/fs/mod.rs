@@ -1,19 +1,12 @@
 //! Virtual File System layer for mini-os.
 //!
-//! Slice 4.4 (Lesson 2): the three core abstractions — Inode, File, FdTable —
-//! plus a hardcoded inode for end-to-end testing of `open`/`read`/`write`/
-//! `close` before path resolution lands in Lesson 3.
+//! Inode holds cached file contents or encoded directory entries. File adds
+//! an open cursor; separate opens have separate cursors. FdTable maps each
+//! process's descriptor numbers to shared open files or sockets.
 //!
-//! The split mirrors Lesson 1's vocabulary:
-//!   - Inode   = the file's identity (data + metadata). Has no name.
-//!   - File    = an open instance (cursor + access mode). Private per `open()`.
-//!   - FdTable = per-process table of FDs (integer keys to Files).
-//!
-//! `Arc<IrqMutex<...>>` patterns are required because (a) two `open()`s of the
-//! same inode share its data, (b) two FDs from `dup()` would share one File,
-//! and (c) we have no borrow checker across the kernel/user boundary — syscalls
-//! hand `Arc<File>` clones out so the scheduler and the syscall handler can
-//! both touch the same File without aliasing.
+//! Path lookup uses one mounted filesystem. The registry caches whole inode
+//! contents in RAM; writes through file syscalls update that cache only.
+//! Arc shares ownership, while IrqMutex serializes access to mutable data.
 
 pub mod ext2;
 
@@ -29,12 +22,8 @@ use core::sync::atomic::{AtomicU64, Ordering};
 // InodeKind — what kind of bytes an inode holds
 // ============================================================
 
-/// What kind of bytes an `Inode` holds.
-///
-/// Linux packs this into the upper bits of `i_mode` (the same field that
-/// holds permission bits) alongside six other kinds: symlink, block device,
-/// character device, named pipe, socket. We use a clean Rust enum — easier
-/// to pattern-match, easier to read. The enum grows as we add the others.
+/// The two inode kinds represented by this VFS. The ext2 adapter converts
+/// supported on-disk mode values to these variants.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InodeKind {
     /// A regular file. Bytes are the file's contents.
@@ -53,10 +42,9 @@ pub enum InodeKind {
 /// An inode has no name. Names are dentries' job — directory entries that
 /// map a name to an inode number, which is what `ino` is for.
 pub struct Inode {
-    /// Stable identifier for this inode. Stored in directory entries, returned
-    /// to userspace by `stat()`. Survives inode cache eviction in Linux's
-    /// design (and would survive reboot on a disk-backed filesystem). Allocated
-    /// monotonically from `NEXT_INO`.
+    /// Registry key. In-memory constructors allocate from NEXT_INO; mounted
+    /// files use their filesystem's inode numbers. These currently share one
+    /// namespace, so mixing the two sources can collide.
     pub ino: u64,
 
     /// File or directory. Tells the kernel how to interpret `data` — as file
@@ -111,12 +99,9 @@ impl Inode {
 // REGISTRY — global inode-number-to-inode map (the inode cache)
 // ============================================================
 
-/// The kernel's inode cache: maps inode numbers to live `Arc<Inode>` entries.
-///
-/// This is the mini-os analog of Linux's inode cache (historically an
-/// `inode_hashtable`, in modern kernels an xarray-indexed structure). When a
-/// directory entry's `ino` field is resolved during path walk, this is where
-/// the actual inode struct is fetched from.
+/// Cached inode objects, keyed only by inode number. Entries retain a strong
+/// Arc; there is no eviction or per-filesystem key. Replacing the mount does
+/// not clear this registry.
 lazy_static::lazy_static! {
     pub static ref REGISTRY: IrqMutex<BTreeMap<u64, Arc<Inode>>> =
         IrqMutex::new(BTreeMap::new());
@@ -138,9 +123,14 @@ lazy_static::lazy_static! {
 // by entry_size. Linux's `struct linux_dirent64` uses the same trick via its
 // `d_reclen` field.
 
+// Internal cached-directory encoding, separate from ext2's disk records.
+const DIRENT_NAME_LENGTH_BYTES: usize = 1;
+const DIRENT_INODE_BYTES: usize = core::mem::size_of::<u64>();
+const DIRENT_FIXED_BYTES: usize = DIRENT_NAME_LENGTH_BYTES + DIRENT_INODE_BYTES;
+
 /// Encode a single directory entry as `[name_len: u8][name: N bytes][ino: u64 LE]`.
 ///
-/// Names longer than 255 bytes panic — Linux's NAME_MAX is 255 anyway.
+/// Names longer than 255 bytes panic because the length occupies one byte.
 pub fn encode_dirent(name: &str, ino: u64) -> Vec<u8> {
     let name_bytes = name.as_bytes();
     assert!(
@@ -149,7 +139,7 @@ pub fn encode_dirent(name: &str, ino: u64) -> Vec<u8> {
         name_bytes.len(),
         u8::MAX
     );
-    let mut out = Vec::with_capacity(1 + name_bytes.len() + 8);
+    let mut out = Vec::with_capacity(DIRENT_FIXED_BYTES + name_bytes.len());
     out.push(name_bytes.len() as u8);
     out.extend_from_slice(name_bytes);
     out.extend_from_slice(&ino.to_le_bytes());
@@ -161,20 +151,23 @@ pub fn encode_dirent(name: &str, ino: u64) -> Vec<u8> {
 /// `dir_bytes` is truncated mid-entry.
 pub fn lookup_in_dir(dir_bytes: &[u8], name: &str) -> Option<u64> {
     let name_bytes = name.as_bytes();
-    let mut i = 0;
-    while i < dir_bytes.len() {
-        let name_len = dir_bytes[i] as usize;
-        let entry_size = 1 + name_len + 8;
-        if i + entry_size > dir_bytes.len() {
+    let mut entry_start = 0;
+    while entry_start < dir_bytes.len() {
+        let name_len = dir_bytes[entry_start] as usize;
+        let entry_size = DIRENT_FIXED_BYTES + name_len;
+        if entry_start + entry_size > dir_bytes.len() {
             return None; // truncated final entry — corrupted directory
         }
-        let entry_name = &dir_bytes[i + 1..i + 1 + name_len];
+        let name_start = entry_start + DIRENT_NAME_LENGTH_BYTES;
+        let entry_name = &dir_bytes[name_start..name_start + name_len];
         if entry_name == name_bytes {
-            let ino_start = i + 1 + name_len;
-            let ino_bytes: [u8; 8] = dir_bytes[ino_start..ino_start + 8].try_into().ok()?;
+            let ino_start = name_start + name_len;
+            let ino_end = ino_start + DIRENT_INODE_BYTES;
+            let ino_bytes: [u8; DIRENT_INODE_BYTES] =
+                dir_bytes[ino_start..ino_end].try_into().ok()?;
             return Some(u64::from_le_bytes(ino_bytes));
         }
-        i += entry_size;
+        entry_start += entry_size;
     }
     None
 }
@@ -202,17 +195,19 @@ pub fn lookup_in_dir(dir_bytes: &[u8], name: &str) -> Option<u64> {
 ///      call `read_file` and store the bytes. Insert into REGISTRY,
 ///      return.
 ///
-/// Subsequent calls for the same path hit the cache — no disk reads.
+/// Every call walks the mounted filesystem to resolve the inode number;
+/// only then is the registry checked. A hit avoids reloading the final inode's
+/// contents, but directory traversal can still read disk blocks.
 pub fn resolve_path(path: &str) -> Option<Arc<Inode>> {
     if !path.starts_with('/') {
         return None;
     }
 
-    // Clone the mounted filesystem handle, then release the registry lock
+    // Clone the mounted filesystem handle, then release the mount lock
     // before any disk operation that may sleep waiting for an interrupt.
     let fs = MOUNTED_FS.lock().as_ref()?.clone();
 
-    let mut current_ino: u64 = 2; // ext2 root, by convention
+    let mut current_ino = ROOT_INO;
 
     for component in path.split('/').filter(|c| !c.is_empty()) {
         // Current must be a directory.
@@ -259,8 +254,8 @@ pub fn resolve_path(path: &str) -> Option<Arc<Inode>> {
 /// shared inode.
 ///
 /// Two `open()` calls produce two distinct `File` instances pointing at the
-/// same `Inode` — independent cursors, shared data. `dup()` and `fork()`
-/// (Lesson 5+) will produce shared `File` instances — same cursor, same data.
+/// same Inode: independent cursors, shared data. Fork's clone_shallow copies
+/// Arc handles to the same File, so inherited descriptors share the cursor.
 pub struct File {
     /// The underlying inode. Shared across all `File` instances that opened
     /// this same file.
@@ -286,15 +281,10 @@ impl File {
 // FdTable — per-process table of file descriptors
 // ============================================================
 
-/// A per-process table mapping small integer FDs to `Arc<File>` entries.
-///
-/// Linux uses a more elaborate structure (bitmap + growable array) for sparse
-/// tables at scale. We use a flat `Vec`; simplicity wins for early mini-os
-/// where the typical process has fewer than 10 FDs open.
-///
-/// FD numbers always start at 0 and are reused on close. Conventions like
-/// "0=stdin, 1=stdout, 2=stderr" live at the syscall-handler level, not here
-/// — this table is purely an integer→File map.
+/// Per-process descriptor slots holding open files, UDP sockets or TCP sockets.
+/// Allocation scans for the lowest free slot, starting at zero. Closing makes
+/// that slot reusable; the vector retains its size. Standard-stream handling
+/// lives in the syscall layer, which treats writes to 1 and 2 as serial output.
 pub struct FdTable {
     table: Vec<Option<OpenObject>>,
 }
@@ -312,9 +302,9 @@ impl FdTable {
         Self { table: Vec::new() }
     }
 
-    /// Copy the table entries while sharing the same open `File`s.
-    /// Each cloned `Arc<File>` points at the same cursor and inode, which
-    /// is the behavior `fork` needs for inherited file descriptors.
+    /// Copy descriptor slots while sharing their open-file/socket objects.
+    /// Closing a slot affects this table; changing an object's cursor or socket
+    /// state is visible through every cloned handle to that object.
     pub fn clone_shallow(&self) -> Self {
         Self {
             table: self.table.clone(),
@@ -382,9 +372,9 @@ impl FdTable {
     /// Remove the entry for `fd`. Returns `true` if there was an entry to
     /// remove, `false` if `fd` was already free or out of range.
     ///
-    /// Dropping the `Arc<File>` here decrements its refcount; if this was the
-    /// last reference, the File (and its `Arc<Inode>`, if also last) gets
-    /// freed. This is how `close(fd)` releases kernel memory.
+    /// Drops this slot's Arc. The object is freed after its final owner drops
+    /// it. Cached inodes still have a registry owner; transport shutdown is
+    /// handled separately by the socket syscall path.
     pub fn close(&mut self, fd: u64) -> bool {
         if let Some(slot) = self.table.get_mut(fd as usize) {
             if slot.is_some() {
@@ -417,8 +407,9 @@ pub const ROOT_INO: u64 = 2;
 /// + `struct file_operations` (we collapse them into one for
 /// simplicity).
 ///
-/// Inode numbers (`u64`) are opaque to VFS — each filesystem
-/// assigns them per its own convention. ext2 uses 2 for root.
+/// The current VFS assumes ROOT_INO=2 and caches by inode number alone.
+/// Additional filesystem implementations must satisfy that root convention.
+/// This interface supplies reads and lookups; it has no disk-write operation.
 pub trait Filesystem {
     /// What kind of thing is inode N? Returns `None` if it doesn't exist.
     fn inode_kind(&self, ino: u64) -> Option<InodeKind>;
@@ -444,7 +435,8 @@ lazy_static::lazy_static! {
 }
 
 /// Install `fs` as the mounted filesystem. Subsequent `resolve_path`
-/// calls dispatch to it via the trait.
+/// calls dispatch to it via the trait. Existing registry entries are retained;
+/// switching to a different filesystem can therefore return stale cached inodes.
 pub fn mount(fs: Box<dyn Filesystem + Send + Sync>) {
     *MOUNTED_FS.lock() = Some(Arc::from(fs));
 }
