@@ -563,6 +563,11 @@ A milestone is a "demo-able" checkpoint. Worth a commit + tag + log entry.
 
 ## Progress Log
 
+### 2026-11-15 — Readability audit: TCP retransmission
+- Named RTT smoothing/variation weights, timeout/backoff factors and initial peer-window assumption. Explained sequence accounting, cumulative ACK removal, preparation-time timestamps and caller-owned transmission.
+- Existing QEMU TCP-loss test passes through retransmission and response. Arithmetic and behavior remain unchanged; formulas checked against RFC 6298.
+- TCP state/passive ownership and remaining ARM/page-table review stay open. Physical Pi checks remain pending.
+
 ### 2026-11-15 — Readability audit: TCP packet layout
 - Named TCP header ranges, Data Offset units, fixed window/MSS values and IPv4 checksum pseudo-header fields. Verified layout against RFC 9293; serialized values are unchanged.
 - Clarified the parser's option-skipping contract. Existing QEMU TCP echo test passes through handshake and data transfer.

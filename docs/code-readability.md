@@ -106,7 +106,8 @@ will be checked alongside the implementation they exercise.
   - [x] Network-device ownership, receive dispatch and ARP wait contracts
   - [x] UDP queue/waiter ownership, runtime ARP cache and network configuration
   - [x] TCP wire header, SYN MSS option and IPv4 checksum pseudo-header
-  - [ ] TCP state transitions, send/receive ownership and retransmission
+  - [x] TCP active-open send accounting, ACK removal and retransmission timing
+  - [ ] TCP state transitions and passive socket ownership
 - [ ] Learning snippets and test helpers affected by the edits
 
 ## First slice: Wi-Fi power-on
@@ -980,3 +981,21 @@ Existing QEMU TCP echo passes through SYN/ACK exchange and payload transfer.
 This covers the changed encoder/parser in the passive connection path; state
 transitions and retransmission logic remain a separate review. No protocol
 behavior or new tests were added.
+
+### TCP send accounting and retransmission timing
+
+`src/net/tcp.rs` names the integer RTT-estimator weights, variation multiplier,
+initial variance divisor, backoff multiplier and initial peer-window assumption.
+Segment buffers use the existing SYN header size. All arithmetic, rounding,
+bounds and packet sizes retain their values.
+
+Comments explain byte-based sequence accounting, cumulative ACK removal,
+partial-entry retention, the fixed send-window cap, and timestamping when
+outbound work is prepared. Retransmit polling updates queue state before the
+caller sends; it has no retry-count limit. Only the global active-open path
+uses this queue. Passive connection state review remains open.
+
+Formula reference: [RFC 6298 sections 2, 3 and 5](https://www.rfc-editor.org/rfc/rfc6298.html).
+The existing QEMU TCP-loss test passes with its external peer, verifying retry
+and response after loss. This confirms the tested path, not full RFC compliance
+or retransmission support for passive sockets. No new tests were introduced.
