@@ -48,11 +48,17 @@ pub fn readable(lba: u64) -> bool {
 pub fn apply(card: &mut SdCard, package_start: u64, bytes: u32) -> Option<u32> {
     let header = read(card, package_start)?;
     if &header[..package_field::MAGIC.len()] != package_field::MAGIC
-        || word(&header, package_field::VERSION_OFFSET) != package_field::VERSION {
+        || word(&header, package_field::VERSION_OFFSET) != package_field::VERSION
+    {
         return None;
     }
     let count = word(&header, package_field::COUNT_OFFSET);
-    if count == 0 || count > MAX_PACKAGE_RECORDS || bytes as u64 != (package_field::HEADER_SECTORS + package_field::RECORD_SECTORS * count as u64) * SECTOR_BYTES {
+    if count == 0
+        || count > MAX_PACKAGE_RECORDS
+        || bytes as u64
+            != (package_field::HEADER_SECTORS + package_field::RECORD_SECTORS * count as u64)
+                * SECTOR_BYTES
+    {
         return None;
     }
     if card.sector_count() < KERNEL_START + KERNEL_SECTORS {
@@ -138,9 +144,10 @@ fn allowed(
         return Some(PHASE_LOADER_DATA);
     }
     if lba == boot.directory_sector {
-        let size = word(new, boot.entry_offset + 28) as usize;
+        let size = word(new, boot.entry_offset + fat_field::FILE_SIZE) as usize;
         let mut expected = *old;
-        expected[boot.entry_offset + 28..boot.entry_offset + 32]
+        expected[boot.entry_offset + fat_field::FILE_SIZE
+            ..boot.entry_offset + fat_field::DIRECTORY_ENTRY_BYTES]
             .copy_from_slice(&(size as u32).to_le_bytes());
         if size == 0 || size > boot.count * 512 || *new != expected {
             return None;
@@ -160,7 +167,9 @@ fn package_record(
     let lba = u64::from_le_bytes(descriptor[package_field::LBA_BYTES].try_into().unwrap());
     let old = read(card, base + 1)?;
     let new = read(card, base + 2)?;
-    if crc32(&old) != word(&descriptor, package_field::OLD_CRC_OFFSET) || crc32(&new) != word(&descriptor, package_field::NEW_CRC_OFFSET) {
+    if crc32(&old) != word(&descriptor, package_field::OLD_CRC_OFFSET)
+        || crc32(&new) != word(&descriptor, package_field::NEW_CRC_OFFSET)
+    {
         return None;
     }
     Some((lba, old, new))
@@ -186,6 +195,30 @@ fn word(bytes: &[u8], offset: usize) -> u32 {
     u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap())
 }
 
+// FAT32 fields used by this fixed-card installer (Microsoft FAT specification).
+mod fat_field {
+    pub const BYTES_PER_SECTOR: core::ops::Range<usize> = 11..13;
+    pub const SECTORS_PER_CLUSTER: usize = 13;
+    pub const RESERVED_SECTORS: core::ops::Range<usize> = 14..16;
+    pub const FAT_COUNT: usize = 16;
+    pub const FAT_SECTORS: usize = 36;
+    pub const ROOT_CLUSTER: usize = 44;
+    pub const TYPE_LABEL: core::ops::Range<usize> = 82..90;
+    pub const DIRECTORY_ENTRY_BYTES: usize = 32;
+    pub const SHORT_NAME: core::ops::Range<usize> = 0..11;
+    pub const ATTRIBUTES: usize = 11;
+    pub const VOLUME_OR_DIRECTORY: u8 = 0x08 | 0x10;
+    pub const CLUSTER_HIGH: core::ops::Range<usize> = 20..22;
+    pub const CLUSTER_LOW: core::ops::Range<usize> = 26..28;
+    pub const FILE_SIZE: usize = 28;
+    pub const FIRST_DATA_CLUSTER: u32 = 2;
+    pub const ENTRY_BYTES: u64 = 4;
+    pub const CLUSTER_MASK: u32 = 0x0fffffff;
+    pub const END_OF_CHAIN: u32 = 0x0ffffff8;
+}
+const MAX_ROOT_DIRECTORY_CLUSTERS: usize = 64;
+
+// The sector list describes existing allocation, including space beyond file size.
 struct BootFile {
     directory_sector: u64,
     entry_offset: usize,
@@ -193,41 +226,52 @@ struct BootFile {
     count: usize,
 }
 impl BootFile {
+    // Locate the fixed 8.3 name using the first FAT. This checks selected fields;
+    // it does not derive FAT type from cluster count or validate the full BPB.
     fn read(card: &mut SdCard) -> Option<Self> {
         let boot = read(card, FAT_START)?;
-        if boot[11..13] != 512u16.to_le_bytes() || &boot[82..90] != b"FAT32   " {
+        if boot[fat_field::BYTES_PER_SECTOR] != 512u16.to_le_bytes()
+            || &boot[fat_field::TYPE_LABEL] != b"FAT32   "
+        {
             return None;
         }
-        let cluster_sectors = boot[13] as u64;
-        let reserved = u16::from_le_bytes(boot[14..16].try_into().unwrap()) as u64;
-        let fat_size = word(&boot, 36) as u64;
+        let cluster_sectors = boot[fat_field::SECTORS_PER_CLUSTER] as u64;
+        let reserved =
+            u16::from_le_bytes(boot[fat_field::RESERVED_SECTORS].try_into().unwrap()) as u64;
+        let fat_size = word(&boot, fat_field::FAT_SECTORS) as u64;
         if cluster_sectors == 0 || !cluster_sectors.is_power_of_two() || fat_size == 0 {
             return None;
         }
         let fat_start = FAT_START + reserved;
-        let data_start = fat_start + boot[16] as u64 * fat_size;
+        let data_start = fat_start + boot[fat_field::FAT_COUNT] as u64 * fat_size;
         let cluster_lba = |cluster: u32| -> Option<u64> {
-            if cluster < 2 {
+            if cluster < fat_field::FIRST_DATA_CLUSTER {
                 return None;
             }
-            let start = data_start + (cluster as u64 - 2) * cluster_sectors;
+            let start = data_start
+                + (cluster as u64 - fat_field::FIRST_DATA_CLUSTER as u64) * cluster_sectors;
             (start + cluster_sectors <= FAT_START + FAT_SECTORS).then_some(start)
         };
-        let mut root = word(&boot, 44);
+        let mut root = word(&boot, fat_field::ROOT_CLUSTER);
         let mut found = None;
-        'directory: for _ in 0..64 {
+        'directory: for _ in 0..MAX_ROOT_DIRECTORY_CLUSTERS {
             let start = cluster_lba(root)?;
             for sector in start..start + cluster_sectors {
                 let entries = read(card, sector)?;
-                for offset in (0..512).step_by(32) {
-                    let entry = &entries[offset..offset + 32];
+                for offset in (0..SECTOR_BYTES as usize).step_by(fat_field::DIRECTORY_ENTRY_BYTES) {
+                    let entry = &entries[offset..offset + fat_field::DIRECTORY_ENTRY_BYTES];
                     if entry[0] == 0 {
                         return None;
                     }
-                    if &entry[..11] == b"KERNEL7 IMG" && entry[11] & 0x18 == 0 {
-                        let cluster =
-                            ((u16::from_le_bytes(entry[20..22].try_into().unwrap()) as u32) << 16)
-                                | u16::from_le_bytes(entry[26..28].try_into().unwrap()) as u32;
+                    if &entry[fat_field::SHORT_NAME] == b"KERNEL7 IMG"
+                        && entry[fat_field::ATTRIBUTES] & fat_field::VOLUME_OR_DIRECTORY == 0
+                    {
+                        let cluster = ((u16::from_le_bytes(
+                            entry[fat_field::CLUSTER_HIGH].try_into().unwrap(),
+                        ) as u32)
+                            << 16)
+                            | u16::from_le_bytes(entry[fat_field::CLUSTER_LOW].try_into().unwrap())
+                                as u32;
                         found = Some((sector, offset, cluster));
                         break 'directory;
                     }
@@ -242,6 +286,9 @@ impl BootFile {
             sectors: [0; MAX_LOADER_SECTORS],
             count: 0,
         };
+        // Keep at most the loader-size cap, even if the chain continues. Repeated
+        // data sectors and the selected directory sector are rejected; other
+        // files' allocations are not checked for cross-links.
         while result.count < MAX_LOADER_SECTORS {
             let start = cluster_lba(cluster)?;
             for sector in start..start + cluster_sectors {
@@ -255,7 +302,7 @@ impl BootFile {
                 result.count += 1;
             }
             let next = next_cluster(card, fat_start, fat_size, cluster)?;
-            if next >= 0x0ffffff8 {
+            if next >= fat_field::END_OF_CHAIN {
                 break;
             }
             cluster = next;
@@ -263,15 +310,17 @@ impl BootFile {
         Some(result)
     }
 }
+// Bounds the entry within the first FAT and returns its low 28 bits. Free,
+// reserved and bad-cluster values are passed back for the caller to encounter.
 fn next_cluster(card: &mut SdCard, fat_start: u64, fat_size: u64, cluster: u32) -> Option<u32> {
-    let offset = cluster as u64 * 4;
-    if offset / 512 >= fat_size {
+    let offset = cluster as u64 * fat_field::ENTRY_BYTES;
+    if offset / SECTOR_BYTES >= fat_size {
         return None;
     }
     Some(
         word(
-            &read(card, fat_start + offset / 512)?,
-            (offset % 512) as usize,
-        ) & 0x0fffffff,
+            &read(card, fat_start + offset / SECTOR_BYTES)?,
+            (offset % SECTOR_BYTES) as usize,
+        ) & fat_field::CLUSTER_MASK,
     )
 }

@@ -73,6 +73,7 @@ will be checked alongside the implementation they exercise.
   - [x] Loader SD selection, streaming read and UART recovery contracts
   - [x] Loader startup GPIO/UART fields and inherited CPU-state contract
   - [x] Installer package fields, fixed kernel extents and ordered write phases
+  - [x] Installer FAT32 field layout and loader-chain limits
 - [ ] ARM VirtIO adapters and hardware probes
   - [x] QEMU VirtIO network: queue roles, feature words, packet metadata and buffer reuse
   - [x] QEMU VirtIO block: feature negotiation, descriptor roles, memory ordering and polling contract
@@ -1244,3 +1245,22 @@ The managed kernel build passes. No installation package was applied and no
 physical SD writes were made. FAT/MBR parsing and the remaining installer bounds
 review are still open; these names alone do not establish safe arbitrary-input
 installation or power-loss recovery.
+
+### Installer FAT32 lookup
+
+`sd_install.rs::fat_field` names the boot-sector geometry, root cluster,
+directory-entry fields, attribute bits and FAT chain encoding. The directory
+size update uses the same named file-size offset. Sector arithmetic retains its
+values. Reference: [Microsoft FAT specification, boot sector and directory structures](https://www.scs.stanford.edu/~zyedidia/docs/_other/fat32.pdf).
+
+Comments explain that the fixed-name search uses the first FAT and selected BPB
+checks, without deriving FAT type from cluster count or fully validating geometry.
+The collected allocation can extend beyond the current file size and stops at
+the loader sector cap even when the chain continues. Duplicate collected sectors
+and the chosen directory sector are rejected; cross-links with other files are
+not examined. Root scanning is bounded to 64 clusters. FAT entry reads mask the
+high four bits and pass free/reserved/bad values back to the caller.
+
+The managed kernel build passes. No package was applied; this source/compile
+check does not test malformed FAT layouts or physical writes. MBR identity and
+remaining installer bounds review remain open, along with physical Pi validation.
