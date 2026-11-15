@@ -92,3 +92,9 @@ panic = "abort"
 
 [profile.release]
 panic = "abort"
+
+[[bin]]
+name = "pi2-sd-check"
+path = "tests/sd_write.rs"
+test = false
+bench = false

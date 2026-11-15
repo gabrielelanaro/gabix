@@ -7,9 +7,10 @@ if [ "$#" -ne 1 ] ||
         [ "$1" != "raspi2b-hardware" ] && [ "$1" != "raspi2b-lifecycle" ] &&
         [ "$1" != "raspi2b-uart-user" ] && [ "$1" != "pi2-loader" ] &&
         [ "$1" != "pi2-dev" ] && [ "$1" != "pi2-network-dev" ] &&
+        [ "$1" != "pi2-sd-check" ] &&
         [ "$1" != "pi2-network-pre-timer-probe" ] &&
         [ "$1" != "pi2-network-no-irq-dev" ]; }; then
-    echo "usage: $0 <virt|raspi2b|raspi2b-hardware|raspi2b-lifecycle|raspi2b-uart-user|pi2-loader|pi2-dev|pi2-network-dev|pi2-network-pre-timer-probe|pi2-network-no-irq-dev>" >&2
+    echo "usage: $0 <pi2-sd-check|virt|raspi2b|raspi2b-hardware|raspi2b-lifecycle|raspi2b-uart-user|pi2-loader|pi2-dev|pi2-network-dev|pi2-network-pre-timer-probe|pi2-network-no-irq-dev>" >&2
     exit 2
 fi
 
@@ -55,6 +56,12 @@ case "$platform" in
         feature=
         binary=pi2-loader
         image_name=kernel-pi2-loader.img
+        ;;
+    pi2-sd-check)
+        kernel_base=0x00100000
+        feature=pi-hardware
+        binary=pi2-sd-check
+        image_name=kernel-pi2-sd-check.img
         ;;
     pi2-dev)
         kernel_base=0x00100000

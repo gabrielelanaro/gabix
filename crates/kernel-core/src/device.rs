@@ -3,6 +3,23 @@ pub trait BlockDevice: Send {
     fn read_sector(&mut self, sector: u64) -> [u8; 512];
 }
 
+/// Errors reported by a writable block device. Status words retain the driver's
+/// diagnostic information; callers must treat any error as an incomplete write.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BlockError {
+    AddressOutOfRange,
+    Timeout,
+    Controller(u32),
+    Card(u32),
+}
+
+/// Optional write capability. Read-only devices can implement BlockDevice alone.
+/// Success means the device completed this sector write. It does not promise
+/// an atomic update across power loss; update protocols must provide recovery.
+pub trait WritableBlockDevice: BlockDevice {
+    fn write_sector(&mut self, sector: u64, data: &[u8; 512]) -> Result<(), BlockError>;
+}
+
 pub const MAX_ETHERNET_FRAME_LEN: usize = 1514;
 
 /// One complete Ethernet frame copied out of device-owned memory.
