@@ -66,7 +66,8 @@ will be checked alongside the implementation they exercise.
   - [x] Ethernet, ARP, IPv4, ICMP, UDP, and checksum helpers: wire layouts, abbreviations, meaningful field values, and split-buffer checksum explanation
   - [x] DHCP options/header fields and ARM lease retry policy; stack dispatch contracts
   - [x] Beacon/association information elements, capability/rate encoding and EAPOL framing
-  - [ ] Remaining CCMP/WPA2 fields
+  - [x] CCMP headers, key/traffic IDs and replay-counter commit order
+  - [ ] Remaining WPA2 fields
 - [ ] Shared ELF, partitions, ext2, memory, loader protocol, and boot records
   - [x] Boot record: field layout, copy-selection state, persistence ownership and MBR bounds
   - [x] UART upload decoder: header fields, incremental storage events, checksum and timeout ownership
@@ -507,3 +508,18 @@ CCMP replay rejection). An ignored host comparison loads the actual old/new
 modules and checks authentication, association and EAPOL builders across 6,288
 buffer/SSID/capability/sequence/payload combinations. Return values and bytes
 match. Managed Wi-Fi release build passes; physical association remains pending.
+
+## CCMP frame handling
+
+Named header/MIC sizes, packet-number width, key IDs, traffic IDs, QoS/fragment
+flags and LLC/SNAP fields. Receive variables describe header bytes, packet number
+and last accepted number. Comments explain per-key/per-traffic replay state and
+its update after successful parsing/copy. Hardware crypto remains the caller's
+precondition. References: Linux [CCMP handling](https://github.com/torvalds/linux/blob/master/net/mac80211/wpa.c)
+header/packet-number conversion and the IEEE 802.11 definitions linked above.
+
+Both existing Wi-Fi frame tests pass, including replay rejection and rejection
+of aggregated QoS payloads without consuming the next packet number. An ignored
+comparison of actual old/new CCMP transmit methods passes 13,130 cases across
+buffer/frame lengths and consecutive calls, with equal results and bytes.
+Managed Wi-Fi release build passes; physical encrypted traffic remains pending.

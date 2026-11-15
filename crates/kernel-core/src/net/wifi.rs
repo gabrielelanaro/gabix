@@ -238,6 +238,32 @@ pub fn eapol_reply<'a>(frame: &'a [u8], station: [u8; 6], ap: [u8; 6]) -> Option
     Some(&frame[EAPOL_PAYLOAD_OFFSET..])
 }
 
+const CCMP_HEADER_BYTES: usize = 8;
+const CCMP_MIC_BYTES: usize = 8;
+const PACKET_NUMBER_BYTES: usize = 6;
+const MAX_PACKET_NUMBER: u64 = 0xffff_ffff_ffff;
+const GROUP_KEY_COUNT: usize = 4;
+const TRAFFIC_ID_COUNT: usize = 16;
+const MAX_GROUP_KEY_ID: u8 = 3;
+const PAIRWISE_KEY_ID: usize = 0;
+const CCMP_EXTENDED_IV: u8 = 1 << 5;
+const CCMP_RESERVED_AND_EXTENDED_MASK: u8 = 0x3f;
+const KEY_ID_SHIFT: u32 = 6;
+const QOS_DATA: u8 = 0x88;
+const QOS_CONTROL_BYTES: usize = 2;
+const QOS_AGGREGATED_MSDU: u8 = 1 << 7;
+const TRAFFIC_ID_MASK: u8 = 0x0f;
+const MORE_FRAGMENTS: u8 = 1 << 2;
+const ORDER_FLAG: u8 = 1 << 7;
+const FRAGMENT_NUMBER_MASK: u8 = 0x0f;
+const SEQUENCE_NUMBER_MASK: u16 = 0x0fff;
+const ETHERNET_HEADER_BYTES: usize = 14;
+const LLC_SNAP_PREFIX: [u8; 6] = [0xaa, 0xaa, 3, 0, 0, 0];
+const LLC_SNAP_HEADER_BYTES: usize = LLC_SNAP_PREFIX.len() + 2; // EtherType.
+const CCMP_PAYLOAD_OFFSET: usize = MANAGEMENT_HEADER_BYTES + CCMP_HEADER_BYTES;
+const DATA_PAYLOAD_OFFSET: usize = CCMP_PAYLOAD_OFFSET + LLC_SNAP_HEADER_BYTES;
+const MIN_CCMP_FRAME_BYTES: usize = DATA_PAYLOAD_OFFSET + CCMP_MIC_BYTES;
+
 /// Ethernet encapsulation for an associated CCMP station. The adapter performs
 /// AES encryption/decryption; this object owns packet numbers and rejects replay.
 pub struct CcmpLink {
@@ -245,9 +271,9 @@ pub struct CcmpLink {
     ap: [u8; 6],
     sequence: u16,
     transmit_number: u64,
-    pairwise_receive: [u64; 16],
-    group_receive: [[u64; 16]; 4],
-    group_installed: [bool; 4],
+    pairwise_receive: [u64; TRAFFIC_ID_COUNT],
+    group_receive: [[u64; TRAFFIC_ID_COUNT]; GROUP_KEY_COUNT],
+    group_installed: [bool; GROUP_KEY_COUNT],
 }
 impl CcmpLink {
     pub fn new(
@@ -256,7 +282,7 @@ impl CcmpLink {
         group_id: u8,
         group_counter: [u8; 8],
     ) -> Option<Self> {
-        if group_id > 3 {
+        if group_id > MAX_GROUP_KEY_ID {
             return None;
         }
         let mut link = Self {
@@ -264,9 +290,9 @@ impl CcmpLink {
             ap,
             sequence: 0,
             transmit_number: 0,
-            pairwise_receive: [0; 16],
-            group_receive: [[0; 16]; 4],
-            group_installed: [false; 4],
+            pairwise_receive: [0; TRAFFIC_ID_COUNT],
+            group_receive: [[0; TRAFFIC_ID_COUNT]; GROUP_KEY_COUNT],
+            group_installed: [false; GROUP_KEY_COUNT],
         };
         link.install_group(group_id, group_counter)?;
         Some(link)
@@ -274,7 +300,7 @@ impl CcmpLink {
 
     /// Call only for a newly authenticated GTK, never for its retransmission.
     pub fn install_group(&mut self, group_id: u8, counter: [u8; 8]) -> Option<()> {
-        if group_id > 3 || counter[6..] != [0, 0] {
+        if group_id > MAX_GROUP_KEY_ID || counter[PACKET_NUMBER_BYTES..] != [0, 0] {
             return None;
         }
         self.group_installed[group_id as usize] = true;
@@ -283,82 +309,118 @@ impl CcmpLink {
     }
 
     pub fn transmit(&mut self, ethernet: &[u8], out: &mut [u8]) -> Option<usize> {
-        if ethernet.len() < 14
+        if ethernet.len() < ETHERNET_HEADER_BYTES
             || ethernet[6..12] != self.station
-            || self.transmit_number == 0xffffffffffff
+            || self.transmit_number == MAX_PACKET_NUMBER
         {
             return None;
         }
-        let length = 40 + ethernet.len() - 14;
+        let length = DATA_PAYLOAD_OFFSET + ethernet.len() - ETHERNET_HEADER_BYTES;
         let frame = out.get_mut(..length)?;
         management_header(frame, DATA, self.station, self.ap, self.sequence);
-        self.sequence = self.sequence.wrapping_add(1) & 0xfff;
-        frame[1] = 0x41; // To DS, protected by CCMP.
-        frame[16..22].copy_from_slice(&ethernet[..6]);
+        self.sequence = self.sequence.wrapping_add(1) & SEQUENCE_NUMBER_MASK;
+        frame[1] = TO_DISTRIBUTION_SYSTEM | PROTECTED_FRAME;
+        frame[ADDRESS_3].copy_from_slice(&ethernet[..6]);
         self.transmit_number += 1;
+        // The six-byte packet number skips the reserved and key-ID bytes
+        // in the CCMP header. Hardware adds the MIC while encrypting.
         let pn = self.transmit_number.to_le_bytes();
-        frame[24..32].copy_from_slice(&[pn[0], pn[1], 0, 0x20, pn[2], pn[3], pn[4], pn[5]]);
-        frame[32..38].copy_from_slice(&[0xaa, 0xaa, 3, 0, 0, 0]);
-        frame[38..40].copy_from_slice(&ethernet[12..14]);
-        frame[40..].copy_from_slice(&ethernet[14..]);
+        frame[MANAGEMENT_HEADER_BYTES..CCMP_PAYLOAD_OFFSET].copy_from_slice(&[
+            pn[0],
+            pn[1],
+            0,
+            CCMP_EXTENDED_IV,
+            pn[2],
+            pn[3],
+            pn[4],
+            pn[5],
+        ]);
+        frame[CCMP_PAYLOAD_OFFSET..CCMP_PAYLOAD_OFFSET + LLC_SNAP_PREFIX.len()]
+            .copy_from_slice(&LLC_SNAP_PREFIX);
+        frame[CCMP_PAYLOAD_OFFSET + LLC_SNAP_PREFIX.len()..DATA_PAYLOAD_OFFSET]
+            .copy_from_slice(&ethernet[12..14]);
+        frame[DATA_PAYLOAD_OFFSET..].copy_from_slice(&ethernet[ETHERNET_HEADER_BYTES..]);
         Some(length)
     }
 
     /// Call only after the adapter reports successful CCMP decryption and MIC
     /// verification. The hardware retains the 8-byte CCMP header and MIC.
     pub fn receive(&mut self, frame: &[u8], out: &mut [u8]) -> Option<usize> {
-        if frame.len() < 48
-            || !matches!(frame[0], 0x08 | 0x88)
-            || frame[1] & 0xc7 != 0x42
-            || frame[10..16] != self.ap
-            || frame[22] & 15 != 0
+        if frame.len() < MIN_CCMP_FRAME_BYTES
+            || !matches!(frame[0], DATA | QOS_DATA)
+            || frame[1]
+                & (ORDER_FLAG | PROTECTED_FRAME | MORE_FRAGMENTS | DISTRIBUTION_DIRECTION_MASK)
+                != (PROTECTED_FRAME | FROM_DISTRIBUTION_SYSTEM)
+            || frame[ADDRESS_2] != self.ap
+            || frame[22] & FRAGMENT_NUMBER_MASK != 0
         {
             return None;
         }
         let group = frame[4] & 1 != 0;
-        if !group && frame[4..10] != self.station {
+        if !group && frame[ADDRESS_1] != self.station {
             return None;
         }
-        let (header, tid) = if frame[0] == 0x88 {
+        let (header_bytes, traffic_id) = if frame[0] == QOS_DATA {
             // A-MSDU carries multiple Ethernet frames and needs its own parser.
-            if frame[24] & 0x80 != 0 {
+            if frame[MANAGEMENT_HEADER_BYTES] & QOS_AGGREGATED_MSDU != 0 {
                 return None;
             }
-            (26, (frame[24] & 15) as usize)
+            (
+                MANAGEMENT_HEADER_BYTES + QOS_CONTROL_BYTES,
+                (frame[MANAGEMENT_HEADER_BYTES] & TRAFFIC_ID_MASK) as usize,
+            )
         } else {
-            (24, 0)
+            (MANAGEMENT_HEADER_BYTES, 0)
         };
-        let iv = frame.get(header..header + 8)?;
-        if iv[2] != 0 || iv[3] & 0x3f != 0x20 {
+        let ccmp_header = frame.get(header_bytes..header_bytes + CCMP_HEADER_BYTES)?;
+        if ccmp_header[2] != 0
+            || ccmp_header[3] & CCMP_RESERVED_AND_EXTENDED_MASK != CCMP_EXTENDED_IV
+        {
             return None;
         }
-        let key_id = (iv[3] >> 6) as usize;
-        let counter = u64::from_le_bytes([iv[0], iv[1], iv[4], iv[5], iv[6], iv[7], 0, 0]);
-        let previous = if group {
+        let key_id = (ccmp_header[3] >> KEY_ID_SHIFT) as usize;
+        let packet_number = u64::from_le_bytes([
+            ccmp_header[0],
+            ccmp_header[1],
+            ccmp_header[4],
+            ccmp_header[5],
+            ccmp_header[6],
+            ccmp_header[7],
+            0,
+            0,
+        ]);
+        // Each traffic ID has an independent replay counter. Group traffic
+        // also selects one of the installed group-key counters.
+        let last_accepted_number = if group {
             if !self.group_installed[key_id] {
                 return None;
             }
-            &mut self.group_receive[key_id][tid]
+            &mut self.group_receive[key_id][traffic_id]
         } else {
-            if key_id != 0 {
+            if key_id != PAIRWISE_KEY_ID {
                 return None;
             }
-            &mut self.pairwise_receive[tid]
+            &mut self.pairwise_receive[traffic_id]
         };
-        if counter <= *previous {
+        if packet_number <= *last_accepted_number {
             return None;
         }
-        let payload = frame.get(header + 8..frame.len().checked_sub(8)?)?;
-        if payload.len() < 8 || payload[..6] != [0xaa, 0xaa, 3, 0, 0, 0] {
+        let payload = frame
+            .get(header_bytes + CCMP_HEADER_BYTES..frame.len().checked_sub(CCMP_MIC_BYTES)?)?;
+        if payload.len() < LLC_SNAP_HEADER_BYTES
+            || payload[..LLC_SNAP_PREFIX.len()] != LLC_SNAP_PREFIX
+        {
             return None;
         }
-        let length = 14 + payload.len() - 8;
+        let length = ETHERNET_HEADER_BYTES + payload.len() - LLC_SNAP_HEADER_BYTES;
         let ethernet = out.get_mut(..length)?;
-        ethernet[..6].copy_from_slice(&frame[4..10]);
-        ethernet[6..12].copy_from_slice(&frame[16..22]);
-        ethernet[12..14].copy_from_slice(&payload[6..8]);
-        ethernet[14..].copy_from_slice(&payload[8..]);
-        *previous = counter;
+        ethernet[..6].copy_from_slice(&frame[ADDRESS_1]);
+        ethernet[6..12].copy_from_slice(&frame[ADDRESS_3]);
+        ethernet[12..14].copy_from_slice(&payload[LLC_SNAP_PREFIX.len()..LLC_SNAP_HEADER_BYTES]);
+        ethernet[ETHERNET_HEADER_BYTES..].copy_from_slice(&payload[LLC_SNAP_HEADER_BYTES..]);
+        // Commit only after parsing and copying succeed; rejected frames
+        // must not advance the replay counter.
+        *last_accepted_number = packet_number;
         Some(length)
     }
 }

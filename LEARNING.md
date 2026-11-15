@@ -563,6 +563,11 @@ A milestone is a "demo-able" checkpoint. Worth a commit + tag + log entry.
 
 ## Progress Log
 
+### 2026-11-15 — Readability audit: CCMP frame handling
+- Named encrypted-frame lengths, packet-number/key-ID fields, QoS/fragment flags and replay-counter dimensions. Explained the adapter's crypto role and the point where a received packet number becomes accepted state.
+- Both existing Wi-Fi frame tests pass, including replay and rejected-aggregate checks. An ignored old/new transmit comparison passes 13,130 buffer/frame/state cases. Managed Wi-Fi release build passes.
+- WPA2 handshake fields and the broader architecture audit remain open. Physical encrypted traffic validation remains pending.
+
 ### 2026-11-15 — Readability audit: Wi-Fi management frames
 - Named shared address ranges, information-element IDs, capability bits, rate arrays, authentication payloads and EAPOL encapsulation. Explained rate units, RSN suite contents and sequence/fragment packing. Station management handling uses the shared address names.
 - Both existing Wi-Fi frame tests pass. An ignored old/new builder comparison passes 6,288 cases covering buffer limits, SSID lengths, capabilities, sequences and EAPOL sizes; output bytes and results match. Managed Wi-Fi release build passes.
