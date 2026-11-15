@@ -37,6 +37,7 @@ will be checked alongside the implementation they exercise.
   - [x] I/Q calibration result fields, consistency policy and correction selection; reference table contract
   - [x] Factory identity/eFuse decoding and read-completion polling
   - [x] Packet RAM page links, queue reservations, boundaries and page sizes
+  - [x] Indirect RF register transport and 20 MHz channel selection
   - [ ] Remaining radio initialization and shared frame/security fields
 - [ ] Pi USB controller, hub enumeration, Ethernet, and RNDIS
   - [x] LAN9512 register transport, PHY access and SMSC frame headers
@@ -430,3 +431,19 @@ old/new initialization methods with a recording transport. One/two/three OUT
 endpoints combined with idle/stuck-busy replies gave six identical results and
 traces, including the complete 256-page list setup and bounded timeout path.
 Actual adapter page handling still requires physical validation.
+
+## Indirect radio access and channel selection
+
+Named the baseband register addresses that carry RF commands, their address/data
+fields and read-edge bit, interface-dependent readback registers and delays.
+Channel selection names its supported range and MAC/baseband/RF bandwidth fields;
+the existing low-twelve-bit RF mask and ordering are preserved. References:
+OpenBSD [rtwn.c](https://github.com/openbsd/src/blob/master/sys/dev/ic/rtwn.c)
+RF read/write and channel setup, plus [r92creg.h](https://github.com/openbsd/src/blob/master/sys/dev/ic/r92creg.h)
+HSSI/LSSI, BWOPMODE, RFMOD, ANAPARAM2 and RF_CHNLBW fields.
+
+Managed Wi-Fi release build passes. A temporary recording-transport harness
+compiled the actual old/new methods and compared all 256 register inputs and
+channels 0..14 with three register-value patterns (including both readback modes).
+All 813 result/trace comparisons pass. It does not model RF timing or radio
+behavior; physical checks remain pending.

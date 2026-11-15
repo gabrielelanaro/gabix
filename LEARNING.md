@@ -563,6 +563,11 @@ A milestone is a "demo-able" checkpoint. Worth a commit + tag + log entry.
 
 ## Progress Log
 
+### 2026-11-15 — Readability audit: radio access and channels
+- Named indirect radio address/data fields, read-edge sequence, reply-register selection and settling delays. Explained coordinated 20 MHz channel settings across MAC/baseband/RF.
+- Managed Wi-Fi release build passes. An ignored host harness compared actual old/new radio-read/write and channel-selection methods across 813 synthetic cases; return values and register traces match.
+- Physical radio validation remains pending while the Pi is disconnected. Receiver bring-up and remaining shared protocol review are still open.
+
 ### 2026-11-15 — Readability audit: Wi-Fi packet RAM
 - Named linked-list commands, page indices, queue reservations/mapping, FIFO byte boundaries and page-size fields. Explained the separate roles of the end-of-list marker and page index 255.
 - Managed Wi-Fi release build passes. An ignored host harness compared old/new setup traces for one/two/three OUT endpoints and clear/stuck-busy responses; all six results and traces match, including the full 256-page setup.

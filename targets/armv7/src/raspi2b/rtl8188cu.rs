@@ -172,6 +172,40 @@ mod fw {
     pub const MAILBOX_POLL_US: u32 = 10;
 }
 
+// Chain-A radio registers are accessed indirectly through baseband registers.
+// USB addresses the baseband register; its value selects the RF register/data.
+mod radio_access {
+    pub const WRITE_COMMAND: u16 = 0x0840; // LSSI_PARAM(0)
+    pub const WRITE_ADDRESS_SHIFT: u32 = 20;
+    pub const VALUE_MASK: u32 = 0x000f_ffff;
+    pub const READ_COMMAND: u16 = 0x0824; // HSSI_PARAM2(0)
+    pub const READ_ADDRESS_MASK: u32 = 0x7f80_0000;
+    pub const READ_ADDRESS_SHIFT: u32 = 23;
+    pub const READ_EDGE: u32 = 1 << 31;
+    pub const INTERFACE_MODE: u16 = 0x0820; // HSSI_PARAM1(0)
+    pub const PI_MODE: u32 = 1 << 8;
+    pub const PI_READBACK: u16 = 0x08b8;
+    pub const SERIAL_READBACK: u16 = 0x08a0;
+    pub const WRITE_SETTLE_US: u32 = 1;
+    pub const READ_STEP_SETTLE_US: u32 = 1000;
+}
+
+mod channel_config {
+    pub const FIRST_CHANNEL: u8 = 1;
+    pub const LAST_CHANNEL: u8 = 13;
+    pub const BANDWIDTH_MODE: u16 = 0x0603;
+    pub const BANDWIDTH_20_MHZ: u8 = 1 << 2;
+    pub const BASEBAND_MODES: [u16; 2] = [0x0800, 0x0900];
+    pub const BASEBAND_40_MHZ: u32 = 1;
+    pub const ANALOG_PARAMETERS: u16 = 0x0884;
+    pub const ANALOG_20_MHZ: u32 = 1 << 10;
+    pub const RADIO_CHANNEL_BANDWIDTH: u8 = 0x18;
+    // Preserve the existing reference sequence's full low-twelve-bit reset.
+    pub const RADIO_FIELDS_RESET_MASK: u32 = 0xfff;
+    pub const RADIO_20_MHZ: u32 = 1 << 10;
+    pub const SETTLE_US: u32 = 10_000;
+}
+
 // Packet RAM is addressed in pages. LLT is the linked-list table that stores
 // the next-page index; queue reservations and byte boundaries use other registers.
 mod packet_memory {
@@ -875,44 +909,63 @@ impl Rtl8188cu {
     }
 
     fn radio_write(&mut self, register: u8, value: u32) -> Result<(), Error> {
-        self.write32(0x0840, ((register as u32) << 20) | (value & 0x000fffff))?;
-        delay_us(1);
+        self.write32(
+            radio_access::WRITE_COMMAND,
+            ((register as u32) << radio_access::WRITE_ADDRESS_SHIFT)
+                | (value & radio_access::VALUE_MASK),
+        )?;
+        delay_us(radio_access::WRITE_SETTLE_US);
         Ok(())
     }
 
     fn radio_read(&mut self, register: u8) -> Result<u32, Error> {
-        let saved = self.read32(0x0824)?;
-        self.write32(0x0824, saved & !0x80000000)?;
-        delay_us(1000);
+        // Lower the read edge, select the RF address, then raise the edge.
+        let saved = self.read32(radio_access::READ_COMMAND)?;
+        self.write32(radio_access::READ_COMMAND, saved & !radio_access::READ_EDGE)?;
+        delay_us(radio_access::READ_STEP_SETTLE_US);
         self.write32(
-            0x0824,
-            (saved & !0x7f800000) | ((register as u32) << 23) | 0x80000000,
+            radio_access::READ_COMMAND,
+            (saved & !radio_access::READ_ADDRESS_MASK)
+                | ((register as u32) << radio_access::READ_ADDRESS_SHIFT)
+                | radio_access::READ_EDGE,
         )?;
-        delay_us(1000);
-        self.write32(0x0824, saved | 0x80000000)?;
-        delay_us(1000);
-        let readback = if self.read32(0x0820)? & 0x100 != 0 {
-            0x08b8
+        delay_us(radio_access::READ_STEP_SETTLE_US);
+        self.write32(radio_access::READ_COMMAND, saved | radio_access::READ_EDGE)?;
+        delay_us(radio_access::READ_STEP_SETTLE_US);
+        // Interface mode selects which register contains the 20-bit reply.
+        let readback = if self.read32(radio_access::INTERFACE_MODE)? & radio_access::PI_MODE != 0 {
+            radio_access::PI_READBACK
         } else {
-            0x08a0
+            radio_access::SERIAL_READBACK
         };
-        Ok(self.read32(readback)? & 0x000fffff)
+        Ok(self.read32(readback)? & radio_access::VALUE_MASK)
     }
 
     pub fn set_channel(&mut self, channel: u8) -> Result<(), Error> {
-        if !(1..=13).contains(&channel) {
+        if !(channel_config::FIRST_CHANNEL..=channel_config::LAST_CHANNEL).contains(&channel) {
             return Err(Error::Configuration);
         }
-        let bandwidth = self.read8(0x0603)?;
-        self.write8(0x0603, bandwidth | 4)?;
-        self.update32(0x0800, 1, 0)?;
-        self.update32(0x0900, 1, 0)?;
-        self.update32(0x0884, 0, 0x400)?;
-        self.radio_write(
-            0x18,
-            (self.channel_register & !0xfff) | channel as u32 | 0x400,
+        let bandwidth = self.read8(channel_config::BANDWIDTH_MODE)?;
+        self.write8(
+            channel_config::BANDWIDTH_MODE,
+            bandwidth | channel_config::BANDWIDTH_20_MHZ,
         )?;
-        delay_us(10_000);
+        // Keep the MAC, both baseband mode registers and RF at 20 MHz.
+        for register in channel_config::BASEBAND_MODES {
+            self.update32(register, channel_config::BASEBAND_40_MHZ, 0)?;
+        }
+        self.update32(
+            channel_config::ANALOG_PARAMETERS,
+            0,
+            channel_config::ANALOG_20_MHZ,
+        )?;
+        self.radio_write(
+            channel_config::RADIO_CHANNEL_BANDWIDTH,
+            (self.channel_register & !channel_config::RADIO_FIELDS_RESET_MASK)
+                | channel as u32
+                | channel_config::RADIO_20_MHZ,
+        )?;
+        delay_us(channel_config::SETTLE_US);
         Ok(())
     }
 
