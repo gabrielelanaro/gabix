@@ -2,7 +2,18 @@ use core::arch::asm;
 #[cfg(feature = "virt")]
 use gabix_kernel::memory::FrameAllocator;
 
+// One first-level entry maps 1 MiB; 4096 entries cover the 32-bit address space.
 const SECTION_COUNT: usize = 4096;
+const TRANSLATION_TABLE_ALIGNMENT: u32 = 16 * 1024;
+const SECTION_ADDRESS_MASK: u32 = 0xfff0_0000;
+const SECTION_EXECUTE_NEVER: u32 = 1 << 4;
+const ACTLR_SMP: u32 = 1 << 6;
+const SCTLR_MMU_ENABLE: u32 = 1;
+const SCTLR_DATA_CACHE_ENABLE: u32 = 1 << 2;
+const DOMAIN_ZERO_CLIENT: u32 = 1;
+const MMU_PROBE_PATTERN: u32 = 0x4741_4249;
+// Existing maintenance stride; repeated operations on the same line are safe.
+const TABLE_CACHE_CLEAN_STRIDE: usize = 32;
 const SECTION_SIZE: u32 = 1024 * 1024;
 const SECTION_DESCRIPTOR: u32 = 0b10;
 const PRIVILEGED_READ_WRITE: u32 = 0b01 << 10;
@@ -31,7 +42,7 @@ pub unsafe fn enable_smp() -> bool {
         value = out(reg) auxiliary_control,
         options(nostack)
     );
-    auxiliary_control |= 1 << 6;
+    auxiliary_control |= ACTLR_SMP;
     asm!(
         "mcr p15, 0, {value}, c1, c0, 1",
         "isb",
@@ -43,7 +54,7 @@ pub unsafe fn enable_smp() -> bool {
         value = out(reg) auxiliary_control,
         options(nostack)
     );
-    auxiliary_control & (1 << 6) != 0
+    auxiliary_control & ACTLR_SMP != 0
 }
 
 #[cfg(feature = "virt")]
@@ -78,26 +89,28 @@ pub unsafe fn enable_identity_mapping() -> bool {
     }
 
     let table_address = core::ptr::addr_of!(BOOT_TABLE) as u32;
-    debug_assert_eq!(table_address & 0x3fff, 0);
+    debug_assert_eq!(table_address & (TRANSLATION_TABLE_ALIGNMENT - 1), 0);
 
     let zero = 0u32;
-    let domain_zero_client = 1u32;
     asm!("dsb");
+    // TTBCR=0: use TTBR0 for the whole virtual address space.
     asm!("mcr p15, 0, {value}, c2, c0, 2", value = in(reg) zero);
+    // TTBR0 points the hardware table walker at our section descriptors.
     asm!("mcr p15, 0, {value}, c2, c0, 0", value = in(reg) table_address);
-    asm!("mcr p15, 0, {value}, c3, c0, 0", value = in(reg) domain_zero_client);
+    // DACR: domain 0 uses the access permissions stored in each descriptor.
+    asm!("mcr p15, 0, {value}, c3, c0, 0", value = in(reg) DOMAIN_ZERO_CLIENT);
     asm!("mcr p15, 0, {value}, c8, c7, 0", value = in(reg) zero);
     asm!("dsb");
     asm!("isb");
 
     let mut system_control: u32;
     asm!("mrc p15, 0, {value}, c1, c0, 0", value = out(reg) system_control);
-    system_control |= 1 | (1 << 2);
+    system_control |= SCTLR_MMU_ENABLE | SCTLR_DATA_CACHE_ENABLE;
     asm!("mcr p15, 0, {value}, c1, c0, 0", value = in(reg) system_control);
     asm!("isb");
 
-    core::ptr::write_volatile(core::ptr::addr_of_mut!(MMU_PROBE), 0x4741_4249);
-    core::ptr::read_volatile(core::ptr::addr_of!(MMU_PROBE)) == 0x4741_4249
+    core::ptr::write_volatile(core::ptr::addr_of_mut!(MMU_PROBE), MMU_PROBE_PATTERN);
+    core::ptr::read_volatile(core::ptr::addr_of!(MMU_PROBE)) == MMU_PROBE_PATTERN
 }
 
 fn section_memory_attributes(address: u32) -> u32 {
@@ -114,13 +127,17 @@ fn section_memory_attributes(address: u32) -> u32 {
     0
 }
 
+/// Replace the containing boot-table section with a user-writable mapping.
+/// Safety: serialize access to BOOT_TABLE and keep executing kernel code mapped.
+/// On Pi, address must belong to the intended fixed user alias range; this
+/// helper computes its physical address without validating that range.
 pub unsafe fn allow_user_section(address: u32) {
     let index = (address / SECTION_SIZE) as usize;
     let table = &mut *core::ptr::addr_of_mut!(BOOT_TABLE);
     #[cfg(feature = "virt")]
-    let physical = table.0[index] & 0xfff0_0000;
+    let physical = table.0[index] & SECTION_ADDRESS_MASK;
     #[cfg(feature = "raspi2b")]
-    let physical = USER_PHYSICAL_BASE + (address & 0xfff0_0000) - USER_VIRTUAL_BASE;
+    let physical = USER_PHYSICAL_BASE + (address & SECTION_ADDRESS_MASK) - USER_VIRTUAL_BASE;
     let descriptor = &mut table.0[index];
     *descriptor = physical | NORMAL_NON_CACHEABLE | USER_READ_WRITE | SECTION_DESCRIPTOR;
 
@@ -136,6 +153,9 @@ pub unsafe fn allow_user_section(address: u32) {
     asm!("isb");
 }
 
+/// Grant access to every section touched by this byte range. Overflow returns
+/// without changes. An unaligned zero-length range still selects its section.
+/// Safety: same exclusive table access and valid alias requirements as allow_user_section().
 pub unsafe fn allow_user_range(start: u32, len: u32) {
     let Some(end) = start.checked_add(len) else {
         return;
@@ -152,7 +172,10 @@ pub unsafe fn allow_user_range(start: u32, len: u32) {
 // Both processes see their allocation at the same virtual addresses.
 pub const PROCESS_BASE: u32 = 0x4100_0000;
 pub const PROCESS_END: u32 = 0x4120_0000;
-pub const PROCESS_STACK_TOP: u32 = PROCESS_END - 16;
+const PROCESS_STACK_TOP_PADDING: u32 = 16;
+pub const PROCESS_STACK_TOP: u32 = PROCESS_END - PROCESS_STACK_TOP_PADDING;
+const PROCESS_SECTION_COUNT: usize = 2;
+const PROCESS_STACK_SECTION: usize = 1;
 pub const PROCESS_COUNT: usize = 2;
 #[cfg(feature = "raspi2b")]
 const PROCESS_PHYSICAL_BASE: u32 = 0x0200_0000;
@@ -163,7 +186,7 @@ static mut PROCESS_TABLES: [TranslationTable; PROCESS_COUNT] =
 
 pub fn process_physical_base(id: usize) -> u32 {
     assert!(id < PROCESS_COUNT);
-    PROCESS_PHYSICAL_BASE + id as u32 * 2 * SECTION_SIZE
+    PROCESS_PHYSICAL_BASE + id as u32 * PROCESS_SECTION_COUNT as u32 * SECTION_SIZE
 }
 
 /// Build a private address space. Kernel/device mappings stay privileged.
@@ -181,17 +204,21 @@ pub unsafe fn prepare_process_table(id: usize) {
             | PRIVILEGED_READ_WRITE
             | SECTION_DESCRIPTOR;
     }
-    for section in 0..2 {
+    for section in 0..PROCESS_SECTION_COUNT {
         (*table).0[(PROCESS_BASE / SECTION_SIZE) as usize + section] = (process_physical_base(id)
             + section as u32 * SECTION_SIZE)
             | NORMAL_NON_CACHEABLE
             | USER_READ_WRITE
             | SECTION_DESCRIPTOR
-            | if section == 1 { 1 << 4 } else { 0 }; // XN: user stack is data.
+            | if section == PROCESS_STACK_SECTION {
+                SECTION_EXECUTE_NEVER
+            } else {
+                0
+            };
     }
     // The page-table walker must see descriptors written into the data cache.
     // 32-byte steps cover both Cortex-A7 and QEMU Cortex-A15 cache lines.
-    for offset in (0..core::mem::size_of::<TranslationTable>()).step_by(32) {
+    for offset in (0..core::mem::size_of::<TranslationTable>()).step_by(TABLE_CACHE_CLEAN_STRIDE) {
         let address = table.cast::<u8>().add(offset) as u32;
         asm!("mcr p15, 0, {address}, c7, c10, 1", address = in(reg) address);
     }
@@ -222,6 +249,8 @@ pub unsafe fn activate_process(id: Option<usize>) {
     );
 }
 
+/// Check only the fixed virtual interval and addition overflow. This does not
+/// inspect mappings or permissions. A zero-length range at PROCESS_END is valid.
 pub fn process_range_is_valid(address: u32, length: u32) -> bool {
     address >= PROCESS_BASE
         && address

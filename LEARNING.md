@@ -563,6 +563,11 @@ A milestone is a "demo-able" checkpoint. Worth a commit + tag + log entry.
 
 ## Progress Log
 
+### 2026-11-15 — Readability audit: ARM mapping controls
+- Named MMU/cache control bits, translation-table alignment, section mask and process section/stack constants. Explained table-register setup and the exact bounds checked by user-range helpers.
+- Existing QEMU ARM memory-mapping and process-isolation tests pass; values and instruction order are unchanged.
+- ARM memory ownership/cache assumptions, process/exception paths and remaining audit areas stay open. Physical Pi verification is pending while disconnected.
+
 ### 2026-11-15 — Readability audit: TCP connection lifecycle
 - Named the passive sequence-generator constants and reused the send-segment size. Explained listener/connection ownership, accept admission, receive buffering and teardown in source comments.
 - Recorded existing protocol and lifetime limitations explicitly, including absent passive retransmission, unbounded receive queues, retained closed connections and unchecked FIN acknowledgments. Behavior is unchanged.

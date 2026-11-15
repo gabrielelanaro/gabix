@@ -60,7 +60,8 @@ will be checked alongside the implementation they exercise.
   - [x] SD capacity extraction and clock-divider bit packing
 - [ ] ARM boot, page tables, interrupts, scheduling, processes, and syscalls
   - [x] Kernel task context switch and scheduler frame creation: named saved-word layout, user-bank offset and IRQ mask
-  - [ ] Boot/exception assembly, process operations, memory and syscalls
+  - [x] ARM memory control bits, table dimensions and range-helper contracts
+  - [ ] Boot/exception assembly, process operations, memory ownership/cache assumptions and syscalls
 - [ ] ARM loader, SD update/install, authenticated management, and diagnostics
 - [ ] ARM VirtIO adapters and hardware probes
   - [x] QEMU VirtIO network: queue roles, feature words, packet metadata and buffer reuse
@@ -1021,3 +1022,21 @@ The existing QEMU TCP echo test passes, including its passive connection flow.
 No new tests were added. This result covers the tested path; it does not verify
 the unsupported cases above. Physical Pi verification remains pending while
 the board is disconnected.
+
+### ARM mapping control and dimensions
+
+`targets/armv7/src/memory.rs` names MMU/cache enable bits, coherent-request
+control, table alignment, section address mask, execute-never bit, process
+section count and stack-section index. Values and instruction order are
+unchanged. Register comments explain TTBCR, TTBR0 and DACR setup.
+
+Control-bit reference: [Arm Cortex-A7 TRM, system control registers](https://documentation-service.arm.com/static/5e8f089d88295d1e18d3b906),
+sections 4.3.27–4.3.28. The table layout and existing cache-attribute encoding
+still need the deeper memory ownership/cache-assumption review.
+
+Helper comments describe the source's actual boundaries: allow_user_section
+requires a valid Pi alias supplied by its caller; allow_user_range silently
+returns on overflow and touches a section for an unaligned zero-length range.
+process_range_is_valid checks only interval arithmetic, including a zero-length
+range at the end. The existing QEMU ARM memory-mapping and process-isolation
+tests pass. Physical Pi validation remains pending while disconnected.
