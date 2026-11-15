@@ -40,7 +40,8 @@ will be checked alongside the implementation they exercise.
   - [x] Indirect RF register transport and 20 MHz channel selection
   - [x] Station power groups, retry/contention settings and ACK diagnostic filter
   - [x] Receiver startup sequence, RF interface controls and scan filters
-  - [ ] Remaining analog preset naming and shared frame/security fields
+  - [x] Analog preset registers and reference USB-interference sequence
+  - [ ] Remaining shared frame/security fields and station-frame offsets
 - [ ] Pi USB controller, hub enumeration, Ethernet, and RNDIS
   - [x] LAN9512 register transport, PHY access and SMSC frame headers
   - [x] Ethernet selection and QEMU RNDIS setup/frame fields
@@ -482,3 +483,10 @@ startup and unsupported-board rejection produced identical results, register
 traces, helper-call order and saved channel value. RF access/calibration helpers
 were recorded stubs; their internal paths are checked separately above. Physical
 passive reception and association remain pending.
+
+Receiver preset follow-up names the PLL, regulator, crystal-control byte and
+reset/enable fields. The reference driver's three USB-interference writes are
+kept as an ordered preset sequence with their undocumented fields acknowledged.
+The managed build and the same receiver trace comparison pass after this change.
+References remain the OpenBSD initialization/register sources above; physical
+validation remains pending.

@@ -563,6 +563,11 @@ A milestone is a "demo-able" checkpoint. Worth a commit + tag + log entry.
 
 ## Progress Log
 
+### 2026-11-15 — Readability audit: receiver preset registers
+- Named PLL, regulator, crystal and reset/enable registers and fields. Grouped the three USB-interference writes with the reference driver's explanation, leaving undocumented fields explicitly undecoded.
+- Managed Wi-Fi release build passes. Reused the ignored receiver trace comparison with the updated source; complete startup and unsupported-board rejection still match the pre-refactor baseline.
+- Shared Wi-Fi/security fields, station-frame offsets and the broader architecture audit remain open. Physical validation still awaits the Pi.
+
 ### 2026-11-15 — Readability audit: receiver startup
 - Divided receiver startup into programming, RF interface, calibration and scan-filter stages. Named board selection, interface controls, calibration timing, receive filters and appended status fields; documented radio-table delay markers.
 - Managed Wi-Fi release build passes. An ignored host harness compared the actual old/new methods and programming tables: complete successful startup and unsupported-board traces match, including recorded helper calls.

@@ -173,6 +173,27 @@ mod fw {
 }
 
 mod receiver_setup {
+    pub const BASEBAND_RESET_RELEASE: u16 = 1 << 0;
+    pub const BASEBAND_GLOBAL_RESET_RELEASE: u16 = 1 << 1;
+    pub const RADIO_DIGITAL_IO: u16 = 1 << 13;
+    pub const ANALOG_PLL_CONTROL: u16 = 0x0028;
+    pub const ANALOG_PLL_PRESET: u16 = 0xdb83;
+    pub const RADIO_CONTROL: u16 = 0x001f;
+    pub const RADIO_ENABLE: u8 = 1;
+    pub const RADIO_RESET_RELEASE: u8 = 1 << 1;
+    pub const RADIO_SDM_RESET_RELEASE: u8 = 1 << 2;
+    pub const USB_ANALOG_ENABLE: u8 = 1 << 2;
+    pub const USB_DIGITAL_ENABLE: u8 = 1 << 4;
+    pub const HOST_REGULATOR_CONTROL: u16 = 0x0022;
+    pub const HOST_REGULATOR_PRESET: u8 = 0x0f;
+    pub const SWITCHING_CONTROL_HIGH_BYTE: u16 = 0x0015; // SYS_SWR_CTRL2 + 1
+    pub const SWITCHING_CONTROL_PRESET: u8 = 0xe9;
+    pub const CRYSTAL_CONTROL_SECOND_BYTE: u16 = 0x0025; // AFE_XTAL_CTRL + 1
+    pub const CRYSTAL_CONTROL_PRESET: u8 = 0x80;
+    // OpenBSD labels this ordered sequence as its USB-interference workaround.
+    // The individual register fields are undocumented in that source.
+    pub const USB_INTERFERENCE_PRESETS: [(u16, u8); 3] =
+        [(0xfe40, 0xe0), (0xfe41, 0x8d), (0xfe42, 0x80)];
     pub const BOARD_TYPE_ROM_BYTE: usize = 0x79;
     pub const BOARD_TYPE_SHIFT: u32 = 5;
     pub const STANDARD_USB_BOARD: u8 = 0;
@@ -921,13 +942,26 @@ impl Rtl8188cu {
             self.write8(register, value)?;
         }
         // Preserve the reference analog/clock presets and their access widths.
-        self.update16(fw::SYSTEM_FUNCTIONS, 0, 0x2003)?;
-        self.write16(0x0028, 0xdb83)?;
-        self.write8(0x001f, 7)?;
-        self.write8(0x0002, 0x17)?;
-        self.write8(0x0022, 0x0f)?;
-        self.write8(0x0015, 0xe9)?;
-        self.write8(0x0025, 0x80)?;
+        self.update16(
+            fw::SYSTEM_FUNCTIONS,
+            0,
+            BASEBAND_RESET_RELEASE | BASEBAND_GLOBAL_RESET_RELEASE | RADIO_DIGITAL_IO,
+        )?;
+        self.write16(ANALOG_PLL_CONTROL, ANALOG_PLL_PRESET)?;
+        self.write8(
+            RADIO_CONTROL,
+            RADIO_ENABLE | RADIO_RESET_RELEASE | RADIO_SDM_RESET_RELEASE,
+        )?;
+        self.write8(
+            fw::SYSTEM_FUNCTIONS,
+            BASEBAND_RESET_RELEASE as u8
+                | BASEBAND_GLOBAL_RESET_RELEASE as u8
+                | USB_ANALOG_ENABLE
+                | USB_DIGITAL_ENABLE,
+        )?;
+        self.write8(HOST_REGULATOR_CONTROL, HOST_REGULATOR_PRESET)?;
+        self.write8(SWITCHING_CONTROL_HIGH_BYTE, SWITCHING_CONTROL_PRESET)?;
+        self.write8(CRYSTAL_CONTROL_SECOND_BYTE, CRYSTAL_CONTROL_PRESET)?;
         for &(register, value) in tables::BASEBAND {
             self.write32(register, value)?;
             delay_us(TABLE_WRITE_SETTLE_US);
@@ -972,9 +1006,9 @@ impl Rtl8188cu {
             self.channel_register | START_LC_CALIBRATION,
         )?;
         delay_us(LC_SETTLE_US);
-        self.write8(0xfe40, 0xe0)?;
-        self.write8(0xfe41, 0x8d)?;
-        self.write8(0xfe42, 0x80)?;
+        for (register, value) in USB_INTERFERENCE_PRESETS {
+            self.write8(register, value)?;
+        }
         // 4. Set our MAC and enable management reception for passive scanning.
         self.write(STATION_ADDRESS, &identity.mac)?;
         self.write8(DRIVER_INFO_SIZE, DRIVER_INFO_EIGHT_BYTE_UNITS)?;
