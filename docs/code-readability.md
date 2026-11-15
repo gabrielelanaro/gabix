@@ -63,6 +63,7 @@ will be checked alongside the implementation they exercise.
   - [ ] Boot/exception assembly, process operations, memory and syscalls
 - [ ] ARM loader, SD update/install, authenticated management, and diagnostics
 - [ ] ARM VirtIO adapters and hardware probes
+  - [x] QEMU VirtIO block: feature negotiation, descriptor roles, memory ordering and polling contract
   - [x] QEMU virt timer/GIC: named interrupt fields, counter interval and acknowledgement sequence
 - [ ] Shared network parsers and state machines, including WPA2
   - [x] Ethernet, ARP, IPv4, ICMP, UDP, and checksum helpers: wire layouts, abbreviations, meaningful field values, and split-buffer checksum explanation
@@ -558,3 +559,15 @@ and MIC lengths are named; derivation comments explain the sorting and final
 partial digest copy already present in the implementation. Existing synthetic
 handshake/unwrap tests and the managed Wi-Fi release build pass. This completes
 the shared WPA2 source review; physical validation remains pending.
+
+### ARM VirtIO block requests
+
+`targets/armv7/src/virt/block.rs` names the request chain and device-write flags,
+feature words, modern transport version and queue selection. Comments explain
+the available-index publication and used-index poll. The poll has no timeout;
+this audit preserves that behavior. The existing QEMU block-read and ext2 file
+read tests pass (`test_arm_virt_reads_block.sh`, `test_arm_virt_reads_file.sh`).
+
+Reference: [VirtIO 1.2](https://docs.oasis-open.org/virtio/virtio/v1.2/virtio-v1.2.html),
+sections 2.7, 4.2 and 5.2. This QEMU driver does not operate the physical Pi SD
+controller; these checks do not replace the pending physical Pi checks.

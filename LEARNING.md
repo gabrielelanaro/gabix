@@ -563,6 +563,11 @@ A milestone is a "demo-able" checkpoint. Worth a commit + tag + log entry.
 
 ## Progress Log
 
+### 2026-11-15 — Readability audit: ARM VirtIO block requests
+- Named feature-word selection, modern transport version, request queue, sector size and descriptor roles. Descriptor flags now state that the device writes the buffer. Explained publication ordering and the synchronous completion poll, including its existing lack of timeout.
+- Existing QEMU ARM block-read and ext2-file-read tests both pass. This driver belongs to QEMU virt; it is separate from the Pi SD driver. Numeric register values, request layout and polling behavior are preserved.
+- ARM VirtIO networking, remaining architecture code and physical Pi validation of earlier changes remain open.
+
 ### 2026-11-15 — Readability audit: WPA2 helper contracts
 - Replaced the key-data parser's boolean argument with explicit required/optional RSN policy and its positional result with named group-key fields. Named digest/key/MIC sizes and explained deterministic ordering and truncation during pairwise key derivation.
 - Existing WPA2 handshake and corruption tests pass; managed Wi-Fi release build passes. Marked the shared WPA2 source review complete, with real Pi validation still pending. The overall codebase audit remains open.

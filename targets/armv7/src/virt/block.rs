@@ -1,6 +1,10 @@
+//! QEMU virt block device using the modern VirtIO MMIO transport.
+//! One synchronous read owns the shared request buffers until completion.
+//! See VirtIO 1.2 sections 2.7 (split queues), 4.2 (MMIO), and 5.2 (block).
 use core::arch::asm;
 use gabix_kernel::device::BlockDevice;
 
+// QEMU virt board address map: 32 transports, each occupying 512 bytes.
 const MMIO_START: usize = 0x0a00_0000;
 const MMIO_STRIDE: usize = 0x200;
 const MMIO_TRANSPORTS: usize = 32;
@@ -24,7 +28,19 @@ const QUEUE_DEVICE_LOW: usize = 0x0a0;
 
 const VIRTIO_MAGIC: u32 = 0x7472_6976;
 const VIRTIO_BLOCK_DEVICE: u32 = 2;
-const VIRTIO_VERSION_1: u32 = 1;
+const MODERN_MMIO_VERSION: u32 = 2;
+const FEATURE_WORD_LOW: u32 = 0;
+const FEATURE_WORD_HIGH: u32 = 1;
+// VIRTIO_F_VERSION_1 is bit 32, exposed as bit 0 of feature word 1.
+const FEATURE_VERSION_1_IN_HIGH_WORD: u32 = 1 << 0;
+const DEVICE_RESET: u32 = 0;
+const REQUEST_QUEUE: u32 = 0;
+const QUEUE_ENABLED: u32 = 1;
+const SECTOR_BYTES: usize = 512;
+// Every request uses this chain: header -> sector data -> completion status.
+const HEADER_DESCRIPTOR: usize = 0;
+const DATA_DESCRIPTOR: usize = 1;
+const STATUS_DESCRIPTOR: usize = 2;
 const STATUS_ACKNOWLEDGE: u32 = 1;
 const STATUS_DRIVER: u32 = 2;
 const STATUS_DRIVER_OK: u32 = 4;
@@ -32,10 +48,10 @@ const STATUS_FEATURES_OK: u32 = 8;
 
 const QUEUE_SIZE: usize = 8;
 const DESC_NEXT: u16 = 1;
-const DESC_WRITE: u16 = 2;
-const REQUEST_IN: u32 = 0;
-const STATUS_PENDING: u8 = 0xff;
-const STATUS_OK: u8 = 0;
+const DESC_DEVICE_WRITES: u16 = 2;
+const REQUEST_READ_SECTOR: u32 = 0;
+const REQUEST_STATUS_PENDING: u8 = 0xff;
+const REQUEST_STATUS_OK: u8 = 0;
 
 #[derive(Clone, Copy)]
 #[repr(C)]
@@ -89,7 +105,7 @@ struct RequestHeader {
 }
 
 #[repr(C, align(512))]
-struct Sector([u8; 512]);
+struct Sector([u8; SECTOR_BYTES]);
 
 static mut DESCRIPTORS: DescriptorTable = DescriptorTable([EMPTY_DESCRIPTOR; QUEUE_SIZE]);
 static mut AVAILABLE: AvailableRing = AvailableRing {
@@ -105,12 +121,12 @@ static mut USED: UsedRing = UsedRing {
     available_event: 0,
 };
 static mut HEADER: RequestHeader = RequestHeader {
-    request_type: REQUEST_IN,
+    request_type: REQUEST_READ_SECTOR,
     reserved: 0,
     sector: 0,
 };
-static mut DATA: Sector = Sector([0; 512]);
-static mut REQUEST_STATUS: u8 = STATUS_PENDING;
+static mut DATA: Sector = Sector([0; SECTOR_BYTES]);
+static mut REQUEST_STATUS: u8 = REQUEST_STATUS_PENDING;
 
 pub struct VirtioBlock {
     base: usize,
@@ -122,7 +138,7 @@ impl VirtioBlock {
         for index in 0..MMIO_TRANSPORTS {
             let base = MMIO_START + index * MMIO_STRIDE;
             if read32(base + MAGIC) == VIRTIO_MAGIC
-                && read32(base + VERSION) == 2
+                && read32(base + VERSION) == MODERN_MMIO_VERSION
                 && read32(base + DEVICE_ID) == VIRTIO_BLOCK_DEVICE
             {
                 let mut device = Self { base, last_used: 0 };
@@ -135,17 +151,17 @@ impl VirtioBlock {
     }
 
     unsafe fn initialize(&mut self) -> bool {
-        write32(self.base + STATUS, 0);
+        write32(self.base + STATUS, DEVICE_RESET);
         write32(self.base + STATUS, STATUS_ACKNOWLEDGE | STATUS_DRIVER);
 
-        write32(self.base + DEVICE_FEATURES_SEL, 1);
-        if read32(self.base + DEVICE_FEATURES) & VIRTIO_VERSION_1 == 0 {
+        write32(self.base + DEVICE_FEATURES_SEL, FEATURE_WORD_HIGH);
+        if read32(self.base + DEVICE_FEATURES) & FEATURE_VERSION_1_IN_HIGH_WORD == 0 {
             return false;
         }
-        write32(self.base + DRIVER_FEATURES_SEL, 0);
+        write32(self.base + DRIVER_FEATURES_SEL, FEATURE_WORD_LOW);
         write32(self.base + DRIVER_FEATURES, 0);
-        write32(self.base + DRIVER_FEATURES_SEL, 1);
-        write32(self.base + DRIVER_FEATURES, VIRTIO_VERSION_1);
+        write32(self.base + DRIVER_FEATURES_SEL, FEATURE_WORD_HIGH);
+        write32(self.base + DRIVER_FEATURES, FEATURE_VERSION_1_IN_HIGH_WORD);
 
         let feature_status = STATUS_ACKNOWLEDGE | STATUS_DRIVER | STATUS_FEATURES_OK;
         write32(self.base + STATUS, feature_status);
@@ -153,7 +169,7 @@ impl VirtioBlock {
             return false;
         }
 
-        write32(self.base + QUEUE_SEL, 0);
+        write32(self.base + QUEUE_SEL, REQUEST_QUEUE);
         if read32(self.base + QUEUE_NUM_MAX) < QUEUE_SIZE as u32 {
             return false;
         }
@@ -175,48 +191,58 @@ impl VirtioBlock {
             self.base + QUEUE_DEVICE_LOW,
             core::ptr::addr_of!(USED) as u64,
         );
-        write32(self.base + QUEUE_READY, 1);
+        write32(self.base + QUEUE_READY, QUEUE_ENABLED);
         write32(self.base + STATUS, feature_status | STATUS_DRIVER_OK);
         true
     }
 
-    pub unsafe fn try_read_sector(&mut self, sector: u64) -> Option<[u8; 512]> {
+    /// Polls the used ring until the device completes this read, with no timeout.
+    /// The caller must serialize access to the module's shared request buffers.
+    pub unsafe fn try_read_sector(&mut self, sector: u64) -> Option<[u8; SECTOR_BYTES]> {
         core::ptr::write_volatile(
             core::ptr::addr_of_mut!(HEADER),
             RequestHeader {
-                request_type: REQUEST_IN,
+                request_type: REQUEST_READ_SECTOR,
                 reserved: 0,
                 sector,
             },
         );
-        core::ptr::write_bytes(core::ptr::addr_of_mut!(DATA.0).cast::<u8>(), 0, 512);
-        core::ptr::write_volatile(core::ptr::addr_of_mut!(REQUEST_STATUS), STATUS_PENDING);
+        core::ptr::write_bytes(
+            core::ptr::addr_of_mut!(DATA.0).cast::<u8>(),
+            0,
+            SECTOR_BYTES,
+        );
+        core::ptr::write_volatile(
+            core::ptr::addr_of_mut!(REQUEST_STATUS),
+            REQUEST_STATUS_PENDING,
+        );
 
+        // The device reads our header, then writes the sector and status byte.
         let descriptors = &mut *core::ptr::addr_of_mut!(DESCRIPTORS);
         core::ptr::write_volatile(
-            &mut descriptors.0[0],
+            &mut descriptors.0[HEADER_DESCRIPTOR],
             Descriptor {
                 address: core::ptr::addr_of!(HEADER) as u64,
                 len: core::mem::size_of::<RequestHeader>() as u32,
                 flags: DESC_NEXT,
-                next: 1,
+                next: DATA_DESCRIPTOR as u16,
             },
         );
         core::ptr::write_volatile(
-            &mut descriptors.0[1],
+            &mut descriptors.0[DATA_DESCRIPTOR],
             Descriptor {
                 address: core::ptr::addr_of!(DATA) as u64,
-                len: 512,
-                flags: DESC_NEXT | DESC_WRITE,
-                next: 2,
+                len: SECTOR_BYTES as u32,
+                flags: DESC_NEXT | DESC_DEVICE_WRITES,
+                next: STATUS_DESCRIPTOR as u16,
             },
         );
         core::ptr::write_volatile(
-            &mut descriptors.0[2],
+            &mut descriptors.0[STATUS_DESCRIPTOR],
             Descriptor {
                 address: core::ptr::addr_of!(REQUEST_STATUS) as u64,
                 len: 1,
-                flags: DESC_WRITE,
+                flags: DESC_DEVICE_WRITES,
                 next: 0,
             },
         );
@@ -225,25 +251,27 @@ impl VirtioBlock {
         let available_index = core::ptr::read_volatile(&available.index);
         core::ptr::write_volatile(
             &mut available.ring[available_index as usize % QUEUE_SIZE],
-            0,
+            HEADER_DESCRIPTOR as u16,
         );
-        barrier();
+        // Publish the buffers and chain head before advancing the available index.
+        order_device_memory();
         core::ptr::write_volatile(&mut available.index, available_index.wrapping_add(1));
-        barrier();
-        write32(self.base + QUEUE_NOTIFY, 0);
+        order_device_memory();
+        write32(self.base + QUEUE_NOTIFY, REQUEST_QUEUE);
 
+        // The device advances this index after writing the completed buffers.
         let used = &*core::ptr::addr_of!(USED);
         while core::ptr::read_volatile(&used.index) == self.last_used {
             core::hint::spin_loop();
         }
         self.last_used = self.last_used.wrapping_add(1);
-        barrier();
+        order_device_memory();
 
-        if core::ptr::read_volatile(core::ptr::addr_of!(REQUEST_STATUS)) != STATUS_OK {
+        if core::ptr::read_volatile(core::ptr::addr_of!(REQUEST_STATUS)) != REQUEST_STATUS_OK {
             return None;
         }
 
-        let mut result = [0u8; 512];
+        let mut result = [0u8; SECTOR_BYTES];
         let data = core::ptr::addr_of!(DATA.0).cast::<u8>();
         for (offset, byte) in result.iter_mut().enumerate() {
             *byte = core::ptr::read_volatile(data.add(offset));
@@ -255,7 +283,7 @@ impl VirtioBlock {
 unsafe impl Send for VirtioBlock {}
 
 impl BlockDevice for VirtioBlock {
-    fn read_sector(&mut self, sector: u64) -> [u8; 512] {
+    fn read_sector(&mut self, sector: u64) -> [u8; SECTOR_BYTES] {
         unsafe {
             self.try_read_sector(sector)
                 .expect("virtio block request failed")
@@ -271,12 +299,13 @@ unsafe fn write32(address: usize, value: u32) {
     core::ptr::write_volatile(address as *mut u32, value);
 }
 
+// MMIO splits each 64-bit queue address into adjacent low/high 32-bit words.
 unsafe fn write_address(low_register: usize, address: u64) {
     write32(low_register, address as u32);
     write32(low_register + 4, (address >> 32) as u32);
 }
 
-fn barrier() {
+fn order_device_memory() {
     unsafe {
         asm!("dmb", options(nostack, preserves_flags));
     }
