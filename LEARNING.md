@@ -563,6 +563,11 @@ A milestone is a "demo-able" checkpoint. Worth a commit + tag + log entry.
 
 ## Progress Log
 
+### 2026-11-15 — Readability audit: TCP connection lifecycle
+- Named the passive sequence-generator constants and reused the send-segment size. Explained listener/connection ownership, accept admission, receive buffering and teardown in source comments.
+- Recorded existing protocol and lifetime limitations explicitly, including absent passive retransmission, unbounded receive queues, retained closed connections and unchecked FIN acknowledgments. Behavior is unchanged.
+- Existing QEMU TCP echo passes. TCP source-review coverage is checked off in the audit; remaining ARM/page-table areas and physical Pi checks stay open.
+
 ### 2026-11-15 — Readability audit: TCP retransmission
 - Named RTT smoothing/variation weights, timeout/backoff factors and initial peer-window assumption. Explained sequence accounting, cumulative ACK removal, preparation-time timestamps and caller-owned transmission.
 - Existing QEMU TCP-loss test passes through retransmission and response. Arithmetic and behavior remain unchanged; formulas checked against RFC 6298.

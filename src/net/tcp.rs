@@ -1,4 +1,5 @@
-//! Minimal active-open TCP with a reliable send stream.
+//! TCP packet encoding, one active-open connection, and passive sockets.
+//! Active-open sends have a retransmission queue; passive sends are submitted once.
 
 use crate::irq_mutex::IrqMutex;
 use crate::net::checksum;
@@ -20,6 +21,9 @@ const CLOCK_GRANULARITY_TICKS: usize = 1;
 const INITIAL_RTO_TICKS: usize = 100;
 const MAX_RTO_TICKS: usize = 6000;
 const SEND_MSS: usize = 1460;
+// Predictable teaching-kernel sequence generator; no secret or random input.
+const SERVER_ISN_TICK_MULTIPLIER: u32 = 1_103_515_245;
+const SERVER_ISN_OFFSET: u32 = 0x33ec_0001;
 // Fixed send cap, not an adaptive congestion-control implementation.
 const CONGESTION_WINDOW_SEGMENTS: usize = 4;
 // Integer weights from RFC 6298 section 2: alpha=1/8, beta=1/4, K=4.
@@ -213,6 +217,9 @@ struct ConnectionKey {
     remote_port: u16,
 }
 
+// Created on SYN and owned by CONNECTIONS before accept() returns a descriptor.
+// Receive bytes accumulate without a queue limit. No retransmission queue or
+// peer-window accounting is implemented for these passive connections.
 struct ServerConnection {
     endpoints: Endpoints,
     state: TcpState,
@@ -245,8 +252,11 @@ pub struct TcpSocket {
 }
 
 lazy_static::lazy_static! {
+    // Descriptors keep listeners alive. Stale weak entries remain until reused.
     static ref LISTENERS: IrqMutex<BTreeMap<u16, Weak<TcpSocket>>> =
         IrqMutex::new(BTreeMap::new());
+    // Strong references retain connections, including closed ones: removal and
+    // TIME_WAIT expiration have not been implemented yet.
     static ref CONNECTIONS: IrqMutex<BTreeMap<ConnectionKey, Arc<TcpSocket>>> =
         IrqMutex::new(BTreeMap::new());
 }
@@ -278,6 +288,8 @@ impl TcpSocket {
         }
     }
 
+    /// Register this port and queue completed handshakes for accept().
+    /// Backlog limits the completed queue; half-open connections are unbounded.
     pub fn listen(self: &Arc<Self>, backlog: usize) -> Result<(), ()> {
         let port = match *self.inner.lock() {
             SocketState::Unbound { port: Some(port) } => port,
@@ -309,6 +321,8 @@ impl TcpSocket {
         }
     }
 
+    /// Remember one task while the accept queue is empty. A later registration
+    /// replaces it; the caller handles blocking after this lock is released.
     pub fn register_accept_waiter(&self, pid: Pid) -> bool {
         let mut state = self.inner.lock();
         match &mut *state {
@@ -324,6 +338,8 @@ impl TcpSocket {
         }
     }
 
+    /// Consume queued bytes first. An empty queue returns Some(0) after FIN,
+    /// or None while waiting for data (also None for a non-connection socket).
     pub fn read(&self, out: &mut [u8]) -> Option<usize> {
         let mut state = self.inner.lock();
         let SocketState::Connection(connection) = &mut *state else {
@@ -352,6 +368,8 @@ impl TcpSocket {
         }
     }
 
+    /// Prepare segments and advance send_next; the caller transmits them.
+    /// This path has no retry queue and does not consult the peer's window.
     pub fn send(&self, payload: &[u8]) -> Option<Vec<Outbound>> {
         let mut state = self.inner.lock();
         let SocketState::Connection(connection) = &mut *state else {
@@ -361,7 +379,7 @@ impl TcpSocket {
             return None;
         }
         let mut result = Vec::new();
-        for chunk in payload.chunks(1460) {
+        for chunk in payload.chunks(SEND_MSS) {
             let sequence = connection.send_next;
             result.push(build_server(
                 connection,
@@ -663,7 +681,8 @@ pub fn register_recv_waiter(pid: Pid) -> bool {
     true
 }
 
-/// Process one valid segment for the single active connection and return an ACK to transmit.
+/// Parse a segment, try the global active connection, then passive sockets.
+/// Any returned segment still needs transmission by the caller.
 pub fn receive(src_ip: [u8; 4], dst_ip: [u8; 4], bytes: &[u8]) -> Option<Outbound> {
     let segment = TcpSegment::parse(bytes, src_ip, dst_ip)?;
     {
@@ -704,6 +723,8 @@ pub fn receive(src_ip: [u8; 4], dst_ip: [u8; 4], bytes: &[u8]) -> Option<Outboun
                     acknowledge(tcb, segment.header.acknowledgment, now_ticks());
                     tcb.send_window = segment.header.window;
                 }
+                // Only the exact next sequence is buffered. Duplicate/out-of-order
+                // data gets no ACK here; active FIN/RST handling is still absent.
                 if !segment.payload.is_empty() && segment.header.sequence == tcb.recv_next {
                     tcb.receive.extend_from_slice(segment.payload);
                     tcb.recv_next = tcb.recv_next.wrapping_add(segment.payload.len() as u32);
@@ -743,6 +764,8 @@ fn receive_server(src_ip: [u8; 4], dst_ip: [u8; 4], segment: &TcpSegment<'_>) ->
             && segment.header.acknowledgment == connection.send_next
         {
             connection.send_unacked = segment.header.acknowledgment;
+            // This branch consumes the handshake ACK without processing any
+            // accompanying payload. Queue admission happens after state changes.
             connection.state = TcpState::Established;
             let listener = connection.listener.upgrade()?;
             drop(state);
@@ -757,6 +780,8 @@ fn receive_server(src_ip: [u8; 4], dst_ip: [u8; 4], segment: &TcpSegment<'_>) ->
                 else {
                     return None;
                 };
+                // A full queue leaves this established connection in CONNECTIONS
+                // without exposing it to accept(); there is no retry admission.
                 if accepted.len() >= *backlog {
                     return None;
                 }
@@ -770,6 +795,8 @@ fn receive_server(src_ip: [u8; 4], dst_ip: [u8; 4], segment: &TcpSegment<'_>) ->
             return None;
         }
 
+        // Current teardown advances on any ACK flag; it does not validate that
+        // the acknowledgment covers our FIN. Keep this limitation explicit.
         if segment.header.flags & FLAG_ACK != 0 {
             connection.send_unacked = segment.header.acknowledgment;
             let old = connection.state;
@@ -792,6 +819,8 @@ fn receive_server(src_ip: [u8; 4], dst_ip: [u8; 4], segment: &TcpSegment<'_>) ->
             }
         }
 
+        // Buffer only contiguous data; duplicates and gaps return without ACK.
+        // RST handling and receive-window enforcement are still unimplemented.
         if segment.header.sequence != connection.recv_next {
             return None;
         }
@@ -848,8 +877,8 @@ fn receive_server(src_ip: [u8; 4], dst_ip: [u8; 4], segment: &TcpSegment<'_>) ->
     }
 
     let isn = (now_ticks() as u32)
-        .wrapping_mul(1_103_515_245)
-        .wrapping_add(0x33ec_0001);
+        .wrapping_mul(SERVER_ISN_TICK_MULTIPLIER)
+        .wrapping_add(SERVER_ISN_OFFSET);
     let connection = ServerConnection {
         endpoints: Endpoints {
             local_ip: dst_ip,

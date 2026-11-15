@@ -107,7 +107,7 @@ will be checked alongside the implementation they exercise.
   - [x] UDP queue/waiter ownership, runtime ARP cache and network configuration
   - [x] TCP wire header, SYN MSS option and IPv4 checksum pseudo-header
   - [x] TCP active-open send accounting, ACK removal and retransmission timing
-  - [ ] TCP state transitions and passive socket ownership
+  - [x] TCP state transitions and passive socket ownership
 - [ ] Learning snippets and test helpers affected by the edits
 
 ## First slice: Wi-Fi power-on
@@ -999,3 +999,25 @@ Formula reference: [RFC 6298 sections 2, 3 and 5](https://www.rfc-editor.org/rfc
 The existing QEMU TCP-loss test passes with its external peer, verifying retry
 and response after loss. This confirms the tested path, not full RFC compliance
 or retransmission support for passive sockets. No new tests were introduced.
+
+### TCP passive connection ownership and state transitions
+
+`src/net/tcp.rs` names the passive initial-sequence generator constants and
+reuses SEND_MSS for segmentation. Comments trace listener weak references,
+connection-table strong ownership, completed-handshake queue admission,
+receive-buffer consumption and preparation of outbound segments. Existing
+values and control flow are unchanged.
+
+Source review records the current limitations: connections remain in the table
+after closing; TIME_WAIT has no expiry; backlog bounds completed accepts only;
+a full queue can strand an established connection; the handshake ACK branch
+skips accompanying payload. Passive sends have no retransmission queue or peer
+window accounting. Passive teardown advances on an ACK flag without checking
+that it acknowledges the FIN. Receive queues are unbounded, out-of-order data
+gets no ACK, and RST handling is absent. The active receive path also lacks FIN
+handling. These are existing implementation gaps, outside this readability edit.
+
+The existing QEMU TCP echo test passes, including its passive connection flow.
+No new tests were added. This result covers the tested path; it does not verify
+the unsupported cases above. Physical Pi verification remains pending while
+the board is disconnected.
