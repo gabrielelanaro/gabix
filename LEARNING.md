@@ -551,6 +551,11 @@ A milestone is a "demo-able" checkpoint. Worth a commit + tag + log entry.
 
 ## Progress Log
 
+### 2026-11-15 — Keep generated output out of reviews
+- **Policy:** Added artifacts/README.md and agent guidance: build output stays in build directories; raw run output goes in ignored target/runs; commit tests and concise findings instead of captures.
+- **Cleanup:** Removed 70 generated baseline files (40 images, 28 logs, two ELF payloads) from the Git index, retaining local copies. Historical results/checksums and the external recovery-image manifest remain tracked. Earlier commits retain historical files; this does not rewrite repository history.
+- **Validation:** Checked staged scope and ignore coverage. No kernel changes or hardware actions. Future work: follow this policy for SD-write testing.
+
 ### 2026-11-15 — Ethernet update and recovery design discussion
 - **Request:** Compared streamed Ethernet-to-SD kernel updates and a factory recovery area with established update designs. No implementation or SD writes performed; parity roadmap unchanged.
 - **Source findings:** Pi SDHCI currently implements CMD17 sector reads only. The resident Gabix UART loader receives a development kernel into RAM at 0x00100000 and branches there; we control this loader after the Raspberry Pi firmware stage.

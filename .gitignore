@@ -23,3 +23,9 @@
 /.lavish
 /.playwright-cli
 /.playwright-mcp
+
+# Raw runs and compiled payloads stay local; commit source and written findings.
+*.log
+/artifacts/**/*.img
+/artifacts/**/*.elf
+/artifacts/**/*.xz

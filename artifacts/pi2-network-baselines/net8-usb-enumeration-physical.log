@@ -1,17 +1,0 @@
-sending 7386-byte kernel (attempt 1/1)
-upload 1/7407 bytes (  0.0%)    1.0 KiB/s ETA   7.4supload 390/7407 bytes (  5.3%)    1.5 KiB/s ETA   4.5supload 777/7407 bytes ( 10.5%)    1.5 KiB/s ETA   4.3supload 1163/7407 bytes ( 15.7%)    1.5 KiB/s ETA   4.0supload 1545/7407 bytes ( 20.9%)    1.5 KiB/s ETA   3.8supload 1929/7407 bytes ( 26.0%)    1.5 KiB/s ETA   3.6supload 2316/7407 bytes ( 31.3%)    1.5 KiB/s ETA   3.3supload 2700/7407 bytes ( 36.5%)    1.5 KiB/s ETA   3.1supload 3085/7407 bytes ( 41.6%)    1.5 KiB/s ETA   2.8supload 3471/7407 bytes ( 46.9%)    1.5 KiB/s ETA   2.6supload 3856/7407 bytes ( 52.1%)    1.5 KiB/s ETA   2.3supload 4241/7407 bytes ( 57.3%)    1.5 KiB/s ETA   2.1supload 4627/7407 bytes ( 62.5%)    1.5 KiB/s ETA   1.8supload 5013/7407 bytes ( 67.7%)    1.5 KiB/s ETA   1.6supload 5400/7407 bytes ( 72.9%)    1.5 KiB/s ETA   1.3supload 5787/7407 bytes ( 78.1%)    1.5 KiB/s ETA   1.1supload 6175/7407 bytes ( 83.4%)    1.5 KiB/s ETA   0.8supload 6561/7407 bytes ( 88.6%)    1.5 KiB/s ETA   0.5supload 6947/7407 bytes ( 93.8%)    1.5 KiB/s ETA   0.3supload 7333/7407 bytes ( 99.0%)    1.5 KiB/s ETA   0.0supload 7407/7407 bytes (100.0%)    1.5 KiB/s ETA   0.0s
-UPLOAD CRC OK
-UPLOAD OK
-HANDOFF ADDRESS 0x00100000
-HANDOFF LENGTH 0x00001CDA
-HANDOFF FIRST WORD 0xF10C00C0
-HANDOFF SCTLR 0x00C50878
-HANDOFF CPSR 0x600001DA
-HANDOFF BRANCH
-NET8 USB PROBE START
-NET8 DWC2 OK
-NET8 ROOT 0424:9514 09
-NET8 ROOT HUB
-NET8 CHILD 0424:EC00 FF
-NET8 LAN9512 FOUND
-GABIX LOADER READY

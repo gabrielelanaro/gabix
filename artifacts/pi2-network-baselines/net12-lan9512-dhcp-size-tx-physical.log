@@ -1,17 +1,0 @@
-sending 17809-byte kernel (attempt 1/1)
-upload 1/17830 bytes (  0.0%)    1.0 KiB/s ETA  17.8supload 394/17830 bytes (  2.2%)    1.5 KiB/s ETA  11.1supload 776/17830 bytes (  4.4%)    1.5 KiB/s ETA  11.0supload 1129/17830 bytes (  6.3%)    1.5 KiB/s ETA  11.1supload 1512/17830 bytes (  8.5%)    1.5 KiB/s ETA  10.8supload 1899/17830 bytes ( 10.7%)    1.5 KiB/s ETA  10.5supload 2286/17830 bytes ( 12.8%)    1.5 KiB/s ETA  10.2supload 2673/17830 bytes ( 15.0%)    1.5 KiB/s ETA   9.9supload 3062/17830 bytes ( 17.2%)    1.5 KiB/s ETA   9.7supload 3448/17830 bytes ( 19.3%)    1.5 KiB/s ETA   9.4supload 3834/17830 bytes ( 21.5%)    1.5 KiB/s ETA   9.1supload 4219/17830 bytes ( 23.7%)    1.5 KiB/s ETA   8.9supload 4606/17830 bytes ( 25.8%)    1.5 KiB/s ETA   8.6supload 4993/17830 bytes ( 28.0%)    1.5 KiB/s ETA   8.4supload 5379/17830 bytes ( 30.2%)    1.5 KiB/s ETA   8.1supload 5768/17830 bytes ( 32.3%)    1.5 KiB/s ETA   7.9supload 6141/17830 bytes ( 34.4%)    1.5 KiB/s ETA   7.6supload 6527/17830 bytes ( 36.6%)    1.5 KiB/s ETA   7.4supload 6908/17830 bytes ( 38.7%)    1.5 KiB/s ETA   7.1supload 7291/17830 bytes ( 40.9%)    1.5 KiB/s ETA   6.9supload 7677/17830 bytes ( 43.1%)    1.5 KiB/s ETA   6.6supload 8064/17830 bytes ( 45.2%)    1.5 KiB/s ETA   6.4supload 8453/17830 bytes ( 47.4%)    1.5 KiB/s ETA   6.1supload 8837/17830 bytes ( 49.6%)    1.5 KiB/s ETA   5.9supload 9223/17830 bytes ( 51.7%)    1.5 KiB/s ETA   5.6supload 9609/17830 bytes ( 53.9%)    1.5 KiB/s ETA   5.4supload 9996/17830 bytes ( 56.1%)    1.5 KiB/s ETA   5.1supload 10383/17830 bytes ( 58.2%)    1.5 KiB/s ETA   4.8supload 10774/17830 bytes ( 60.4%)    1.5 KiB/s ETA   4.6supload 11162/17830 bytes ( 62.6%)    1.5 KiB/s ETA   4.3supload 11534/17830 bytes ( 64.7%)    1.5 KiB/s ETA   4.1supload 11929/17830 bytes ( 66.9%)    1.5 KiB/s ETA   3.8supload 12313/17830 bytes ( 69.1%)    1.5 KiB/s ETA   3.6supload 12696/17830 bytes ( 71.2%)    1.5 KiB/s ETA   3.3supload 13080/17830 bytes ( 73.4%)    1.5 KiB/s ETA   3.1supload 13455/17830 bytes ( 75.5%)    1.5 KiB/s ETA   2.8supload 13841/17830 bytes ( 77.6%)    1.5 KiB/s ETA   2.6supload 14234/17830 bytes ( 79.8%)    1.5 KiB/s ETA   2.3supload 14622/17830 bytes ( 82.0%)    1.5 KiB/s ETA   2.1supload 15009/17830 bytes ( 84.2%)    1.5 KiB/s ETA   1.8supload 15398/17830 bytes ( 86.4%)    1.5 KiB/s ETA   1.6supload 15792/17830 bytes ( 88.6%)    1.5 KiB/s ETA   1.3supload 16179/17830 bytes ( 90.7%)    1.5 KiB/s ETA   1.1supload 16564/17830 bytes ( 92.9%)    1.5 KiB/s ETA   0.8supload 16949/17830 bytes ( 95.1%)    1.5 KiB/s ETA   0.6supload 17335/17830 bytes ( 97.2%)    1.5 KiB/s ETA   0.3supload 17720/17830 bytes ( 99.4%)    1.5 KiB/s ETA   0.1supload 17830/17830 bytes (100.0%)    1.5 KiB/s ETA   0.0s
-UPLOAD CRC OK
-UPLOAD OK
-HANDOFF ADDRESS 0x00100000
-HANDOFF LENGTH 0x00004591
-HANDOFF FIRST WORD 0xF10C00C0
-HANDOFF SCTLR 0x00C50878
-HANDOFF CPSR 0x600001DA
-HANDOFF BRANCH
-NET10 LAN9512 TX START
-NET10 BASELINE OK
-NET10 LAN9512 MAC 02:47:41:42:49:58
-NET10 LAN9512 CONFIG OK
-NET10 WAITING FOR LINK
-NET10 TX SUCCEEDED 10
-GABIX LOADER READY

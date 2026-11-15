@@ -1,5 +1,7 @@
 # Raspberry Pi 2 physical Ethernet baselines
 
+**Storage note:** This document preserves historical results and checksums. Raw logs and compiled payloads are local-only and ignored; earlier Git commits retain the historical copies. See [artifact policy](../README.md).
+
 Each stage changes one hardware boundary and remains immutable after its
 physical result is recorded. Development payloads are loaded into RAM by the
 SD-resident UART loader; these tests do not write the SD card.

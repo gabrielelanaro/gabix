@@ -76,3 +76,13 @@ For gabix lessons, tours, and explainers, three project-specific rules apply on 
 - **Both architectures are first-class.** x86 and ARM are two answers to one problem; teach the problem, then both. Neither is the default with the other as a footnote.
 - **Ground every behavioral claim in gabix source.** A claim about what the code or hardware does points at the gabix file and line, or the manual section.
 - **Code blocks use the course dark theme.** Do not override the `pre` background or text color — `assets/lesson.css` paints `pre` dark with near-white text and styles `.c` comments grey. Tag every comment `<span class="c">`.
+
+
+## Generated output and review hygiene
+
+Follow `artifacts/README.md`. Keep compiled output in build directories and raw
+run output in `target/runs/<date>-<purpose>/` (temporary scratch output may use
+an OS temporary directory). Commit concise findings and reproducible tests;
+do not commit routine raw logs, screenshots, packet captures, or compiled probes.
+Preserve recovery-image metadata in `artifacts/pi2-images.json`; images remain
+in the external store. Inspect the staged paths before each commit.

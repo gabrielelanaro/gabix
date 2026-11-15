@@ -1,5 +1,7 @@
 # Raspberry Pi 2 UART payload baselines
 
+**Storage note:** This document preserves historical results and checksums. Raw logs and compiled payloads are local-only and ignored; earlier Git commits retain the historical copies. See [artifact policy](../README.md).
+
 Each file in this directory is immutable after its physical result is recorded.
 New stages receive a new filename. The SD-resident diagnostic loader writes each
 payload at `0x00100000` after validating its CRC32.
