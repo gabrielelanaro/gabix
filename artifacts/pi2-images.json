@@ -40,6 +40,16 @@
       "protected": false,
       "source": "pi2-uart-smoke-working-2026-08-09 with diagnostic UART failure and CRC messages",
       "evidence": "Build and structural image verification passed; physical boot has not been attempted."
+    },
+    {
+      "id": "pi2-sd-boot-2026-11-15",
+      "filename": "gabix-pi2-sd-boot-2026-11-15.img",
+      "size": 2634022912,
+      "sha256": "81a0e9ffb659207734de1b340a3b3d84704aca2a9c9c0241951ce35a628bb1b3",
+      "status": "hardware-passed",
+      "protected": true,
+      "source": "Protected pi2-uart-loader-full-2026-08-15 baseline with SD boot loader, 128 MiB kernel partition and two development kernel copies",
+      "evidence": "Physical Pi booted the permanently installed SD loader, confirmed an Ethernet-uploaded kernel, recovered from a hung candidate through watchdog fallback, and accepted UART recovery after both CRCs were rejected. Final live MBR, boot record, both kernels and logical loader file match this image byte-for-byte. FAT allocation is preserved independently in the baseline image and live card. Installed in place over Ethernet/UART; this complete raw image has not been reflashed as a whole. Original protected image SHA256 unchanged. See docs/pi2-boot-status.md."
     }
   ]
 }

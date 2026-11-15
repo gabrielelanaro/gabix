@@ -7,10 +7,10 @@ if [ "$#" -ne 1 ] ||
         [ "$1" != "raspi2b-hardware" ] && [ "$1" != "raspi2b-lifecycle" ] &&
         [ "$1" != "raspi2b-uart-user" ] && [ "$1" != "pi2-loader" ] &&
         [ "$1" != "pi2-dev" ] && [ "$1" != "pi2-network-dev" ] &&
-        [ "$1" != "pi2-sd-check" ] && [ "$1" != "pi2-sd-transfer" ] &&
+        [ "$1" != "pi2-loader-trial" ] && [ "$1" != "pi2-sd-loader" ] && [ "$1" != "pi2-sd-check" ] && [ "$1" != "pi2-sd-transfer" ] &&
         [ "$1" != "pi2-network-pre-timer-probe" ] &&
         [ "$1" != "pi2-network-no-irq-dev" ]; }; then
-    echo "usage: $0 <pi2-sd-transfer|pi2-sd-check|virt|raspi2b|raspi2b-hardware|raspi2b-lifecycle|raspi2b-uart-user|pi2-loader|pi2-dev|pi2-network-dev|pi2-network-pre-timer-probe|pi2-network-no-irq-dev>" >&2
+    echo "usage: $0 <pi2-loader-trial|pi2-sd-loader|pi2-sd-transfer|pi2-sd-check|virt|raspi2b|raspi2b-hardware|raspi2b-lifecycle|raspi2b-uart-user|pi2-loader|pi2-dev|pi2-network-dev|pi2-network-pre-timer-probe|pi2-network-no-irq-dev>" >&2
     exit 2
 fi
 
@@ -56,6 +56,20 @@ case "$platform" in
         feature=
         binary=pi2-loader
         image_name=kernel-pi2-loader.img
+        ;;
+    pi2-loader-trial)
+        GABIX_TRIAL_LOADER=$(sh "$script_dir/build-arm.sh" pi2-sd-loader | tail -1)
+        export GABIX_TRIAL_LOADER
+        kernel_base=0x00100000
+        feature=
+        binary=pi2-loader-trial
+        image_name=kernel-pi2-loader-trial.img
+        ;;
+    pi2-sd-loader)
+        kernel_base=0x00008000
+        feature=pi-sd-loader
+        binary=pi2-loader
+        image_name=kernel-pi2-sd-loader.img
         ;;
     pi2-sd-transfer)
         kernel_base=0x00100000

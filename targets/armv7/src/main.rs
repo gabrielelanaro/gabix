@@ -16,6 +16,10 @@ mod scheduler;
 #[cfg(feature = "pi-sd-transfer")]
 mod sd_transfer;
 #[cfg(feature = "pi-sd-transfer")]
+mod sd_install;
+#[cfg(feature = "pi-sd-transfer")]
+mod boot_trial;
+#[cfg(feature = "pi-sd-transfer")]
 static mut PI_SD_TRANSFER: Option<sd_transfer::Receiver> = None;
 mod process;
 mod syscall;
@@ -98,6 +102,10 @@ global_asm!(
 
 #[no_mangle]
 extern "C" fn arm_kernel_entry() {
+    #[cfg(feature = "pi-sd-transfer")]
+    unsafe {
+        boot_trial::begin();
+    }
     let mut console = Pl011::new(UART_BASE);
     gabix_kernel::announce_boot(&mut console, PLATFORM);
 
@@ -128,7 +136,7 @@ extern "C" fn arm_kernel_entry() {
             let receiver = sd_transfer::Receiver::initialize();
             let ready = receiver.is_some();
             PI_SD_TRANSFER = receiver;
-            raspi2b::reset::stop_deadman();
+            release_boot_test_watchdog();
             if ready {
                 write_line(&mut console, b"gabix SD transfer region ready");
             } else {
@@ -235,7 +243,7 @@ extern "C" fn arm_kernel_entry() {
                 feature = "pi-network-pre-timer-probe",
                 feature = "pi-network-no-irq-dev"
             ))))]
-            raspi2b::reset::stop_deadman();
+            release_boot_test_watchdog();
             write_line(&mut console, b"gabix arm scheduler trace 10 20 11 21 12 22");
             write_line(&mut console, b"gabix arm scheduler tasks finished");
         }
@@ -336,6 +344,8 @@ extern "C" fn arm_kernel_entry() {
                             {
                                 discover_count += 1;
                             }
+                            #[cfg(feature = "pi-sd-transfer")]
+                            boot_trial::refresh();
                             next_discover = now + 100;
                         }
                         #[cfg(feature = "pi-hardware")]
@@ -486,8 +496,14 @@ unsafe fn verify_process_isolation(console: &mut Pl011) {
         write_line(console, b"gabix arm isolated userspace processes passed");
         write_line(console, b"gabix arm user faults contained; peer process survived");
         #[cfg(all(feature = "pi-hardware", not(any(feature = "pi-network-dev", feature = "pi-network-pre-timer-probe", feature = "pi-network-no-irq-dev"))))]
-        raspi2b::reset::stop_deadman();
-    } else { write_line(console, b"gabix arm process isolation FAILED"); }
+        release_boot_test_watchdog();
+    } else {
+        write_line(console, b"gabix arm process isolation FAILED");
+        #[cfg(feature = "pi-sd-transfer")]
+        if boot_trial::is_active() {
+            raspi2b::reset::reset();
+        }
+    }
 }
 
 #[no_mangle]
@@ -505,9 +521,13 @@ unsafe fn verify_timer_preemption(console: &mut Pl011) {
             feature = "pi-network-dev", feature = "pi-network-pre-timer-probe",
             feature = "pi-network-no-irq-dev"
         ))))]
-        raspi2b::reset::stop_deadman();
+        release_boot_test_watchdog();
     } else {
         write_line(console, b"gabix arm preemption check failed");
+        #[cfg(feature = "pi-sd-transfer")]
+        if boot_trial::is_active() {
+            raspi2b::reset::reset();
+        }
     }
 }
 
@@ -536,4 +556,32 @@ fn panic(_: &PanicInfo) -> ! {
     loop {
         core::hint::spin_loop();
     }
+}
+
+#[cfg(feature = "pi-hardware")]
+fn release_boot_test_watchdog() {
+    #[cfg(feature = "pi-sd-transfer")]
+    if boot_trial::is_active() {
+        boot_trial::refresh();
+        return;
+    }
+    raspi2b::reset::stop_deadman();
+}
+#[cfg(feature = "pi-sd-transfer")]
+pub fn confirm_sd_boot(console: &mut Pl011) {
+    if !boot_trial::is_active() {
+        return;
+    }
+    unsafe {
+        let network_ready = (&*core::ptr::addr_of!(PI_NETWORK)).is_some();
+        if network_ready {
+            if let Some(receiver) = (&mut *core::ptr::addr_of_mut!(PI_SD_TRANSFER)).as_mut() {
+                if receiver.confirm_boot() {
+                    write_line(console, b"GABIX SD BOOT CONFIRMED");
+                    return;
+                }
+            }
+        }
+    }
+    write_line(console, b"GABIX SD BOOT UNCONFIRMED; watchdog will retry");
 }

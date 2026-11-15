@@ -2,6 +2,8 @@
 name = "gabix-armv7"
 version = "0.1.0"
 edition = "2021"
+# Bare-metal fixtures below are explicit binaries, not hosted test harnesses.
+autotests = false
 
 [[bin]]
 name = "gabix-armv7"
@@ -86,6 +88,7 @@ pi-network-repeated-receive-probe = []
 pi-network-no-irq-dev = ["pi-hardware"]
 pi-lifecycle = ["raspi2b"]
 pi-uart-user = ["raspi2b"]
+pi-sd-loader = ["gabix-kernel/kernel"]
 pi-sd-transfer = ["pi-hardware", "pi-uart-user"]
 
 [profile.dev]
@@ -97,5 +100,11 @@ panic = "abort"
 [[bin]]
 name = "pi2-sd-check"
 path = "tests/sd_write.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "pi2-loader-trial"
+path = "tests/loader_trial.rs"
 test = false
 bench = false

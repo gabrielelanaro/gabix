@@ -17,6 +17,8 @@ pub fn serve_uart_uploads_and_ethernet(uart_console: &mut Pl011) -> ! {
     let mut last_uart_byte_tick = crate::raspi2b::timer::ticks();
     let mut next_ethernet_poll_tick = last_uart_byte_tick;
     let mut next_dhcp_discover_tick = last_uart_byte_tick;
+    #[cfg(feature = "pi-sd-transfer")]
+    crate::confirm_sd_boot(uart_console);
     write_line(uart_console, b"GABIX USER READY");
 
     loop {

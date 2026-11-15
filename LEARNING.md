@@ -14,6 +14,7 @@ Approach: follow the "Writing an OS in Rust" tutorial (phil-opp.com) as the spin
 - [ ] Shared file descriptors, VFS, and file syscalls on both architectures
 - [ ] Shared userspace sockets, blocking I/O, and TCP on ARM
 - [ ] Equivalent behavioral suites on x86, ARM virt, and physical Pi
+- [ ] Future extension: file-backed demand paging on x86 and ARM — handle a missing mapping by reading the required file page from storage into RAM, then resume the process. Existing page tables do not provide this automatically; the boot loader can continue loading the whole kernel.
 
 Each slice includes didactic source names, a short lesson, and physical validation
 through UART reboot/upload. Preserve the working server as the recovery image.
@@ -31,6 +32,8 @@ through UART reboot/upload. Preserve the working server as the recovery image.
 - [x] Build the physical kernel and partitioned SD-card image
 - [x] Initialize Raspberry Pi USB power, DWC2 DMA, and LAN9512 Ethernet
 - [ ] Verify UART, SD, USB, Ethernet, DHCP, ping, and UDP on a physical Pi 2B
+- [x] Ethernet uploads into SD kernel storage with complete read-back verification
+- [x] Permanent SD boot with two 32 MiB copies, trial confirmation, watchdog fallback, UART recovery, and a preserved recovery image
 
 ### TCP arc — the connection-oriented transport
 - [x] Lesson 31 TCP segment, three-way handshake, and first byte exchanged
@@ -550,6 +553,22 @@ A milestone is a "demo-able" checkpoint. Worth a commit + tag + log entry.
 ---
 
 ## Progress Log
+
+### 2026-11-15 — Permanent SD boot and recoverable Ethernet updates
+- **Installed:** Added the 128 MiB kernel partition after the existing partitions, two 32 MiB kernel areas, and the checked boot record. Replaced only the existing FAT loader allocation and its size field after RAM-loader tests. All installation sectors were read back; no card removal or manual power cycle was required.
+- **Behavior:** Ethernet uploads stream into the inactive copy, with chunk read-back and whole-image CRC. The loader records each attempt before execution. A watchdog reset skips an unconfirmed kernel; successful service startup confirms the chosen copy. Exhausting both copies enters the UART recovery loader.
+- **Physical validation:** Healthy SD boot, hung-candidate fallback, and both-invalid-checksum UART recovery passed with the RAM candidate and then the permanently installed loader. Restored normal SD boot afterward. Final copies are both 83,864 bytes; A is confirmed active with no pending attempt.
+- **Recovery:** Built a 2,634,022,912-byte burnable image from the protected original. Verified the loader and kernels, preserved all original bytes outside the MBR and approved loader sectors, and checked the original SHA256 remained unchanged. The live configuration was installed in place; a complete raw-image reflash and power-cut tests were not performed.
+- **Checks:** Three focused boot-record host tests, 16 existing UART/image-registry tests, and release builds passed. Physical checks live in tests/test_pi2_sd_boot.py; raw output stays under ignored target/runs/. Marked the two SD-update milestones complete; broader ARM parity remains in progress.
+- **Next:** Review this installation and its explicit limits in docs/pi2-sd-boot.md. Normal updates use the uploader's --kernel option and a UART-triggered reboot. Future work can address authenticated transfers, redundant metadata, and the executable RAM limit independently.
+
+### 2026-11-15 — Card capacity and SD-loader checkpoint
+- **Physical evidence:** Read CSD capacity and the final sector on the Pi: 15,523,840 sectors (7,948,206,080 bytes). Existing partitions end at sector 4,882,432. No partition-table or boot-file writes performed.
+- **Implemented:** Planned 128 MiB kernel partition with two 32 MiB extents, read-only layout checker, checked boot-record decoder, and optional SD-loader build. Decoder host tests and loader release build pass; SD-loader execution on hardware remains untested.
+- **Incomplete:** Automatic new/previous/UART fallback, recovery-image generation, and permanent installation. See docs/pi2-boot-status.md for the explicit inventory and next delivery milestone.
+
+### 2026-11-15 — Demand-paging follow-up
+- **Requested:** Record file-backed demand paging as future work for both architectures. Added an unchecked roadmap item; no paging implementation changed.
 
 ### 2026-11-15 — Ethernet file transfer to SD
 - **Built:** Opt-in Pi transfer kernel, bounded staging-file receiver on UDP 5556, and a Mac uploader. Chunks are written and read back before acknowledgement; whole-file CRC and host byte-for-byte read-back verify completion. No boot selection changes.
