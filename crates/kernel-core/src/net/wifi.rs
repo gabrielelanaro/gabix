@@ -1,4 +1,26 @@
 //! IEEE 802.11 station packet parsing, shared by device adapters.
+//!
+//! The common 24-byte header carries frame control (0..2), duration (2..4),
+//! three MAC addresses (4..10, 10..16, 16..22), and sequence/fragment (22..24).
+//! Address roles depend on the To-DS/From-DS direction flags. A station's
+//! management frames use receiver, sender, then access-point identity.
+//! Multi-byte 802.11 fields are little-endian; embedded Ethernet protocol
+//! identifiers are big-endian.
+
+pub const MAX_NETWORK_NAME_BYTES: usize = 32;
+pub const MANAGEMENT_HEADER_BYTES: usize = 24;
+// First frame-control byte: type and subtype. The second byte holds flags.
+pub const ASSOCIATION_REQUEST: u8 = 0x00;
+pub const ASSOCIATION_RESPONSE: u8 = 0x10;
+pub const BEACON: u8 = 0x80;
+pub const DISASSOCIATION: u8 = 0xa0;
+pub const AUTHENTICATION: u8 = 0xb0;
+pub const DEAUTHENTICATION: u8 = 0xc0;
+pub const DATA: u8 = 0x08;
+pub const DISTRIBUTION_DIRECTION_MASK: u8 = 0b11;
+// IEEE 802.11 reason 3: sending station is leaving the network.
+pub const REASON_STATION_LEAVING: u16 = 3;
+pub const STATUS_SUCCESS: u16 = 0;
 
 /// A beacon advertises an access point before a station has joined it.
 pub struct Beacon<'a> {
@@ -11,7 +33,7 @@ pub struct Beacon<'a> {
 
 pub fn parse_beacon(frame: &[u8]) -> Option<Beacon<'_>> {
     // 24-byte management header, 8-byte timestamp, interval and capabilities.
-    if frame.len() < 36 || frame[0] != 0x80 || frame[1] & 3 != 0 {
+    if frame.len() < 36 || frame[0] != BEACON || frame[1] & DISTRIBUTION_DIRECTION_MASK != 0 {
         return None;
     }
     let mut bssid = [0; 6];
@@ -25,7 +47,7 @@ pub fn parse_beacon(frame: &[u8]) -> Option<Beacon<'_>> {
         let length = header[1] as usize;
         let value = remaining.get(2..2 + length)?;
         match header[0] {
-            0 if length <= 32 && ssid.is_none() => ssid = Some(value),
+            0 if length <= MAX_NETWORK_NAME_BYTES && ssid.is_none() => ssid = Some(value),
             0 => return None,
             3 if length == 1 => channel = Some(value[0]),
             48 if rsn.is_none() => rsn = Some(value),
@@ -51,7 +73,7 @@ pub fn authentication_request(
     sequence: u16,
 ) -> Option<usize> {
     let frame = out.get_mut(..30)?;
-    management_header(frame, 0xb0, station, access_point, sequence);
+    management_header(frame, AUTHENTICATION, station, access_point, sequence);
     frame[24..30].copy_from_slice(&[0, 0, 1, 0, 0, 0]);
     Some(frame.len())
 }
@@ -66,7 +88,7 @@ pub fn association_request(
     ssid: &[u8],
     access_point_capabilities: u16,
 ) -> Option<usize> {
-    if ssid.len() > 32 {
+    if ssid.len() > MAX_NETWORK_NAME_BYTES {
         return None;
     }
     const RSN: [u8; 20] = [
@@ -74,7 +96,7 @@ pub fn association_request(
     ];
     let length = 28 + 2 + ssid.len() + 10 + 6 + 22;
     let frame = out.get_mut(..length)?;
-    management_header(frame, 0x00, station, access_point, sequence);
+    management_header(frame, ASSOCIATION_REQUEST, station, access_point, sequence);
     // ESS/privacy plus supported short-preamble and short-slot capabilities.
     let capabilities = 0x0011 | (access_point_capabilities & 0x0420);
     frame[24..26].copy_from_slice(&capabilities.to_le_bytes());
@@ -110,7 +132,7 @@ fn management_header(
 }
 
 /// Validate that a management reply belongs to this station and access point.
-/// The caller supplies 0xb0 for authentication or 0x10 for association.
+/// The caller supplies AUTHENTICATION or ASSOCIATION_RESPONSE.
 pub fn management_reply_status(
     frame: &[u8],
     subtype: u8,
@@ -119,7 +141,7 @@ pub fn management_reply_status(
 ) -> Option<u16> {
     if frame.len() < 30
         || frame[0] != subtype
-        || frame[1] & 3 != 0
+        || frame[1] & DISTRIBUTION_DIRECTION_MASK != 0
         || frame[4..10] != station
         || frame[10..16] != access_point
         || frame[16..22] != access_point
@@ -127,8 +149,8 @@ pub fn management_reply_status(
         return None;
     }
     let offset = match subtype {
-        0xb0 if frame[24..28] == [0, 0, 2, 0] => 28,
-        0x10 => 26,
+        AUTHENTICATION if frame[24..28] == [0, 0, 2, 0] => 28,
+        ASSOCIATION_RESPONSE => 26,
         _ => return None,
     };
     Some(u16::from_le_bytes([frame[offset], frame[offset + 1]]))
@@ -144,7 +166,7 @@ pub fn eapol_request(
 ) -> Option<usize> {
     let length = 32 + eapol.len();
     let frame = out.get_mut(..length)?;
-    management_header(frame, 0x08, station, ap, sequence);
+    management_header(frame, DATA, station, ap, sequence);
     frame[1] = 1; // To DS: address 1 is the receiver AP, address 3 is destination.
     frame[24..32].copy_from_slice(&[0xaa, 0xaa, 3, 0, 0, 0, 0x88, 0x8e]);
     frame[32..].copy_from_slice(eapol);
@@ -154,7 +176,7 @@ pub fn eapol_request(
 /// Extract an unencrypted EAPOL frame sent by the selected access point.
 pub fn eapol_reply<'a>(frame: &'a [u8], station: [u8; 6], ap: [u8; 6]) -> Option<&'a [u8]> {
     if frame.len() < 32
-        || frame[0] != 0x08
+        || frame[0] != DATA
         || frame[1] & 0x43 != 2
         || frame[4..10] != station
         || frame[10..16] != ap
@@ -220,7 +242,7 @@ impl CcmpLink {
         }
         let length = 40 + ethernet.len() - 14;
         let frame = out.get_mut(..length)?;
-        management_header(frame, 0x08, self.station, self.ap, self.sequence);
+        management_header(frame, DATA, self.station, self.ap, self.sequence);
         self.sequence = self.sequence.wrapping_add(1) & 0xfff;
         frame[1] = 0x41; // To DS, protected by CCMP.
         frame[16..22].copy_from_slice(&ethernet[..6]);

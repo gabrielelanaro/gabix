@@ -14,13 +14,39 @@ use gabix_kernel::{
     },
 };
 
+// Connection policy, measured against the Pi's microsecond system timer.
+// Scan channels 1..=13; each authentication/association request gets three tries.
+const FIRST_SCAN_CHANNEL: u8 = 1;
+const LAST_SCAN_CHANNEL: u8 = 13;
+const SCAN_DWELL_US: u32 = 300_000;
+const JOIN_RETRY_US: u32 = 1_000_000;
+const JOIN_ATTEMPTS: u8 = 3;
+const SECURITY_TIMEOUT_US: u32 = 10_000_000;
+const LINK_SILENCE_TIMEOUT_US: u32 = 15_000_000;
+const RECONNECT_BACKOFF_US: u32 = 2_000_000;
+// Zero in our event log identifies a local timeout/error without an AP reason.
+const LOCAL_DISCONNECT_REASON: u16 = 0;
+const PAIRWISE_KEY_TABLE_ENTRY: u8 = 4;
+const PAIRWISE_KEY_ID: u8 = 0;
+const EAPOL_ETHERTYPE: [u8; 2] = [0x88, 0x8e];
+// EAPOL header (4 bytes) + descriptor type (1 byte), then key-information flags.
+const EAPOL_KEY_INFORMATION: core::ops::Range<usize> = 5..7;
+const PAIRWISE_MESSAGE_1_FLAGS: [u8; 2] = [0, 0x8a];
+const SYSTEM_TIMER_LOW: *const u32 = 0x3f00_3004 as *const u32;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum State {
+    /// Listen for a beacon advertising the configured network.
     Scanning,
+    /// Open-system station authentication, before password verification.
     Authenticating,
+    /// Ask the access point to accept our station and security capabilities.
     Associating,
+    /// Exchange WPA2 messages and install the negotiated packet keys.
     Securing,
+    /// Encrypted frames are available to the existing DHCP/IP stack.
     Online,
+    /// Pause before discarding old keys and starting the scan again.
     Backoff,
 }
 #[derive(Clone, Copy, Debug)]
@@ -47,6 +73,7 @@ pub struct WifiEthernet {
     access_point: Option<AccessPoint>,
     state: State,
     entered: u32,
+    // Refreshed by a matching beacon or an accepted encrypted data frame.
     last_beacon: u32,
     channel: u8,
     attempts: u8,
@@ -62,15 +89,23 @@ impl WifiEthernet {
         pmk: &'static [u8; 32],
         firmware: &[u8],
     ) -> Result<Self, Error> {
-        if ssid.is_empty() || ssid.len() > 32 {
+        if ssid.is_empty() || ssid.len() > wifi::MAX_NETWORK_NAME_BYTES {
             return Err(Error::Configuration);
         }
+        // `radio` owns the Pi USB transport and the selected dongle address.
+        // These calls send USB commands; the Pi CPU executes the Rust code.
         let mut radio = Rtl8188cu::attach(host, device)?;
+        // Read the factory identity and per-device calibration values.
         let identity = radio.identify()?;
+        // A kernel reboot can leave the dongle running. Reset its internal
+        // power state before applying the startup sequence again.
         radio.power_off()?;
         radio.power_on()?;
+        // Allocate the dongle's packet buffers and connect its USB queues.
         radio.initialize_packet_memory()?;
+        // Copy the vendor program into the dongle's processor memory.
         radio.load_firmware(firmware)?;
+        // Configure and calibrate the radio so scanning can receive beacons.
         radio.initialize_receiver(&identity)?;
         let now = clock();
         Ok(Self {
@@ -84,7 +119,7 @@ impl WifiEthernet {
             state: State::Scanning,
             entered: now,
             last_beacon: now,
-            channel: 1,
+            channel: FIRST_SCAN_CHANNEL,
             attempts: 0,
             sequence: 1,
             event: Some(Event::State(State::Scanning)),
@@ -105,15 +140,15 @@ impl WifiEthernet {
     /// Used for local recovery as well as the physical reconnect check.
     pub fn reconnect(&mut self) {
         if let Some(ap) = self.access_point {
-            let mut frame = [0u8; 26];
-            frame[0] = 0xc0;
+            let mut frame = [0u8; wifi::MANAGEMENT_HEADER_BYTES + 2];
+            frame[0] = wifi::DEAUTHENTICATION;
             frame[4..10].copy_from_slice(&ap.address);
             frame[10..16].copy_from_slice(&self.identity.mac);
             frame[16..22].copy_from_slice(&ap.address);
-            frame[24..26].copy_from_slice(&3u16.to_le_bytes());
+            frame[24..26].copy_from_slice(&wifi::REASON_STATION_LEAVING.to_le_bytes());
             let _ = self.radio.transmit(&frame);
         }
-        self.disconnect(3);
+        self.disconnect(wifi::REASON_STATION_LEAVING);
     }
     fn transition(&mut self, state: State) {
         self.state = state;
@@ -128,7 +163,7 @@ impl WifiEthernet {
         self.event = Some(Event::Disconnected(reason));
     }
     fn hardware_failure(&mut self, error: Error) {
-        self.disconnect(0);
+        self.disconnect(LOCAL_DISCONNECT_REASON);
         self.event = Some(Event::Hardware(error));
     }
     fn send_join(&mut self) -> Result<(), Error> {
@@ -162,24 +197,28 @@ impl WifiEthernet {
         let now = clock();
         let elapsed = now.wrapping_sub(self.entered);
         match self.state {
-            State::Scanning if elapsed >= 300_000 => {
-                self.channel = self.channel % 13 + 1;
+            State::Scanning if elapsed >= SCAN_DWELL_US => {
+                self.channel = self.channel % LAST_SCAN_CHANNEL + FIRST_SCAN_CHANNEL;
                 self.radio.set_channel(self.channel)?;
                 self.entered = now;
             }
-            State::Authenticating | State::Associating if elapsed >= 1_000_000 => {
-                if self.attempts >= 3 {
-                    self.disconnect(0);
+            State::Authenticating | State::Associating if elapsed >= JOIN_RETRY_US => {
+                if self.attempts >= JOIN_ATTEMPTS {
+                    self.disconnect(LOCAL_DISCONNECT_REASON);
                 } else {
                     self.send_join()?;
                 }
             }
-            State::Securing if elapsed >= 10_000_000 => self.disconnect(0),
-            State::Online if now.wrapping_sub(self.last_beacon) >= 15_000_000 => self.disconnect(0),
-            State::Backoff if elapsed >= 2_000_000 => {
+            State::Securing if elapsed >= SECURITY_TIMEOUT_US => {
+                self.disconnect(LOCAL_DISCONNECT_REASON)
+            }
+            State::Online if now.wrapping_sub(self.last_beacon) >= LINK_SILENCE_TIMEOUT_US => {
+                self.disconnect(LOCAL_DISCONNECT_REASON)
+            }
+            State::Backoff if elapsed >= RECONNECT_BACKOFF_US => {
                 self.radio.clear_keys()?;
-                self.channel = 1;
-                self.radio.set_channel(1)?;
+                self.channel = FIRST_SCAN_CHANNEL;
+                self.radio.set_channel(FIRST_SCAN_CHANNEL)?;
                 self.transition(State::Scanning);
             }
             _ => {}
@@ -189,7 +228,9 @@ impl WifiEthernet {
     fn handle_eapol(&mut self, packet: &[u8], encrypted: bool) -> Result<(), Error> {
         let ap = self.access_point.ok_or(Error::Configuration)?.address;
         // Full pairwise reauthentication starts with a new station nonce.
-        if self.state == State::Online && packet.get(5..7) == Some(&[0, 0x8a]) {
+        if self.state == State::Online
+            && packet.get(EAPOL_KEY_INFORMATION) == Some(&PAIRWISE_MESSAGE_1_FLAGS)
+        {
             self.reconnect();
             return Ok(());
         }
@@ -206,7 +247,12 @@ impl WifiEthernet {
         };
         if let Some(keys) = response.install {
             if let Some(pairwise) = keys.pairwise {
-                self.radio.install_ccmp_key(4, 0, ap, &pairwise)?;
+                self.radio.install_ccmp_key(
+                    PAIRWISE_KEY_TABLE_ENTRY,
+                    PAIRWISE_KEY_ID,
+                    ap,
+                    &pairwise,
+                )?;
                 self.link = CcmpLink::new(
                     self.identity.mac,
                     ap,
@@ -229,7 +275,7 @@ impl WifiEthernet {
             let mut ethernet = [0u8; 1100];
             ethernet[..6].copy_from_slice(&ap);
             ethernet[6..12].copy_from_slice(&self.identity.mac);
-            ethernet[12..14].copy_from_slice(&[0x88, 0x8e]);
+            ethernet[12..14].copy_from_slice(&EAPOL_ETHERTYPE);
             ethernet[14..14 + response.length].copy_from_slice(&reply[..response.length]);
             self.send_encrypted(&ethernet[..14 + response.length])?;
         } else {
@@ -276,7 +322,7 @@ impl WifiEthernet {
                 && beacon.rsn == Some(&wpa2::RSN[2..])
             {
                 let channel = beacon.channel.unwrap_or(self.channel);
-                if !(1..=13).contains(&channel) {
+                if !(FIRST_SCAN_CHANNEL..=LAST_SCAN_CHANNEL).contains(&channel) {
                     return Ok(None);
                 }
                 self.radio
@@ -300,9 +346,9 @@ impl WifiEthernet {
         let Some(ap) = self.access_point else {
             return Ok(None);
         };
-        if frame.len() >= 26
-            && matches!(frame[0], 0xa0 | 0xc0)
-            && frame[1] & 3 == 0
+        if frame.len() >= wifi::MANAGEMENT_HEADER_BYTES + 2
+            && matches!(frame[0], wifi::DISASSOCIATION | wifi::DEAUTHENTICATION)
+            && frame[1] & wifi::DISTRIBUTION_DIRECTION_MASK == 0
             && frame[4..10] == self.identity.mac
             && frame[10..16] == ap.address
             && frame[16..22] == ap.address
@@ -312,14 +358,14 @@ impl WifiEthernet {
         }
         if matches!(self.state, State::Authenticating | State::Associating) {
             let subtype = if self.state == State::Authenticating {
-                0xb0
+                wifi::AUTHENTICATION
             } else {
-                0x10
+                wifi::ASSOCIATION_RESPONSE
             };
             if let Some(status) =
                 wifi::management_reply_status(frame, subtype, self.identity.mac, ap.address)
             {
-                if status != 0 {
+                if status != wifi::STATUS_SUCCESS {
                     self.disconnect(status);
                 } else if self.state == State::Authenticating {
                     self.attempts = 0;
@@ -355,7 +401,7 @@ impl WifiEthernet {
             return Ok(None);
         };
         self.last_beacon = clock();
-        if ethernet[12..14] == [0x88, 0x8e] {
+        if ethernet[12..14] == EAPOL_ETHERTYPE {
             if ethernet[..6] == self.identity.mac && ethernet[6..12] == ap.address {
                 self.handle_eapol(&ethernet[14..length], true)?;
             }
@@ -391,5 +437,5 @@ impl FrameDevice for WifiEthernet {
     }
 }
 fn clock() -> u32 {
-    unsafe { core::ptr::read_volatile(0x3f003004 as *const u32) }
+    unsafe { core::ptr::read_volatile(SYSTEM_TIMER_LOW) }
 }

@@ -26,6 +26,166 @@ mod tables;
 
 use super::usb::{BulkEndpoints, Dwc2, UsbDevice};
 
+// These are addresses inside the USB dongle. read*/write* access them through
+// USB control messages; they are separate from the Pi USB-controller registers.
+// Reference names are retained to make OpenBSD's r92creg.h easy to compare.
+mod power {
+    pub const STATE: u16 = 0x0004; // APS_FSMCO
+    pub const AUTOLOAD_DONE: u16 = 1 << 1; // PFM_ALDN
+    pub const REQUEST_MAC_POWER_ON: u16 = 1 << 8; // APFM_ONMAC
+    pub const HARDWARE_SUSPEND: u16 = 1 << 11; // AFSM_HSUS
+    pub const POWER_DOWN_ENABLED: u16 = 1 << 4; // PDN_EN
+    pub const RUNNING_CONFIGURATION: u16 = HARDWARE_SUSPEND | POWER_DOWN_ENABLED | AUTOLOAD_DONE;
+
+    pub const CONTROL_LOCK: u16 = 0x001c; // RSV_CTRL
+    pub const UNLOCK_CONTROLS: u8 = 0;
+    pub const SWITCHING_REGULATOR: u16 = 0x0011; // SPS0_CTRL
+                                                 // Reference-driver setting for pulse-width modulation (PWM) mode.
+    pub const REGULATOR_PWM_CONFIGURATION: u8 = 0x2b;
+    pub const DIGITAL_REGULATOR: u16 = 0x0021; // LDOV12D_CTRL
+    pub const DIGITAL_REGULATOR_ENABLED: u8 = 1; // LDV12_EN
+
+    pub const ISOLATION: u16 = 0x0000; // SYS_ISO_CTRL
+    pub const MD2PP_ISOLATION: u16 = 1; // MD2PP; reference does not expand the name.
+    pub const RADIO_DIGITAL_ISOLATION: u16 = 1 << 9; // DIOR
+    pub const MAC_SLEEP_CONTROL: u16 = 0x0600; // APSD_CTRL
+    pub const MAC_OFF_REQUEST: u8 = 1 << 6; // OFF
+    pub const MAC_OFF_STATUS: u16 = 1 << 7; // OFF_STATUS
+
+    pub const BLOCK_ENABLE: u16 = 0x0100; // CR
+    pub const USB_TRANSMIT_DMA: u16 = 1 << 0; // HCI_TXDMA_EN
+    pub const USB_RECEIVE_DMA: u16 = 1 << 1; // HCI_RXDMA_EN
+    pub const TRANSMIT_DMA: u16 = 1 << 2; // TXDMA_EN
+    pub const RECEIVE_DMA: u16 = 1 << 3; // RXDMA_EN
+    pub const PROTOCOL: u16 = 1 << 4; // PROTOCOL_EN
+    pub const PACKET_SCHEDULER: u16 = 1 << 5; // SCHEDULE_EN
+    pub const MAC_TRANSMIT: u16 = 1 << 6; // MACTXEN
+    pub const MAC_RECEIVE: u16 = 1 << 7; // MACRXEN
+    pub const SECURITY: u16 = 1 << 9; // ENSEC
+    pub const REQUIRED_BLOCKS: u16 = USB_TRANSMIT_DMA
+        | USB_RECEIVE_DMA
+        | TRANSMIT_DMA
+        | RECEIVE_DMA
+        | PROTOCOL
+        | PACKET_SCHEDULER
+        | MAC_TRANSMIT
+        | MAC_RECEIVE
+        | SECURITY;
+
+    // OpenBSD urtwn_r92c_power_on ends with this write but supplies no register
+    // name or bit description. Preserve the tested value without inventing one.
+    pub const UNDOCUMENTED_FINAL_REGISTER: u16 = 0xfe10;
+    pub const UNDOCUMENTED_FINAL_VALUE: u8 = 0x19;
+
+    pub const POLL_INTERVAL_US: u32 = 5;
+    pub const MAC_POLL_INTERVAL_US: u32 = 50;
+    pub const REGULATOR_SETTLE_US: u32 = 100;
+}
+
+// Warm-reset values from OpenBSD urtwn_r92c_power_off. Some are complete
+// reference configurations rather than individual bits; retain their numeric
+// values here so the ordered procedure below can state each operation's purpose.
+mod shutdown {
+    pub const TRANSMIT_PAUSE: u16 = 0x0522; // TXPAUSE
+    pub const ALL_TRANSMIT_QUEUES: u8 = 0xff;
+    pub const RADIO_POWER_CONTROL: u8 = 0; // RF_AC
+    pub const RADIO_DISABLED: u32 = 0;
+    pub const USB_ANALOG_AND_DIGITAL_ENABLED: u8 = 0x14; // SYS_FUNC_EN USBA | USBD
+    pub const BASEBAND_GLOBAL_RESET: u8 = 1 << 1; // BB_GLB_RST
+    pub const RESET_MAC_ENABLE_PROCESSOR: u8 = 0x54; // CPUEN | ELDR | HWPDN, high byte
+    pub const SYSTEM_CLOCK: u16 = 0x0008; // SYS_CLKR
+                                          // Includes the reference's unnamed bit 0x4000; do not infer its function.
+    pub const MAC_CLOCK_DISABLED_CONFIGURATION: u16 = 0x70a3;
+    pub const ANALOG_PLL: u16 = 0x0028; // AFE_PLL_CTRL
+    pub const ANALOG_PLL_DISABLED: u8 = 0x80;
+    pub const CRYSTAL_CONTROL: u16 = 0x0024; // AFE_XTAL_CTRL
+    pub const ANALOG_DIGITAL_CLOCK_GATED: u16 = 0x880f;
+    pub const DIGITAL_ISOLATION_CONFIGURATION: u8 = 0xf9;
+    pub const LOADER_ISOLATION_CONFIGURATION: u8 = 0x82;
+
+    pub const GPIO_LOW: u16 = 0x0044; // GPIO_PIN_CTRL
+    pub const GPIO_LOW_OUTPUT_MASK: u32 = 0x0000_ff00;
+    pub const GPIO_LOW_OUTPUT_SHIFT: u32 = 8;
+    pub const GPIO_LOW_CONFIGURATION: u32 = 0x00ff_0000;
+    pub const GPIO_PIN_MULTIPLEXER: u16 = 0x0043; // MAC_PINMUX_CFG
+    pub const GPIO_HIGH: u16 = 0x0042; // GPIO_IO_SEL
+    pub const GPIO_HIGH_INPUT_MASK: u16 = 0x000f;
+    pub const GPIO_HIGH_OUTPUT_MASK: u16 = 0x00f0;
+    pub const GPIO_HIGH_OUTPUT_SHIFT: u32 = 4;
+    pub const GPIO_HIGH_CONFIGURATION: u16 = 0x0780;
+    pub const LED_CONTROL: u16 = 0x004c; // LEDCFG0
+    pub const BOTH_LEDS_DISABLED: u16 = 0x8080;
+
+    pub const ANALOG_SUPPLY: u16 = 0x0020; // LDOA15_CTRL
+    pub const ANALOG_SUPPLY_OFF_OUTPUT_BUFFER: u8 = 4; // OBUF without EN
+    pub const REGULATOR_PFM_CONFIGURATION: u8 = 0x23;
+    pub const USB_SUSPEND_CONFIGURATION: u16 = 0x4802; // APDM_HOST | AFSM_HSUS | PFM_ALDN
+    pub const LOCK_POWER_CONTROLS: u8 = 0x0e; // RSV_CTRL
+}
+
+// Firmware is copied into the dongle's own processor memory. These constants
+// describe its download window and host-to-firmware command registers.
+// Reference: OpenBSD r92creg.h, rtwn_load_firmware, rtwn_fw_cmd.
+mod fw {
+    pub const CONTROL: u16 = 0x0080; // MCUFWDL
+    pub const DOWNLOAD_ENABLED: u8 = 1 << 0;
+    pub const DOWNLOAD_READY: u32 = 1 << 1;
+    pub const CHECKSUM_REPORTED: u8 = 1 << 2;
+    pub const INITIALIZATION_READY: u16 = 1 << 6; // WINTINI_RDY
+    pub const RUNNING_FROM_RAM: u8 = 1 << 7; // RAM_DL_SEL
+    pub const PAGE_MASK: u32 = 0x0007_0000;
+    pub const PAGE_SHIFT: u32 = 16;
+    pub const ROM_DOWNLOAD_ENABLED: u32 = 1 << 19; // ROM_DLEN
+    pub const SYSTEM_FUNCTIONS: u16 = 0x0002; // SYS_FUNC_EN
+    pub const PROCESSOR_ENABLED: u16 = 1 << 10; // CPUEN
+
+    pub const HEADER_BYTES: usize = 32;
+    pub const SIGNATURE_FAMILY_SHIFT: u32 = 4;
+    pub const SIGNATURE_8188C: u16 = 0x88c;
+    pub const SIGNATURE_8192C: u16 = 0x92c;
+    pub const PAGE_BYTES: usize = 4096;
+    pub const PAGE_COUNT: usize = 8;
+    pub const WRITE_WINDOW: u16 = 0x1000;
+    // The USB reference loader uses large blocks, then words, then bytes.
+    pub const USB_BLOCK_BYTES: usize = 196;
+    pub const USB_WORD_BYTES: usize = 4;
+
+    pub const MAILBOX_STATUS: u16 = 0x01cc; // HMETFR
+    pub const SELF_RESET_REGISTER: u16 = MAILBOX_STATUS + 3;
+    pub const SELF_RESET_REQUEST: u8 = 0x20;
+    pub const MAILBOX_BASE: u16 = 0x01d0; // HMEBOX
+    pub const MAILBOX_EXTENSION_BASE: u16 = 0x0088; // HMEBOX_EXT
+    pub const MAILBOX_COUNT: u8 = 4;
+    pub const MAIN_WORD_BYTES: usize = 4;
+    pub const EXTENSION_BYTES: usize = 2;
+    pub const INLINE_PAYLOAD_BYTES: usize = MAIN_WORD_BYTES - 1;
+    pub const MAX_COMMAND_PAYLOAD_BYTES: usize = INLINE_PAYLOAD_BYTES + EXTENSION_BYTES;
+    pub const COMMAND_HAS_EXTENSION: u8 = 1 << 7;
+
+    pub const RESET_ATTEMPTS: usize = 100;
+    pub const RESET_POLL_US: u32 = 50;
+    pub const DOWNLOAD_SETTLE_US: u32 = 50;
+    pub const READBACK_RETRY_US: u32 = 100;
+    pub const CHECKSUM_POLL_US: u32 = 5;
+    pub const PROCESSOR_START_US: u32 = 5_000;
+    pub const READY_POLL_US: u32 = 10;
+    pub const MAILBOX_POLL_US: u32 = 10;
+}
+
+// Realtek vendor control requests: register address in wValue, zero wIndex,
+// byte count in wLength. USB encodes both 16-bit fields least-significant first.
+const USB_VENDOR_DEVICE_READ: u8 = 0xc0;
+const USB_VENDOR_DEVICE_WRITE: u8 = 0x40;
+const REALTEK_REGISTER_REQUEST: u8 = 5;
+const UNUSED_REQUEST_INDEX: u16 = 0;
+const REGISTER_POLL_ATTEMPTS: usize = 1000;
+
+#[derive(Clone, Copy)]
+enum BitState {
+    Set,
+    Clear,
+}
+
 #[derive(Debug, Clone, Copy)]
 pub enum Error {
     WrongDevice,
@@ -104,11 +264,19 @@ impl Rtl8188cu {
         })
     }
 
+    /// Ask the dongle for N bytes at its register address. The USB driver sends
+    /// an eight-byte SETUP request, then receives the register bytes into RAM.
     fn read<const N: usize>(&mut self, register: u16) -> Result<[u8; N], Error> {
         let mut bytes = [0; N];
         let received = unsafe {
-            self.usb
-                .control_read(self.device, 0xc0, 5, register, 0, &mut bytes)
+            self.usb.control_read(
+                self.device,
+                USB_VENDOR_DEVICE_READ,
+                REALTEK_REGISTER_REQUEST,
+                register,
+                UNUSED_REQUEST_INDEX,
+                &mut bytes,
+            )
         };
         if received != Some(N) {
             return Err(Error::UsbRead(
@@ -121,10 +289,17 @@ impl Rtl8188cu {
         Ok(bytes)
     }
 
+    /// Send a SETUP request naming the dongle register, followed by its new bytes.
     fn write(&mut self, register: u16, bytes: &[u8]) -> Result<(), Error> {
         unsafe {
-            self.usb
-                .control_write(self.device, 0x40, 5, register, 0, bytes)
+            self.usb.control_write(
+                self.device,
+                USB_VENDOR_DEVICE_WRITE,
+                REALTEK_REGISTER_REQUEST,
+                register,
+                UNUSED_REQUEST_INDEX,
+                bytes,
+            )
         }
         .ok_or(Error::UsbWrite(register))
     }
@@ -150,6 +325,16 @@ impl Rtl8188cu {
     fn update16(&mut self, register: u16, clear: u16, set: u16) -> Result<(), Error> {
         let value = self.read16(register)?;
         self.write16(register, (value & !clear) | set)
+    }
+
+    /// Set only the selected bits, preserving the register's other bits.
+    fn set_bits16(&mut self, register: u16, bits: u16) -> Result<(), Error> {
+        self.update16(register, 0, bits)
+    }
+
+    /// Clear only the selected bits, preserving the register's other bits.
+    fn clear_bits16(&mut self, register: u16, bits: u16) -> Result<(), Error> {
+        self.update16(register, bits, 0)
     }
 
     /// Read the factory-programmed identity and calibration bytes.
@@ -223,71 +408,174 @@ impl Rtl8188cu {
     /// A Pi reboot resets USB but can leave the dongle's 8051 and RF running.
     pub fn power_off(&mut self) -> Result<(), Error> {
         self.phase = "power off";
-        self.write8(0x0522, 0xff)?;
-        self.radio_write(0, 0)?;
-        self.write8(0x0600, 0x40)?;
-        self.write8(0x0002, 0x16)?;
-        self.write8(0x0002, 0x14)?;
-        if self.read8(0x0080)? & 2 != 0 {
-            self.write8(0x0080, 0)?;
-            self.write8(0x01cf, 0x20)?;
-            for _ in 0..100 {
-                if self.read16(0x0002)? & 0x0400 == 0 {
+
+        // 1. Stop outgoing packets and disable the radio before resetting its
+        // digital processing. USB stays enabled so we can send the next commands.
+        self.write8(shutdown::TRANSMIT_PAUSE, shutdown::ALL_TRANSMIT_QUEUES)?;
+        self.radio_write(shutdown::RADIO_POWER_CONTROL, shutdown::RADIO_DISABLED)?;
+        self.write8(power::MAC_SLEEP_CONTROL, power::MAC_OFF_REQUEST)?;
+        self.write8(
+            fw::SYSTEM_FUNCTIONS,
+            shutdown::USB_ANALOG_AND_DIGITAL_ENABLED | shutdown::BASEBAND_GLOBAL_RESET,
+        )?;
+        self.write8(
+            fw::SYSTEM_FUNCTIONS,
+            shutdown::USB_ANALOG_AND_DIGITAL_ENABLED,
+        )?;
+
+        // 2. Ask any running firmware to stop its processor. Preserve the
+        // existing bounded wait and final explicit processor-disable write.
+        if self.read8(fw::CONTROL)? & fw::DOWNLOAD_READY as u8 != 0 {
+            self.write8(fw::CONTROL, 0)?;
+            self.write8(fw::SELF_RESET_REGISTER, fw::SELF_RESET_REQUEST)?;
+            for _ in 0..fw::RESET_ATTEMPTS {
+                if self.read16(fw::SYSTEM_FUNCTIONS)? & fw::PROCESSOR_ENABLED == 0 {
                     break;
                 }
-                delay_us(50);
+                delay_us(fw::RESET_POLL_US);
             }
-            self.update16(0x0002, 0x0400, 0)?;
+            self.clear_bits16(fw::SYSTEM_FUNCTIONS, fw::PROCESSOR_ENABLED)?;
         }
-        self.write8(0x0003, 0x54)?;
-        self.write8(0x0080, 0)?;
-        self.write16(0x0008, 0x70a3)?;
-        self.write8(0x0028, 0x80)?;
-        self.write16(0x0024, 0x880f)?;
-        self.write8(0x0000, 0xf9)?;
-        self.write16(0x0046, 0)?;
-        let gpio = self.read32(0x0044)? & !0xff00;
-        self.write32(0x0044, gpio | ((gpio << 8) & 0xff00) | 0x00ff0000)?;
-        self.write8(0x0043, 0)?;
-        let gpio = self.read16(0x0042)? & !0x00f0;
-        self.write16(0x0042, gpio | ((gpio & 15) << 4) | 0x0780)?;
-        self.write16(0x004c, 0x8080)?;
-        self.write16(0x0008, 0x70a3)?;
-        self.write8(0x0001, 0x82)?;
-        self.write8(0x0020, 4)?;
-        let regulator = self.read8(0x0021)?;
-        self.write8(0x0021, regulator & !1)?;
-        self.write8(0x0011, 0x23)?;
-        self.write16(0x0004, 0x4802)?;
-        self.write8(0x001c, 0x0e)
+
+        // 3. Apply the reference digital reset, stop clocks, and isolate the
+        // powered-down circuits. +1 deliberately addresses the high byte.
+        self.write8(
+            fw::SYSTEM_FUNCTIONS + 1,
+            shutdown::RESET_MAC_ENABLE_PROCESSOR,
+        )?;
+        self.write8(fw::CONTROL, 0)?;
+        self.write16(
+            shutdown::SYSTEM_CLOCK,
+            shutdown::MAC_CLOCK_DISABLED_CONFIGURATION,
+        )?;
+        self.write8(shutdown::ANALOG_PLL, shutdown::ANALOG_PLL_DISABLED)?;
+        self.write16(
+            shutdown::CRYSTAL_CONTROL,
+            shutdown::ANALOG_DIGITAL_CLOCK_GATED,
+        )?;
+        self.write8(power::ISOLATION, shutdown::DIGITAL_ISOLATION_CONFIGURATION)?;
+
+        // 4. Put the general-purpose I/O (GPIO) pins and LEDs into the reference
+        // shutdown configuration. Copy sampled pin levels into their output
+        // fields before enabling those outputs, as the reference sequence does.
+        self.write16(shutdown::GPIO_LOW + 2, 0)?;
+        let gpio = self.read32(shutdown::GPIO_LOW)? & !shutdown::GPIO_LOW_OUTPUT_MASK;
+        self.write32(
+            shutdown::GPIO_LOW,
+            gpio | ((gpio << shutdown::GPIO_LOW_OUTPUT_SHIFT) & shutdown::GPIO_LOW_OUTPUT_MASK)
+                | shutdown::GPIO_LOW_CONFIGURATION,
+        )?;
+        self.write8(shutdown::GPIO_PIN_MULTIPLEXER, 0)?;
+        let gpio = self.read16(shutdown::GPIO_HIGH)? & !shutdown::GPIO_HIGH_OUTPUT_MASK;
+        self.write16(
+            shutdown::GPIO_HIGH,
+            gpio | ((gpio & shutdown::GPIO_HIGH_INPUT_MASK) << shutdown::GPIO_HIGH_OUTPUT_SHIFT)
+                | shutdown::GPIO_HIGH_CONFIGURATION,
+        )?;
+        self.write16(shutdown::LED_CONTROL, shutdown::BOTH_LEDS_DISABLED)?;
+
+        // 5. Isolate the loader, switch off the analog/digital supplies, then
+        // select pulse-frequency modulation (PFM) for the switching regulator.
+        self.write16(
+            shutdown::SYSTEM_CLOCK,
+            shutdown::MAC_CLOCK_DISABLED_CONFIGURATION,
+        )?;
+        self.write8(
+            power::ISOLATION + 1,
+            shutdown::LOADER_ISOLATION_CONFIGURATION,
+        )?;
+        self.write8(
+            shutdown::ANALOG_SUPPLY,
+            shutdown::ANALOG_SUPPLY_OFF_OUTPUT_BUFFER,
+        )?;
+        let regulator = self.read8(power::DIGITAL_REGULATOR)?;
+        self.write8(
+            power::DIGITAL_REGULATOR,
+            regulator & !power::DIGITAL_REGULATOR_ENABLED,
+        )?;
+        self.write8(
+            power::SWITCHING_REGULATOR,
+            shutdown::REGULATOR_PFM_CONFIGURATION,
+        )?;
+
+        // 6. Finish the USB suspend sequence and lock power/clock controls.
+        self.write16(power::STATE, shutdown::USB_SUSPEND_CONFIGURATION)?;
+        self.write8(power::CONTROL_LOCK, shutdown::LOCK_POWER_CONTROLS)
     }
 
-    /// Power the MAC and radio control blocks. Transmission stays unconfigured.
+    /// Enable the dongle's internal power supplies and packet-processing blocks.
+    /// USB already works at this point. Firmware loading and Wi-Fi association
+    /// happen later. Sequence: OpenBSD if_urtwn.c, urtwn_r92c_power_on.
     pub fn power_on(&mut self) -> Result<(), Error> {
         self.phase = "power on";
-        const APS_FSMCO: u16 = 0x0004;
-        const SYS_ISO_CTRL: u16 = 0x0000;
-        const LDOV12D_CTRL: u16 = 0x0021;
-        const APSD_CTRL: u16 = 0x0600;
-        self.wait16(APS_FSMCO, 2, 2, 5)?;
-        self.write8(0x001c, 0)?; // Unlock clock and power control.
-        self.write8(0x0011, 0x2b)?; // Switching regulator PWM mode.
-        delay_us(100);
-        let regulator = self.read8(LDOV12D_CTRL)?;
-        if regulator & 1 == 0 {
-            self.write8(LDOV12D_CTRL, regulator | 1)?;
-            delay_us(100);
-            self.update16(SYS_ISO_CTRL, 1, 0)?;
+
+        // 1. Wait for the dongle to finish loading its initial configuration.
+        // Each attempt reads two bytes over USB and checks AUTOLOAD_DONE.
+        self.wait_for_bits16(
+            power::STATE,
+            power::AUTOLOAD_DONE,
+            BitState::Set,
+            power::POLL_INTERVAL_US,
+        )?;
+
+        // 2. Allow power/clock settings to be changed, then select the reference
+        // switching-regulator mode. The delay lets that supply settle.
+        self.write8(power::CONTROL_LOCK, power::UNLOCK_CONTROLS)?;
+        self.write8(
+            power::SWITCHING_REGULATOR,
+            power::REGULATOR_PWM_CONFIGURATION,
+        )?;
+        delay_us(power::REGULATOR_SETTLE_US);
+
+        // 3. Enable the digital supply if it is off. Preserve its other settings.
+        // Release the reference driver's MD2PP isolation bit after settling.
+        let regulator = self.read8(power::DIGITAL_REGULATOR)?;
+        if regulator & power::DIGITAL_REGULATOR_ENABLED == 0 {
+            self.write8(
+                power::DIGITAL_REGULATOR,
+                regulator | power::DIGITAL_REGULATOR_ENABLED,
+            )?;
+            delay_us(power::REGULATOR_SETTLE_US);
+            self.clear_bits16(power::ISOLATION, power::MD2PP_ISOLATION)?;
         }
-        self.update16(APS_FSMCO, 0, 0x0100)?;
-        self.wait16(APS_FSMCO, 0x0100, 0, 5)?;
-        self.write16(APS_FSMCO, 0x0812)?;
-        self.update16(SYS_ISO_CTRL, 0x0200, 0)?;
-        let sleep_control = self.read8(APSD_CTRL)?;
-        self.write8(APSD_CTRL, sleep_control & !0x40)?;
-        self.wait16(APSD_CTRL, 0x80, 0, 50)?;
-        self.update16(0x0100, 0, 0x02ff)?; // DMA, scheduler, MAC and security blocks.
-        self.write8(0xfe10, 0x19)
+
+        // 4. Request power-on of the MAC (the dongle's Wi-Fi frame-processing
+        // hardware). The dongle clears the request bit when this completes.
+        self.set_bits16(power::STATE, power::REQUEST_MAC_POWER_ON)?;
+        self.wait_for_bits16(
+            power::STATE,
+            power::REQUEST_MAC_POWER_ON,
+            BitState::Clear,
+            power::POLL_INTERVAL_US,
+        )?;
+
+        // 5. Apply the reference running configuration and release radio
+        // digital isolation so the powered blocks can communicate.
+        self.write16(power::STATE, power::RUNNING_CONFIGURATION)?;
+        self.clear_bits16(power::ISOLATION, power::RADIO_DIGITAL_ISOLATION)?;
+
+        // 6. Clear the MAC-off request, then wait for its off-status to clear.
+        let sleep_control = self.read8(power::MAC_SLEEP_CONTROL)?;
+        self.write8(
+            power::MAC_SLEEP_CONTROL,
+            sleep_control & !power::MAC_OFF_REQUEST,
+        )?;
+        self.wait_for_bits16(
+            power::MAC_SLEEP_CONTROL,
+            power::MAC_OFF_STATUS,
+            BitState::Clear,
+            power::MAC_POLL_INTERVAL_US,
+        )?;
+
+        // 7. Enable USB/data movement, packet scheduling, send/receive, and
+        // encryption hardware. DMA means direct memory access inside the dongle.
+        self.set_bits16(power::BLOCK_ENABLE, power::REQUIRED_BLOCKS)?;
+
+        // 8. Retain the reference driver's final, undocumented register write.
+        self.write8(
+            power::UNDOCUMENTED_FINAL_REGISTER,
+            power::UNDOCUMENTED_FINAL_VALUE,
+        )
     }
 
     pub fn verify_identity_reads(&mut self, expected: u32) -> Result<(), Error> {
@@ -568,27 +856,44 @@ impl Rtl8188cu {
         Ok(())
     }
 
+    /// Send one command to the dongle's firmware through a numbered mailbox.
+    /// Main word: command byte + up to three payload bytes. Longer commands
+    /// put their first two payload bytes in a separate extension register.
     fn firmware_command(&mut self, command: u8, payload: &[u8]) -> Result<(), Error> {
-        if command & 0x80 != 0 || payload.len() > 5 {
+        if command & fw::COMMAND_HAS_EXTENSION != 0 || payload.len() > fw::MAX_COMMAND_PAYLOAD_BYTES
+        {
             return Err(Error::Configuration);
         }
         let mailbox = self.firmware_mailbox as u16;
-        self.wait16(0x01cc, 1 << mailbox, 0, 10)?;
-        let mut main = [0u8; 4];
-        let mut extension = [0u8; 2];
+        // A clear status bit means firmware consumed this mailbox's previous
+        // command. Wait before overwriting either half of that command.
+        self.wait_for_bits16(
+            fw::MAILBOX_STATUS,
+            1 << mailbox,
+            BitState::Clear,
+            fw::MAILBOX_POLL_US,
+        )?;
+        let mut main = [0u8; fw::MAIN_WORD_BYTES];
+        let mut extension = [0u8; fw::EXTENSION_BYTES];
         main[0] = command;
-        if payload.len() > 3 {
+        if payload.len() > fw::INLINE_PAYLOAD_BYTES {
             // RTL8188C puts the first two payload bytes in the extension.
-            main[0] |= 0x80;
-            extension.copy_from_slice(&payload[..2]);
-            main[1..payload.len() - 1].copy_from_slice(&payload[2..]);
+            main[0] |= fw::COMMAND_HAS_EXTENSION;
+            extension.copy_from_slice(&payload[..fw::EXTENSION_BYTES]);
+            main[1..payload.len() - 1].copy_from_slice(&payload[fw::EXTENSION_BYTES..]);
         } else {
             main[1..1 + payload.len()].copy_from_slice(payload);
         }
-        self.write16(0x0088 + mailbox * 2, u16::from_le_bytes(extension))?;
+        self.write16(
+            fw::MAILBOX_EXTENSION_BASE + mailbox * fw::EXTENSION_BYTES as u16,
+            u16::from_le_bytes(extension),
+        )?;
         // The main word alerts firmware, so write it after the extension.
-        self.write32(0x01d0 + mailbox * 4, u32::from_le_bytes(main))?;
-        self.firmware_mailbox = (self.firmware_mailbox + 1) % 4;
+        self.write32(
+            fw::MAILBOX_BASE + mailbox * fw::MAIN_WORD_BYTES as u16,
+            u32::from_le_bytes(main),
+        )?;
+        self.firmware_mailbox = (self.firmware_mailbox + 1) % fw::MAILBOX_COUNT;
         Ok(())
     }
 
@@ -705,63 +1010,82 @@ impl Rtl8188cu {
 
     /// Copy the adapter's firmware into its own MCU RAM, then await its ready bit.
     pub fn load_firmware(&mut self, firmware: &[u8]) -> Result<(), Error> {
-        const MCUFWDL: u16 = 0x0080;
-        const SYS_FUNC_EN: u16 = 0x0002;
-        if firmware.len() < 32 || firmware.len() > 32 + 8 * 4096 {
+        if firmware.len() < fw::HEADER_BYTES
+            || firmware.len() > fw::HEADER_BYTES + fw::PAGE_COUNT * fw::PAGE_BYTES
+        {
             return Err(Error::InvalidFirmware);
         }
-        let signature = u16::from_le_bytes([firmware[0], firmware[1]]) >> 4;
-        if signature != 0x88c && signature != 0x92c {
+        // The file starts with a vendor header. Only the bytes after it are
+        // executable firmware. The reference family check ignores the low four
+        // signature bits.
+        let signature =
+            u16::from_le_bytes([firmware[0], firmware[1]]) >> fw::SIGNATURE_FAMILY_SHIFT;
+        if signature != fw::SIGNATURE_8188C && signature != fw::SIGNATURE_8192C {
             return Err(Error::InvalidFirmware);
         }
-        let payload = &firmware[32..];
+        let payload = &firmware[fw::HEADER_BYTES..];
         self.phase = "firmware reset";
-        if self.read8(MCUFWDL)? & 0x80 != 0 {
+        if self.read8(fw::CONTROL)? & fw::RUNNING_FROM_RAM != 0 {
             // A USB reset can leave the radio MCU running. Hold it in reset
             // before replacing its program, then release it after verification.
-            self.write8(MCUFWDL, 0)?;
-            self.write8(0x01cf, 0x20)?; // Ask the running 8051 to reset itself.
+            self.write8(fw::CONTROL, 0)?;
+            self.write8(fw::SELF_RESET_REGISTER, fw::SELF_RESET_REQUEST)?; // Ask the running 8051 to reset itself.
             let mut reset = false;
-            for _ in 0..100 {
-                if self.read16(SYS_FUNC_EN)? & 0x0400 == 0 {
+            for _ in 0..fw::RESET_ATTEMPTS {
+                if self.read16(fw::SYSTEM_FUNCTIONS)? & fw::PROCESSOR_ENABLED == 0 {
                     reset = true;
                     break;
                 }
-                delay_us(50);
+                delay_us(fw::RESET_POLL_US);
             }
             if !reset {
-                self.update16(SYS_FUNC_EN, 0x0400, 0)?;
+                self.clear_bits16(fw::SYSTEM_FUNCTIONS, fw::PROCESSOR_ENABLED)?;
             }
         }
         self.phase = "firmware download enable";
-        let value = self.read8(MCUFWDL)?;
-        self.write8(MCUFWDL, value | 1)?;
-        let value = self.read32(MCUFWDL)?;
-        self.write32(MCUFWDL, value & !0x00080000)?;
-        let value = self.read8(MCUFWDL)?;
-        self.write8(MCUFWDL, value | 4)?; // Reset the firmware checksum report.
-        delay_us(50);
+        let value = self.read8(fw::CONTROL)?;
+        self.write8(fw::CONTROL, value | fw::DOWNLOAD_ENABLED)?;
+        let value = self.read32(fw::CONTROL)?;
+        self.write32(fw::CONTROL, value & !fw::ROM_DOWNLOAD_ENABLED)?;
+        let value = self.read8(fw::CONTROL)?;
+        self.write8(fw::CONTROL, value | fw::CHECKSUM_REPORTED)?; // Reset the firmware checksum report.
+        delay_us(fw::DOWNLOAD_SETTLE_US);
         self.phase = "firmware pages";
-        for (page, bytes) in payload.chunks(4096).enumerate() {
-            let value = self.read32(MCUFWDL)?;
-            self.write32(MCUFWDL, (value & !0x00070000) | ((page as u32) << 16))?;
+        // Select one 4 KiB page at a time. The same USB-visible address window
+        // accesses whichever page CONTROL currently selects. Read back each
+        // write before advancing so a corrupt upload cannot be started.
+        for (page, bytes) in payload.chunks(fw::PAGE_BYTES).enumerate() {
+            let value = self.read32(fw::CONTROL)?;
+            self.write32(
+                fw::CONTROL,
+                (value & !fw::PAGE_MASK) | ((page as u32) << fw::PAGE_SHIFT),
+            )?;
             let mut offset = 0;
             while offset < bytes.len() {
                 // Match the USB firmware loader's supported write sizes.
                 let remaining = bytes.len() - offset;
-                let length = if remaining > 196 {
-                    196
-                } else if remaining > 4 {
-                    4
+                let length = if remaining > fw::USB_BLOCK_BYTES {
+                    fw::USB_BLOCK_BYTES
+                } else if remaining > fw::USB_WORD_BYTES {
+                    fw::USB_WORD_BYTES
                 } else {
                     1
                 };
-                self.write(0x1000 + offset as u16, &bytes[offset..offset + length])?;
-                let mut readback = [0u8; 196];
-                let address = 0x1000 + offset as u16;
+                self.write(
+                    fw::WRITE_WINDOW + offset as u16,
+                    &bytes[offset..offset + length],
+                )?;
+                let mut readback = [0u8; fw::USB_BLOCK_BYTES];
+                let address = fw::WRITE_WINDOW + offset as u16;
                 let received = unsafe {
-                    self.usb
-                        .control_read(self.device, 0xc0, 5, address, 0, &mut readback[..length])
+                    self.usb.control_read(
+                        self.device,
+                        USB_VENDOR_DEVICE_READ,
+                        REALTEK_REGISTER_REQUEST,
+                        address,
+                        UNUSED_REQUEST_INDEX,
+                        &mut readback[..length],
+                    )
                 };
                 if received != Some(length) {
                     return Err(Error::UsbRead(
@@ -773,21 +1097,21 @@ impl Rtl8188cu {
                 }
                 for index in 0..length {
                     if readback[index] != bytes[offset + index] {
-                        delay_us(100);
-                        let mut repeated = [0u8; 196];
+                        delay_us(fw::READBACK_RETRY_US);
+                        let mut repeated = [0u8; fw::USB_BLOCK_BYTES];
                         let _ = unsafe {
                             self.usb.control_read(
                                 self.device,
-                                0xc0,
-                                5,
+                                USB_VENDOR_DEVICE_READ,
+                                REALTEK_REGISTER_REQUEST,
                                 address,
-                                0,
+                                UNUSED_REQUEST_INDEX,
                                 &mut repeated[..length],
                             )
                         };
                         return Err(Error::FirmwareReadback {
                             page: page as u8,
-                            status: self.read32(MCUFWDL)?,
+                            status: self.read32(fw::CONTROL)?,
                             address: address + index as u16,
                             expected: bytes[offset + index],
                             actual: readback[index],
@@ -798,28 +1122,51 @@ impl Rtl8188cu {
                 offset += length;
             }
         }
+        // The dongle must report the download checksum before we close the
+        // write window and restart its processor. INITIALIZATION_READY belongs
+        // to the newly started firmware, so clear its previous value first.
         self.phase = "firmware checksum";
-        self.wait16(MCUFWDL, 4, 4, 5)?;
-        let value = self.read8(MCUFWDL)?;
-        self.write8(MCUFWDL, value & !1)?;
-        self.write8(MCUFWDL + 1, 0)?;
-        let value = self.read32(MCUFWDL)?;
-        self.write32(MCUFWDL, (value & !0x40) | 2)?;
-        self.update16(SYS_FUNC_EN, 0x0400, 0)?;
-        self.update16(SYS_FUNC_EN, 0, 0x0400)?;
-        delay_us(5_000);
+        self.wait_for_bits16(
+            fw::CONTROL,
+            fw::CHECKSUM_REPORTED as u16,
+            BitState::Set,
+            fw::CHECKSUM_POLL_US,
+        )?;
+        let value = self.read8(fw::CONTROL)?;
+        self.write8(fw::CONTROL, value & !fw::DOWNLOAD_ENABLED)?;
+        self.write8(fw::CONTROL + 1, 0)?;
+        let value = self.read32(fw::CONTROL)?;
+        self.write32(
+            fw::CONTROL,
+            (value & !(fw::INITIALIZATION_READY as u32)) | fw::DOWNLOAD_READY,
+        )?;
+        self.clear_bits16(fw::SYSTEM_FUNCTIONS, fw::PROCESSOR_ENABLED)?;
+        self.set_bits16(fw::SYSTEM_FUNCTIONS, fw::PROCESSOR_ENABLED)?;
+        delay_us(fw::PROCESSOR_START_US);
         self.phase = "firmware start";
-        self.wait16(MCUFWDL, 0x40, 0x40, 10)
+        self.wait_for_bits16(
+            fw::CONTROL,
+            fw::INITIALIZATION_READY,
+            BitState::Set,
+            fw::READY_POLL_US,
+        )
     }
 
-    fn wait16(
+    /// Poll a two-byte dongle register until all selected bits are set or clear.
+    /// Every read is a USB control transfer. The interval is an extra delay
+    /// between attempts; total elapsed time also includes those USB transfers.
+    fn wait_for_bits16(
         &mut self,
         register: u16,
         mask: u16,
-        expected: u16,
+        state: BitState,
         interval_us: u32,
     ) -> Result<(), Error> {
-        for _ in 0..1000 {
+        let expected = match state {
+            BitState::Set => mask,
+            BitState::Clear => 0,
+        };
+        for _ in 0..REGISTER_POLL_ATTEMPTS {
             if self.read16(register)? & mask == expected {
                 return Ok(());
             }
