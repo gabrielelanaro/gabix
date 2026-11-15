@@ -7,27 +7,28 @@
 //! Returns an `ExecContext` (entry point + stack top + the new AS)
 //! to the caller, which then switches CR3 and `iretq`s to user mode.
 //!
-//! This is the second-to-last piece of the mission. The kernel's
-//! Linux counterpart is `load_elf_binary()` in `fs/binfmt_elf.c`.
+//! The Linux counterpart is `load_elf_binary()` in `fs/binfmt_elf.c`.
+//! This loader assumes trusted build output: table/segment ranges and address
+//! arithmetic are not fully validated and malformed files can panic.
 
 use crate::elf::{self, PF_W};
 use crate::frame_allocator;
 use crate::fs;
 use crate::memory::{self, AddressSpace};
 use crate::println;
+use gabix_kernel::memory::FRAME_SIZE;
 use x86_64::structures::paging::PageTableFlags;
 use x86_64::{PhysAddr, VirtAddr};
 
-/// Page size on x86-64. The ELF's `p_align` for `PT_LOAD` is usually
-/// 4096, matching this — but we don't read `p_align`, we just always
-/// page-align.
-const PAGE: u64 = 4096;
+// All segment and stack mappings use 4 KiB frames. p_align is not validated.
+const PAGE_BYTES: u64 = FRAME_SIZE;
+const PAGE_OFFSET_MASK: u64 = PAGE_BYTES - 1;
 
-/// Where to put the user stack. Same address as the existing
-/// `user.rs` USER_STACK_TOP — keeps things consistent.
+/// Fixed upper boundary of the user stack. The initial RSP points just
+/// past the mapped range; pushes move it down into allocated memory.
 const STACK_TOP: u64 = 0x7001_0000;
-/// Stack size: 16 pages = 64 KB. Plenty for hello.elf; real programs
-/// would grow this on demand via a page-fault handler.
+/// Fixed stack allocation: 16 pages = 64 KiB. There is no stack growth
+/// or argument/environment setup in this loader.
 const STACK_PAGES: u64 = 16;
 
 /// The result of a successful `exec_elf`. The caller uses these to
@@ -54,7 +55,8 @@ pub fn exec_elf(path: &str) -> Result<ExecContext, &'static str> {
 /// The new address space starts as a clone of the current mappings because
 /// this kernel still has required low-half kernel mappings. Existing pages at
 /// the new ELF segments and fixed user-stack range are removed before the new
-/// image is mapped.
+/// image is mapped. Old user mappings outside those ranges remain in the clone;
+/// replaced frames and abandoned address spaces are not reclaimed here.
 pub fn exec_elf_replace(path: &str) -> Result<ExecContext, &'static str> {
     exec_elf_with(path, true)
 }
@@ -77,22 +79,21 @@ fn exec_elf_with(path: &str, replace_existing: bool) -> Result<ExecContext, &'st
         header.entry, header.phnum, header.phentsize
     );
 
-    // 3. Fresh address space. `new()` copies entries 256–511 (kernel
-    //    high half) from current CR3. We also call `deep_clone_from_current`
-    //    to share the low-half kernel mappings (heap at 0x4444_4444_0000,
-    //    VGA buffer at 0xb8000, physical-memory direct map at
-    //    0x180_0000_0000). Without those, any kernel code that touches
-    //    heap/VGA/direct-map after switch_to() will page-fault — and
-    //    println! touches heap (allocates a String), so it'd crash
-    //    immediately.
+    // 3. Clone the current mappings so the kernel can still reach its heap,
+    // VGA buffer and physical-memory direct map after switching CR3.
+    // deep_clone_from_current also copies existing 4 KiB user pages.
     let mut aspace = AddressSpace::new();
     aspace.deep_clone_from_current();
 
-    // 4. Walk the PHT, map each PT_LOAD.
+    // 4. Walk the program-header table and map each loadable segment.
+    // The file supplies the entry stride; its size and table bounds are
+    // trusted here. A malformed offset can panic at the slice below.
     let mut load_count = 0u16;
-    for i in 0..header.phnum {
-        let off = header.phoff as usize + i as usize * header.phentsize as usize;
-        let ph = elf::ProgramHeader::parse(&bytes[off..]).ok_or("ph parse failed")?;
+    for program_index in 0..header.phnum {
+        let header_file_offset =
+            header.phoff as usize + program_index as usize * header.phentsize as usize;
+        let ph =
+            elf::ProgramHeader::parse(&bytes[header_file_offset..]).ok_or("ph parse failed")?;
         if ph.is_load() {
             map_segment(&aspace, &ph, &bytes, replace_existing)?;
             load_count += 1;
@@ -132,18 +133,16 @@ fn map_segment(
 ) -> Result<(), &'static str> {
     assert!(ph.is_load(), "map_segment called on non-PT_LOAD");
 
-    // Page-align the segment's memory range. ELF spec guarantees
-    // `p_vaddr ≡ p_offset (mod p_align)`; the segment may start
-    // mid-page and end mid-page.
-    let page_start = ph.p_vaddr & !(PAGE - 1);
-    let page_end = (ph.p_vaddr + ph.p_memsz + PAGE - 1) & !(PAGE - 1);
-    let num_pages = (page_end - page_start) / PAGE;
+    // Round the memory range outward to whole pages. A valid ELF requires
+    // matching file/virtual offsets modulo p_align; this loader trusts that
+    // requirement and the range arithmetic without checking them.
+    let page_start = ph.p_vaddr & !PAGE_OFFSET_MASK;
+    let page_end = (ph.p_vaddr + ph.p_memsz + PAGE_BYTES - 1) & !PAGE_OFFSET_MASK;
+    let num_pages = (page_end - page_start) / PAGE_BYTES;
 
-    // Translate p_flags to page-table flags. We always set PRESENT +
-    // USER_ACCESSIBLE; WRITABLE conditional on PF_W. NX bit (NO_EXECUTE)
-    // requires enabling via EFER.NXE — skipping for now, so 'x' permission
-    // is implicit (all mapped pages are executable). That's a security
-    // gap (W^X not enforced) but fine for a teaching kernel.
+    // PF_W controls writable mappings. Every mapped page is readable and
+    // executable here: PF_R and PF_X are not enforced, and NO_EXECUTE is
+    // never set by this loader.
     let mut flags = PageTableFlags::PRESENT | PageTableFlags::USER_ACCESSIBLE;
     if ph.p_flags & PF_W != 0 {
         flags |= PageTableFlags::WRITABLE;
@@ -159,15 +158,15 @@ fn map_segment(
     );
 
     for i in 0..num_pages {
-        let vaddr = page_start + i * PAGE;
+        let vaddr = page_start + i * PAGE_BYTES;
         if replace_existing {
             let _ = aspace.unmap(VirtAddr::new(vaddr));
         }
         let frame_idx = frame_allocator::allocate().ok_or("out of frames during exec")?;
-        let phys = PhysAddr::new(frame_idx * PAGE);
+        let phys = PhysAddr::new(frame_idx * PAGE_BYTES);
 
-        // SAFETY: the virtual page is currently unmapped in the new AS
-        // (it's fresh), and the frame is freshly allocated.
+        // SAFETY: the physical frame is freshly allocated. Trusted ELF input
+        // must keep user ranges separate from required kernel mappings.
         unsafe {
             aspace
                 .map_to(VirtAddr::new(vaddr), phys, flags)
@@ -179,10 +178,10 @@ fn map_segment(
 
         // Compute the file-byte slice that lands inside this page.
         // File range: [p_offset, p_offset + p_filesz)
-        // Memory range for this page: [vaddr, vaddr + PAGE)
+        // Memory range for this page: [vaddr, vaddr + PAGE_BYTES)
         // Memory range of segment: [p_vaddr, p_vaddr + p_filesz)  (for the file part)
         let mem_page_start = vaddr;
-        let mem_page_end = vaddr + PAGE;
+        let mem_page_end = vaddr + PAGE_BYTES;
         let copy_mem_start = mem_page_start.max(ph.p_vaddr);
         let copy_mem_end = mem_page_end.min(ph.p_vaddr + ph.p_filesz);
 
@@ -200,7 +199,8 @@ fn map_segment(
     Ok(())
 }
 
-/// Map `STACK_PAGES` rw- user frames ending at `STACK_TOP`.
+/// Map `STACK_PAGES` writable user frames ending at `STACK_TOP`.
+/// NO_EXECUTE is not set, so this stack is executable too.
 /// Returns the stack-top virtual address (where `rsp` should point).
 fn setup_user_stack(aspace: &AddressSpace, replace_existing: bool) -> Result<u64, &'static str> {
     let flags =
@@ -208,13 +208,15 @@ fn setup_user_stack(aspace: &AddressSpace, replace_existing: bool) -> Result<u64
 
     for i in 0..STACK_PAGES {
         // i=0 maps the bottom page, i=N-1 maps the top page.
-        let vaddr = STACK_TOP - (STACK_PAGES - i) * PAGE;
+        let vaddr = STACK_TOP - (STACK_PAGES - i) * PAGE_BYTES;
         if replace_existing {
             let _ = aspace.unmap(VirtAddr::new(vaddr));
         }
         let frame_idx = frame_allocator::allocate().ok_or("out of frames for stack")?;
-        let phys = PhysAddr::new(frame_idx * PAGE);
-        // SAFETY: fresh virtual range, fresh frame.
+        let phys = PhysAddr::new(frame_idx * PAGE_BYTES);
+        // SAFETY: this fixed user range must be separate from kernel mappings;
+        // the frame is freshly allocated. Existing mappings were removed above
+        // for replacement; otherwise map_to returns an error on overlap.
         unsafe {
             aspace
                 .map_to(VirtAddr::new(vaddr), phys, flags)

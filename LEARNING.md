@@ -563,6 +563,11 @@ A milestone is a "demo-able" checkpoint. Worth a commit + tag + log entry.
 
 ## Progress Log
 
+### 2026-11-15 — Readability audit: x86 executable loading
+- Named ELF64 header/program-entry offsets and used shared frame sizes in segment/stack mapping. Clarified file stride, zero-fill, page permissions and cloned address-space behavior against the parser and loader.
+- Corrected claims about validation and rw- stacks: current code trusts several file fields, maps pages executable, and retains old user mappings outside replacement ranges. Those limitations are unchanged and documented for separate correctness work.
+- Existing exec-replacement QEMU test passes, including initial executable loading. gABI header/program layouts checked; no redundant tests added. Broader process and ARM review remain open; Pi checks remain pending while disconnected.
+
 ### 2026-11-15 — Readability audit: x86 interrupt entry
 - Named exception stack offsets/padding and reused PIC timer-vector and crate fault-bit definitions. Explained register saving, return through IRETQ and deferred network-task processing; removed stale ABI and NAPI claims.
 - Checked CPU frame layout against Intel SDM 3A section 6.14.2. Recorded existing defects: breakpoint caller-register clobber, page-fault call misalignment, an unconditional demo-memory read and missing SIMD preservation. Behavior remains unchanged; these require separate correctness work.

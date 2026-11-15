@@ -17,9 +17,43 @@
 
 use crate::println;
 
+// Byte offsets in the file, independent of Rust struct layout.
+// gABI ELF Header and Program Header definitions: Elf64_Ehdr / Elf64_Phdr.
+mod header_offset {
+    pub const CLASS: usize = 4;
+    pub const BYTE_ORDER: usize = 5;
+    pub const IDENT_VERSION: usize = 6;
+    pub const OS_ABI: usize = 7;
+    pub const TYPE: usize = 0x10;
+    pub const MACHINE: usize = 0x12;
+    pub const ENTRY: usize = 0x18;
+    pub const PROGRAM_TABLE: usize = 0x20;
+    pub const SECTION_TABLE: usize = 0x28;
+    pub const FLAGS: usize = 0x30;
+    pub const HEADER_SIZE: usize = 0x34;
+    pub const PROGRAM_ENTRY_SIZE: usize = 0x36;
+    pub const PROGRAM_COUNT: usize = 0x38;
+    pub const SECTION_ENTRY_SIZE: usize = 0x3a;
+    pub const SECTION_COUNT: usize = 0x3c;
+    pub const SECTION_NAME_TABLE: usize = 0x3e;
+    pub const BYTE_LEN: usize = 64;
+}
+
+mod program_offset {
+    pub const TYPE: usize = 0x00;
+    pub const FLAGS: usize = 0x04;
+    pub const FILE_OFFSET: usize = 0x08;
+    pub const VIRTUAL_ADDRESS: usize = 0x10;
+    pub const PHYSICAL_ADDRESS: usize = 0x18;
+    pub const FILE_SIZE: usize = 0x20;
+    pub const MEMORY_SIZE: usize = 0x28;
+    pub const ALIGNMENT: usize = 0x30;
+    pub const BYTE_LEN: usize = 56;
+}
+
 /// The ELF magic — four bytes at offset 0 of every ELF file.
 /// `0x7F` followed by the ASCII for 'E', 'L', 'F'.
-pub const ELF_MAGIC: [u8; 4] = [0x7F, 0x45, 0x4C, 0x46];
+pub const ELF_MAGIC: [u8; 4] = [0x7f, b'E', b'L', b'F'];
 
 /// `e_ident[EI_CLASS]` value for 64-bit binaries.
 pub const ELFCLASS64: u8 = 2;
@@ -36,20 +70,18 @@ pub const EM_X86_64: u16 = 0x3E;
 
 /// The 64-byte ELF header (Elf64_Ehdr in the spec).
 ///
-/// We model every load-bearing field at its spec-mandated offset.
-/// The `e_ident` region (bytes 0..16) is split into individual bytes
-/// because its sub-fields are individually meaningful (class, data,
-/// version, OS/ABI) and parsing them as a struct would require
-/// `repr(C)` padding tricks.
+/// Parsed values read explicitly from the file's byte offsets. This Rust
+/// struct's layout is independent of the serialized header layout.
+/// Some fields, including the main e_version, are not retained.
 #[derive(Debug)]
 pub struct ElfHeader {
     /// `e_ident[EI_CLASS]` — 1 = 32-bit, 2 = 64-bit. Must be 2 for us.
     pub class: u8,
     /// `e_ident[EI_DATA]` — 1 = little-endian, 2 = big-endian. Must be 1.
     pub data: u8,
-    /// `e_ident[EI_VERSION]` — always 1.
+    /// `e_ident[EI_VERSION]` — expected to be 1; currently not validated.
     pub version: u8,
-    /// `e_ident[EI_OSABI]` — 0 = System V, 3 = Linux. We accept either.
+    /// `e_ident[EI_OSABI]` — 0 = System V, 3 = Linux. Currently not validated.
     pub osabi: u8,
     /// `e_type` — what kind of ELF (executable, library, ...).
     pub e_type: u16,
@@ -84,10 +116,10 @@ impl ElfHeader {
     /// match. Other field-level validation (class, machine, type) is
     /// the caller's job — see `is_x86_64_exec` below.
     pub fn parse(bytes: &[u8]) -> Option<Self> {
-        if bytes.len() < 64 {
+        if bytes.len() < header_offset::BYTE_LEN {
             return None;
         }
-        if &bytes[0..4] != ELF_MAGIC {
+        if &bytes[..ELF_MAGIC.len()] != ELF_MAGIC {
             return None;
         }
 
@@ -103,31 +135,31 @@ impl ElfHeader {
 
         Some(Self {
             // e_ident sub-bytes
-            class: bytes[4],
-            data: bytes[5],
-            version: bytes[6],
-            osabi: bytes[7],
+            class: bytes[header_offset::CLASS],
+            data: bytes[header_offset::BYTE_ORDER],
+            version: bytes[header_offset::IDENT_VERSION],
+            osabi: bytes[header_offset::OS_ABI],
             // Main header
-            e_type: u16_at(0x10),
-            machine: u16_at(0x12),
-            entry: u64_at(0x18),
-            phoff: u64_at(0x20),
-            shoff: u64_at(0x28),
-            flags: u32_at(0x30),
-            ehsize: u16_at(0x34),
-            phentsize: u16_at(0x36),
-            phnum: u16_at(0x38),
-            shentsize: u16_at(0x3A),
-            shnum: u16_at(0x3C),
-            shstrndx: u16_at(0x3E),
+            e_type: u16_at(header_offset::TYPE),
+            machine: u16_at(header_offset::MACHINE),
+            entry: u64_at(header_offset::ENTRY),
+            phoff: u64_at(header_offset::PROGRAM_TABLE),
+            shoff: u64_at(header_offset::SECTION_TABLE),
+            flags: u32_at(header_offset::FLAGS),
+            ehsize: u16_at(header_offset::HEADER_SIZE),
+            phentsize: u16_at(header_offset::PROGRAM_ENTRY_SIZE),
+            phnum: u16_at(header_offset::PROGRAM_COUNT),
+            shentsize: u16_at(header_offset::SECTION_ENTRY_SIZE),
+            shnum: u16_at(header_offset::SECTION_COUNT),
+            shstrndx: u16_at(header_offset::SECTION_NAME_TABLE),
         })
     }
 
     /// True if this is a 64-bit, little-endian, ET_EXEC, x86-64 binary.
     ///
-    /// These are the four conditions the Lesson 16 loader will require
-    /// before attempting to map the binary. ET_DYN (PIE) would need
-    /// relocation handling; 32-bit or big-endian is a different ABI.
+    /// This checks only the four fields below. Header sizes, versions,
+    /// table ranges and segment contents require separate validation.
+    /// The current loader supports fixed-address executables.
     pub fn is_x86_64_exec(&self) -> bool {
         self.class == ELFCLASS64
             && self.data == ELFDATA2LSB
@@ -191,12 +223,13 @@ pub const PT_DYNAMIC: u32 = 2; // Dynamic linking info (for ld.so).
 pub const PT_INTERP: u32 = 3; // Path to the dynamic linker.
 pub const PT_NOTE: u32 = 4; // Metadata (build-id, ABI properties).
 pub const PT_PHDR: u32 = 6; // The PHT itself, as a segment.
-/// PT_GNU_STACK — marker for "should the stack be executable?". The
-/// weird number is `0x6474e551` — a magic in the OS-specific range.
+/// GNU stack-permission header in the OS-specific type range.
+/// The current loader ignores it when setting up the user stack.
 pub const PT_GNU_STACK: u32 = 0x6474E551;
 
-/// Permission bits for `p_flags`. Maps directly to page-table bits
-/// in Lesson 16: PF_R → readable, PF_W → writable, PF_X → executable.
+/// ELF permission bits for `p_flags`. `exec::map_segment` uses PF_W for
+/// writable pages. It currently maps all segments readable and executable,
+/// regardless of PF_R and PF_X.
 pub const PF_R: u32 = 0x4;
 pub const PF_W: u32 = 0x2;
 pub const PF_X: u32 = 0x1;
@@ -235,7 +268,7 @@ impl ProgramHeader {
     /// short input. The ELF magic / class / etc. checks happen at
     /// the header level, not per-entry.
     pub fn parse(bytes: &[u8]) -> Option<Self> {
-        if bytes.len() < 56 {
+        if bytes.len() < program_offset::BYTE_LEN {
             return None;
         }
 
@@ -245,14 +278,14 @@ impl ProgramHeader {
             |off: usize| -> u64 { u64::from_le_bytes(bytes[off..off + 8].try_into().unwrap()) };
 
         Some(Self {
-            p_type: u32_at(0x00),
-            p_flags: u32_at(0x04),
-            p_offset: u64_at(0x08),
-            p_vaddr: u64_at(0x10),
-            p_paddr: u64_at(0x18),
-            p_filesz: u64_at(0x20),
-            p_memsz: u64_at(0x28),
-            p_align: u64_at(0x30),
+            p_type: u32_at(program_offset::TYPE),
+            p_flags: u32_at(program_offset::FLAGS),
+            p_offset: u64_at(program_offset::FILE_OFFSET),
+            p_vaddr: u64_at(program_offset::VIRTUAL_ADDRESS),
+            p_paddr: u64_at(program_offset::PHYSICAL_ADDRESS),
+            p_filesz: u64_at(program_offset::FILE_SIZE),
+            p_memsz: u64_at(program_offset::MEMORY_SIZE),
+            p_align: u64_at(program_offset::ALIGNMENT),
         })
     }
 

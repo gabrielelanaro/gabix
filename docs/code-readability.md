@@ -77,7 +77,8 @@ will be checked alongside the implementation they exercise.
   - [x] UART upload decoder: header fields, incremental storage events, checksum and timeout ownership
   - [x] Shared frame bitmap and both heap wrappers: frame/address units, availability bits, IRQ locking
   - [x] Shared ext2 boot reader: disk fields, inode/group arithmetic, directory records and direct-block limit
-  - [x] ARM ELF32 parser: named header offsets, segment/callback contracts; x86 ELF introduction corrected (remaining x86 parser review pending)
+  - [x] ARM ELF32 parser: named header offsets, segment/callback contracts
+  - [x] x86 ELF64 parser and loader: named fields, page arithmetic and explicit validation/permission limits
   - [x] MBR primary-entry lookup and offset adapter: named layout fields and explicit validation limits
 - [ ] x86 boot, paging, context switching, interrupts, PIC/PIT/APIC, and syscalls
   - [x] PIT: named control-word fields and corrected the mode description
@@ -200,7 +201,7 @@ explains file bounds, memory zero-fill responsibility, and partial effects on
 failure. The ARM loader names its existing image lower bound and stack reserve,
 and explains why it clears memory before copying file bytes. The x86 ELF
 introduction was corrected: e_phoff locates the program-header table, which
-need not immediately follow the file header. Its detailed parser audit remains.
+need not immediately follow the file header. The later ELF64 audit is recorded below.
 References: [ELF Header](https://gabi.xinuos.com/elf/02-eheader.html) and
 [Program Loading](https://gabi.xinuos.com/elf/07-pheader.html), System V gABI.
 Existing Pi QEMU userspace boot test passes: it reads an ELF from the SD image,
@@ -759,3 +760,24 @@ Existing timer and UDP echo QEMU checks cover ordinary boot, timer progression
 and network delivery. They do not exercise breakpoint or page-fault recovery,
 prove SIMD preservation, or resolve these recorded defects. Exception repairs
 need focused behavioral tests in a separate correctness change.
+
+### x86 ELF64 parsing and executable loading
+
+`src/elf.rs` names the byte offsets of identification, ELF-header and
+program-header fields. These are offsets into serialized bytes, independent
+of Rust struct layout. `src/exec.rs` uses the shared frame size for page
+arithmetic and identifies the file-supplied program-header stride.
+
+The comments describe existing limits: the format predicate checks class,
+byte order, type and machine; versions/OS ABI/header sizes are not validated.
+The loader trusts table/segment ranges and arithmetic. It enforces PF_W only,
+maps the stack executable, and leaves old user pages outside replacement
+ranges in the cloned address space. Replaced memory is not reclaimed here.
+These are recorded limitations, not new behavior or claims of robust input
+validation. Header field offsets, sizes, iteration and copy ranges are unchanged.
+
+References: gABI [ELF Header](https://gabi.xinuos.com/elf/02-eheader.html)
+and [Program Loading](https://gabi.xinuos.com/elf/07-pheader.html).
+The existing exec-replacement QEMU test passes through initial ELF boot and
+loading the replacement program. It does not establish malformed-file handling
+or full address-space replacement; those require separate correctness work.
