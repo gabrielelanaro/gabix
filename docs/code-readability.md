@@ -33,6 +33,7 @@ will be checked alongside the implementation they exercise.
   - [x] Firmware pages, mailbox ownership, and power-off sequence: named fields and ordering explanations (physical check pending)
   - [x] Station phases, retry timings, and basic management-frame tags
   - [x] Packet descriptor fields, queue/rate selection and USB PID toggling
+  - [x] Adapter key-table commands/layout, security enable fields and station-rate registration
   - [ ] Calibration, remaining frame/security fields
 - [ ] Pi USB controller, hub enumeration, Ethernet, and RNDIS
   - [x] LAN9512 register transport, PHY access and SMSC frame headers
@@ -355,3 +356,22 @@ ignored under `target/runs/readability`; it performs no device operations. This
 proves those encodings are unchanged, not that radio operation has been retested.
 Receive arithmetic was reviewed against the reference fields; physical checks
 remain pending.
+
+## Wi-Fi key table and station rates
+
+Named CAM command/data registers, busy/write/clear bits, key entry word layout,
+security enable flags and station-rate firmware fields. The five-entry bound is
+identified as Gabix station policy. Entry validity is still cleared before key
+writes and set only with the final address/control word. Register operations,
+values and polling limits are unchanged.
+References: OpenBSD [r92creg.h](https://github.com/openbsd/src/blob/master/sys/dev/ic/r92creg.h)
+CAM/SECCFG and MACID definitions, and [rtwn.c](https://github.com/openbsd/src/blob/master/sys/dev/ic/rtwn.c)
+key installation and rate initialization.
+
+Managed Wi-Fi release build passes. A temporary host harness used the actual
+old/new key-installation and word-write methods with a recording register
+transport. All 90 combinations of entries 0..5, key IDs 0..4 and three synthetic
+key patterns produced identical results and writes. Busy reads returned clear,
+so this check covers encoding/order and invalid-input rejection; it does not
+exercise USB or hardware completion timing. No real key material was used.
+Physical validation remains pending.

@@ -172,6 +172,46 @@ mod fw {
     pub const MAILBOX_POLL_US: u32 = 10;
 }
 
+// CAM (content-addressable memory) holds the adapter's address/key entries.
+// Write a data word, then issue a command with its word address and busy bit.
+mod key_table {
+    pub const COMMAND: u16 = 0x0670;
+    pub const WRITE_DATA: u16 = 0x0674;
+    pub const SECURITY_CONFIG: u16 = 0x0680;
+    pub const BUSY: u32 = 1 << 31;
+    pub const CLEAR_ALL: u32 = 1 << 30;
+    pub const WRITE: u32 = 1 << 16;
+    pub const WORDS_PER_ENTRY: u16 = 8;
+    pub const KEY_FIRST_WORD: u16 = 2;
+    pub const WORD_BYTES: usize = 4;
+    pub const VALID: u32 = 1 << 15;
+    pub const ALGORITHM_AES: u32 = 4 << 2;
+    pub const MAC_LOW_SHIFT: u32 = 16;
+    // Gabix uses entries 0..3 for group keys and entry 4 for the AP pairwise
+    // key. The hardware has more entries; this bound is our station policy.
+    pub const LAST_STATION_ENTRY: u8 = 4;
+    pub const MAX_KEY_ID: u8 = 3;
+    pub const POLL_ATTEMPTS: usize = 1000;
+    pub const POLL_DELAY_US: u32 = 5;
+    pub const TX_DEFAULT_UNICAST_KEY: u16 = 1 << 0;
+    pub const RX_DEFAULT_UNICAST_KEY: u16 = 1 << 1;
+    pub const TX_ENCRYPTION: u16 = 1 << 2;
+    pub const RX_DECRYPTION: u16 = 1 << 3;
+    pub const TX_DEFAULT_BROADCAST_KEY: u16 = 1 << 6;
+    pub const RX_DEFAULT_BROADCAST_KEY: u16 = 1 << 7;
+}
+
+mod station_rate {
+    pub const CONFIGURE_COMMAND: u8 = 6; // Firmware MACID_CONFIG command.
+    pub const BROADCAST_ID: u8 = 4;
+    pub const ACCESS_POINT_ID: u8 = 0;
+    pub const ID_VALID: u8 = 0x80;
+    pub const TABLE_80211B: u32 = 6 << 28;
+    pub const CCK_RATE_MASK: u32 = 0x0f; // 1, 2, 5.5 and 11 Mbps.
+    pub const INITIAL_RATE_BASE: u16 = 0x0484;
+    pub const CCK1: u8 = 0;
+}
+
 // Adapter packet descriptors precede the 802.11 frame in USB bulk transfers.
 // These fields belong to the dongle; DWC2's USB channel has a separate setup.
 mod rx_descriptor {
@@ -881,9 +921,17 @@ impl Rtl8188cu {
     /// Clear the hardware key table when starting a new association.
     pub fn clear_keys(&mut self) -> Result<(), Error> {
         self.phase = "clear keys";
-        self.write32(0x0670, 0xc0000000)?;
+        self.write32(key_table::COMMAND, key_table::BUSY | key_table::CLEAR_ALL)?;
         self.wait_key_table()?;
-        self.write16(0x0680, 0x00cf)
+        self.write16(
+            key_table::SECURITY_CONFIG,
+            key_table::TX_DEFAULT_UNICAST_KEY
+                | key_table::RX_DEFAULT_UNICAST_KEY
+                | key_table::TX_ENCRYPTION
+                | key_table::RX_DECRYPTION
+                | key_table::TX_DEFAULT_BROADCAST_KEY
+                | key_table::RX_DEFAULT_BROADCAST_KEY,
+        )
     }
 
     /// Diagnostic receive filter for observing 802.11 acknowledgement frames.
@@ -896,12 +944,17 @@ impl Rtl8188cu {
     /// Both start at CCK1; the descriptor also selects this fixed data rate.
     pub fn configure_station_rates(&mut self) -> Result<(), Error> {
         self.phase = "station rate registration";
-        for station_id in [4u8, 0] {
+        for station_id in [station_rate::BROADCAST_ID, station_rate::ACCESS_POINT_ID] {
             let mut payload = [0u8; 5];
-            payload[..4].copy_from_slice(&0x6000000fu32.to_le_bytes()); // 11b, 1/2/5.5/11 Mbps.
-            payload[4] = 0x80 | station_id; // MACID_VALID.
-            self.firmware_command(6, &payload)?; // MACID_CONFIG.
-            self.write8(0x0484 + station_id as u16, 0)?;
+            payload[..4].copy_from_slice(
+                &(station_rate::TABLE_80211B | station_rate::CCK_RATE_MASK).to_le_bytes(),
+            );
+            payload[4] = station_rate::ID_VALID | station_id;
+            self.firmware_command(station_rate::CONFIGURE_COMMAND, &payload)?;
+            self.write8(
+                station_rate::INITIAL_RATE_BASE + station_id as u16,
+                station_rate::CCK1,
+            )?;
         }
         Ok(())
     }
@@ -954,36 +1007,45 @@ impl Rtl8188cu {
         mac: [u8; 6],
         key: &[u8; 16],
     ) -> Result<(), Error> {
-        if entry > 4 || key_id > 3 {
+        if entry > key_table::LAST_STATION_ENTRY || key_id > key_table::MAX_KEY_ID {
             return Err(Error::Configuration);
         }
-        let base = entry as u16 * 8;
+        let base = entry as u16 * key_table::WORDS_PER_ENTRY;
         // Keep the entry invalid until all key and address words are present.
         self.write_key_word(base, 0)?;
-        for (i, word) in key.chunks_exact(4).enumerate() {
+        for (i, word) in key.chunks_exact(key_table::WORD_BYTES).enumerate() {
             self.write_key_word(
-                base + 2 + i as u16,
+                base + key_table::KEY_FIRST_WORD + i as u16,
                 u32::from_le_bytes(word.try_into().unwrap()),
             )?;
         }
+        // Control word 1 holds the final four MAC bytes. Control word 0
+        // combines the first two MAC bytes, algorithm, key ID and valid bit.
         self.write_key_word(base + 1, u32::from_le_bytes(mac[2..6].try_into().unwrap()))?;
         self.write_key_word(
             base,
-            0x8010 | key_id as u32 | ((u16::from_le_bytes([mac[0], mac[1]]) as u32) << 16),
+            key_table::VALID
+                | key_table::ALGORITHM_AES
+                | key_id as u32
+                | ((u16::from_le_bytes([mac[0], mac[1]]) as u32) << key_table::MAC_LOW_SHIFT),
         )
     }
 
     fn write_key_word(&mut self, address: u16, value: u32) -> Result<(), Error> {
-        self.write32(0x0674, value)?;
-        self.write32(0x0670, 0x80010000 | address as u32)?;
+        self.write32(key_table::WRITE_DATA, value)?;
+        self.write32(
+            key_table::COMMAND,
+            key_table::BUSY | key_table::WRITE | address as u32,
+        )?;
         self.wait_key_table()
     }
+    // The dongle clears BUSY after finishing the requested table operation.
     fn wait_key_table(&mut self) -> Result<(), Error> {
-        for _ in 0..1000 {
-            if self.read32(0x0670)? & 0x80000000 == 0 {
+        for _ in 0..key_table::POLL_ATTEMPTS {
+            if self.read32(key_table::COMMAND)? & key_table::BUSY == 0 {
                 return Ok(());
             }
-            delay_us(5);
+            delay_us(key_table::POLL_DELAY_US);
         }
         Err(Error::Configuration)
     }

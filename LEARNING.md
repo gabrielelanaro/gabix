@@ -563,6 +563,11 @@ A milestone is a "demo-able" checkpoint. Worth a commit + tag + log entry.
 
 ## Progress Log
 
+### 2026-11-15 — Readability audit: Wi-Fi key table and rate registration
+- Named key-table commands, busy polling, entry layout and security enable flags. Explained invalidating an entry before writing it and setting validity last. Named firmware station IDs and rate-table fields.
+- Managed Wi-Fi release build passes. An ignored host harness compared old/new key-installation register writes and results for 90 synthetic cases, including rejected entry/key IDs; every trace matched.
+- Physical key installation and reassociation still await the disconnected Pi. Calibration and remaining shared frame/security code remain open.
+
 ### 2026-11-15 — Readability audit: Wi-Fi packet descriptors
 - Named receive length/error/padding/decryption fields and transmit ownership, segment, queue, cipher, rate and checksum fields. Separated the data aggregation flag from queue selection; preserved every encoded value.
 - Managed Wi-Fi release build passes. An ignored host harness compared the actual old/new transmit-buffer snippets across 95,664 combinations of lengths, frame types, protection/multicast bits and sequence fields; every byte matched.
