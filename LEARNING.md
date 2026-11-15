@@ -563,6 +563,11 @@ A milestone is a "demo-able" checkpoint. Worth a commit + tag + log entry.
 
 ## Progress Log
 
+### 2026-11-15 — Readability audit: atomic diagnostic probes
+- Named reset/mode/timing fields and explained UART markers, inherited entry state and the limited single-operation scope of both atomic probes.
+- Both release probe build scripts pass. Values and instruction order are preserved; no physical Pi test was performed.
+- Remaining probes, orchestration and lesson-reference review continue. Physical checks await the disconnected Pi; roadmap checkboxes remain open.
+
 ### 2026-11-15 — Readability audit: network service polling
 - Named link status values and link/DHCP polling intervals; explained exclusive service ownership, synchronous work and management-frame priority.
 - Managed and UART-user builds pass with unchanged values and operation order. The Pi is disconnected, so physical checks remain pending.

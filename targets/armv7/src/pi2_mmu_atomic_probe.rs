@@ -1,6 +1,9 @@
 #![no_std]
 #![no_main]
 
+// This single-core probe attempts one 0 -> 1 compare/exchange. L means success;
+// E means failure or panic. It does not test contention or multi-core ordering.
+// The assembly entry arms a five-second watchdog and inherits UART setup.
 mod memory;
 
 use core::panic::PanicInfo;
@@ -16,6 +19,7 @@ static ATOMIC_PROBE: AtomicU32 = AtomicU32::new(0);
 
 #[no_mangle]
 extern "C" fn pi2_mmu_atomic_probe_main() -> ! {
+    // S reports the SMP control-bit readback, M the identity-map probe, L the CAS.
     let smp_enabled = unsafe { memory::enable_smp() };
     write_byte(if smp_enabled { b'S' } else { b'E' });
     if !smp_enabled {

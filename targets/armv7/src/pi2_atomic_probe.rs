@@ -1,6 +1,9 @@
 #![no_std]
 #![no_main]
 
+// This single-core probe attempts one 0 -> 1 compare/exchange. L means success;
+// E means failure or panic. It does not test contention or multi-core ordering.
+// The assembly entry arms a five-second watchdog and inherits UART setup.
 use core::panic::PanicInfo;
 use core::sync::atomic::{AtomicU32, Ordering};
 

@@ -1458,3 +1458,22 @@ network processing. A handled management frame returns before Wi-Fi event loggin
 
 Managed and UART-user builds pass. Values and operation order are unchanged.
 Physical service checks remain pending while the Pi is disconnected.
+
+### Atomic diagnostic probes
+
+`pi2_atomic_probe` and `pi2_mmu_atomic_probe` name CPU modes, reset fields,
+watchdog duration and stack location in their assembly entries. The MMU probe
+uses character literals for its UART exception markers and explains the raw
+DFSR/DFAR output. Field meanings match the already-reviewed reset, boot and
+memory modules; exception/vector assumptions follow the ARM references above.
+
+Both probes attempt a single 0-to-1 compare/exchange. They cannot establish
+contention behavior or multi-core ordering. Entry inherits UART and cache/MMU
+state, assumes only one executing core, and changes mode only for HYP entry.
+The MMU probe sets VBAR but leaves the high-vector control bit inherited. Its
+S/M/L output reports SMP-bit readback, the identity-map test and CAS success.
+The simpler atomic probe inherits exception routing entirely.
+
+Both existing probe build scripts pass in release mode. Instruction arguments
+retain their values; no physical probe was run while the Pi is disconnected.
+Remaining diagnostic probes and lesson-reference coverage are still open.
