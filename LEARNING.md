@@ -563,6 +563,11 @@ A milestone is a "demo-able" checkpoint. Worth a commit + tag + log entry.
 
 ## Progress Log
 
+### 2026-11-15 — Readability audit: x86 syscall entry
+- Named saved syscall argument offsets and the seventh C argument's stack slot. STAR selector fields derive from the GDT. Frame arithmetic uses the shared size; comments correctly identify the existing stack as 64 KiB.
+- Replaced obsolete argument-preservation commentary with the actual distinction between ordinary return and the smaller fork snapshot; corrected the assembly step explanation before argument conversion. Push/pop order, offsets, stack size and selector values are preserved.
+- Existing fork-resumption and UDP echo tests pass, covering parent/child return and socket syscalls. Remaining interrupt wrappers, paging and process logic still need review; physical Pi checks remain pending.
+
 ### 2026-11-15 — Readability audit: x86 boot and user entry
 - Named CR4 SSE-support bits, initial user flags, timer rate and queue size. User entry obtains selectors from the GDT instead of repeating their encoded values. Explained the IRETQ stack order.
 - Corrected stale GDT/TSS descriptions: scheduler updates RSP0, and SYSCALL uses a software stack switch. Fixed assembly annotations: OR changes flags; the push/IRETQ sequence touches the stack and transfers control permanently. Intended register values and transition order are preserved.

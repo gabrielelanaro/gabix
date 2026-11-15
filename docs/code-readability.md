@@ -84,6 +84,7 @@ will be checked alongside the implementation they exercise.
   - [x] PIC masks and local APIC enable/address/acknowledgement fields
   - [x] Task context switch and matching new-task/fork stack construction
   - [x] Boot orchestration, GDT/TSS contracts and initial user entry
+  - [x] SYSCALL/SYSRET entry, saved argument offsets and STAR selector setup
 - [x] x86 PCI and VirtIO drivers (source review; existing QEMU checks pass)
   - [x] PCI bus-0 discovery, BAR fields and configuration access contract
   - [x] VirtIO capability regions and MSI-X table/control parsing
@@ -698,3 +699,17 @@ returns. This is a compiler-contract correction alongside the readability work.
 Existing user-mode boot and timer QEMU tests pass. These cover startup and
 ordinary interrupts; the remaining interrupt-wrapper review is separate.
 Flag references: [Linux x86 processor flags](https://raw.githubusercontent.com/torvalds/linux/master/arch/x86/include/uapi/asm/processor-flags.h).
+
+### x86 syscall entry
+
+The saved-argument offsets now name their syscall argument and original register.
+The seventh C argument offset accounts explicitly for its reserved stack slot.
+STAR is computed from the same GDT selectors used for user entry, preserving
+its current value. Stack comments now describe the existing 16-frame/64-KiB
+allocation. Ordinary syscall return and the smaller fork snapshot have separate
+contracts; no fork snapshot expansion or register-order change was introduced.
+
+Existing fork-resumption and UDP echo QEMU tests pass. These exercise user entry,
+fork return, and socket argument forwarding; they do not prove every register
+value under arbitrary nested scheduling. The scheduler/global snapshot policy
+remains part of the broader process review.
