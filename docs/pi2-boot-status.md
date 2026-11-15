@@ -17,19 +17,24 @@ card stayed in the Pi.
 | Permanent loader installation | 42 changed FAT data/directory sectors read back exactly; subsequent firmware boot passed |
 | Recovery image | Built from the protected original; loader, record and kernel contents verified; equivalent configuration tested on hardware |
 
-The final card contains two valid 83,864-byte development kernels. Copy A is
+The card now contains two authenticated managed kernels (A: 117,204 bytes;
+B: 116,172 bytes). Copy A is
 confirmed active, with no pending or failed attempts. The service accepts a new
 kernel over Ethernet and preserves the currently confirmed copy.
 
-The recovery image is registered as `pi2-sd-boot-2026-11-15` in
+The previous SD boot recovery image is registered as `pi2-sd-boot-2026-11-15` in
 `artifacts/pi2-images.json`. The original protected UART-loader image remains
 unchanged. The new image's complete raw-file SHA256 is recorded there; this run
 installed its changes in place rather than flashing the complete image.
 
 The new partition starts at sector 4,882,432. Kernel A starts at 4,884,480;
 B starts at 4,950,016. Each has 65,536 sectors (32 MiB). Metadata reserves
-1 MiB; 63 MiB remains spare. The executable-size limit is currently 16 MiB.
+1 MiB; a separate 16 MiB area stores logs and 47 MiB remains spare. The executable-size limit is currently 16 MiB.
 
 See [SD boot and update instructions](pi2-sd-boot.md) for the boot record,
 commands, tests, and single-record power-loss limitation. Raw logs, packages,
 and intermediate images remain in ignored `target/runs/` output.
+
+Router preparation and physical outage/renewal tests are documented in
+[router readiness](pi2-router-readiness.md). Routine updates and reboots can now
+use Ethernet; UART remains available for last-resort recovery.

@@ -34,6 +34,8 @@ through UART reboot/upload. Preserve the working server as the recovery image.
 - [ ] Verify UART, SD, USB, Ethernet, DHCP, ping, and UDP on a physical Pi 2B
 - [x] Ethernet uploads into SD kernel storage with complete read-back verification
 - [x] Permanent SD boot with two 32 MiB copies, trial confirmation, watchdog fallback, UART recovery, and a preserved recovery image
+- [x] Router preparation: authenticated Ethernet management/reboot, persistent buffered logs, DHCP retry/renewal diagnostics; physical outage and reboot checks
+- [ ] Verify the managed Pi on the actual FRITZ!Box LAN after moving the cable
 
 ### TCP arc — the connection-oriented transport
 - [x] Lesson 31 TCP segment, three-way handshake, and first byte exchanged
@@ -553,6 +555,14 @@ A milestone is a "demo-able" checkpoint. Worth a commit + tag + log entry.
 ---
 
 ## Progress Log
+
+### 2026-11-15 — Router readiness and persistent diagnostics
+- **Built:** Managed Pi profile with HMAC-SHA256 authentication for status, logs, sector access, uploads, installation, and reboot. Requests/replies use a persistent boot number and command counter; duplicate requests reuse the prior reply. The private key stays outside Git at ~/.config/gabix/pi2-management.key. New recovery images use owner-only read permissions.
+- **Storage:** Allocated a dedicated 16 MiB journal from the former spare area, starting at sector 5,015,552. Boot metadata remains 1 MiB; 47 MiB remains spare. A small RAM queue buffers routine lines; boot/update decisions request immediate flush. CRC-protected records retain boot/sequence/uptime and expose drop/write/corruption counters.
+- **Network:** Added lease renewal, rebinding, expiry, NAK/request-timeout recovery, link polling, and state/counter diagnostics. The client advertises gabix-pi2 and handles multiple DNS/router addresses. Ordinary reboot and update now work over Ethernet; the recovery loader still uses UART if both kernel copies fail.
+- **Physical evidence:** Managed boot acquired DHCP and exposed status/logs. Paused the Mac DHCP daemon for 150 seconds through a bounded administrator script; the Pi stayed up and obtained its address around boot+149 seconds without another reset. Its 300-second lease renewed at boot+299 seconds. Authenticated updates/reboots, previous-boot log retrieval, modified/unsigned rejection, duplicate caching, and cross-boot replay rejection passed. A host harness initially stopped on macOS's expected temporary 'No route to host' during reboot; it now retries that condition, and the repeated physical test passed.
+- **Checks:** Two focused DHCP lifecycle host tests, the existing ARM virt QEMU DHCP regression, 16 UART/image-registry tests, and managed/normal development builds passed. Final managed image is 117,204 bytes, CRC32 68bdf494; active A is confirmed, with the prior authenticated 116,172-byte copy B retained. Logs and test captures remain ignored.
+- **Next:** Stop the Mac's temporary en6 DHCP server, move the cable to a normal FRITZ!Box LAN port, and find gabix-pi2 / MAC 02:47:41:42:49:58 in the router. The real router connection is the remaining unchecked step. See docs/pi2-router-readiness.md for commands and limits.
 
 ### 2026-11-15 — Permanent SD boot and recoverable Ethernet updates
 - **Installed:** Added the 128 MiB kernel partition after the existing partitions, two 32 MiB kernel areas, and the checked boot record. Replaced only the existing FAT loader allocation and its size field after RAM-loader tests. All installation sectors were read back; no card removal or manual power cycle was required.

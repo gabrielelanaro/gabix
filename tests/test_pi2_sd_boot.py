@@ -130,7 +130,7 @@ def test_hung_trial_boots_previous(args):
 
 
 def test_candidate_boots_and_confirms(args):
-    image = IMAGES / "kernel-pi2-sd-transfer.img"
+    image = args.kernel
     if args.ram:
         patch(args, "candidate", lambda record: None, image.read_bytes())
     else:
@@ -152,7 +152,7 @@ def test_invalid_copies_accept_uart_recovery(args):
     (args.output / "good-record.bin").write_bytes(good)
     output = boot(args, b"GABIX SD COPIES EXHAUSTED")
     assert output.count(b"GABIX SD COPY INVALID") == 2, output
-    upload(IMAGES / "kernel-pi2-sd-transfer.img")
+    upload(args.kernel)
     patch(args, "restore-record", lambda record: record.__setitem__(slice(None), good))
     output = boot(args)
     assert b"GABIX SD BOOT CONFIRMED" in output, output
@@ -164,6 +164,7 @@ def main():
     p.add_argument("case", choices=["all", "hung", "candidate", "recovery"])
     p.add_argument("--ram", action="store_true")
     p.add_argument("--address", default="10.0.2.15")
+    p.add_argument("--kernel", type=Path, default=IMAGES / "kernel-pi2-managed.img")
     p.add_argument("--output", type=Path, required=True)
     args = p.parse_args()
     args.output.mkdir(parents=True, exist_ok=True)

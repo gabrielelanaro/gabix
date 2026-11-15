@@ -33,6 +33,8 @@ impl BootConsole for Pl011 {
 }
 
 pub fn write_line(console: &mut impl BootConsole, line: &[u8]) {
+    #[cfg(feature = "pi-sd-transfer")]
+    crate::diagnostics::line(line);
     for &byte in line {
         console.write_byte(byte);
     }

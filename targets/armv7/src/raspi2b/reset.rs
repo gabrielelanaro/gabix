@@ -45,3 +45,8 @@ pub fn reset() -> ! {
         }
     }
 }
+
+/// Raw PM_RSTS value; callers retain the register bits without guessing a cause.
+pub fn status() -> u32 {
+    unsafe { read_volatile((POWER_BASE + 0x20) as *const u32) }
+}

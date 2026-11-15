@@ -8,6 +8,10 @@ and marks it for a trial boot after whole-image verification.
 
 import argparse
 import binascii
+import hashlib
+import hmac
+import os
+import weakref
 from pathlib import Path
 import secrets
 import socket
@@ -19,7 +23,7 @@ MAGIC = b"GBSD"
 MAX_BYTES = 4095 * 512
 
 
-def exchange(
+def _exchange_plain(
     connection, session, operation, argument=0, value=0, payload=b"", timeout=2
 ):
     packet = HEADER.pack(MAGIC, operation, session, argument, value) + payload
@@ -51,6 +55,77 @@ def exchange(
             return reply[HEADER.size :]
     raise TimeoutError(
         f"No acknowledgement for operation {operation}, offset {argument}"
+    )
+
+
+_AUTH = weakref.WeakKeyDictionary()
+
+
+def exchange(
+    connection, session, operation, argument=0, value=0, payload=b"", timeout=2
+):
+    if os.environ.get("GABIX_PI_LEGACY") == "1":
+        return _exchange_plain(
+            connection, session, operation, argument, value, payload, timeout
+        )
+    state = _AUTH.get(connection)
+    if state is None:
+        path = Path(
+            os.environ.get(
+                "GABIX_PI_MANAGEMENT_KEY",
+                Path.home() / ".config/gabix/pi2-management.key",
+            )
+        )
+        key = path.read_bytes()
+        if len(key) != 32:
+            raise ValueError("Management key must contain exactly 32 bytes")
+        boot, sequence = struct.unpack("<QQ", _exchange_plain(connection, session, 10))
+        state = [key, boot, sequence]
+        _AUTH[connection] = state
+    key, boot, sequence = state
+    sequence += 1
+    inner = HEADER.pack(MAGIC, operation, session, argument, value) + payload
+    signed = struct.pack("<4sQQ", b"GBAU", boot, sequence) + inner
+    packet = signed + hmac.digest(key, b"request" + signed, "sha256")
+    for _ in range(8):
+        connection.send(packet)
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            connection.settimeout(max(0.001, deadline - time.monotonic()))
+            try:
+                reply = connection.recv(1024)
+            except socket.timeout:
+                break
+            if len(reply) < 72 or reply[:20] != struct.pack(
+                "<4sQQ", b"GBAU", boot, sequence
+            ):
+                continue
+            if not hmac.compare_digest(
+                reply[-32:], hmac.digest(key, b"response" + reply[:-32], "sha256")
+            ):
+                continue
+            response = reply[20:-32]
+            magic, reply_op, reply_session, reply_argument, status = HEADER.unpack_from(
+                response
+            )
+            if (magic, reply_op, reply_session, reply_argument) != (
+                MAGIC,
+                operation | 0x80000000,
+                session,
+                argument,
+            ):
+                continue
+            state[2] = sequence
+            if status:
+                raise RuntimeError(
+                    f"Pi rejected operation {operation}, offset {argument}: status {status}"
+                )
+            return response[HEADER.size :]
+    # Another authorized client may have advanced the counter; the next command
+    # obtains a new challenge. Never fall back to an unsigned request.
+    _AUTH.pop(connection, None)
+    raise TimeoutError(
+        f"No authenticated acknowledgement for operation {operation}; check address/key/link"
     )
 
 

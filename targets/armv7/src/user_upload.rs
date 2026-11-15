@@ -20,8 +20,12 @@ pub fn serve_uart_uploads_and_ethernet(uart_console: &mut Pl011) -> ! {
     #[cfg(feature = "pi-sd-transfer")]
     crate::confirm_sd_boot(uart_console);
     write_line(uart_console, b"GABIX USER READY");
+    #[cfg(feature = "pi-sd-transfer")]
+    crate::flush_diagnostics(true);
 
     loop {
+        #[cfg(feature = "pi-sd-transfer")]
+        crate::flush_diagnostics(false);
         // 1. Read one UART byte, or detect an interrupted upload.
         let uart_upload_event = if let Some(byte) = uart_console.try_read_byte() {
             last_uart_byte_tick = crate::raspi2b::timer::ticks();
@@ -80,7 +84,9 @@ pub fn serve_uart_uploads_and_ethernet(uart_console: &mut Pl011) -> ! {
                     UploadFailure::InvalidHeader => {
                         write_line(uart_console, b"USER UPLOAD HEADER FAILED")
                     }
-                    UploadFailure::CrcMismatch => write_line(uart_console, b"USER UPLOAD CRC FAILED"),
+                    UploadFailure::CrcMismatch => {
+                        write_line(uart_console, b"USER UPLOAD CRC FAILED")
+                    }
                     UploadFailure::Timeout => write_line(uart_console, b"USER UPLOAD TIMEOUT"),
                 }
                 write_line(uart_console, b"USER UPLOAD FAILED");

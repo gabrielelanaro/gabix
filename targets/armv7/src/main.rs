@@ -18,6 +18,10 @@ mod sd_transfer;
 #[cfg(feature = "pi-sd-transfer")]
 mod sd_install;
 #[cfg(feature = "pi-sd-transfer")]
+mod diagnostics;
+#[cfg(feature = "pi-managed")]
+mod management_auth;
+#[cfg(feature = "pi-sd-transfer")]
 mod boot_trial;
 #[cfg(feature = "pi-sd-transfer")]
 static mut PI_SD_TRANSFER: Option<sd_transfer::Receiver> = None;
@@ -139,6 +143,7 @@ extern "C" fn arm_kernel_entry() {
             release_boot_test_watchdog();
             if ready {
                 write_line(&mut console, b"gabix SD transfer region ready");
+                flush_diagnostics(true);
             } else {
                 write_line(&mut console, b"gabix SD transfer unavailable: card or region check failed");
             }
@@ -274,8 +279,14 @@ extern "C" fn arm_kernel_entry() {
         )))]
         {
             raspi2b::timer::init();
+            #[cfg(feature = "pi-sd-transfer")]
+            flush_diagnostics(true);
             verify_timer_preemption(&mut console);
+            #[cfg(feature = "pi-sd-transfer")]
+            flush_diagnostics(true);
             verify_process_isolation(&mut console);
+            #[cfg(feature = "pi-sd-transfer")]
+            flush_diagnostics(true);
         }
         #[cfg(any(not(feature = "pi-uart-user"), feature = "pi-hardware"))]
         if let Some(mut usb) = raspi2b::usb::Dwc2::initialize() {
@@ -324,15 +335,25 @@ extern "C" fn arm_kernel_entry() {
                         }
                     }
                     let mut session = DhcpSession::new(network.mac_address(), 0x4741_4258);
+                    #[cfg(not(feature = "pi-managed"))]
                     let mut next_discover = raspi2b::timer::ticks();
-                    #[cfg(feature = "pi-hardware")]
+                    #[cfg(all(feature = "pi-hardware", not(feature = "pi-managed")))]
                     let mut discover_count = 0usize;
                     #[cfg(not(feature = "pi-hardware"))]
                     let deadline = raspi2b::timer::ticks() + 200;
                     #[cfg(feature = "pi-hardware")]
                     let deadline = raspi2b::timer::ticks() + 2_000;
                     while raspi2b::timer::ticks() < deadline {
+                        #[cfg(not(feature = "pi-managed"))]
                         let now = raspi2b::timer::ticks();
+                        #[cfg(feature = "pi-managed")]
+                        {
+                            session.poll(&mut network, raspi2b::timer::uptime_millis()/1000, true);
+                            record_network_progress(&session);
+                            boot_trial::refresh();
+                            flush_diagnostics(false);
+                        }
+                        #[cfg(not(feature = "pi-managed"))]
                         if !session.is_configured() && now >= next_discover {
                             write_line(&mut console, b"gabix raspi2b dhcp discover");
                             if session.send_discover(&mut network) {
@@ -348,8 +369,10 @@ extern "C" fn arm_kernel_entry() {
                             boot_trial::refresh();
                             next_discover = now + 100;
                         }
-                        #[cfg(feature = "pi-hardware")]
+                        #[cfg(all(feature = "pi-hardware", not(feature = "pi-managed")))]
                         let poll_receive = discover_count >= 2;
+                        #[cfg(feature = "pi-managed")]
+                        let poll_receive = true;
                         #[cfg(not(feature = "pi-hardware"))]
                         let poll_receive = true;
                         if poll_receive {
@@ -382,8 +405,14 @@ extern "C" fn arm_kernel_entry() {
                         PI_NETWORK = Some(network);
                         PI_DHCP = Some(session);
                     }
+                } else {
+                    write_line(&mut console, b"gabix ethernet device configuration FAILED");
                 }
+            } else {
+                write_line(&mut console, b"gabix USB root enumeration FAILED");
             }
+        } else {
+            write_line(&mut console, b"gabix USB host initialization FAILED");
         }
         while raspi2b::timer::ticks() < 2 {
             #[cfg(feature = "pi-network-no-irq-dev")]
@@ -405,22 +434,61 @@ extern "C" fn arm_kernel_entry() {
 
 /// Poll from the UART loader's idle loop; the IRQ handler never owns these objects.
 #[cfg(feature = "pi-uart-user")]
-pub fn poll_ethernet_and_reply(console: &mut Pl011, next_dhcp_discover_tick: &mut u64) {
+pub fn poll_ethernet_and_reply(console: &mut Pl011, _next_dhcp_discover_tick: &mut u64) {
     unsafe {
         let network = &mut *core::ptr::addr_of_mut!(PI_NETWORK);
         let session = &mut *core::ptr::addr_of_mut!(PI_DHCP);
         if let (Some(network), Some(session)) = (network.as_mut(), session.as_mut()) {
+            #[cfg(not(feature = "pi-managed"))]
             let current_tick = raspi2b::timer::ticks();
-            if !session.is_configured() && current_tick >= *next_dhcp_discover_tick {
+            #[cfg(feature = "pi-managed")]
+            {
+                let now = raspi2b::timer::uptime_millis();
+                if now >= NEXT_LINK_CHECK {
+                    let link = match network.link_up() {
+                        Some(true) => 2,
+                        Some(false) => 1,
+                        None => 0,
+                    };
+                    if link != LINK_STATUS {
+                        diagnostics::event(format_args!(
+                            "ethernet link {}",
+                            match link {
+                                2 => "up",
+                                1 => "down",
+                                _ => "unknown",
+                            }
+                        ));
+                        if LINK_STATUS != 0 {
+                            session.restart("link changed");
+                        }
+                        LINK_STATUS = link;
+                        flush_diagnostics(true);
+                    }
+                    NEXT_LINK_CHECK = now + 2000;
+                }
+                session.poll(network, now / 1000, LINK_STATUS != 1);
+                record_network_progress(session);
+                if let Some(receiver) = (&mut *core::ptr::addr_of_mut!(PI_SD_TRANSFER)).as_mut() {
+                    receiver.network_status(session, LINK_STATUS);
+                }
+            }
+            #[cfg(not(feature = "pi-managed"))]
+            if !session.is_configured() && current_tick >= *_next_dhcp_discover_tick {
                 session.send_discover(network);
-                *next_dhcp_discover_tick = current_tick + 100;
+                *_next_dhcp_discover_tick = current_tick + 100;
             }
             if let Some(frame) = network.receive() {
                 #[cfg(feature = "pi-sd-transfer")]
                 if let Some(receiver) = (&mut *core::ptr::addr_of_mut!(PI_SD_TRANSFER)).as_mut() {
-                    if session.handle_sd_transfer(network, frame.bytes(), receiver) { return; }
+                    if session.handle_sd_transfer(network, frame.bytes(), receiver) {
+                        return;
+                    }
                 }
-                if matches!(session.handle_frame(network, frame.bytes()), NetworkEvent::Configured) {
+                if matches!(
+                    session.handle_frame(network, frame.bytes()),
+                    NetworkEvent::Configured
+                ) {
                     write_line(console, b"gabix raspi2b dhcp configured");
                 }
             }
@@ -584,4 +652,53 @@ pub fn confirm_sd_boot(console: &mut Pl011) {
         }
     }
     write_line(console, b"GABIX SD BOOT UNCONFIRMED; watchdog will retry");
+}
+
+#[cfg(feature = "pi-sd-transfer")]
+pub fn flush_diagnostics(critical: bool) {
+    unsafe {
+        if let Some(receiver) = (&mut *core::ptr::addr_of_mut!(PI_SD_TRANSFER)).as_mut() {
+            receiver.maintenance(critical);
+        }
+    }
+}
+#[cfg(feature = "pi-managed")]
+static mut LINK_STATUS: u32 = 0;
+#[cfg(feature = "pi-managed")]
+static mut NEXT_LINK_CHECK: u64 = 0;
+#[cfg(feature = "pi-managed")]
+fn record_network_progress(session: &DhcpSession) {
+    static mut PREVIOUS: (u32, u32, u32, u64) = (u32::MAX, 0, 0, 0);
+    let state = session.state as u32;
+    let remaining = session.lease_remaining();
+    unsafe {
+        let previous = &mut *core::ptr::addr_of_mut!(PREVIOUS);
+        let attempt_summary = session.attempts != previous.1
+            && (session.attempts.is_power_of_two() || session.attempts % 64 == 0);
+        if state != previous.0 || remaining > previous.3.saturating_add(2) {
+            let label = match session.state {
+                network::LeaseState::Selecting => "discovering",
+                network::LeaseState::Requesting => "requesting",
+                network::LeaseState::Bound => "bound",
+                network::LeaseState::Renewing => "renewing",
+                network::LeaseState::Rebinding => "rebinding",
+            };
+            diagnostics::event(format_args!(
+                "dhcp {} ip={:?} attempts={} lease_remaining_s={} server={:?} discovery_reason={}",
+                label,
+                session.address(),
+                session.attempts,
+                remaining,
+                session.lease.map(|l| l.server).unwrap_or([0; 4]),
+                session.discovery_reason
+            ));
+            flush_diagnostics(true);
+        } else if attempt_summary || session.tx_failures != previous.2 {
+            diagnostics::event(format_args!(
+                "dhcp attempts={} transmit_failures={}",
+                session.attempts, session.tx_failures
+            ));
+        }
+        *previous = (state, session.attempts, session.tx_failures, remaining);
+    }
 }

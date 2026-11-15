@@ -18,8 +18,9 @@
       {"name": "A", "offset_sectors": 2048, "capacity_sectors": 65536},
       {"name": "B", "offset_sectors": 67584, "capacity_sectors": 65536}
     ],
-    "spare_offset_sectors": 133120,
-    "spare_sectors": 129024
+    "logs": {"offset_sectors": 133120, "capacity_sectors": 32768},
+    "spare_offset_sectors": 165888,
+    "spare_sectors": 96256
   },
   "current_loader_limit_bytes": 16777216
 }

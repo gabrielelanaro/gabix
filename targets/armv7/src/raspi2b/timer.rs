@@ -41,8 +41,7 @@ pub fn ticks() -> u64 {
 
 pub fn delay_us(microseconds: u32) {
     let started = unsafe { core::ptr::read_volatile(SYSTEM_TIMER_LOW) };
-    while unsafe { core::ptr::read_volatile(SYSTEM_TIMER_LOW) }.wrapping_sub(started)
-        < microseconds
+    while unsafe { core::ptr::read_volatile(SYSTEM_TIMER_LOW) }.wrapping_sub(started) < microseconds
     {
         core::hint::spin_loop();
     }
@@ -50,4 +49,17 @@ pub fn delay_us(microseconds: u32) {
 
 unsafe fn write32(address: usize, value: u32) {
     core::ptr::write_volatile(address as *mut u32, value);
+}
+
+/// System timer uptime includes startup before IRQ-driven ticks are enabled.
+pub fn uptime_millis() -> u64 {
+    unsafe {
+        loop {
+            let high = core::ptr::read_volatile(0x3f003008 as *const u32);
+            let low = core::ptr::read_volatile(SYSTEM_TIMER_LOW);
+            if high == core::ptr::read_volatile(0x3f003008 as *const u32) {
+                return (((high as u64) << 32) | low as u64) / 1000;
+            }
+        }
+    }
 }

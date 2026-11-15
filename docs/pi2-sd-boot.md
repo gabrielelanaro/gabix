@@ -17,7 +17,8 @@ except for the FAT loader file and its directory size field.
 | Boot record and reserved metadata | 4,882,432 | 1 MiB |
 | Kernel A | 4,884,480 | 32 MiB |
 | Kernel B | 4,950,016 | 32 MiB |
-| Future allocation | 5,015,552 | 63 MiB |
+| Persistent diagnostics | 5,015,552 | 16 MiB |
+| Future allocation | 5,048,320 | 47 MiB |
 
 The record stores each copy's relative start, capacity, byte length, and CRC32.
 The current executable limit is **16 MiB**, matching the UART loader's RAM
@@ -55,12 +56,11 @@ continuous health monitor in this implementation.
 Build and send a development kernel while the Pi's service is running:
 
 ```sh
-GABIX_ARM_PROFILE=release sh scripts/build-arm.sh pi2-sd-transfer
+GABIX_ARM_PROFILE=release sh scripts/build-arm.sh pi2-managed
 python3 scripts/pi2-sd-transfer.py \
-  targets/armv7/target/armv7a-none-eabihf/release/kernel-pi2-sd-transfer.img \
+  targets/armv7/target/armv7a-none-eabihf/release/kernel-pi2-managed.img \
   --kernel
-python3 scripts/upload-pi2-user.py /dev/cu.usbserial-0001 \
-  target/arm_reboot.elf --wait-for-reboot
+python3 scripts/pi2-manage.py reboot
 ```
 
 The host reads the complete uploaded image back for comparison. The reboot
@@ -113,8 +113,11 @@ write can require UART recovery. Power loss while replacing the FAT loader can
 require burning the preserved recovery image from another computer. The initial
 loader installation is therefore a controlled one-off operation.
 
-CRC32 detects accidental corruption; uploads and installation packages have no
-authentication. This development service belongs on the private direct link.
+CRC32 detects accidental corruption. The `pi2-managed` build authenticates
+management commands with HMAC-SHA256. The older `pi2-sd-transfer` build is retained
+for private-link bootstrap; `GABIX_PI_LEGACY=1` explicitly selects its unsigned
+host protocol. Use the managed build for router-connected operation. See
+[router readiness](pi2-router-readiness.md) for key handling and diagnostics.
 The image builder preserves the original firmware and Linux filesystem from
 the protected baseline. Image verification checks its loader, both kernel
 copies, boot record, and full-file SHA256; it does not substitute for a full

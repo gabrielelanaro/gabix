@@ -38,6 +38,8 @@ def validate(layout, mbr, card_sectors):
     if not 0 <= partition['boot_record_offset'] < partition['metadata_sectors']:
         raise ValueError('Boot record lies outside metadata area')
     ranges += [(copy['offset_sectors'], copy['capacity_sectors']) for copy in partition['copies']]
+    if 'logs' in partition:
+        ranges += [(partition['logs']['offset_sectors'], partition['logs']['capacity_sectors'])]
     ranges += [(partition['spare_offset_sectors'], partition['spare_sectors'])]
     end = 0
     for offset, count in sorted(ranges):
