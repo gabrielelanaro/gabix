@@ -1,6 +1,19 @@
+//! LAN9512 register commands use USB control transfers; Ethernet frames use
+//! the bulk endpoints. Field definitions follow Linux smsc95xx.h/.c.
+
 use super::usb::{Dwc2, UsbDevice};
 use gabix_kernel::device::{EthernetFrame, FrameDevice, MAX_ETHERNET_FRAME_LEN};
 use gabix_kernel::net::smsc95xx::{read_rx_frame, write_tx_frame, RX_HEADER_LEN, TX_HEADER_LEN};
+
+const USB_VENDOR_DEVICE_READ: u8 = 0xc0;
+const USB_VENDOR_DEVICE_WRITE: u8 = 0x40;
+const UNUSED_REQUEST_VALUE: u16 = 0;
+const MII_PHY_ADDRESS_SHIFT: u32 = 11;
+const MII_REGISTER_SHIFT: u32 = 6;
+const MII_REGISTER_MASK: u32 = 0x1f;
+const CHECKSUM_OFFLOAD_DISABLED: u32 = 0;
+const CLEAR_ALL_INTERRUPT_STATUS: u32 = u32::MAX;
+const FALLBACK_MAC: [u8; 6] = [0x02, 0x47, 0x41, 0x42, 0x49, 0x58];
 
 const DATA0: u32 = 0;
 const DATA1: u32 = 2;
@@ -22,9 +35,10 @@ const ADDRL: u16 = 0x108;
 const COE_CR: u16 = 0x130;
 
 const TX_CFG_ON: u32 = 0x0000_0004;
-const HW_CFG_BIR: u32 = 0x0000_1000;
-const HW_CFG_RXDOFF: u32 = 0x0000_0600;
-const HW_CFG_LRST: u32 = 0x0000_0008;
+const BULK_IN_EMPTY_RESPONSE: u32 = 0x0000_1000;
+const RX_DATA_OFFSET_MASK: u32 = 0x0000_0600;
+const LITE_RESET_REQUEST: u32 = 0x0000_0008;
+// Linux reference flow-control thresholds and backpressure configuration.
 const AFC_CFG_DEFAULT: u32 = 0x00f8_30a1;
 const MAC_CR_FULL_DUPLEX: u32 = 0x0010_0000;
 const MAC_CR_TX_ENABLE: u32 = 0x0000_0008;
@@ -53,13 +67,15 @@ pub struct Lan9512Ethernet {
 
 impl Lan9512Ethernet {
     pub unsafe fn configure(mut host: Dwc2, device: UsbDevice) -> Option<Self> {
+        // Configure USB endpoints, then wait for the adapter's internal reset.
         let endpoints = host.configure_bulk_device(device)?;
-        write_register(&mut host, device, HW_CFG, HW_CFG_LRST)?;
-        wait_register_clear(&mut host, device, HW_CFG, HW_CFG_LRST)?;
+        write_register(&mut host, device, HW_CFG, LITE_RESET_REQUEST)?;
+        wait_register_clear(&mut host, device, HW_CFG, LITE_RESET_REQUEST)?;
 
+        // Use EEPROM identity when valid; otherwise use our local unicast MAC.
         let mac = read_mac_address(&mut host, device)
             .filter(valid_mac_address)
-            .unwrap_or([0x02, 0x47, 0x41, 0x42, 0x49, 0x58]);
+            .unwrap_or(FALLBACK_MAC);
         write_register(
             &mut host,
             device,
@@ -73,17 +89,18 @@ impl Lan9512Ethernet {
             u16::from_le_bytes([mac[4], mac[5]]) as u32,
         )?;
 
+        // Zero RX data offset places frame bytes immediately after RX status.
         let hardware = read_register(&mut host, device, HW_CFG)?;
         write_register(
             &mut host,
             device,
             HW_CFG,
-            (hardware | HW_CFG_BIR) & !HW_CFG_RXDOFF,
+            (hardware | BULK_IN_EMPTY_RESPONSE) & !RX_DATA_OFFSET_MASK,
         )?;
         write_register(&mut host, device, BURST_CAP, 0)?;
-        write_register(&mut host, device, INT_STS, u32::MAX)?;
+        write_register(&mut host, device, INT_STS, CLEAR_ALL_INTERRUPT_STATUS)?;
         write_register(&mut host, device, AFC_CFG, AFC_CFG_DEFAULT)?;
-        write_register(&mut host, device, COE_CR, 0)?;
+        write_register(&mut host, device, COE_CR, CHECKSUM_OFFLOAD_DISABLED)?;
 
         let mac_control = read_register(&mut host, device, MAC_CR)?;
         write_register(
@@ -107,6 +124,8 @@ impl Lan9512Ethernet {
     }
 
     fn update_pid(pid: &mut u32, length: usize, packet_size: usize) {
+        // USB DATA0/DATA1 alternates per packet. An odd packet count changes
+        // the starting PID for the next transfer; a zero-length packet counts.
         let packets = length.max(1).div_ceil(packet_size);
         if packets & 1 != 0 {
             *pid = if *pid == DATA0 { DATA1 } else { DATA0 };
@@ -138,9 +157,7 @@ impl Lan9512Ethernet {
     pub unsafe fn link_up(&mut self) -> Option<bool> {
         // BMSR link status is latch-low, so Linux reads it twice as well.
         let _ = read_phy_register(&mut self.host, self.device, MII_BMSR)?;
-        Some(
-            read_phy_register(&mut self.host, self.device, MII_BMSR)? & BMSR_LINK_STATUS != 0,
-        )
+        Some(read_phy_register(&mut self.host, self.device, MII_BMSR)? & BMSR_LINK_STATUS != 0)
     }
 }
 
@@ -174,7 +191,15 @@ impl FrameDevice for Lan9512Ethernet {
 
 unsafe fn read_register(host: &mut Dwc2, device: UsbDevice, register: u16) -> Option<u32> {
     let mut bytes = [0u8; 4];
-    if host.control_read(device, 0xc0, READ_REGISTER, 0, register, &mut bytes)? != bytes.len() {
+    if host.control_read(
+        device,
+        USB_VENDOR_DEVICE_READ,
+        READ_REGISTER,
+        UNUSED_REQUEST_VALUE,
+        register,
+        &mut bytes,
+    )? != bytes.len()
+    {
         return None;
     }
     Some(u32::from_le_bytes(bytes))
@@ -188,25 +213,25 @@ unsafe fn write_register(
 ) -> Option<()> {
     host.control_write(
         device,
-        0x40,
+        USB_VENDOR_DEVICE_WRITE,
         WRITE_REGISTER,
-        0,
+        UNUSED_REQUEST_VALUE,
         register,
         &value.to_le_bytes(),
     )
 }
 
-unsafe fn read_phy_register(
-    host: &mut Dwc2,
-    device: UsbDevice,
-    register: u32,
-) -> Option<u16> {
+unsafe fn read_phy_register(host: &mut Dwc2, device: UsbDevice, register: u32) -> Option<u16> {
+    // The MAC proxies access to the Ethernet physical-layer (PHY) registers.
+    // Wait for the previous operation before submitting this read.
     wait_register_clear(host, device, MII_ADDR, MII_BUSY)?;
     write_register(
         host,
         device,
         MII_ADDR,
-        INTERNAL_PHY_ID << 11 | (register & 0x1f) << 6 | MII_BUSY,
+        INTERNAL_PHY_ID << MII_PHY_ADDRESS_SHIFT
+            | (register & MII_REGISTER_MASK) << MII_REGISTER_SHIFT
+            | MII_BUSY,
     )?;
     wait_register_clear(host, device, MII_ADDR, MII_BUSY)?;
     Some(read_register(host, device, MII_DATA)? as u16)
@@ -218,6 +243,7 @@ unsafe fn wait_register_clear(
     register: u16,
     mask: u32,
 ) -> Option<()> {
+    // Each poll is a USB control read; the limit counts attempts, not time.
     for _ in 0..REGISTER_POLL_LIMIT {
         if read_register(host, device, register)? & mask == 0 {
             return Some(());

@@ -563,6 +563,11 @@ A milestone is a "demo-able" checkpoint. Worth a commit + tag + log entry.
 
 ## Progress Log
 
+### 2026-11-15 — Readability audit: LAN9512 USB Ethernet
+- Explained control-register versus bulk-frame transfers; named PHY packing, vendor request fields, RX length shift and supported device IDs.
+- Documented command words, FCS removal, reset/MAC initialization, packet-toggle accounting and polling units without changing operations.
+- Existing host framing tests pass (3); managed Pi release build passes. Real LAN9512 verification remains pending; QEMU RNDIS is not equivalent hardware coverage.
+
 ### 2026-11-15 — Readability audit: SD boot record
 - Named record and copy-descriptor fields, checksum parameters, and MBR fields. Explained trial state and the callers' responsibility to persist selection/confirmation.
 - Existing boot-record tests pass (3), and the loader-only library compiles without kernel features. Preserved disk format and selection order; no physical SD operations performed.

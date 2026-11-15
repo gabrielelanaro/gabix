@@ -34,6 +34,8 @@ will be checked alongside the implementation they exercise.
   - [x] Station phases, retry timings, and basic management-frame tags
   - [ ] Packet descriptors, calibration, remaining frame/security fields
 - [ ] Pi USB controller, hub enumeration, Ethernet, and RNDIS
+  - [x] LAN9512 register transport, PHY access and SMSC frame headers
+  - [ ] USB controller/hubs, Ethernet selection, RNDIS
 - [ ] Pi SD controller, mailbox, timer, reset, and hardware random generator
   - [x] Timer: source rates, interrupt routing/acknowledgement, rollover-safe uptime read
   - [x] Random generator: enable/warm-up, FIFO word count, whole-nonce timeout
@@ -237,3 +239,15 @@ implied next_attempt itself wrote to disk. Record bytes and selection order are
 preserved. Existing corruption/extent, fallback/confirmation and partition-bound
 unit tests pass (3); the loader-only library also compiles without kernel
 features. No SD writes were made; physical validation remains pending.
+
+## LAN9512 Ethernet over USB
+
+The shared SMSC parser documents transmit command words, receive status and
+FCS removal. The adapter names USB request fields and PHY-address packing;
+comments explain internal reset, EEPROM MAC selection, receive offsets,
+DATA0/DATA1 packet alternation and USB-read polling. Existing register values,
+packet bytes and polling limits are unchanged.
+Reference: [Linux smsc95xx.h](https://github.com/torvalds/linux/blob/master/drivers/net/usb/smsc95xx.h), TX/RX command fields and register masks.
+Existing host frame tests pass (3), and the managed Pi release build passes.
+QEMU's RNDIS USB network device does not exercise LAN9512 register behavior;
+physical Ethernet validation remains pending reconnection.
