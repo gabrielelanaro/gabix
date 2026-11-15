@@ -1,4 +1,12 @@
-//! ARP packet parsing and building.
+//! Address Resolution Protocol (ARP) packet parsing and building.
+//!
+//! For Ethernet/IPv4, ARP asks which MAC address owns an IP address. The
+//! eight-byte prefix identifies hardware/protocol types, address lengths,
+//! and request/reply operation. Four address fields follow in this order:
+//! sender MAC (8..14), sender IP (14..18), target MAC (18..24), target IP (24..28).
+//! Field abbreviations below match RFC 826: htype/ptype are hardware/protocol
+//! types; hlen/plen are address lengths; sha/spa are sender hardware/protocol
+//! addresses; tha/tpa are target hardware/protocol addresses.
 
 pub const ARP_PACKET_LEN: usize = 28;
 pub const HTYPE_ETHERNET: u16 = 1;

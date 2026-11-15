@@ -1,4 +1,8 @@
 //! Ethernet header parsing and building.
+//!
+//! Wire layout: destination MAC address (bytes 0..6), source MAC (6..12),
+//! then a big-endian EtherType (12..14) identifying the payload protocol.
+//! This module handles that header; the frame device supplies payload bytes.
 
 pub const ETHERNET_HEADER_LEN: usize = 14;
 pub const ETHERTYPE_IPV4: u16 = 0x0800;
