@@ -1707,3 +1707,18 @@ requires a connected Pi and evidence for the changed hardware paths:
 The Pi remains disconnected by the user's instruction. No network probes, uploads,
 SD writes or resets were attempted in this verification slice. Lesson-reference
 review remains independent local work; the physical gate is still unsatisfied.
+
+### Renamed constant references and mailbox lesson
+
+Scanned removed constant names across teaching material, tests and scripts.
+Updated five VirtIO lesson/tour references to VIRTQ_DESC_F_DEVICE_WRITES and
+MIN_TX_BYTES, preserving values. PAGE/TIMER/HEADER matches denote other local
+concepts and were not renamed indiscriminately.
+
+The mailbox lesson now shows current power_on_usb rather than an old inline
+message implementation with an unbounded loop. It explains exchange_id_value,
+cache visibility, serialized shared-buffer access and bounded polling, and
+corrects the old claim that the Pi timer is polled. Source locations accompany
+the updated explanation. Changed HTML files parse; whitespace checks pass.
+These are affected-reference fixes, not a rewrite of historical course material.
+Physical Pi validation remains pending.

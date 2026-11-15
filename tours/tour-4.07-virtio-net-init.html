@@ -151,7 +151,7 @@ configure_queue_at(1, &amp;tx_queue, <span class="s">"TX"</span>);</pre>
     <div class="snippet-meta"><span class="snippet-file">src/virtio.rs</span><span class="snippet-what">receive supply</span></div>
 <pre>desc.addr = buffer_phys;
 desc.len = 2048;
-desc.flags = <span class="t">VIRTQ_DESC_F_WRITE</span>;
+desc.flags = <span class="t">VIRTQ_DESC_F_DEVICE_WRITES</span>;
 
 rx_queue.submit_chain(desc_idx);</pre>
     <p>

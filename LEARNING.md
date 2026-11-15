@@ -563,6 +563,11 @@ A milestone is a "demo-able" checkpoint. Worth a commit + tag + log entry.
 
 ## Progress Log
 
+### 2026-11-15 — Readability audit: mailbox/VirtIO references
+- Scanned removed constant names and updated five VirtIO references; replaced the mailbox lesson's outdated helper with current source and polling explanation.
+- HTML parsing and whitespace checks pass. No kernel behavior changed.
+- Physical Pi validation remains pending; final consistency/evidence review continues.
+
 ### 2026-11-15 — Readability audit: host compatibility and hardware gate
 - Passed all 16 uploader/registry host tests and all eight default-feature shared-library unit tests.
 - Reviewed physical helper scope and recorded concrete Wi-Fi/USB, management/logging, SD recovery and memory/scheduling checks still required.

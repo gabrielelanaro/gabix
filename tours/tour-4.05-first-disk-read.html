@@ -583,9 +583,9 @@
     <span class="k">self</span>.write_descriptor(head, header_phys, <span class="n">16</span>,
         <span class="n">VIRTQ_DESC_F_NEXT</span>, mid);
     <span class="k">self</span>.write_descriptor(mid, data_phys, <span class="n">512</span>,
-        <span class="n">VIRTQ_DESC_F_NEXT</span> | <span class="n">VIRTQ_DESC_F_WRITE</span>, tail);
+        <span class="n">VIRTQ_DESC_F_NEXT</span> | <span class="n">VIRTQ_DESC_F_DEVICE_WRITES</span>, tail);
     <span class="k">self</span>.write_descriptor(tail, status_phys, <span class="n">1</span>,
-        <span class="n">VIRTQ_DESC_F_WRITE</span>, <span class="n">0</span>);
+        <span class="n">VIRTQ_DESC_F_DEVICE_WRITES</span>, <span class="n">0</span>);
 
     head
 }</pre>
