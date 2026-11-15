@@ -9,6 +9,14 @@ const GUSBCFG: usize = 0x00c;
 #[cfg(feature = "pi-hardware")]
 const GRSTCTL: usize = 0x010;
 const GINTSTS: usize = 0x014;
+#[cfg(feature = "pi-hardware")]
+const GRXFSIZ: usize = 0x024;
+#[cfg(feature = "pi-hardware")]
+const GNPTXFSIZ: usize = 0x028;
+#[cfg(feature = "pi-hardware")]
+const GHWCFG3: usize = 0x04c;
+#[cfg(feature = "pi-hardware")]
+const HPTXFSIZ: usize = 0x100;
 const HCFG: usize = 0x400;
 const HPRT: usize = 0x440;
 const CHANNEL_BASE: usize = 0x500;
@@ -86,7 +94,6 @@ struct DmaBuffer([u8; 256]);
 
 static mut SETUP: DmaBuffer = DmaBuffer([0; 256]);
 static mut DATA: DmaBuffer = DmaBuffer([0; 256]);
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct UsbDevice {
     pub address: u8,
@@ -99,6 +106,8 @@ pub struct UsbDevice {
 pub struct BulkEndpoints {
     pub input: u8,
     pub output: u8,
+    pub outputs: [u8; 3],
+    pub output_count: usize,
     pub max_packet_size: u16,
 }
 
@@ -120,6 +129,18 @@ pub enum HubEnumerationError {
 pub struct Dwc2;
 
 impl Dwc2 {
+    /// Snapshot the most recent channel result for a failed device operation.
+    pub fn channel_status(&self) -> [u32; 4] {
+        unsafe {
+            [
+                read32(CHANNEL_BASE + HCINT),
+                read32(CHANNEL_BASE + HCTSIZ),
+                read32(CHANNEL_BASE + HCCHAR),
+                read32(CHANNEL_BASE + HCDMA),
+            ]
+        }
+    }
+
     pub unsafe fn initialize() -> Option<Self> {
         #[cfg(feature = "pi-hardware")]
         initialize_hardware()?;
@@ -256,7 +277,7 @@ impl Dwc2 {
             return None;
         }
         let max_packet_size = first[7];
-        if max_packet_size == 0 {
+        if !matches!(max_packet_size, 8 | 16 | 32 | 64) {
             return None;
         }
 
@@ -429,9 +450,15 @@ impl Dwc2 {
             true,
             PID_DATA1,
             core::ptr::addr_of!(DATA.0).cast::<u8>(),
-            out.len(),
+            // DWC2 IN DMA requires room for whole USB packets even when
+            // wLength asks for a smaller register value. DATA has 256 bytes;
+            // the validated EP0 packet sizes divide that capacity exactly.
+            out.len().div_ceil(max_packet_size as usize) * max_packet_size as usize,
             true,
         )?;
+        if received > out.len() {
+            return None;
+        }
         for (offset, byte) in out.iter_mut().take(received).enumerate() {
             *byte = core::ptr::read_volatile(core::ptr::addr_of!(DATA.0).cast::<u8>().add(offset));
         }
@@ -626,13 +653,15 @@ unsafe fn transfer(
             read32(CHANNEL_BASE + HCINT)
                 & (INTERRUPT_TRANSFER_COMPLETE
                     | INTERRUPT_CHANNEL_HALTED
-                    | INTERRUPT_NAK
+                    | (if retry_transient { 0 } else { INTERRUPT_NAK })
                     | INTERRUPT_STALL
                     | INTERRUPT_ERRORS)
                 != 0
         })
         .is_none()
         {
+            stop_channel_before_returning();
+            complete_dma_buffer(buffer, length, direction_in);
             return None;
         }
         // 1. NAK means the device cannot supply or accept data yet.
@@ -640,13 +669,17 @@ unsafe fn transfer(
         // not mean that it has stopped accessing our buffer.
         let status = read32(CHANNEL_BASE + HCINT);
         let device_not_ready = status & INTERRUPT_NAK != 0;
-        if device_not_ready && channel_is_enabled() {
+        if device_not_ready && !retry_transient && channel_is_enabled() {
             request_channel_halt();
         }
 
         // 2. Wait until the controller releases the channel before reusing
         // its registers or the memory buffer passed to this function.
-        wait_until(|| !channel_is_enabled())?;
+        if wait_until(|| !channel_is_enabled()).is_none() {
+            stop_channel_before_returning();
+            complete_dma_buffer(buffer, length, direction_in);
+            return None;
+        }
 
         // 3. Read status again: the transfer may have completed while we
         // were requesting the halt. Keep a completed transfer's result.
@@ -667,6 +700,9 @@ unsafe fn transfer(
         if transfer_failed || !transfer_completed {
             return None;
         }
+        // OUT completion confirms the whole submitted payload. DWC2 leaves
+        // the OUT byte-count field unchanged; only IN reports residual bytes.
+        if !direction_in { return Some(length); }
         let remaining = (read32(CHANNEL_BASE + HCTSIZ) & 0x7ffff) as usize;
         return Some(length.saturating_sub(remaining));
     }
@@ -686,6 +722,18 @@ unsafe fn request_channel_halt() {
         CHANNEL_BASE + HCCHAR,
         configuration | CHANNEL_DISABLE | CHANNEL_ENABLE,
     );
+}
+
+/// A timed-out transfer may still own the caller's memory. Returning while
+/// DMA remains active would let hardware overwrite a reused stack buffer.
+unsafe fn stop_channel_before_returning() {
+    if channel_is_enabled() {
+        request_channel_halt();
+        if wait_until(|| !channel_is_enabled()).is_none() {
+            // Keep the transfer's stack frame alive until watchdog recovery.
+            panic!("USB channel did not halt; DMA buffer cannot be released");
+        }
+    }
 }
 
 unsafe fn prepare_dma_buffer(buffer: *const u8, length: usize, direction_in: bool) {
@@ -782,6 +830,18 @@ unsafe fn initialize_hardware() -> Option<()> {
     write32(PCGCCTL, 0);
     write32(HCFG, 0);
 
+    // FIFO sizes and addresses are measured in 32-bit words. The reset
+    // receive depth exceeds the BCM2836 controller's available FIFO RAM.
+    // Give receive, non-periodic transmit, and periodic transmit distinct
+    // 1024-word regions within its reported capacity.
+    let fifo_words = read32(GHWCFG3) >> 16;
+    if fifo_words < 3072 {
+        return None;
+    }
+    write32(GRXFSIZ, 1024);
+    write32(GNPTXFSIZ, (1024 << 16) | 1024);
+    write32(HPTXFSIZ, (1024 << 16) | 2048);
+
     write32(GRSTCTL, RESET_TX_FIFO | RESET_TX_FIFO_ALL);
     wait_until(|| read32(GRSTCTL) & RESET_TX_FIFO == 0)?;
     delay_us(1);
@@ -835,6 +895,8 @@ unsafe fn write32(offset: usize, value: u32) {
 fn parse_bulk_endpoints(descriptors: &[u8]) -> Option<BulkEndpoints> {
     let mut input = None;
     let mut output = None;
+    let mut outputs = [0; 3];
+    let mut output_count = 0;
     let mut max_packet_size = 0;
     let mut offset = 0;
     while offset + 2 <= descriptors.len() {
@@ -850,6 +912,11 @@ fn parse_bulk_endpoints(descriptors: &[u8]) -> Option<BulkEndpoints> {
                 input = Some(endpoint & 0x0f);
             } else {
                 output = Some(endpoint & 0x0f);
+                if output_count >= outputs.len() {
+                    return None;
+                }
+                outputs[output_count] = endpoint & 0x0f;
+                output_count += 1;
             }
         }
         offset += length;
@@ -857,6 +924,8 @@ fn parse_bulk_endpoints(descriptors: &[u8]) -> Option<BulkEndpoints> {
     Some(BulkEndpoints {
         input: input?,
         output: output?,
+        outputs,
+        output_count,
         max_packet_size: max_packet_size.max(1),
     })
 }
