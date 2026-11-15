@@ -35,6 +35,7 @@ will be checked alongside the implementation they exercise.
   - [x] Packet descriptor fields, queue/rate selection and USB PID toggling
   - [x] Adapter key-table commands/layout, security enable fields and station-rate registration
   - [x] I/Q calibration result fields, consistency policy and correction selection; reference table contract
+  - [x] Factory identity/eFuse decoding and read-completion polling
   - [ ] Remaining radio initialization and shared frame/security fields
 - [ ] Pi USB controller, hub enumeration, Ethernet, and RNDIS
   - [x] LAN9512 register transport, PHY access and SMSC frame headers
@@ -395,3 +396,19 @@ RX-failure, TX-failure and combined-failure scenarios produced identical return
 values, receive-correction state and register traces. This covers the exercised
 selection/application paths; analog behavior, varying measurements and transport
 failures remain outside that check. Physical Pi calibration remains pending.
+
+## Wi-Fi factory identity
+
+Named the eFuse read supply/clocks, completion/address fields, storage bounds,
+compressed block sizes, ROM signature and MAC range. Comments explain how the
+record header selects a logical block and skips absent words, and why the
+16-bit timeout diagnostic observes the upper register half. Source reference:
+OpenBSD [rtwn.c](https://github.com/openbsd/src/blob/master/sys/dev/ic/rtwn.c)
+`rtwn_efuse_read_1`, `rtwn_efuse_read` and chip identification, with register
+fields from [r92creg.h](https://github.com/openbsd/src/blob/master/sys/dev/ic/r92creg.h).
+
+Managed Wi-Fi release build passes. An ignored host harness compiled the actual
+old/new identity methods with synthetic eFuse bytes. Six cases cover a valid
+identity, invalid signature, multicast MAC, a truncated record stream, and each
+unsupported chip flag. Decoded results/errors and setup writes match. The byte
+reader was stubbed, so USB/read-completion timing still needs physical testing.

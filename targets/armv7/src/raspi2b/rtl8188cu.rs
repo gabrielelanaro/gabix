@@ -172,6 +172,35 @@ mod fw {
     pub const MAILBOX_POLL_US: u32 = 10;
 }
 
+// Factory eFuse storage is a compressed stream of optional two-byte words.
+// Decoding it produces the logical ROM map used by identity/calibration code.
+mod efuse {
+    pub const SYSTEM_CONFIG: u16 = 0x00f0;
+    pub const TEST_CHIP: u32 = 1 << 23;
+    pub const CHIP_8192C: u32 = 1 << 27;
+    pub const READ_SUPPLY_ENABLED: u16 = 1 << 15;
+    pub const EEPROM_LOADER_ENABLED: u16 = 1 << 12;
+    pub const SYSTEM_CLOCK: u16 = 0x0008;
+    pub const LOADER_CLOCK: u16 = 1 << 5;
+    pub const ANALOG_8_MHZ_CLOCK: u16 = 1 << 1;
+    pub const CONTROL: u16 = 0x0030;
+    pub const READ_COMPLETE: u32 = 1 << 31;
+    pub const ADDRESS_MASK: u32 = 0x0003ff00;
+    pub const ADDRESS_SHIFT: u32 = 8;
+    pub const POLL_ATTEMPTS: usize = 100;
+    pub const POLL_DELAY_US: u32 = 5;
+    pub const PHYSICAL_BYTES: u16 = 512;
+    pub const LOGICAL_BYTES: usize = 128;
+    pub const EMPTY: u8 = 0xff;
+    pub const BLOCK_SHIFT: u32 = 4;
+    pub const WORDS_PER_BLOCK: usize = 4;
+    pub const WORD_BYTES: usize = 2;
+    pub const BLOCK_BYTES: usize = WORDS_PER_BLOCK * WORD_BYTES;
+    pub const ROM_SIGNATURE: [u8; 2] = [0x29, 0x81];
+    pub const MAC_BYTES: core::ops::Range<usize> = 22..28;
+    pub const PA_SETTING_ADDRESS: u16 = 0x1fa;
+}
+
 // CAM (content-addressable memory) holds the adapter's address/key entries.
 // Write a data word, then issue a command with its word address and busy bit.
 mod key_table {
@@ -309,7 +338,7 @@ pub struct ReceivedFrame<'a> {
 pub struct Identity {
     pub system_config: u32,
     pub mac: [u8; 6],
-    pub rom: [u8; 128],
+    pub rom: [u8; efuse::LOGICAL_BYTES],
     pub pa_setting: u8,
 }
 
@@ -423,40 +452,45 @@ impl Rtl8188cu {
     /// Read the factory-programmed identity and calibration bytes.
     /// These operations enable the eFuse reader; they never program a fuse.
     pub fn identify(&mut self) -> Result<Identity, Error> {
-        let system_config = self.read32(0x00f0)?;
+        let system_config = self.read32(efuse::SYSTEM_CONFIG)?;
         // This implementation supports the production 8188C, one radio chain.
-        if system_config & ((1 << 23) | (1 << 27)) != 0 {
+        if system_config & (efuse::TEST_CHIP | efuse::CHIP_8192C) != 0 {
             return Err(Error::UnsupportedChip(system_config));
         }
-        self.update16(0x0000, 0, 0x8000)?; // Enable eFuse read supply.
-        self.update16(0x0002, 0, 0x1000)?; // Release EEPROM loader reset.
-        self.update16(0x0008, 0, 0x0022)?; // Enable loader and 8 MHz clocks.
-        let mut rom = [0xff; 128];
+        self.set_bits16(power::ISOLATION, efuse::READ_SUPPLY_ENABLED)?; // Enable eFuse read supply.
+        self.set_bits16(fw::SYSTEM_FUNCTIONS, efuse::EEPROM_LOADER_ENABLED)?; // Release EEPROM loader reset.
+        self.set_bits16(
+            efuse::SYSTEM_CLOCK,
+            efuse::LOADER_CLOCK | efuse::ANALOG_8_MHZ_CLOCK,
+        )?; // Enable loader and 8 MHz clocks.
+        let mut rom = [efuse::EMPTY; efuse::LOGICAL_BYTES];
         let mut address = 0u16;
-        while address < 512 {
+        while address < efuse::PHYSICAL_BYTES {
             let header = self.efuse_byte(address)?;
             address += 1;
-            if header == 0xff {
+            if header == efuse::EMPTY {
                 break;
             }
-            let offset = (header >> 4) as usize * 8;
-            for word in 0..4 {
+            // High nibble chooses an eight-byte logical block. Each low
+            // nibble bit marks a word omitted from this record when set.
+            let offset = (header >> efuse::BLOCK_SHIFT) as usize * efuse::BLOCK_BYTES;
+            for word in 0..efuse::WORDS_PER_BLOCK {
                 if header & (1 << word) != 0 {
                     continue;
                 }
-                if address + 1 >= 512 {
+                if address + 1 >= efuse::PHYSICAL_BYTES {
                     return Err(Error::InvalidRom);
                 }
-                rom[offset + word * 2] = self.efuse_byte(address)?;
-                rom[offset + word * 2 + 1] = self.efuse_byte(address + 1)?;
-                address += 2;
+                rom[offset + word * efuse::WORD_BYTES] = self.efuse_byte(address)?;
+                rom[offset + word * efuse::WORD_BYTES + 1] = self.efuse_byte(address + 1)?;
+                address += efuse::WORD_BYTES as u16;
             }
         }
-        if rom[0..2] != [0x29, 0x81] {
+        if rom[0..2] != efuse::ROM_SIGNATURE {
             return Err(Error::InvalidRom);
         }
         let mut mac = [0; 6];
-        mac.copy_from_slice(&rom[22..28]);
+        mac.copy_from_slice(&rom[efuse::MAC_BYTES]);
         if mac[0] & 1 != 0 || mac == [0; 6] {
             return Err(Error::InvalidRom);
         }
@@ -464,26 +498,32 @@ impl Rtl8188cu {
             system_config,
             mac,
             rom,
-            pa_setting: self.efuse_byte(0x1fa)?,
+            pa_setting: self.efuse_byte(efuse::PA_SETTING_ADDRESS)?,
         })
     }
 
     fn efuse_byte(&mut self, address: u16) -> Result<u8, Error> {
-        const EFUSE_CTRL: u16 = 0x0030;
-        let value = self.read32(EFUSE_CTRL)?;
-        self.write32(EFUSE_CTRL, (value & !0x8003ff00) | ((address as u32) << 8))?;
-        for _ in 0..100 {
-            let value = self.read32(EFUSE_CTRL)?;
-            if value & (1 << 31) != 0 {
+        // Clear READ_COMPLETE while selecting the address to start a read.
+        let value = self.read32(efuse::CONTROL)?;
+        self.write32(
+            efuse::CONTROL,
+            (value & !(efuse::READ_COMPLETE | efuse::ADDRESS_MASK))
+                | ((address as u32) << efuse::ADDRESS_SHIFT),
+        )?;
+        for _ in 0..efuse::POLL_ATTEMPTS {
+            let value = self.read32(efuse::CONTROL)?;
+            if value & efuse::READ_COMPLETE != 0 {
                 return Ok(value as u8);
             }
-            delay_us(5);
+            delay_us(efuse::POLL_DELAY_US);
         }
+        // The shared timeout diagnostic reports a 16-bit register window.
+        // Use the upper half here so it includes READ_COMPLETE.
         Err(Error::Timeout {
-            register: EFUSE_CTRL,
-            mask: 0x8000,
-            expected: 0x8000,
-            observed: (self.read32(EFUSE_CTRL)? >> 16) as u16,
+            register: efuse::CONTROL,
+            mask: (efuse::READ_COMPLETE >> 16) as u16,
+            expected: (efuse::READ_COMPLETE >> 16) as u16,
+            observed: (self.read32(efuse::CONTROL)? >> 16) as u16,
         })
     }
 

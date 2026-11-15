@@ -563,6 +563,11 @@ A milestone is a "demo-able" checkpoint. Worth a commit + tag + log entry.
 
 ## Progress Log
 
+### 2026-11-15 — Readability audit: Wi-Fi factory identity
+- Named eFuse register fields, physical/logical sizes, compressed block layout, identity signature and MAC location. Explained skipped words and the upper-half timeout diagnostic.
+- Managed Wi-Fi release build passes. An ignored host harness compared actual old/new identity methods on six synthetic cases: valid data, bad signature, multicast MAC, truncated record stream and both unsupported chip flags. Results and setup writes match.
+- Physical eFuse reads remain pending with the Pi disconnected. Remaining radio initialization and shared security review continue.
+
 ### 2026-11-15 — Readability audit: Wi-Fi I/Q calibration
 - Named calibration registers, coefficient positions, validity/failure fields, sample limits and timing. Replaced the receive-correction boolean with explicit choices; documented the preserved second-trigger policy and reference tuning recipe.
 - Managed Wi-Fi release build passes. An ignored host harness compared the complete old/new calibration register traces for success, RX failure, TX failure and both failures; results and writes match in all four cases.
