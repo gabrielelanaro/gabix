@@ -20,17 +20,20 @@ struct PropertyMessage([u32; 8]);
 static mut MESSAGE: PropertyMessage = PropertyMessage([0; 8]);
 
 pub unsafe fn power_on_usb() -> Option<()> {
+    (property(SET_POWER_STATE, USB_HCD_DEVICE, POWER_ON_WAIT)? & 1 != 0).then_some(())
+}
+
+/// Firmware owns the EMMC source clock. Query it before calculating SD dividers.
+pub unsafe fn emmc_clock_rate() -> Option<u32> {
+    const GET_CLOCK_RATE: u32 = 0x0003_0002;
+    const EMMC_CLOCK: u32 = 1;
+    let rate = property(GET_CLOCK_RATE, EMMC_CLOCK, 0)?;
+    (rate != 0).then_some(rate)
+}
+
+unsafe fn property(tag: u32, id: u32, value: u32) -> Option<u32> {
     let message = &mut *core::ptr::addr_of_mut!(MESSAGE);
-    message.0 = [
-        32,
-        0,
-        SET_POWER_STATE,
-        8,
-        8,
-        USB_HCD_DEVICE,
-        POWER_ON_WAIT,
-        0,
-    ];
+    message.0 = [32, 0, tag, 8, 0, id, value, 0];
     let address = bus_address(core::ptr::addr_of!(MESSAGE) as u32);
     let request = address | PROPERTY_CHANNEL;
 
@@ -45,9 +48,9 @@ pub unsafe fn power_on_usb() -> Option<()> {
         if read32(READ) == request {
             invalidate_message();
             return (message.0[1] == RESPONSE_SUCCESS
-                && message.0[4] & RESPONSE_SUCCESS != 0
-                && message.0[6] & 1 != 0)
-                .then_some(());
+                && message.0[4] == RESPONSE_SUCCESS | 8
+                && message.0[5] == id)
+                .then_some(message.0[6]);
         }
     }
     None

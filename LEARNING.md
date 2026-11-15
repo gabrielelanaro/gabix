@@ -551,6 +551,12 @@ A milestone is a "demo-able" checkpoint. Worth a commit + tag + log entry.
 
 ## Progress Log
 
+### 2026-11-15 — Physical Pi SD sector writes
+- **Built:** Optional shared writable-block interface, Pi CMD24 sector writes, CMD13 completion checks, explicit errors and bounded waits. Corrected the clock configuration: query the firmware source rate and calculate dividers for 400 kHz initialization and 25 MHz transfers. The old divider requested 100 MHz from the physical 200 MHz source without negotiating a faster card mode.
+- **Verified:** Uploaded the test kernel over UART to the real Pi. Pattern write/read-back, original-sector restoration, unchanged neighbors, and automatic return to the UART loader passed. Scratch sector 8192 lies in the verified empty gap of the registered recovery image; the reusable test checks that image's layout before writing.
+- **Review hygiene:** One physical end-to-end test, opt-in writes, raw captures in ignored run output, instructions in docs/pi2-sd-writes.md. Roadmap checkboxes unchanged: the combined physical peripheral milestone remains broader than this test.
+- **Next:** Review sector-write support, then design inactive update slots and Ethernet streaming. At 25 MHz, 128 matching reads took 140 ms versus 811 ms with the temporary slow workaround. Higher-speed modes and power-loss fault injection remain unverified.
+
 ### 2026-11-15 — Keep generated output out of reviews
 - **Policy:** Added artifacts/README.md and agent guidance: build output stays in build directories; raw run output goes in ignored target/runs; commit tests and concise findings instead of captures.
 - **Cleanup:** Removed 70 generated baseline files (40 images, 28 logs, two ELF payloads) from the Git index, retaining local copies. Historical results/checksums and the external recovery-image manifest remain tracked. Earlier commits retain historical files; this does not rewrite repository history.
