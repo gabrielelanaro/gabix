@@ -84,6 +84,7 @@ will be checked alongside the implementation they exercise.
 - [ ] x86 PCI and VirtIO drivers
   - [x] PCI bus-0 discovery, BAR fields and configuration access contract
   - [x] VirtIO capability regions and MSI-X table/control parsing
+  - [x] Shared x86 VirtIO queue layout, submission/completion contracts and descriptor permissions
 - [ ] x86 scheduling, process lifecycle, file operations, and network stack
 - [ ] Learning snippets and test helpers affected by the edits
 
@@ -612,3 +613,16 @@ are outside those checks. Queue setup and device initialization remain open.
 
 References: [Linux PCI MSI-X fields](https://raw.githubusercontent.com/torvalds/linux/master/include/uapi/linux/pci_regs.h)
 and [VirtIO 1.2 section 4.1.4](https://docs.oasis-open.org/virtio/virtio/v1.2/virtio-v1.2.html).
+
+### x86 VirtIO queue mechanics
+
+Named ring offsets/entry widths and block buffer lengths, reused the shared
+frame size, and renamed the device-write permission. Removed disabled print
+blocks. Corrected the 64-entry available-ring size (134 bytes), alignment and
+completion-length comments. Volatile access and atomic publication are explained
+separately; the driver still uses the same acquire/release operations.
+
+Existing x86 disk-read and network-frame QEMU tests pass. These cover the current
+device configuration and ordinary submissions, without establishing malformed
+queue safety or concurrent-producer support. Submission requires serialization.
+Reference: [VirtIO 1.2 sections 2.7 and 5.2.6](https://docs.oasis-open.org/virtio/virtio/v1.2/virtio-v1.2.html).

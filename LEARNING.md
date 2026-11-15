@@ -563,6 +563,11 @@ A milestone is a "demo-able" checkpoint. Worth a commit + tag + log entry.
 
 ## Progress Log
 
+### 2026-11-15 — Readability audit: x86 VirtIO queues
+- Named ring offsets, entry sizes and block-request lengths; reused the shared frame size. The write flag explicitly means the device writes. Removed disabled diagnostic print blocks while retaining the active debug-state API.
+- Corrected ring-size arithmetic in comments, alignment requirements, completion-length semantics and volatile/atomic ordering explanations. Documented serialized submission and separate notification. Operations and atomic orderings remain unchanged.
+- Existing x86 disk-read and network-frame QEMU tests pass. Block/network initialization and remaining architecture code are next; physical Pi validation remains pending for earlier changes.
+
 ### 2026-11-15 — Readability audit: x86 VirtIO capability transport
 - Named VirtIO region offsets and MSI-X table/control fields. Explained table entry count and function masking; corrected the capability result's notification multiplier contract and the module overview.
 - Existing x86 QEMU disk-read and network-frame tests pass. Register reads/writes and unsupported/malformed-list handling are unchanged. The parser still assumes valid lengths and an acyclic list; these limits are explicit.

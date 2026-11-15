@@ -1,4 +1,4 @@
-use super::queue::VIRTQ_DESC_F_WRITE;
+use super::queue::VIRTQ_DESC_F_DEVICE_WRITES;
 use super::*;
 use crate::drivers::{EthernetFrame, FrameDevice, MAX_ETHERNET_FRAME_LEN};
 
@@ -493,7 +493,7 @@ impl VirtioNet {
                 desc_idx,
                 phys,
                 VIRTIO_NET_RX_BUFFER_LEN,
-                VIRTQ_DESC_F_WRITE,
+                VIRTQ_DESC_F_DEVICE_WRITES,
                 0,
             );
             rx_queue.submit_chain(desc_idx);
