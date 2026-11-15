@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Explicit physical management checks; requires a managed Pi on the direct link."""
+"""Explicit physical management checks; requires a reachable managed Pi."""
 
 import argparse
 import importlib.util
@@ -110,7 +110,7 @@ def test_network_reboot_preserves_logs(address, output):
             (output / "status.json").write_text(json.dumps(after, indent=2) + "\n")
             (output / "logs.json").write_text(json.dumps(logs, indent=2) + "\n")
             print(
-                "PASS: Ethernet reboot, DHCP recovery, previous-boot logs, and cross-boot replay rejection",
+                "PASS: network reboot, DHCP recovery, previous-boot logs, and cross-boot replay rejection",
                 flush=True,
             )
             return

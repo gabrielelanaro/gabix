@@ -6,3 +6,9 @@ pub mod reset;
 pub mod sdhci;
 pub mod timer;
 pub mod usb;
+#[cfg(feature = "pi-wifi")]
+pub mod random;
+#[cfg(feature = "pi-wifi")]
+pub mod rtl8188cu;
+#[cfg(feature = "pi-wifi")]
+pub mod wifi_ethernet;

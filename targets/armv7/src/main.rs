@@ -293,6 +293,21 @@ extern "C" fn arm_kernel_entry() {
             if let Some(device) = usb.enumerate_root() {
                 write_line(&mut console, b"gabix raspi2b usb enumerated");
                 let network_device = if device.device_class == 9 {
+                    #[cfg(feature = "pi-wifi")]
+                    {
+                        let mut wireless = None;
+                        let mut wired = None;
+                        let _ = usb.visit_hub_children(device, |_, child| {
+                            if (child.vendor_id, child.product_id) == (0x0bda, 0x8176) {
+                                wireless = Some(child);
+                            } else if gabix_kernel::net::smsc95xx::is_lan9512(child.vendor_id, child.product_id) {
+                                wired = Some(child);
+                            }
+                            true
+                        });
+                        wireless.or(wired)
+                    }
+                    #[cfg(not(feature = "pi-wifi"))]
                     usb.enumerate_hub_child(device)
                 } else {
                     Some(device)
@@ -302,7 +317,7 @@ extern "C" fn arm_kernel_entry() {
                 {
                     write_line(&mut console, b"gabix raspi2b usb network configured");
                     #[cfg(feature = "pi-hardware")]
-                    {
+                    if !network.is_wifi() {
                         match network.link_up() {
                             Some(true) => write_line(&mut console, b"gabix raspi2b ethernet link up"),
                             Some(false) => write_line(&mut console, b"gabix raspi2b ethernet link down"),
@@ -348,7 +363,8 @@ extern "C" fn arm_kernel_entry() {
                         let now = raspi2b::timer::ticks();
                         #[cfg(feature = "pi-managed")]
                         {
-                            session.poll(&mut network, raspi2b::timer::uptime_millis()/1000, true);
+                            let link = network.link_up() != Some(false);
+                            session.poll(&mut network, raspi2b::timer::uptime_millis()/1000, link);
                             record_network_progress(&session);
                             boot_trial::refresh();
                             flush_diagnostics(false);
@@ -397,6 +413,10 @@ extern "C" fn arm_kernel_entry() {
                         }
                         #[cfg(feature = "pi-network-no-irq-dev")]
                         core::hint::spin_loop();
+                        #[cfg(all(feature = "pi-wifi", feature = "pi-managed"))]
+                        if let Some(event) = network.take_wifi_event() {
+                            diagnostics::event(format_args!("wifi {event:?}"));
+                        }
                         #[cfg(not(feature = "pi-network-no-irq-dev"))]
                         asm!("wfi");
                     }
@@ -452,7 +472,7 @@ pub fn poll_ethernet_and_reply(console: &mut Pl011, _next_dhcp_discover_tick: &m
                     };
                     if link != LINK_STATUS {
                         diagnostics::event(format_args!(
-                            "ethernet link {}",
+                            "network link {}",
                             match link {
                                 2 => "up",
                                 1 => "down",
@@ -491,6 +511,13 @@ pub fn poll_ethernet_and_reply(console: &mut Pl011, _next_dhcp_discover_tick: &m
                 ) {
                     write_line(console, b"gabix raspi2b dhcp configured");
                 }
+            }
+            #[cfg(all(feature = "pi-wifi", feature = "pi-managed"))]
+            if let Some(event) = network.take_wifi_event() {
+                if matches!(event, raspi2b::wifi_ethernet::Event::State(raspi2b::wifi_ethernet::State::Online)) {
+                    session.restart("wifi associated");
+                }
+                diagnostics::event(format_args!("wifi {event:?}"));
             }
         }
     }

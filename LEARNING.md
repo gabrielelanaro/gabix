@@ -36,7 +36,7 @@ through UART reboot/upload. Preserve the working server as the recovery image.
 - [x] Permanent SD boot with two 32 MiB copies, trial confirmation, watchdog fallback, UART recovery, and a preserved recovery image
 - [x] Router preparation: authenticated Ethernet management/reboot, persistent buffered logs, DHCP retry/renewal diagnostics; physical outage and reboot checks
 - [ ] Verify the managed Pi on the actual FRITZ!Box LAN after moving the cable
-- [ ] USB Wi-Fi feasibility: initialize the detected Realtek 0bda:8176 adapter, receive beacons, then implement association/security before reusing DHCP and management
+- [x] USB Wi-Fi: RTL8188CU initialization, WPA2-Personal, DHCP, authenticated management, reconnect, and permanent SD boot verified on the Pi
 
 ### TCP arc — the connection-oriented transport
 - [x] Lesson 31 TCP segment, three-way handshake, and first byte exchanged
@@ -556,6 +556,17 @@ A milestone is a "demo-able" checkpoint. Worth a commit + tag + log entry.
 ---
 
 ## Progress Log
+
+### 2026-11-15 — Wi-Fi register transport and adapter firmware
+- **Physical identity:** RTL8188C, SYS_CFG `04400735`, standard USB board; eFuse identity and power-on sequence verified through the existing UART recovery flow.
+- **USB defect found:** Reset FIFO settings reported RX=4096 words, non-periodic TX=256 words starting at 4096, periodic TX=512 words starting at 8192, while GHWCFG3 reports only 4080 words of FIFO RAM. The old layout consistently corrupted a register read at iteration 559. Three non-overlapping 1024-word regions passed all 4096 repeated reads on the Pi. Control-IN DMA also reserves complete endpoint packets in its backing buffer.
+- **Verified:** Firmware bytes written to adapter RAM and read back; firmware checksum and initialization-ready bits passed on the Pi. QEMU USB enumeration regression passed. Installed SD kernels remain unchanged; trials run in RAM and return to the UART loader.
+- **Further validation:** Passive reception found the target FRITZ!Box on channel 1 with WPA2-PSK/CCMP. Software power-off/reset handles retained adapter state; I/Q calibration supports the reference driver's TX-only fallback when RX measurements are unstable. Authentication and association both receive successful responses on the Pi. QEMU Ethernet UDP echo also passes with the USB changes.
+- **Authentication diagnosis:** The router's configured key differed from the supplied key. The actual Pi message-2 MIC was independently verified; radio ACK reception confirmed delivery. After updating the private PMK from the router, the Pi completed WPA2 and DHCP (`192.168.178.128`). Mac-to-Pi ICMP and exact UDP echo passed for 32, 512, and 1200 bytes. No password or handshake capture is committed.
+- **Connection lifetime:** A reusable polled Wi-Fi station advances scan, authentication, association, security, and online states. The real Pi completed a deliberate disconnect, a fresh handshake, and a second DHCP lease. Host vectors cover group-key replacement and duplicate-handshake protection.
+- **Permanent install verified:** Authenticated Wi-Fi upload stored and read back all 236,236 kernel bytes (CRC32 `98195a23`) in 18.51 seconds. Remote reboot selected SD copy B, confirmed its boot, rejoined WPA2/DHCP at `192.168.178.128`, preserved previous-boot logs, and rejected a replayed reboot request. Copy A retains the previous Ethernet kernel. Authentication rejection checks and the QEMU Ethernet UDP regression passed.
+- **Limits and follow-up:** Initial radio transmission uses 1 Mbps; WPA3/required PMF, roaming, and USB hotplug are unimplemented. Group rekey has independent host vectors; router-triggered rekey and a full access-point outage remain hardware follow-ups. Network credentials and handshake captures remain private and excluded from Git; routine captures stay under ignored `target/runs/`. Setup and supported scope are in `docs/pi2-wifi.md`.
+
 
 ### 2026-11-15 — Physical USB Wi-Fi inventory
 - **Observed on Pi:** Root hub 0424:9514, Ethernet 0424:ec00 on hub port 1, and Wi-Fi candidate 0bda:8176 on hub port 4. The Linux [rtl8192cu device table](https://github.com/torvalds/linux/blob/master/drivers/net/wireless/realtek/rtlwifi/rtl8192cu/sw.c) identifies this ID as an 8188CU single-stream dongle. Exact chip revision still needs register identification.

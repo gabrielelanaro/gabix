@@ -80,6 +80,7 @@ default = []
 virt = ["gabix-kernel/kernel"]
 raspi2b = ["gabix-kernel/kernel"]
 pi-hardware = ["raspi2b"]
+pi-wifi = ["pi-hardware", "gabix-kernel/wifi-security"]
 pi-network-dev = ["pi-hardware"]
 pi-network-dhcp-size-probe = []
 pi-network-dhcp-packet-probe = []
@@ -109,5 +110,11 @@ bench = false
 [[bin]]
 name = "pi2-loader-trial"
 path = "tests/loader_trial.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "pi2-wifi-check"
+path = "tests/wifi.rs"
 test = false
 bench = false

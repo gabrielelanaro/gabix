@@ -17,6 +17,8 @@ pub fn serve_uart_uploads_and_ethernet(uart_console: &mut Pl011) -> ! {
     let mut last_uart_byte_tick = crate::raspi2b::timer::ticks();
     let mut next_ethernet_poll_tick = last_uart_byte_tick;
     let mut next_dhcp_discover_tick = last_uart_byte_tick;
+    #[cfg(feature = "pi-managed")]
+    let mut next_watchdog_tick = last_uart_byte_tick;
     #[cfg(feature = "pi-sd-transfer")]
     crate::confirm_sd_boot(uart_console);
     write_line(uart_console, b"GABIX USER READY");
@@ -24,6 +26,13 @@ pub fn serve_uart_uploads_and_ethernet(uart_console: &mut Pl011) -> ! {
     crate::flush_diagnostics(true);
 
     loop {
+        #[cfg(feature = "pi-managed")]
+        if crate::raspi2b::timer::ticks() >= next_watchdog_tick {
+            // Refresh from foreground work, so a stuck device driver triggers
+            // recovery. UART uploads also keep this service loop progressing.
+            crate::raspi2b::reset::arm_deadman(15);
+            next_watchdog_tick = crate::raspi2b::timer::ticks() + 100;
+        }
         #[cfg(feature = "pi-sd-transfer")]
         crate::flush_diagnostics(false);
         // 1. Read one UART byte, or detect an interrupted upload.

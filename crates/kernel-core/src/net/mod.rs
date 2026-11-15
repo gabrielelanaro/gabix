@@ -9,3 +9,7 @@ pub mod ipv4;
 pub mod smsc95xx;
 pub mod stack;
 pub mod udp;
+pub mod wifi;
+
+#[cfg(feature = "wifi-security")]
+pub mod wpa2;
