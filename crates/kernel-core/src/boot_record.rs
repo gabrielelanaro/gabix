@@ -43,6 +43,19 @@ pub const NO_COPY: u32 = u32::MAX;
 pub const HANDOFF_ADDRESS: usize = 0x0006_0000;
 pub const HANDOFF_MAGIC: u32 = 0x4742_5848;
 
+/// Little-endian RAM message from the SD loader to the running kernel.
+/// This describes the attempted image; the persistent boot record stays on SD.
+pub mod handoff_field {
+    pub const BYTE_LEN: usize = 28;
+    pub const MAGIC: core::ops::Range<usize> = 0..4;
+    pub const RECORD_SECTOR: core::ops::Range<usize> = 4..12;
+    pub const COPY_INDEX: core::ops::Range<usize> = 12..16;
+    pub const IMAGE_LENGTH: core::ops::Range<usize> = 16..20;
+    pub const IMAGE_CRC: core::ops::Range<usize> = 20..24;
+    pub const CHECKSUM: core::ops::Range<usize> = 24..28;
+    pub const CHECKSUM_INPUT: core::ops::Range<usize> = 0..24;
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct KernelCopy {
     pub offset_sectors: u64,

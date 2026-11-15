@@ -69,6 +69,7 @@ will be checked alongside the implementation they exercise.
   - [x] Boot GPIO/UART registers and polling console contracts
   - [ ] Memory ownership/cache assumptions
 - [ ] ARM loader, SD update/install, authenticated management, and diagnostics
+  - [x] Loader/kernel RAM handoff fields and trial-confirmation contracts
 - [ ] ARM VirtIO adapters and hardware probes
   - [x] QEMU VirtIO network: queue roles, feature words, packet metadata and buffer reuse
   - [x] QEMU VirtIO block: feature negotiation, descriptor roles, memory ordering and polling contract
@@ -1164,3 +1165,22 @@ and [BCM2835 peripherals, GPIO and UART chapters](https://pip-assets.raspberrypi
 The existing QEMU userspace-write test passes; Pi hardware and UART-user builds
 pass. Physical pin routing, baud rate and receive behavior remain pending Pi
 verification while the board is disconnected.
+
+### Loader-to-kernel trial handoff
+
+`boot_record::handoff_field` defines the existing 28-byte little-endian RAM
+layout once for `pi2_loader.rs` and `boot_trial.rs`: magic, boot-record sector,
+copy index, image length/CRC and message CRC. Ranges and checksum coverage retain
+the original values. This RAM message describes the attempted image; the SD
+boot record remains the persistent decision state.
+
+Trial comments trace consuming/clearing the handoff, checking the running image
+against its CRC, watchdog refresh and confirmation write/read-back. A failed
+read-back can follow a successful physical write, so failure keeps local trial
+state/watchdog active without claiming the disk is unchanged. With no active
+trial, confirm is a no-op success. Calls rely on single-core boot/service access.
+
+Both SD loader and managed kernel builds pass. All three existing host boot-record
+tests pass (record validation, fallback ordering, partition bounds). Those tests
+cover persistent record behavior, not physical RAM handoff or SD persistence.
+No new tests or device writes were added; physical validation is pending.

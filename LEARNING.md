@@ -563,6 +563,11 @@ A milestone is a "demo-able" checkpoint. Worth a commit + tag + log entry.
 
 ## Progress Log
 
+### 2026-11-15 — Readability audit: trial handoff and confirmation
+- Shared the existing RAM handoff field names between loader writer and kernel reader. Named trial watchdog duration and running-image address; clarified consume-once validation and confirmation failure semantics.
+- SD loader and managed kernel builds pass. Three existing host boot-record tests pass; these do not establish physical handoff/persistence correctness.
+- Boot selection, installer/management/diagnostics and other audit areas remain open. No device writes were performed; Pi validation is pending.
+
 ### 2026-11-15 — Readability audit: ARM boot UART and console
 - Named GPIO function selection, UART register offsets, FIFO/control fields, baud divisors and semihosting values. Explained console polling, caller-owned setup, discarded receive errors and unbounded transmit waits.
 - Existing QEMU userspace-write test and Pi hardware/UART-user builds pass; values and ordering are preserved.

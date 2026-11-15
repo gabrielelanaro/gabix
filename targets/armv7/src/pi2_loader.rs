@@ -188,15 +188,15 @@ fn try_sd_boot(uart: &Uart) {
 
 #[cfg(feature = "pi-sd-loader")]
 unsafe fn write_boot_handoff(record_sector: u64, index: u32, length: u32, crc: u32) {
-    use gabix_kernel::boot_record::{crc32, HANDOFF_ADDRESS, HANDOFF_MAGIC};
-    let mut bytes = [0u8; 28];
-    bytes[..4].copy_from_slice(&HANDOFF_MAGIC.to_le_bytes());
-    bytes[4..12].copy_from_slice(&record_sector.to_le_bytes());
-    bytes[12..16].copy_from_slice(&index.to_le_bytes());
-    bytes[16..20].copy_from_slice(&length.to_le_bytes());
-    bytes[20..24].copy_from_slice(&crc.to_le_bytes());
-    let checksum = crc32(&bytes[..24]);
-    bytes[24..].copy_from_slice(&checksum.to_le_bytes());
+    use gabix_kernel::boot_record::{crc32, handoff_field, HANDOFF_ADDRESS, HANDOFF_MAGIC};
+    let mut bytes = [0u8; handoff_field::BYTE_LEN];
+    bytes[handoff_field::MAGIC].copy_from_slice(&HANDOFF_MAGIC.to_le_bytes());
+    bytes[handoff_field::RECORD_SECTOR].copy_from_slice(&record_sector.to_le_bytes());
+    bytes[handoff_field::COPY_INDEX].copy_from_slice(&index.to_le_bytes());
+    bytes[handoff_field::IMAGE_LENGTH].copy_from_slice(&length.to_le_bytes());
+    bytes[handoff_field::IMAGE_CRC].copy_from_slice(&crc.to_le_bytes());
+    let checksum = crc32(&bytes[handoff_field::CHECKSUM_INPUT]);
+    bytes[handoff_field::CHECKSUM].copy_from_slice(&checksum.to_le_bytes());
     for (offset, byte) in bytes.into_iter().enumerate() {
         core::ptr::write_volatile((HANDOFF_ADDRESS + offset) as *mut u8, byte);
     }
