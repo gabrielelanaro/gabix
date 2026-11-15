@@ -44,7 +44,7 @@ will be checked alongside the implementation they exercise.
   - [x] Management-frame address ranges shared with the station adapter
   - [x] WPA2 fixed message fields, reply nonce selection and derived key ranges
   - [x] Key-data element fields and RFC 3394 unwrap loop
-  - [ ] Remaining shared security helper APIs and derivation policy
+  - [x] Shared security helper APIs and derivation policy (physical validation pending)
 - [ ] Pi USB controller, hub enumeration, Ethernet, and RNDIS
   - [x] LAN9512 register transport, PHY access and SMSC frame headers
   - [x] Ethernet selection and QEMU RNDIS setup/frame fields
@@ -69,7 +69,7 @@ will be checked alongside the implementation they exercise.
   - [x] DHCP options/header fields and ARM lease retry policy; stack dispatch contracts
   - [x] Beacon/association information elements, capability/rate encoding and EAPOL framing
   - [x] CCMP headers, key/traffic IDs and replay-counter commit order
-  - [ ] Remaining WPA2 fields
+  - [x] WPA2 message fields, key-data parsing, unwrap and derivation helper contracts
 - [ ] Shared ELF, partitions, ext2, memory, loader protocol, and boot records
   - [x] Boot record: field layout, copy-selection state, persistence ownership and MBR bounds
   - [x] UART upload decoder: header fields, incremental storage events, checksum and timeout ownership
@@ -548,3 +548,13 @@ for unwrap and its integrity value; [hostap WPA definitions](https://raw.githubu
 for RSN key-data selectors and group TX/RX flag naming. The prior
 `GROUP_MESSAGE_1_WITH_INSTALL` name was corrected to `WITH_TX_RX`; the accepted
 value remains 0x13c2. This change does not expand the supported protocol.
+
+### WPA2 helper contracts
+
+The parser now states `RsnRequirement::Required` for pairwise message 3 and
+`Optional` for group rekeying. Both paths still reject a mismatching RSN element
+when present. Its result names the group key ID and bytes. Digest, derived-key
+and MIC lengths are named; derivation comments explain the sorting and final
+partial digest copy already present in the implementation. Existing synthetic
+handshake/unwrap tests and the managed Wi-Fi release build pass. This completes
+the shared WPA2 source review; physical validation remains pending.

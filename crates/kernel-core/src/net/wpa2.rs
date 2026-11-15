@@ -8,9 +8,14 @@ use aes::{
 use hmac::{Hmac, Mac};
 use sha1::Sha1;
 
+// The RSN (Robust Security Network) element advertises version 1,
+// CCMP for group and unicast traffic, and pre-shared-key authentication.
 pub const RSN: [u8; 22] = [
     48, 20, 1, 0, 0, 15, 172, 4, 1, 0, 0, 15, 172, 4, 1, 0, 0, 15, 172, 2, 0, 0,
 ];
+const SHA1_DIGEST_BYTES: usize = 20;
+const PAIRWISE_KEY_BYTES: usize = 48;
+const HANDSHAKE_MIC_BYTES: usize = 16;
 const MIC: core::ops::Range<usize> = 81..97;
 // Byte ranges start at the EAPOL version byte. The fixed key header is
 // followed by key data; its two-byte length excludes the fixed header.
@@ -65,6 +70,19 @@ const WRAP_ROUNDS: usize = 6;
 const MIN_WRAPPED_BYTES: usize = 3 * WRAP_UNIT_BYTES;
 const WRAP_INTEGRITY_VALUE: [u8; WRAP_UNIT_BYTES] = [0xa6; WRAP_UNIT_BYTES];
 
+// Message 3 must repeat our negotiated RSN element. Group rekeying may omit
+// it; when present, the parser still checks that it matches our configuration.
+#[derive(Clone, Copy)]
+enum RsnRequirement {
+    Required,
+    Optional,
+}
+
+struct GroupKey {
+    id: u8,
+    bytes: [u8; 16],
+}
+
 #[derive(Clone, Copy)]
 enum ReplyNonce {
     Station,
@@ -109,10 +127,11 @@ pub struct Supplicant {
     access_point: [u8; 6],
     station_nonce: [u8; 32],
     ap_nonce: [u8; 32],
-    ptk: [u8; 48],
+    // Pairwise transient key: authentication, key unwrap, and unicast keys.
+    ptk: [u8; PAIRWISE_KEY_BYTES],
     replay: u64,
-    message3_mic: [u8; 16],
-    group_mic: Option<[u8; 16]>,
+    message3_mic: [u8; HANDSHAKE_MIC_BYTES],
+    group_mic: Option<[u8; HANDSHAKE_MIC_BYTES]>,
     current_group: Option<(u8, [u8; 16])>,
     state: State,
 }
@@ -131,9 +150,9 @@ impl Supplicant {
             access_point,
             station_nonce,
             ap_nonce: [0; 32],
-            ptk: [0; 48],
+            ptk: [0; PAIRWISE_KEY_BYTES],
             replay: 0,
-            message3_mic: [0; 16],
+            message3_mic: [0; HANDSHAKE_MIC_BYTES],
             group_mic: None,
             current_group: None,
             state: State::AwaitMessage1,
@@ -278,7 +297,10 @@ impl Supplicant {
             &packet[KEY_DATA_OFFSET..],
             &mut unwrapped,
         )?;
-        let (group_id, group) = parse_key_data(&unwrapped[..length], true)?;
+        let GroupKey {
+            id: group_id,
+            bytes: group,
+        } = parse_key_data(&unwrapped[..length], RsnRequirement::Required)?;
         let keys = InstalledKeys {
             pairwise: Some(self.ptk[UNICAST_ENCRYPTION_KEY].try_into().unwrap()),
             group,
@@ -337,7 +359,10 @@ impl Supplicant {
             &packet[KEY_DATA_OFFSET..],
             &mut unwrapped,
         )?;
-        let (group_id, group) = parse_key_data(&unwrapped[..length], false)?;
+        let GroupKey {
+            id: group_id,
+            bytes: group,
+        } = parse_key_data(&unwrapped[..length], RsnRequirement::Optional)?;
         // A repeated key with a fresh replay counter must preserve its PN state.
         let install = match self.current_group {
             Some((old_id, old_key)) if old_key == group => {
@@ -392,12 +417,12 @@ impl Supplicant {
         out[KEY_DATA_LENGTH].copy_from_slice(&(data.len() as u16).to_be_bytes());
         out[KEY_DATA_OFFSET..].copy_from_slice(data);
         let mic = hmac_sha1(&self.ptk[MESSAGE_AUTHENTICATION_KEY], &[out]);
-        out[MIC].copy_from_slice(&mic[..16]);
+        out[MIC].copy_from_slice(&mic[..HANDSHAKE_MIC_BYTES]);
         Ok(length)
     }
 }
 
-fn hmac_sha1(key: &[u8], parts: &[&[u8]]) -> [u8; 20] {
+fn hmac_sha1(key: &[u8], parts: &[&[u8]]) -> [u8; SHA1_DIGEST_BYTES] {
     let mut mac = <Hmac<Sha1> as hmac::KeyInit>::new_from_slice(key).unwrap();
     for part in parts {
         mac.update(part);
@@ -410,7 +435,8 @@ fn derive_ptk(
     ap: [u8; 6],
     snonce: [u8; 32],
     anonce: [u8; 32],
-) -> [u8; 48] {
+) -> [u8; PAIRWISE_KEY_BYTES] {
+    // Both peers sort the addresses and nonces identically before hashing.
     let (first_mac, second_mac) = if station < ap {
         (station, ap)
     } else {
@@ -421,8 +447,9 @@ fn derive_ptk(
     } else {
         (anonce, snonce)
     };
-    let mut ptk = [0; 48];
-    for (counter, chunk) in ptk.chunks_mut(20).enumerate() {
+    let mut ptk = [0; PAIRWISE_KEY_BYTES];
+    // Each counter produces 20 bytes; the last iteration supplies the final 8.
+    for (counter, chunk) in ptk.chunks_mut(SHA1_DIGEST_BYTES).enumerate() {
         let digest = hmac_sha1(
             pmk,
             &[
@@ -442,7 +469,7 @@ fn verify_mic(key: &[u8], packet: &[u8]) -> Result<(), Error> {
     let mut mac = <Hmac<Sha1> as hmac::KeyInit>::new_from_slice(key).unwrap();
     // Compute authentication with the packet's MIC field treated as zero.
     mac.update(&packet[..MIC.start]);
-    mac.update(&[0; 16]);
+    mac.update(&[0; HANDSHAKE_MIC_BYTES]);
     mac.update(&packet[MIC.end..]);
     mac.verify_truncated_left(&packet[MIC])
         .map_err(|_| Error::Mic)
@@ -485,8 +512,8 @@ fn unwrap_key(key: &[u8], wrapped: &[u8], out: &mut [u8]) -> Result<usize, Error
     }
     Ok(length)
 }
-fn parse_key_data(mut bytes: &[u8], require_rsn: bool) -> Result<(u8, [u8; 16]), Error> {
-    let mut rsn = false;
+fn parse_key_data(mut bytes: &[u8], rsn_requirement: RsnRequirement) -> Result<GroupKey, Error> {
+    let mut rsn_seen = false;
     let mut gtk = None;
     while !bytes.is_empty() {
         // IEEE key-data padding begins with 0xdd followed by zero bytes.
@@ -501,10 +528,10 @@ fn parse_key_data(mut bytes: &[u8], require_rsn: bool) -> Result<(u8, [u8; 16]),
             .get(..ELEMENT_HEADER_BYTES + length)
             .ok_or(Error::KeyData)?;
         if ie[0] == RSN_ELEMENT {
-            if rsn || ie != RSN {
+            if rsn_seen || ie != RSN {
                 return Err(Error::Unsupported);
             }
-            rsn = true;
+            rsn_seen = true;
         } else if ie[0] == VENDOR_ELEMENT && ie.get(KEY_DATA_SELECTOR) == Some(&GROUP_KEY_SELECTOR)
         {
             if gtk.is_some()
@@ -513,14 +540,14 @@ fn parse_key_data(mut bytes: &[u8], require_rsn: bool) -> Result<(u8, [u8; 16]),
             {
                 return Err(Error::KeyData);
             }
-            gtk = Some((
-                ie[GROUP_KEY_FLAGS] & GROUP_KEY_ID_MASK,
-                ie[GROUP_KEY_BYTES].try_into().unwrap(),
-            ));
+            gtk = Some(GroupKey {
+                id: ie[GROUP_KEY_FLAGS] & GROUP_KEY_ID_MASK,
+                bytes: ie[GROUP_KEY_BYTES].try_into().unwrap(),
+            });
         }
         bytes = &bytes[ELEMENT_HEADER_BYTES + length..];
     }
-    if require_rsn && !rsn {
+    if matches!(rsn_requirement, RsnRequirement::Required) && !rsn_seen {
         return Err(Error::KeyData);
     }
     gtk.ok_or(Error::KeyData)
