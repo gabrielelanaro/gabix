@@ -81,11 +81,12 @@ will be checked alongside the implementation they exercise.
   - [x] MBR primary-entry lookup and offset adapter: named layout fields and explicit validation limits
 - [ ] x86 boot, paging, context switching, interrupts, PIC/PIT/APIC, and syscalls
   - [x] PIT: named control-word fields and corrected the mode description
-- [ ] x86 PCI and VirtIO drivers
+- [x] x86 PCI and VirtIO drivers (source review; existing QEMU checks pass)
   - [x] PCI bus-0 discovery, BAR fields and configuration access contract
   - [x] VirtIO capability regions and MSI-X table/control parsing
   - [x] Shared x86 VirtIO queue layout, submission/completion contracts and descriptor permissions
   - [x] x86 block initialization, interrupt routing, synchronous read and DMA-buffer contract
+  - [x] x86 network initialization, queue/interrupt selection and buffer lifetime
 - [ ] x86 scheduling, process lifecycle, file operations, and network stack
 - [ ] Learning snippets and test helpers affected by the edits
 
@@ -640,3 +641,17 @@ The transport/queue references above apply to these fields. Review covered the
 whole block source; x86 networking initialization remains pending. This test
 exercises the attached QEMU disk, without proving error-device handling or
 physical Pi operation.
+
+### x86 VirtIO network driver
+
+Named queue IDs separately from MSI-X entry IDs, feature words, control values
+and table offsets in `src/drivers/virtio/network.rs`. Comments explain zeroed
+transmit metadata, the interrupt-assisted completion loop and receive copying
+before buffer reuse. The shared frame size replaces repeated allocation units.
+The 64-byte transmit padding policy and two retained frames per transmission are
+explicit existing limitations; behavior is preserved.
+
+The existing x86 QEMU network-frame test passes. Combined with the prior disk
+and network checks, this completes source review of the PCI/VirtIO driver group.
+Other source groups and physical Pi validation remain pending. The previously
+recorded VirtIO 1.2 and Linux MSI-X references cover the named fields.

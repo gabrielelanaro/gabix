@@ -563,6 +563,11 @@ A milestone is a "demo-able" checkpoint. Worth a commit + tag + log entry.
 
 ## Progress Log
 
+### 2026-11-15 — Readability audit: x86 VirtIO network driver
+- Named RX/TX queue IDs, interrupt table entries/offsets, feature words and reset/enable values. Reused the shared frame size and described transmit metadata, interrupt-assisted waiting and receive-buffer reuse.
+- Documented existing 64-byte transmit padding policy and two retained frames per transmit without changing them. Existing x86 QEMU network-frame test passes.
+- PCI/VirtIO source review is complete across discovery, transport, queues and both devices. Broader architecture/protocol review and physical Pi checks remain open.
+
 ### 2026-11-15 — Readability audit: x86 VirtIO block driver
 - Named queue/vector selection, MSI-X entry offsets, feature words, sector size and enable/reset values. Reused the shared frame size for DMA buffers.
 - Rewrote outdated initialization/read documentation: reads check the used ring and sleep between interrupts; initial zero status does not prove completion; each read retains three frames. Removed disabled prints and unsupported claims about device thread scheduling and register-read timing.
