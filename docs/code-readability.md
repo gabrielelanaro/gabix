@@ -1632,3 +1632,18 @@ Source areas now have review records, including files requiring no edits. This
 inventory does not certify hardware behavior or learning snippets. Remaining
 work is consistency checking of references/test helpers and the recorded physical
 validation on the Pi. Existing implementation limitations remain listed above.
+
+### USB lesson consistency
+
+Lesson 7.04 now distinguishes its simplified register-submission sketch from
+production DMA ownership/timeout cleanup. It explains policy-dependent NAK
+handling, IN residual-byte accounting and successful OUT length. Removed stale
+line references from the transfer caption and added current function locations.
+The polling section now distinguishes synchronous USB status polling from the
+Pi timer interrupt handler and explains foreground service delays.
+
+Checked the updated claims against usb.rs transfer/cleanup and the timer/service
+entry points. HTML parses and code tags balance; existing styles/layout are
+unchanged. This is a targeted consistency correction, not a claim that every
+historical lesson has been synchronized. Remaining reference/test-helper review
+and physical validation remain open.

@@ -563,6 +563,11 @@ A milestone is a "demo-able" checkpoint. Worth a commit + tag + log entry.
 
 ## Progress Log
 
+### 2026-11-15 — Readability audit: USB lesson consistency
+- Updated lesson 7.04's transfer explanation for DMA cleanup, retry policy and IN/OUT completion; corrected its claim about timer polling.
+- Source checks and HTML parsing pass. Existing styling/layout retained; no kernel changes in this slice.
+- Continue reviewing affected learning/test references. Physical Pi checks remain pending.
+
 ### 2026-11-15 — Readability audit: source inventory follow-up
 - Read the remaining unchanged module/re-export/entry wrappers and recorded no-edit coverage; clarified frame allocator, dispatcher and halt contracts.
 - Offline x86 cargo check passes. Comment-only changes preserve behavior.
