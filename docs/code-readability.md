@@ -102,7 +102,7 @@ will be checked alongside the implementation they exercise.
   - [x] Task creation, fork layout and process-table resource contracts (known limitations below)
   - [x] VFS inode cache, internal directory encoding and descriptor ownership
   - [x] x86 ext2 adapter storage units, pointer roles and read limits
-  - [ ] Remaining x86 ext2 serialized field offsets
+  - [x] x86 ext2 serialized superblock, group, inode and directory field offsets
 - [ ] Learning snippets and test helpers affected by the edits
 
 ## First slice: Wi-Fi power-on
@@ -910,3 +910,17 @@ file pointer, and no feature/block-size rejection at mount. On-disk self/parent
 directory entries are omitted from listings but remain available through lookup.
 The existing QEMU file-read test passes for the generated supported image.
 It does not validate other block sizes, inode groups or sparse/indirect files.
+
+### x86 ext2 serialized field parsing
+
+The remaining parser literals in `src/fs/ext2.rs` now name superblock,
+group-descriptor, inode and directory-entry fields. The block-pointer stride
+uses the serialized u32 width; permission display names its existing mask.
+Offsets and field widths retain their original values, checked against the
+Linux ext2 structure definitions cited above.
+
+The parser contracts now identify short-header panics, empty names on truncated
+directory payloads, unchecked record boundaries/geometry, and low-word-only
+file sizes. No validation policy changed. The existing QEMU file-read test
+passes through these parsers on the supported image; malformed-image handling
+is not established by that test. The broader audit remains incomplete.

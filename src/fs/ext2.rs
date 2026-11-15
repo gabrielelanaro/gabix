@@ -48,6 +48,52 @@ const TRIPLE_INDIRECT_BLOCK_INDEX: usize = DOUBLE_INDIRECT_BLOCK_INDEX + 1;
 const BLOCK_POINTER_COUNT: usize = TRIPLE_INDIRECT_BLOCK_INDEX + 1;
 const DIRECTORY_HEADER_BYTES: usize = 8;
 
+// Serialized byte offsets; these do not depend on Rust struct layout.
+mod superblock_field {
+    pub const INODES_COUNT: usize = 0;
+    pub const BLOCKS_COUNT: usize = 4;
+    pub const RESERVED_BLOCKS: usize = 8;
+    pub const FREE_BLOCKS: usize = 12;
+    pub const FREE_INODES: usize = 16;
+    pub const FIRST_DATA_BLOCK: usize = 20;
+    pub const LOG_BLOCK_SIZE: usize = 24;
+    pub const INODES_PER_GROUP: usize = 40;
+    pub const MAGIC: usize = 56;
+    pub const STATE: usize = 58;
+    pub const INODE_SIZE: usize = 88;
+}
+
+mod group_field {
+    pub const BLOCK_BITMAP: usize = 0;
+    pub const INODE_BITMAP: usize = 4;
+    pub const INODE_TABLE: usize = 8;
+    pub const FREE_BLOCKS: usize = 12;
+    pub const FREE_INODES: usize = 14;
+    pub const USED_DIRECTORIES: usize = 16;
+}
+
+mod inode_field {
+    pub const MODE: usize = 0;
+    pub const UID: usize = 2;
+    pub const SIZE_LOW: usize = 4;
+    pub const ACCESS_TIME: usize = 8;
+    pub const CHANGE_TIME: usize = 12;
+    pub const MODIFY_TIME: usize = 16;
+    pub const DELETE_TIME: usize = 20;
+    pub const GID: usize = 24;
+    pub const LINK_COUNT: usize = 26;
+    pub const SECTOR_COUNT: usize = 28;
+    pub const BLOCK_POINTERS: usize = 40;
+}
+
+mod dirent_field {
+    pub const INODE: usize = 0;
+    pub const RECORD_LENGTH: usize = 4;
+    pub const NAME_LENGTH: usize = 6;
+    pub const FILE_TYPE: usize = 7;
+    pub const NAME: usize = 8;
+}
+
 /// Read the ext2 superblock from disk. The superblock is 1024 bytes
 /// starting at byte offset 1024 (sector 2). Since `read_sector` returns
 /// 512 bytes at a time, we read two sectors (2 and 3) and concatenate.
@@ -126,25 +172,26 @@ impl Superblock {
         let u16_at =
             |off: usize| -> u16 { u16::from_le_bytes(bytes[off..off + 2].try_into().unwrap()) };
 
-        let s_log_block_size = u32_at(24);
+        let s_log_block_size = u32_at(superblock_field::LOG_BLOCK_SIZE);
         let block_size = EXT2_MIN_BLOCK_SIZE << s_log_block_size;
 
         Self {
-            inodes_count: u32_at(0),
-            blocks_count: u32_at(4),
-            r_blocks_count: u32_at(8),
-            free_blocks_count: u32_at(12),
-            free_inodes_count: u32_at(16),
-            first_data_block: u32_at(20),
+            inodes_count: u32_at(superblock_field::INODES_COUNT),
+            blocks_count: u32_at(superblock_field::BLOCKS_COUNT),
+            r_blocks_count: u32_at(superblock_field::RESERVED_BLOCKS),
+            free_blocks_count: u32_at(superblock_field::FREE_BLOCKS),
+            free_inodes_count: u32_at(superblock_field::FREE_INODES),
+            first_data_block: u32_at(superblock_field::FIRST_DATA_BLOCK),
             block_size,
-            magic: u16_at(56),
-            state: u16_at(58),
-            inodes_per_group: u32_at(40),
-            inode_size: u16_at(88),
+            magic: u16_at(superblock_field::MAGIC),
+            state: u16_at(superblock_field::STATE),
+            inodes_per_group: u32_at(superblock_field::INODES_PER_GROUP),
+            inode_size: u16_at(superblock_field::INODE_SIZE),
         }
     }
 
-    /// Validate the magic number. Returns true if the disk is ext2.
+    /// Check only the ext2 magic. Feature flags, revision and geometry still
+    /// require validation before treating an arbitrary image as supported.
     pub fn is_ext2(&self) -> bool {
         self.magic == EXT2_MAGIC
     }
@@ -224,12 +271,12 @@ impl BlockGroupDescriptor {
             |off: usize| -> u16 { u16::from_le_bytes(bytes[off..off + 2].try_into().unwrap()) };
 
         Self {
-            block_bitmap: u32_at(0),
-            inode_bitmap: u32_at(4),
-            inode_table: u32_at(8),
-            free_blocks_count: u16_at(12),
-            free_inodes_count: u16_at(14),
-            used_dirs_count: u16_at(16),
+            block_bitmap: u32_at(group_field::BLOCK_BITMAP),
+            inode_bitmap: u32_at(group_field::INODE_BITMAP),
+            inode_table: u32_at(group_field::INODE_TABLE),
+            free_blocks_count: u16_at(group_field::FREE_BLOCKS),
+            free_inodes_count: u16_at(group_field::FREE_INODES),
+            used_dirs_count: u16_at(group_field::USED_DIRECTORIES),
         }
     }
 
@@ -253,6 +300,7 @@ impl BlockGroupDescriptor {
 
 /// i_mode top-4-bit file-type masks.
 pub const S_IFMT: u16 = 0xF000;
+const MODE_PERMISSION_AND_SPECIAL_BITS: u16 = 0o7777;
 pub const S_IFREG: u16 = 0x8000; // regular file
 pub const S_IFDIR: u16 = 0x4000; // directory
 pub const S_IFLNK: u16 = 0xA000; // symbolic link
@@ -287,14 +335,15 @@ pub struct Inode {
     /// Number of 512-byte sectors used (NOT ext2 blocks).
     pub blocks: u32,
     /// 15 block pointers: 12 direct, 1 indirect, 1 double, 1 triple.
-    /// We don't dereference these in Lesson 12; that's Lesson 13.
+    /// The current readers follow only the direct pointers.
     pub block_pointers: [u32; BLOCK_POINTER_COUNT],
 }
 
 impl Inode {
     /// Parse the first 128 bytes of an on-disk inode into our struct.
     /// We model the standard 128-byte struct even when s_inode_size is
-    /// larger (256+); bytes 128+ are extended attributes we don't touch.
+    /// larger (256+). Extended inode bytes are ignored. Only the low file-size
+    /// word is retained; this parser does not support large-file size fields.
     pub fn parse(bytes: &[u8]) -> Self {
         assert!(
             bytes.len() >= BASE_INODE_BYTES,
@@ -309,20 +358,21 @@ impl Inode {
 
         let mut block_pointers = [0u32; BLOCK_POINTER_COUNT];
         for i in 0..BLOCK_POINTER_COUNT {
-            block_pointers[i] = u32_at(40 + i * 4);
+            block_pointers[i] =
+                u32_at(inode_field::BLOCK_POINTERS + i * core::mem::size_of::<u32>());
         }
 
         Self {
-            mode: u16_at(0),
-            uid: u16_at(2),
-            size: u32_at(4),
-            atime: u32_at(8),
-            ctime: u32_at(12),
-            mtime: u32_at(16),
-            dtime: u32_at(20),
-            gid: u16_at(24),
-            links_count: u16_at(26),
-            blocks: u32_at(28),
+            mode: u16_at(inode_field::MODE),
+            uid: u16_at(inode_field::UID),
+            size: u32_at(inode_field::SIZE_LOW),
+            atime: u32_at(inode_field::ACCESS_TIME),
+            ctime: u32_at(inode_field::CHANGE_TIME),
+            mtime: u32_at(inode_field::MODIFY_TIME),
+            dtime: u32_at(inode_field::DELETE_TIME),
+            gid: u16_at(inode_field::GID),
+            links_count: u16_at(inode_field::LINK_COUNT),
+            blocks: u32_at(inode_field::SECTOR_COUNT),
             block_pointers,
         }
     }
@@ -362,7 +412,7 @@ impl Inode {
             "[ext2]   mode          = 0x{:04X}  ({}, perms 0o{:o})",
             self.mode,
             self.type_name(),
-            self.mode & 0o7777
+            self.mode & MODE_PERMISSION_AND_SPECIAL_BITS
         );
         println!("[ext2]   uid:gid       = {}:{}", self.uid, self.gid);
         println!("[ext2]   size          = {} bytes", self.size);
@@ -502,8 +552,10 @@ impl Dirent {
     /// Parse the dirent at `offset` within `bytes`. Returns the parsed
     /// Dirent plus the offset of the NEXT entry (offset + rec_len).
     ///
-    /// The returned Dirent is always populated (even for dead entries)
-    /// so the walker can decide what to do with them.
+    /// Requires a full eight-byte header at offset; short headers panic.
+    /// A name extending past bytes becomes empty. Record alignment, minimum
+    /// record size and name fit within rec_len are not validated. Dead entries
+    /// are returned too; the caller selects entries with a nonzero inode.
     pub fn parse_at(bytes: &[u8], offset: usize) -> (Dirent, usize) {
         let u32_at =
             |off: usize| -> u32 { u32::from_le_bytes(bytes[off..off + 4].try_into().unwrap()) };
@@ -511,14 +563,14 @@ impl Dirent {
             |off: usize| -> u16 { u16::from_le_bytes(bytes[off..off + 2].try_into().unwrap()) };
         let u8_at = |off: usize| -> u8 { bytes[off] };
 
-        let inode = u32_at(offset);
-        let rec_len = u16_at(offset + 4);
-        let name_len = u8_at(offset + 6);
-        let file_type = u8_at(offset + 7);
+        let inode = u32_at(offset + dirent_field::INODE);
+        let rec_len = u16_at(offset + dirent_field::RECORD_LENGTH);
+        let name_len = u8_at(offset + dirent_field::NAME_LENGTH);
+        let file_type = u8_at(offset + dirent_field::FILE_TYPE);
 
         // Name bytes start at offset+8 and run for name_len bytes.
         // Spec guarantees no null terminator; we copy as-is.
-        let name_start = offset + 8;
+        let name_start = offset + dirent_field::NAME;
         let name_end = name_start + name_len as usize;
         let name = if name_end <= bytes.len() {
             bytes[name_start..name_end].to_vec()

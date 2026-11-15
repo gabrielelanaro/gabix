@@ -563,6 +563,11 @@ A milestone is a "demo-able" checkpoint. Worth a commit + tag + log entry.
 
 ## Progress Log
 
+### 2026-11-15 — Readability audit: ext2 serialized fields
+- Named the remaining superblock, group-descriptor, inode and directory field offsets, block-pointer stride and permission mask. Parsing values and widths are unchanged.
+- Clarified validation limits and removed obsolete lesson-stage claims. Existing QEMU file-read test passes for the supported image.
+- ext2 source review is covered; broader networking/ARM and page-table contract review remain open, along with physical Pi validation.
+
 ### 2026-11-15 — Readability audit: ext2 adapter units and limits
 - Named disk/metadata widths and direct/indirect pointer positions. Corrected directory type-code and descriptor-boundary explanations against the Linux ext2 definitions.
 - Documented fixed-block-size, group-0, direct-block and sparse-read limitations without changing behavior. Existing QEMU file-read test passes for the supported image.
