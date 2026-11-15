@@ -1647,3 +1647,17 @@ entry points. HTML parses and code tags balance; existing styles/layout are
 unchanged. This is a targeted consistency correction, not a claim that every
 historical lesson has been synchronized. Remaining reference/test-helper review
 and physical validation remain open.
+
+### LAN9512 lesson consistency
+
+Lesson 7.05 uses the current register-request and reset/offset constant names,
+corrects the transmit trait's boolean return and explains local USB submission
+versus peer receipt. Configuration prose distinguishes individual register
+transfers from multi-access EEPROM/reset operations. It identifies endpoint-zero
+register access and the polling implementation without asserting that the chip
+has no interrupt mechanism. Updated configuration/frame source locations and
+noted the Wi-Fi adapter alongside the wired diagram. Existing layout is retained.
+
+Checked statements against lan9512.rs, ethernet.rs and shared smsc95xx.rs. HTML
+parses and diff whitespace checks pass. Historical lesson coverage remains an
+ongoing review; this correction does not imply all old listings compile unchanged.

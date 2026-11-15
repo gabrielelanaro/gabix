@@ -563,6 +563,11 @@ A milestone is a "demo-able" checkpoint. Worth a commit + tag + log entry.
 
 ## Progress Log
 
+### 2026-11-15 — Readability audit: LAN9512 lesson consistency
+- Updated register names, transmit return contract, endpoint descriptions and adapter selection context; corrected source locations.
+- Checked against current drivers/shared framing and parsed the HTML. Kernel behavior is unchanged.
+- Continue affected reference/test-helper review; physical validation remains pending.
+
 ### 2026-11-15 — Readability audit: USB lesson consistency
 - Updated lesson 7.04's transfer explanation for DMA cleanup, retry policy and IN/OUT completion; corrected its claim about timer polling.
 - Source checks and HTML parsing pass. Existing styling/layout retained; no kernel changes in this slice.
