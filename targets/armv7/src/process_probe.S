@@ -1,5 +1,13 @@
     .syntax unified
     .arm
+    @ Shared probe data layout: see process.rs PROBE_* constants.
+    .equ PROBE_ADDRESS_OFFSET, 4
+    .equ PROBE_ACCESS_OFFSET, 8
+    .equ PROBE_READ, 0
+    .equ PROBE_EXECUTE, 2
+    .equ SYS_WRITE, 1
+    .equ SYS_GETPID, 39
+    .equ SYS_EXIT, 60
     .section .rodata.process_probe,"a"
     .align 2
     .global process_probe_start
@@ -7,7 +15,7 @@
 process_probe_start:
     @ Both copies execute at 0x41000000. Their private test data is at
     @ 0x41010000 and their private user stacks are near 0x41200000.
-    mov r7, #39                     @ getpid
+    mov r7, #SYS_GETPID                     @ getpid
     svc #0
     mov r4, r0
     movw r5, #0
@@ -22,22 +30,22 @@ process_probe_start:
     cmp r8, r4
     bne .Lfailed
 
-    ldr r1, [r5, #4]                @ Zero = normal exit; otherwise forbidden VA.
+    ldr r1, [r5, #PROBE_ADDRESS_OFFSET]                @ Zero = normal exit; otherwise forbidden VA.
     cmp r1, #0
     beq .Lsuccess
-    ldr r2, [r5, #8]
-    cmp r2, #2
+    ldr r2, [r5, #PROBE_ACCESS_OFFSET]
+    cmp r2, #PROBE_EXECUTE
     bxeq r1                         @ Execute-never user stack must fault.
     @ The write syscall must reject a pointer outside this process's user range.
     mov r0, #1
     mov r2, #4
-    mov r7, #1
+    mov r7, #SYS_WRITE
     svc #0
     cmn r0, #1                      @ Expected u32::MAX / error.
     bne .Lfailed
-    ldr r1, [r5, #4]
-    ldr r2, [r5, #8]                @ 0 = read attack, 1 = write attack.
-    cmp r2, #0
+    ldr r1, [r5, #PROBE_ADDRESS_OFFSET]
+    ldr r2, [r5, #PROBE_ACCESS_OFFSET]                @ 0 = read attack, 1 = write attack.
+    cmp r2, #PROBE_READ
     streq r2, [sp, #-4]!            @ Exercise process-private user stack again.
     ldreq r0, [r1]                  @ Must raise a user permission fault.
     strne r4, [r1]                  @ Must raise a user permission fault.
@@ -48,7 +56,7 @@ process_probe_start:
 .Lfailed:
     mov r0, #1
 .Lexit:
-    mov r7, #60
+    mov r7, #SYS_EXIT
     svc #0
     b .Lexit
 .Lbusy:

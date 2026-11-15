@@ -61,6 +61,7 @@ will be checked alongside the implementation they exercise.
 - [ ] ARM boot, page tables, interrupts, scheduling, processes, and syscalls
   - [x] Kernel task context switch and scheduler frame creation: named saved-word layout, user-bank offset and IRQ mask
   - [x] ARM memory control bits, table dimensions and range-helper contracts
+  - [x] Fixed-process isolation probe ABI and fault-status checks
   - [ ] Boot/exception assembly, process operations, memory ownership/cache assumptions and syscalls
 - [ ] ARM loader, SD update/install, authenticated management, and diagnostics
 - [ ] ARM VirtIO adapters and hardware probes
@@ -1040,3 +1041,21 @@ returns on overflow and touches a section for an unaligned zero-length range.
 process_range_is_valid checks only interval arithmetic, including a zero-length
 range at the end. The existing QEMU ARM memory-mapping and process-isolation
 tests pass. Physical Pi validation remains pending while disconnected.
+
+### ARM process isolation probe
+
+`targets/armv7/src/process.rs` and `process_probe.S` name the shared data-field
+offsets, access kinds, probe stack offsets, minimum timer switches and syscall
+numbers. Outcome arrays use PROCESS_COUNT. The setup contract explains that
+it switches tables and clears the stopped process's entire allocation.
+The fault comparison names the saved mode, split status field, section
+permission fault and write flag. Numeric values and conditions are preserved.
+
+References: [Arm DFSR fields](https://arm-software.github.io/CMSIS_5/Core_A/html/group__CMSIS__DFSR.html)
+and [Cortex-A7 TRM fault-status encodings](https://documentation-service.arm.com/static/5e8f089d88295d1e18d3b906).
+The existing QEMU isolation test passes its baseline, other-process read/write,
+kernel read and stack-execution cases. The Pi hardware build passes. This is
+source/build evidence for the Pi; the disconnected board has not run this edit.
+The fixed probe ABI still has paired Rust/assembly definitions, linked by source
+comments and exercised by the existing test. General process lifecycle review
+remains open.
