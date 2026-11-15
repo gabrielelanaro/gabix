@@ -28,6 +28,16 @@ const CHECKSUM: u32 = 4;
 
 pub struct Receiver {
     card: SdCard,
+    pub journal: crate::diagnostics::Journal,
+    #[cfg(feature = "pi-managed")]
+    authentication: crate::management_auth::Authentication,
+    status: [u8; 176],
+    requests: u32,
+    tx_failures: u32,
+    last_request: u64,
+    reboot_at: Option<u64>,
+    last_error: (u32, u32),
+    repeated_errors: u32,
     session: u32,
     length: u32,
     expected_crc: u32,
@@ -76,8 +86,44 @@ impl Receiver {
             return None;
         }
         let verified = owned && word(&header, 16) == 1;
+        let journal =
+            crate::diagnostics::Journal::open(&mut card, crate::raspi2b::timer::uptime_millis())?;
+        #[cfg(feature = "pi-managed")]
+        if journal.boot == 0 {
+            return None;
+        }
+        if let Some(bytes) = unsafe { card.try_read_sector(crate::sd_install::KERNEL_START) } {
+            if let Some(record) = gabix_kernel::boot_record::BootRecord::decode(
+                &bytes,
+                crate::sd_install::KERNEL_SECTORS,
+            ) {
+                crate::diagnostics::event(format_args!(
+                    "boot selection active={} pending={} attempted={} running={}",
+                    record.active_copy,
+                    record.pending_copy,
+                    record.attempted_mask,
+                    record.running_copy
+                ));
+            }
+        }
+        crate::diagnostics::event(format_args!(
+            "reset_status_raw={:#x}",
+            crate::raspi2b::reset::status()
+        ));
+        #[cfg(feature = "pi-managed")]
+        let authentication = crate::management_auth::Authentication::new(journal.boot);
         Some(Self {
             card,
+            journal,
+            #[cfg(feature = "pi-managed")]
+            authentication,
+            status: [0; 176],
+            requests: 0,
+            tx_failures: 0,
+            last_request: 0,
+            reboot_at: None,
+            last_error: (0, 0),
+            repeated_errors: 0,
             session: 0,
             length,
             expected_crc: if owned { word(&header, 12) } else { 0 },
@@ -94,11 +140,53 @@ impl Receiver {
         &mut self,
         peer: ([u8; 4], u16),
         packet: &[u8],
+        reply: &mut [u8; 584],
+    ) -> Option<usize> {
+        #[cfg(feature = "pi-managed")]
+        {
+            // A public challenge exposes only the persistent boot number and
+            // counter. Every diagnostic/read/write/reboot command requires HMAC.
+            if packet.len() == 20 && &packet[..4] == WIRE_MAGIC && word(packet, 4) == 10 {
+                reply[..20].copy_from_slice(packet);
+                reply[4..8].copy_from_slice(&(10u32 | 0x80000000).to_le_bytes());
+                reply[16..20].fill(0);
+                reply[20..28].copy_from_slice(&self.authentication.boot.to_le_bytes());
+                reply[28..36].copy_from_slice(&self.authentication.sequence.to_le_bytes());
+                return Some(36);
+            }
+            match self.authentication.verify(packet) {
+                crate::management_auth::Request::Rejected => return None,
+                crate::management_auth::Request::Retry => {
+                    return Some(self.authentication.reply(reply))
+                }
+                crate::management_auth::Request::Fresh(inner) => {
+                    let mut response = [0; 532];
+                    let length = self.handle_command(peer, inner, &mut response)?;
+                    self.authentication.seal(&response[..length]);
+                    return Some(self.authentication.reply(reply));
+                }
+            }
+        }
+        #[cfg(not(feature = "pi-managed"))]
+        {
+            let mut response = [0; 532];
+            let length = self.handle_command(peer, packet, &mut response)?;
+            reply[..length].copy_from_slice(&response[..length]);
+            Some(length)
+        }
+    }
+
+    fn handle_command(
+        &mut self,
+        peer: ([u8; 4], u16),
+        packet: &[u8],
         reply: &mut [u8; 532],
     ) -> Option<usize> {
         if packet.len() < HEADER_LEN || &packet[..4] != WIRE_MAGIC {
             return None;
         }
+        self.requests = self.requests.saturating_add(1);
+        self.last_request = crate::raspi2b::timer::uptime_millis();
         let operation = word(packet, 4);
         let session = word(packet, 8);
         let argument = word(packet, 12);
@@ -106,7 +194,28 @@ impl Receiver {
         let data = &packet[HEADER_LEN..];
         let mut status = INVALID;
         let mut reply_data_len = 0;
-        if self.failed {
+        if operation == 11 && data.is_empty() {
+            self.fill_storage_status();
+            reply[20..196].copy_from_slice(&self.status);
+            reply_data_len = 176;
+            status = OK;
+        } else if operation == 12 && data.is_empty() {
+            let sequence = (value as u64) << 32 | argument as u64;
+            if let Some(bytes) = self.journal.read(&mut self.card, sequence) {
+                reply[20..532].copy_from_slice(&bytes);
+                reply_data_len = 512;
+                status = OK;
+            }
+        } else if operation == 13 && data.is_empty() {
+            crate::diagnostics::line(b"management reboot requested");
+            self.maintenance(true);
+            if self.journal.flush(&mut self.card, self.last_request) {
+                self.reboot_at = Some(self.last_request + 1000);
+                status = OK;
+            } else {
+                status = IO_ERROR;
+            }
+        } else if self.failed {
             status = IO_ERROR;
         } else if operation == CARD_INFO && data.is_empty() {
             reply[20..28].copy_from_slice(&self.card.sector_count().to_le_bytes());
@@ -165,6 +274,12 @@ impl Receiver {
                     self.expected_crc = value;
                     self.next = 0;
                     self.verified = false;
+                    crate::diagnostics::line(if operation == BEGIN_KERNEL {
+                        b"kernel update started"
+                    } else {
+                        b"staging upload started"
+                    });
+                    self.maintenance(true);
                     status = if self.save_header(false) {
                         OK
                     } else {
@@ -239,6 +354,8 @@ impl Receiver {
                             status = IO_ERROR;
                         } else {
                             self.verified = true;
+                            crate::diagnostics::line(b"upload verified and committed");
+                            self.maintenance(true);
                         }
                     }
                 }
@@ -263,6 +380,20 @@ impl Receiver {
                 _ => {}
             }
         }
+        if status != OK {
+            if self.last_error != (operation, status) {
+                self.repeated_errors = 0;
+            }
+            self.last_error = (operation, status);
+            self.repeated_errors = self.repeated_errors.saturating_add(1);
+            if self.repeated_errors.is_power_of_two() {
+                crate::diagnostics::event(format_args!(
+                    "management operation={} offset={} failure={} count={}",
+                    operation, argument, status, self.repeated_errors
+                ));
+                self.maintenance(status == IO_ERROR);
+            }
+        }
         if status == IO_ERROR {
             self.failed = true;
         }
@@ -276,6 +407,103 @@ impl Receiver {
             reply[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
         }
         Some(HEADER_LEN + reply_data_len)
+    }
+
+    pub fn maintenance(&mut self, critical: bool) {
+        let now = crate::raspi2b::timer::uptime_millis();
+        self.journal.drain(&mut self.card, now, critical);
+        if self.reboot_at.map(|at| now >= at).unwrap_or(false) {
+            self.journal.flush(&mut self.card, now);
+            crate::raspi2b::reset::reset();
+        }
+    }
+
+    pub fn transmitted(&mut self, success: bool) {
+        if !success {
+            self.tx_failures = self.tx_failures.saturating_add(1);
+        }
+    }
+
+    pub fn network_status(&mut self, session: &crate::network::DhcpSession, link: u32) {
+        let put = |bytes: &mut [u8], at: usize, value: u32| {
+            bytes[at..at + 4].copy_from_slice(&value.to_le_bytes())
+        };
+        put(&mut self.status, 0, 1);
+        put(&mut self.status, 4, session.state as u32);
+        put(&mut self.status, 8, link);
+        self.status[12..16].copy_from_slice(&session.address());
+        if let Some(lease) = session.lease {
+            self.status[16..20].copy_from_slice(&lease.subnet_mask);
+            self.status[20..24].copy_from_slice(&lease.gateway);
+            self.status[24..28].copy_from_slice(&lease.server);
+            self.status[28..32].copy_from_slice(&lease.dns);
+            put(&mut self.status, 60, lease.lease_seconds);
+        } else {
+            self.status[16..32].fill(0);
+            put(&mut self.status, 60, 0);
+        }
+        self.status[32..38].copy_from_slice(&session.mac_address());
+        for (at, value) in [
+            (40, session.attempts),
+            (44, session.tx_failures),
+            (48, session.received_frames),
+            (52, session.rejected_dhcp),
+            (56, session.lease_losses),
+        ] {
+            put(&mut self.status, at, value);
+        }
+        self.status[64..72].copy_from_slice(&session.lease_remaining().to_le_bytes());
+    }
+
+    fn fill_storage_status(&mut self) {
+        let now = crate::raspi2b::timer::uptime_millis();
+        for (at, value) in [
+            (72, now),
+            (80, self.journal.boot),
+            (88, self.journal.sequence),
+            (
+                96,
+                self.journal
+                    .sequence
+                    .saturating_sub(crate::diagnostics::SECTOR_COUNT - 1)
+                    .max(1),
+            ),
+            (128, self.last_request),
+        ] {
+            self.status[at..at + 8].copy_from_slice(&value.to_le_bytes());
+        }
+        #[cfg(feature = "pi-managed")]
+        let (rejected, authenticated) = (self.authentication.rejected, 1);
+        #[cfg(not(feature = "pi-managed"))]
+        let (rejected, authenticated) = (0, 0);
+        for (at, value) in [
+            (104, self.journal.write_errors),
+            (108, self.journal.dropped_lines),
+            (112, self.journal.corrupt_records),
+            (116, rejected),
+            (120, self.requests),
+            (124, self.tx_failures),
+            (148, crate::raspi2b::reset::status()),
+            (156, gabix_kernel::loader_protocol::MAX_KERNEL_SIZE),
+            (160, crate::diagnostics::SECTOR_COUNT as u32),
+            (164, authenticated),
+        ] {
+            self.status[at..at + 4].copy_from_slice(&value.to_le_bytes());
+        }
+        if let Some(record) = unsafe { self.card.try_read_sector(crate::sd_install::KERNEL_START) }
+            .and_then(|b| {
+                gabix_kernel::boot_record::BootRecord::decode(&b, crate::sd_install::KERNEL_SECTORS)
+            })
+        {
+            for (at, value) in [
+                (136, record.active_copy as u32),
+                (140, record.pending_copy),
+                (144, record.attempted_mask),
+                (152, record.copies[record.active_copy].image_crc32),
+            ] {
+                self.status[at..at + 4].copy_from_slice(&value.to_le_bytes());
+            }
+        }
     }
 
     pub fn confirm_boot(&mut self) -> bool {

@@ -98,7 +98,8 @@ def verify_image(image: dict, path: Path, require_protection: bool = True) -> No
 
 
 def protect_path(path: Path) -> None:
-    path.chmod(0o444)
+    # Managed kernels embed a private LAN authentication key.
+    path.chmod(0o400)
     immutable_flag = getattr(stat, "UF_IMMUTABLE", 0)
     if immutable_flag:
         os.chflags(path, path.stat().st_flags | immutable_flag)

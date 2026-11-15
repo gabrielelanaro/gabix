@@ -6,6 +6,7 @@ pub const DISCOVER: u8 = 1;
 pub const OFFER: u8 = 2;
 pub const REQUEST: u8 = 3;
 pub const ACK: u8 = 5;
+pub const NAK: u8 = 6;
 
 const BOOTP_FIXED_LEN: usize = 236;
 const OPTIONS_START: usize = 240;
@@ -20,6 +21,8 @@ pub struct DhcpReply {
     pub gateway: [u8; 4],
     pub dns: [u8; 4],
     pub lease_seconds: u32,
+    pub renewal_seconds: u32,
+    pub rebinding_seconds: u32,
 }
 
 pub struct DhcpClient {
@@ -43,6 +46,18 @@ impl DhcpClient {
         self.write_message(out, REQUEST, Some(offer.address), Some(offer.server))
     }
 
+    /// Renewal uses ciaddr and omits requested-address/server options (RFC 2131 §4.3.2).
+    pub fn write_renewal(&self, out: &mut [u8], address: [u8; 4]) -> Option<usize> {
+        let length = self.write_message(out, REQUEST, None, None)?;
+        out[10..12].fill(0);
+        out[12..16].copy_from_slice(&address);
+        Some(length)
+    }
+
+    pub fn restart(&mut self) {
+        self.transaction_id = self.transaction_id.wrapping_add(1);
+    }
+
     pub fn parse_reply(&self, bytes: &[u8]) -> Option<DhcpReply> {
         if bytes.len() <= OPTIONS_START
             || bytes[0] != 2
@@ -63,6 +78,8 @@ impl DhcpClient {
             gateway: [0; 4],
             dns: [0; 4],
             lease_seconds: 0,
+            renewal_seconds: 0,
+            rebinding_seconds: 0,
         };
         let mut offset = OPTIONS_START;
         while offset < bytes.len() {
@@ -81,14 +98,16 @@ impl DhcpClient {
                 (53, 1) => reply.message_type = value[0],
                 (54, 4) => reply.server.copy_from_slice(value),
                 (1, 4) => reply.subnet_mask.copy_from_slice(value),
-                (3, 4) => reply.gateway.copy_from_slice(value),
-                (6, 4) => reply.dns.copy_from_slice(value),
+                (3, n) if n >= 4 && n % 4 == 0 => reply.gateway.copy_from_slice(&value[..4]),
+                (6, n) if n >= 4 && n % 4 == 0 => reply.dns.copy_from_slice(&value[..4]),
                 (51, 4) => reply.lease_seconds = u32::from_be_bytes(value.try_into().ok()?),
+                (58, 4) => reply.renewal_seconds = u32::from_be_bytes(value.try_into().ok()?),
+                (59, 4) => reply.rebinding_seconds = u32::from_be_bytes(value.try_into().ok()?),
                 _ => {}
             }
             offset += length;
         }
-        if reply.message_type == 0 || reply.address == [0; 4] {
+        if !matches!(reply.message_type, OFFER | ACK | NAK) {
             None
         } else {
             Some(reply)
@@ -102,7 +121,7 @@ impl DhcpClient {
         requested_address: Option<[u8; 4]>,
         server: Option<[u8; 4]>,
     ) -> Option<usize> {
-        if out.len() < OPTIONS_START + 4 {
+        if out.len() < 300 {
             return None;
         }
         out.fill(0);
@@ -122,9 +141,13 @@ impl DhcpClient {
         if let Some(address) = server {
             write_option(out, &mut offset, 54, &address)?;
         }
-        write_option(out, &mut offset, 55, &[1, 3, 6, 51, 54])?;
+        write_option(out, &mut offset, 55, &[1, 3, 6, 51, 54, 58, 59])?;
+        write_option(out, &mut offset, 12, b"gabix-pi2")?;
+        let mut identity = [1u8; 7];
+        identity[1..].copy_from_slice(&self.mac);
+        write_option(out, &mut offset, 61, &identity)?;
         *out.get_mut(offset)? = 255;
-        Some(offset + 1)
+        Some((offset + 1).max(300))
     }
 }
 

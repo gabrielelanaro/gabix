@@ -72,6 +72,8 @@ path = "src/pi2_lan9512_receive_probe.rs"
 [dependencies]
 gabix-kernel = { path = "../../crates/kernel-core", default-features = false }
 linked_list_allocator = "0.10"
+hmac = { version = "0.13", default-features = false, optional = true }
+sha2 = { version = "0.11", default-features = false, optional = true }
 
 [features]
 default = []
@@ -90,6 +92,7 @@ pi-lifecycle = ["raspi2b"]
 pi-uart-user = ["raspi2b"]
 pi-sd-loader = ["gabix-kernel/kernel"]
 pi-sd-transfer = ["pi-hardware", "pi-uart-user"]
+pi-managed = ["pi-sd-transfer", "dep:hmac", "dep:sha2"]
 
 [profile.dev]
 panic = "abort"
