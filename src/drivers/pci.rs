@@ -1,7 +1,7 @@
 //! PCI (Peripheral Component Interconnect) bus access.
 //!
-//! Lesson 5 step 5.2: raw config space access via I/O ports 0xCF8 (address)
-//! and 0xCFC (data). No device discovery yet — that's step 5.3.
+//! Configuration access, bus-0 discovery, and Base Address Register decoding.
+//! The configuration address/data port pair must be accessed serially.
 //!
 //! The PCI standard reserves two 32-bit I/O ports for config space access:
 //!   - port 0xCF8: write a 32-bit address word identifying bus/device/func/offset
@@ -25,6 +25,25 @@ const CONFIG_ADDRESS: u16 = 0xCF8;
 
 /// I/O port for PCI configuration data (32-bit).
 const CONFIG_DATA: u16 = 0xCFC;
+
+// Conventional PCI configuration layout; see Linux include/uapi/linux/pci_regs.h.
+const ROOT_BUS: u8 = 0;
+const DEVICES_PER_BUS: u8 = 32;
+const FUNCTIONS_PER_DEVICE: u8 = 8;
+const VENDOR_DEVICE_IDS: u8 = 0x00;
+const CLASS_REVISION: u8 = 0x08;
+const FIRST_BAR: u8 = 0x10;
+const CONFIG_WORD_BYTES: u8 = 4;
+const ENDPOINT_BAR_COUNT: u8 = 6;
+const ABSENT_VENDOR: u16 = 0xffff;
+const BAR_IO_SPACE: u32 = 1;
+const BAR_IO_ADDRESS_MASK: u32 = !0x3;
+const BAR_MEMORY_ADDRESS_MASK: u32 = !0xf;
+const BAR_MEMORY_TYPE_SHIFT: u32 = 1;
+const BAR_MEMORY_TYPE_MASK: u32 = 0b11;
+const BAR_MEMORY_32_BIT: u32 = 0b00;
+const BAR_MEMORY_64_BIT: u32 = 0b10;
+const BAR_PREFETCHABLE: u32 = 1 << 3;
 
 /// Build the 32-bit PCI config address word.
 ///
@@ -53,25 +72,25 @@ fn make_address(bus: u8, device: u8, func: u8, offset: u8) -> u32 {
 ///
 /// Returns 0 for an unused BAR (one that reads as all zeros).
 pub fn bar_base(bus: u8, device: u8, func: u8, bar_index: u8) -> u64 {
-    let offset = 0x10 + bar_index * 4;
+    let offset = FIRST_BAR + bar_index * CONFIG_WORD_BYTES;
     let bar = config_read(bus, device, func, offset);
 
     if bar == 0 {
         return 0;
     }
 
-    if bar & 0x1 == 1 {
-        // I/O BAR — low 2 bits are type, rest is address
-        return (bar & !0x3) as u64;
+    if bar & BAR_IO_SPACE != 0 {
+        // I/O BAR: bit 0 selects I/O, bit 1 is reserved, remaining bits form the address.
+        return (bar & BAR_IO_ADDRESS_MASK) as u64;
     }
 
     // Memory BAR
-    let type_bits = (bar >> 1) & 0x3;
-    let base_low = (bar & !0xF) as u64;
+    let type_bits = (bar >> BAR_MEMORY_TYPE_SHIFT) & BAR_MEMORY_TYPE_MASK;
+    let base_low = (bar & BAR_MEMORY_ADDRESS_MASK) as u64;
 
-    if type_bits == 0b10 {
+    if type_bits == BAR_MEMORY_64_BIT {
         // 64-bit memory BAR — combine with the next BAR slot's high 32 bits
-        let next_offset = 0x10 + (bar_index + 1) * 4;
+        let next_offset = FIRST_BAR + (bar_index + 1) * CONFIG_WORD_BYTES;
         let bar_high = config_read(bus, device, func, next_offset);
         base_low | ((bar_high as u64) << 32)
     } else {
@@ -95,10 +114,8 @@ pub fn config_read(bus: u8, device: u8, func: u8, offset: u8) -> u32 {
 
 /// Write 32 bits to PCI config space at the given bus/device/function/offset.
 ///
-/// Used for enabling bus mastering in the command register, assigning BAR
-/// addresses, setting virtio device status bits (DRIVER_OK in Lesson 6),
-/// etc. Writes to read-only fields (vendor_id, device_id, class_code) are
-/// silently ignored by the device.
+/// Used for PCI command fields such as bus mastering and for BAR addresses.
+/// VirtIO device status is accessed through its transport-specific registers.
 pub fn config_write(bus: u8, device: u8, func: u8, offset: u8, value: u32) {
     let address = make_address(bus, device, func, offset);
     unsafe {
@@ -142,12 +159,12 @@ fn class_name(base_class: u8) -> &'static str {
 /// Linux's `pci_scan_bus` recurses; we don't need that complexity here.
 pub fn enumerate() {
     println!("[pci] scanning bus 0");
-    for device in 0..32u8 {
-        for func in 0..8u8 {
+    for device in 0..DEVICES_PER_BUS {
+        for func in 0..FUNCTIONS_PER_DEVICE {
             // Reading offset 0x00 returns vendor_id (low 16) | device_id (high 16)
-            let vendor_word = config_read(0, device, func, 0x00);
+            let vendor_word = config_read(ROOT_BUS, device, func, VENDOR_DEVICE_IDS);
             let vendor_id = (vendor_word & 0xFFFF) as u16;
-            if vendor_id == 0xFFFF {
+            if vendor_id == ABSENT_VENDOR {
                 continue; // absent slot
             }
             let device_id = (vendor_word >> 16) as u16;
@@ -155,13 +172,13 @@ pub fn enumerate() {
             // Reading offset 0x08 returns revision (low 8) | prog_if (8) |
             // subclass (8) | base_class (high 8). We extract base_class for
             // the human-readable name.
-            let class_word = config_read(0, device, func, 0x08);
+            let class_word = config_read(ROOT_BUS, device, func, CLASS_REVISION);
             let base_class = ((class_word >> 24) & 0xFF) as u8;
             let subclass = ((class_word >> 16) & 0xFF) as u8;
 
             println!(
                 "[pci] {:02x}:{:02x}.{} vendor={:04x} device={:04x} class={:02x}{:02x} ({})",
-                0u8,
+                ROOT_BUS,
                 device,
                 func,
                 vendor_id,
@@ -188,9 +205,9 @@ pub const VIRTIO_NET_NON_TRANSITIONAL: u16 = 0x1041;
 
 /// Search bus 0 for one modern virtio device ID.
 pub fn find_virtio_device(device_id: u16) -> Option<PciDevice> {
-    for device in 0..32u8 {
-        for func in 0..8u8 {
-            let vendor_word = config_read(0, device, func, 0x00);
+    for device in 0..DEVICES_PER_BUS {
+        for func in 0..FUNCTIONS_PER_DEVICE {
+            let vendor_word = config_read(ROOT_BUS, device, func, VENDOR_DEVICE_IDS);
             let vendor_id = (vendor_word & 0xFFFF) as u16;
             if vendor_id != VIRTIO_VENDOR_ID {
                 continue;
@@ -198,7 +215,7 @@ pub fn find_virtio_device(device_id: u16) -> Option<PciDevice> {
             let found_device_id = (vendor_word >> 16) as u16;
             if found_device_id == device_id {
                 return Some(PciDevice {
-                    bus: 0,
+                    bus: ROOT_BUS,
                     device,
                     func,
                 });
@@ -218,29 +235,30 @@ pub fn find_virtio_blk() -> Option<(u8, u8, u8)> {
         return Some((dev.bus, dev.device, dev.func));
     }
 
-    for device in 0..32u8 {
-        for func in 0..8u8 {
-            let vendor_word = config_read(0, device, func, 0x00);
+    for device in 0..DEVICES_PER_BUS {
+        for func in 0..FUNCTIONS_PER_DEVICE {
+            let vendor_word = config_read(ROOT_BUS, device, func, VENDOR_DEVICE_IDS);
             let vendor_id = (vendor_word & 0xFFFF) as u16;
             if vendor_id != VIRTIO_VENDOR_ID {
                 continue;
             }
             let device_id = (vendor_word >> 16) as u16;
             if device_id == VIRTIO_BLK_TRANSITIONAL {
-                return Some((0, device, func));
+                return Some((ROOT_BUS, device, func));
             }
         }
     }
     None
 }
 
-/// Read and decode all six BARs (Base Address Registers) for a device.
+/// Read all six BAR slots of a normal endpoint (PCI header type 0).
+/// Callers must supply an endpoint; bridge headers have a different layout.
 ///
 /// BAR layout per slot (32 bits):
 ///   - bit 0 = 1: I/O BAR. Bits 2-31 = base address (mask off low 2 type bits).
 ///   - bit 0 = 0: memory BAR.
 ///       - bits 1-2 = type: 00 = 32-bit, 10 = 64-bit (uses TWO BAR slots),
-///                              01 = reserved (was 16-bit), 11 = reserved.
+///                              01 = obsolete below-1-MiB address, 11 = reserved.
 ///       - bit 3 = prefetchable flag (1 = safe to read-ahead).
 ///       - bits 4-31 = base address (mask off low 4 type bits).
 ///
@@ -248,8 +266,8 @@ pub fn find_virtio_blk() -> Option<(u8, u8, u8)> {
 /// base address — combined with this slot's low 32 bits to form a 64-bit base.
 pub fn print_bars(bus: u8, device: u8, func: u8) {
     let mut i = 0u8;
-    while i < 6 {
-        let offset = 0x10 + i * 4;
+    while i < ENDPOINT_BAR_COUNT {
+        let offset = FIRST_BAR + i * CONFIG_WORD_BYTES;
         let bar = config_read(bus, device, func, offset);
 
         if bar == 0 {
@@ -258,9 +276,9 @@ pub fn print_bars(bus: u8, device: u8, func: u8) {
             continue;
         }
 
-        if bar & 0x1 == 1 {
+        if bar & BAR_IO_SPACE != 0 {
             // I/O BAR
-            let base = bar & !0x3;
+            let base = bar & BAR_IO_ADDRESS_MASK;
             println!(
                 "[pci]   BAR{} = 0x{:08X} (I/O space, base 0x{:08X})",
                 i, bar, base
@@ -268,14 +286,14 @@ pub fn print_bars(bus: u8, device: u8, func: u8) {
             i += 1;
         } else {
             // Memory BAR
-            let type_bits = (bar >> 1) & 0x3;
-            let prefetchable = (bar & 0x8) != 0;
-            let base_low = bar & !0xF;
+            let type_bits = (bar >> BAR_MEMORY_TYPE_SHIFT) & BAR_MEMORY_TYPE_MASK;
+            let prefetchable = (bar & BAR_PREFETCHABLE) != 0;
+            let base_low = bar & BAR_MEMORY_ADDRESS_MASK;
             let pref_str = if prefetchable { " prefetchable" } else { "" };
 
-            if type_bits == 0b10 {
+            if type_bits == BAR_MEMORY_64_BIT {
                 // 64-bit memory BAR — consumes this slot AND the next
-                let next_offset = offset + 4;
+                let next_offset = offset + CONFIG_WORD_BYTES;
                 let bar_high = config_read(bus, device, func, next_offset);
                 let base64 = (base_low as u64) | ((bar_high as u64) << 32);
                 println!(
@@ -288,7 +306,7 @@ pub fn print_bars(bus: u8, device: u8, func: u8) {
                     base64
                 );
                 i += 2; // consume both slots
-            } else if type_bits == 0b00 {
+            } else if type_bits == BAR_MEMORY_32_BIT {
                 // 32-bit memory BAR
                 println!(
                     "[pci]   BAR{} = 0x{:08X} (memory, 32-bit{}, base 0x{:08X})",
@@ -296,7 +314,7 @@ pub fn print_bars(bus: u8, device: u8, func: u8) {
                 );
                 i += 1;
             } else {
-                // Reserved type (01 or 11) — shouldn't happen on modern hardware
+                // This diagnostic labels both unsupported encodings (01 and 11) reserved.
                 println!(
                     "[pci]   BAR{} = 0x{:08X} (memory, RESERVED type {})",
                     i, bar, type_bits

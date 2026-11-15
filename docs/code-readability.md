@@ -82,6 +82,7 @@ will be checked alongside the implementation they exercise.
 - [ ] x86 boot, paging, context switching, interrupts, PIC/PIT/APIC, and syscalls
   - [x] PIT: named control-word fields and corrected the mode description
 - [ ] x86 PCI and VirtIO drivers
+  - [x] PCI bus-0 discovery, BAR fields and configuration access contract
 - [ ] x86 scheduling, process lifecycle, file operations, and network stack
 - [ ] Learning snippets and test helpers affected by the edits
 
@@ -586,3 +587,15 @@ Reference: [VirtIO 1.2 section 5.1.6](https://docs.oasis-open.org/virtio/virtio/
 for the modern packet header, zeroed transmit fields and single receive buffer
 when mergeable buffers are not negotiated. Numeric values, descriptor access
 permissions, copy lengths and barrier positions are preserved.
+
+### x86 PCI discovery
+
+`src/drivers/pci.rs` names scan limits, configuration offsets and BAR fields.
+Comments now describe implemented discovery, endpoint-only six-BAR decoding,
+and the obsolete below-1-MiB memory encoding. The existing diagnostic string
+for unsupported memory types remains unchanged. Address packing already has
+a bit-by-bit description; the class-code lookup remains a readable value table.
+
+The existing x86 known-block QEMU test passes. It exercises the configured QEMU
+device topology, not every PCI BAR encoding or bridge topology. Field meanings
+were checked against [Linux PCI register definitions](https://raw.githubusercontent.com/torvalds/linux/master/include/uapi/linux/pci_regs.h).

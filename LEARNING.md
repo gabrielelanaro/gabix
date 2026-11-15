@@ -563,6 +563,11 @@ A milestone is a "demo-able" checkpoint. Worth a commit + tag + log entry.
 
 ## Progress Log
 
+### 2026-11-15 — Readability audit: x86 PCI discovery
+- Named bus/function scan limits, configuration fields, BAR masks/types and endpoint BAR count. Corrected stale discovery documentation, the obsolete below-1-MiB BAR description, and the distinction between PCI configuration and VirtIO status registers.
+- Existing x86 QEMU known-block test passes through discovery, BAR setup and the disk driver. Scan order, values and diagnostics remain unchanged; existing address packing and class-code lookup tables were already explained and remain literal.
+- PCI transport callers, x86 VirtIO drivers and remaining architecture code still need review. Physical Pi checks remain pending for earlier hardware changes.
+
 ### 2026-11-15 — Readability audit: ARM VirtIO networking
 - Named transmit storage consistently alongside receive storage, descriptor roles, modern feature-word selection, and packet/header sizes. Explained zeroed transmit metadata, buffer publication, completion polling and receive-buffer reuse.
 - Existing QEMU UDP echo test passes; its peer also completes DHCP and verifies reply addresses, payload and checksums. Driver behavior and memory-barrier placement remain unchanged. Transmit still waits without a timeout.
