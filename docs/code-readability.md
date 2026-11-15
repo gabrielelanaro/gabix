@@ -72,6 +72,7 @@ will be checked alongside the implementation they exercise.
   - [x] Loader/kernel RAM handoff fields and trial-confirmation contracts
   - [x] Loader SD selection, streaming read and UART recovery contracts
   - [x] Loader startup GPIO/UART fields and inherited CPU-state contract
+  - [x] Installer package fields, fixed kernel extents and ordered write phases
 - [ ] ARM VirtIO adapters and hardware probes
   - [x] QEMU VirtIO network: queue roles, feature words, packet metadata and buffer reuse
   - [x] QEMU VirtIO block: feature negotiation, descriptor roles, memory ordering and polling contract
@@ -1224,3 +1225,22 @@ this source contains no normalization or cache cleanup for arbitrary entry state
 The existing UART-loader firmware-address test passes, and the SD-loader build
 passes. These verify compilation/link location, not physical re-entry or UART
 clock configuration. Physical Pi testing remains pending.
+
+### Installer package and write phases
+
+`targets/armv7/src/sd_install.rs` names the package header/descriptor fields,
+three-sector record stride, count limit, fixed copy extents and five ordered
+write phases. The header and descriptor definitions match
+`scripts/pi2-install.py::write_package`. Values and comparisons are unchanged.
+
+The apply contract requires stable staged bytes and serialized card mutations.
+Preflight accepts each target only when it equals expected-old or new bytes;
+write-time records are read again. Applied prefixes can remain after failure.
+A retry accepts already-new bytes, but the implementation provides no atomic
+rollback. The active copy's full reserved extent is protected when a valid
+existing boot record is available. Fixed layout checks remain card-specific.
+
+The managed kernel build passes. No installation package was applied and no
+physical SD writes were made. FAT/MBR parsing and the remaining installer bounds
+review are still open; these names alone do not establish safe arbitrary-input
+installation or power-loss recovery.

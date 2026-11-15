@@ -563,6 +563,11 @@ A milestone is a "demo-able" checkpoint. Worth a commit + tag + log entry.
 
 ## Progress Log
 
+### 2026-11-15 — Readability audit: installer package and phases
+- Named package fields/record stride, fixed kernel extents and ordered install phases. Verified the package layout against the host writer; documented stable-input requirements and partial-write retry behavior.
+- Managed kernel build passes. No hardware installation or SD write was performed; values and control flow are preserved.
+- FAT/MBR parser review, remaining installer bounds, management/diagnostics and other audit work remain open. Physical validation is pending.
+
 ### 2026-11-15 — Readability audit: resident loader startup
 - Named startup GPIO/UART fields and baud divisors. Linked the source-clock assumption to boot/config.txt and documented inherited CPU mode/MMU/cache/vector state.
 - Existing firmware-address test and SD-loader build pass. Values and instruction order are unchanged; physical re-entry was not tested.

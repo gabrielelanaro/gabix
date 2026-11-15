@@ -8,6 +8,31 @@ pub const KERNEL_START: u64 = 4_882_432;
 pub const KERNEL_SECTORS: u64 = 262_144;
 const FAT_START: u64 = 16_384;
 const FAT_SECTORS: u64 = 1_048_576;
+const SECTOR_BYTES: u64 = 512;
+const COPY_A_OFFSET_SECTORS: u64 = 2048;
+const COPY_B_OFFSET_SECTORS: u64 = 67584;
+const COPY_CAPACITY_SECTORS: u64 = 65536;
+const COPY_AREA_END_SECTORS: u64 = COPY_B_OFFSET_SECTORS + COPY_CAPACITY_SECTORS;
+const MAX_PACKAGE_RECORDS: u32 = 1000;
+// Ascending phases enforce publication order: payloads before boot selection.
+const PHASE_KERNEL_DATA: u8 = 0;
+const PHASE_BOOT_RECORD: u8 = 1;
+const PHASE_PARTITION_TABLE: u8 = 2;
+const PHASE_LOADER_DATA: u8 = 3;
+const PHASE_LOADER_FILE_SIZE: u8 = 4;
+
+// Same little-endian format emitted by scripts/pi2-install.py::write_package.
+mod package_field {
+    pub const MAGIC: &[u8; 8] = b"GBXINST1";
+    pub const COUNT_OFFSET: usize = 8;
+    pub const VERSION_OFFSET: usize = 12;
+    pub const VERSION: u32 = 1;
+    pub const HEADER_SECTORS: u64 = 1;
+    pub const RECORD_SECTORS: u64 = 3; // descriptor, expected-old bytes, new bytes
+    pub const LBA_BYTES: core::ops::Range<usize> = 0..8;
+    pub const OLD_CRC_OFFSET: usize = 8;
+    pub const NEW_CRC_OFFSET: usize = 12;
+}
 const MAX_LOADER_SECTORS: usize = 512; // 256 KiB, below the loader's RAM handoff.
 
 pub fn readable(lba: u64) -> bool {
@@ -16,13 +41,18 @@ pub fn readable(lba: u64) -> bool {
         || (KERNEL_START..KERNEL_START + KERNEL_SECTORS).contains(&lba)
 }
 
+/// Validate the whole package against the current card, then write in order.
+/// Callers must supply stable staged bytes and serialize all card mutation.
+/// Failure may leave an applied prefix; sectors already equal to new are accepted
+/// on retry. This is not a transactional or power-loss-atomic operation.
 pub fn apply(card: &mut SdCard, package_start: u64, bytes: u32) -> Option<u32> {
     let header = read(card, package_start)?;
-    if &header[..8] != b"GBXINST1" || word(&header, 12) != 1 {
+    if &header[..package_field::MAGIC.len()] != package_field::MAGIC
+        || word(&header, package_field::VERSION_OFFSET) != package_field::VERSION {
         return None;
     }
-    let count = word(&header, 8);
-    if count == 0 || count > 1000 || bytes as u64 != (1 + 3 * count as u64) * 512 {
+    let count = word(&header, package_field::COUNT_OFFSET);
+    if count == 0 || count > MAX_PACKAGE_RECORDS || bytes as u64 != (package_field::HEADER_SECTORS + package_field::RECORD_SECTORS * count as u64) * SECTOR_BYTES {
         return None;
     }
     if card.sector_count() < KERNEL_START + KERNEL_SECTORS {
@@ -49,7 +79,7 @@ pub fn apply(card: &mut SdCard, package_start: u64, bytes: u32) -> Option<u32> {
         if actual != old && actual != new {
             return None;
         }
-        if phase == 0 {
+        if phase == PHASE_KERNEL_DATA {
             if let Some(record) = active {
                 let copy = record.copies[record.active_copy];
                 let start = KERNEL_START + copy.offset_sectors;
@@ -80,21 +110,21 @@ fn allowed(
     old: &[u8; 512],
     new: &[u8; 512],
 ) -> Option<u8> {
-    if (KERNEL_START + 2048..KERNEL_START + 133120).contains(&lba) {
-        return Some(0);
+    if (KERNEL_START + COPY_A_OFFSET_SECTORS..KERNEL_START + COPY_AREA_END_SECTORS).contains(&lba) {
+        return Some(PHASE_KERNEL_DATA);
     }
     if lba == KERNEL_START {
         let record = BootRecord::decode(new, KERNEL_SECTORS)?;
-        if record.copies[0].offset_sectors != 2048
-            || record.copies[1].offset_sectors != 67584
+        if record.copies[0].offset_sectors != COPY_A_OFFSET_SECTORS
+            || record.copies[1].offset_sectors != COPY_B_OFFSET_SECTORS
             || record
                 .copies
                 .iter()
-                .any(|copy| copy.capacity_sectors != 65536)
+                .any(|copy| copy.capacity_sectors != COPY_CAPACITY_SECTORS)
         {
             return None;
         }
-        return Some(1);
+        return Some(PHASE_BOOT_RECORD);
     }
     if lba == 0 {
         let mut expected = *mbr;
@@ -102,10 +132,10 @@ fn allowed(
         expected[482] = 0xda;
         expected[486..490].copy_from_slice(&(KERNEL_START as u32).to_le_bytes());
         expected[490..494].copy_from_slice(&(KERNEL_SECTORS as u32).to_le_bytes());
-        return (*new == expected).then_some(2);
+        return (*new == expected).then_some(PHASE_PARTITION_TABLE);
     }
     if boot.sectors[..boot.count].contains(&lba) {
-        return Some(3);
+        return Some(PHASE_LOADER_DATA);
     }
     if lba == boot.directory_sector {
         let size = word(new, boot.entry_offset + 28) as usize;
@@ -115,7 +145,7 @@ fn allowed(
         if size == 0 || size > boot.count * 512 || *new != expected {
             return None;
         }
-        return Some(4);
+        return Some(PHASE_LOADER_FILE_SIZE);
     }
     None
 }
@@ -125,12 +155,12 @@ fn package_record(
     start: u64,
     index: u32,
 ) -> Option<(u64, [u8; 512], [u8; 512])> {
-    let base = start + 1 + index as u64 * 3;
+    let base = start + package_field::HEADER_SECTORS + index as u64 * package_field::RECORD_SECTORS;
     let descriptor = read(card, base)?;
-    let lba = u64::from_le_bytes(descriptor[..8].try_into().unwrap());
+    let lba = u64::from_le_bytes(descriptor[package_field::LBA_BYTES].try_into().unwrap());
     let old = read(card, base + 1)?;
     let new = read(card, base + 2)?;
-    if crc32(&old) != word(&descriptor, 8) || crc32(&new) != word(&descriptor, 12) {
+    if crc32(&old) != word(&descriptor, package_field::OLD_CRC_OFFSET) || crc32(&new) != word(&descriptor, package_field::NEW_CRC_OFFSET) {
         return None;
     }
     Some((lba, old, new))
