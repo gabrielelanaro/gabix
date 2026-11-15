@@ -59,7 +59,7 @@ per-lesson index lives in `reference/modules.html`.
 |---|---|---|
 | 0 — Orientation | The course map, cross-cutting overviews, roadmaps, spaced-repetition reviews. Read `0.01` first. | 0.01 written |
 | 1 — The CPU | Running a program with reduced rights, the door it uses to call the kernel, and how a device or a timer pulls the CPU's attention away from a program. Both x86 and ARM. | 1.01 written |
-| 2 — Memory | How every memory access is checked against a table that hides one program's memory from another and from the kernel. x86 gives each process its own table; the ARM port uses one shared table so far. | new — both archs |
+| 2 — Memory | How every memory access is checked against a table that hides one program's memory from another and from the kernel. Both ports have private process tables; ARM currently uses two fixed allocations and section mappings. | 2.01 ARM process memory written |
 | 3 — Processes | Switching between programs, loading an ELF binary, and the fork/exec/wait lifecycle. | 4 x86 lessons; 3.05–3.06 ARM cooperative scheduling and timer preemption written |
 | 4 — Devices | Finding devices, moving bytes with them, and learning the moment one finishes a job. | 11 lessons (x86); ARM device discovery + keyboard to add |
 | 5 — Storage | The layer that reads a sector, the shared file interface, and ext2 on disk. None of it depends on the CPU. | 7 lessons (complete, arch-neutral) |

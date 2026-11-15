@@ -535,3 +535,30 @@ Raspberry Pi documents the boot settings and kernel filename rules in its
 [config.txt documentation](https://www.raspberrypi.com/documentation/computers/config_txt.html)
 and the board UART and GPIO interfaces in its
 [computer configuration documentation](https://www.raspberrypi.com/documentation/configuration/computers/raspberry-pi.html).
+
+
+## Isolated userspace process check
+
+The ARM boot checks run two user-mode processes with private translation tables
+and stacks. They retain different values at the same virtual address across timer
+switches. Additional runs check forbidden reads/writes and execution from the
+user stack; the peer process must survive each fault.
+
+Build and run the physical check from a running UART-enabled development kernel:
+
+```sh
+GABIX_ARM_PROFILE=release sh scripts/build-arm.sh pi2-dev
+sh scripts/build-arm-user.sh tests/fixtures/arm_reboot.rs target/arm_reboot.elf
+python3 scripts/check-pi2-isolation.py /dev/cu.usbserial-0001
+```
+
+The script reboots through the UART userspace loader, uploads the kernel, allows
+90 seconds for the physical boot tests, checks both isolation success markers,
+and sends a UDP echo. It prints a temporary directory containing all logs. The
+Mac DHCP peer must already be running. No power cycle or SD write is required.
+
+This first slice uses two fixed 2 MiB allocations and 1 MiB section mappings.
+The code/data section is writable and executable; the user-stack section is
+execute-never. The test images are flat binaries; UART ELF loading still uses
+its legacy single-program path. General ELF process creation and fork/exec/wait
+remain separate work.

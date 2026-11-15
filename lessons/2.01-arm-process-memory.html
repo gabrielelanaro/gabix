@@ -1,0 +1,93 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>2.01 — Two programs using the same address</title><link rel="stylesheet" href="../assets/lesson.css"></head><body><article class="lesson"><header class="lesson-header"><div class="lesson-eyebrow">Module 2 · Memory</div><h1 class="lesson-title">Two programs using the same address</h1><p class="lesson-subtitle">How the kernel gives each ARM process its own memory.</p></header><div class="content">
+<p>Read the main paragraphs for the scenario. Open the <strong>ARM and code</strong> sections when you want to connect a step to the instructions in our kernel.</p>
+<h2>The scenario</h2><p>We run two copies of a small user program on one Pi CPU core. Both programs store a number at address <code>0x41010000</code>. Process A stores 1. Process B stores 2. Timer interrupts let them take turns.</p><p>We want A to keep reading 1 and B to keep reading 2. If both addresses referred to the same physical memory, B would overwrite A’s value.</p>
+<h2>The address in the program is a virtual address</h2><p>The CPU’s memory management unit translates a program’s address into a physical memory address. It uses a translation table prepared by the kernel. Each process has its own table.</p><table><thead><tr><th>Running process</th><th>Address used by the program</th><th>Physical address on the Pi</th><th>Stored value</th></tr></thead><tbody><tr><td>A</td><td><code>0x41010000</code></td><td><code>0x02010000</code></td><td>1</td></tr><tr><td>B</td><td><code>0x41010000</code></td><td><code>0x02210000</code></td><td>2</td></tr></tbody></table>
+<p>The program uses the middle column. The selected translation table determines the physical address. These are the addresses used by our physical Pi test; QEMU’s virt board uses a different physical RAM range.</p>
+<details><summary>ARM and code: how one table entry translates this address</summary>
+<p>We use ARMv7’s <strong>short-descriptor translation format</strong>. Our first-level table has 4,096 entries, each four bytes wide. Each entry maps a 1 MiB region called a <strong>section</strong>. The table occupies 16 KiB and must be aligned to a 16 KiB address.</p>
+<p>For <code>0x41010000</code>, split the virtual address into a table index and an offset:</p>
+<pre><code>virtual address: 0x41010000
+section index:   0x410        <span class="c">// upper 12 bits: select entry 1040</span>
+section offset:  0x00010000   <span class="c">// lower 20 bits: position inside 1 MiB</span>
+
+A's entry: physical base 0x02000000 + offset = 0x02010000
+B's entry: physical base 0x02200000 + offset = 0x02210000</code></pre>
+<p>The entry stores the physical section base and permission bits. In <a href="../targets/armv7/src/memory.rs">memory.rs</a>, <code>prepare_process_table</code> builds those entries. This excerpt shows the expression used for the two user sections:</p>
+<pre><code>(process_physical_base(id) + section as u32 * SECTION_SIZE)
+    | NORMAL_NON_CACHEABLE
+    | USER_READ_WRITE
+    | SECTION_DESCRIPTOR
+    | if section == 1 { 1 &lt;&lt; 4 } else { 0 }</code></pre>
+<p>The <code>|</code> operator combines fields in one 32-bit descriptor. The physical base occupies the high bits; the flags occupy lower bits. Section 0 contains code/data. Section 1 contains the stack, so it also sets bit 4, the execute-never flag.</p>
+<p>The MMU performs this lookup when it needs a translation. Once cached in the TLB, the translation can be reused without rereading the table for every access.</p>
+</details>
+<h2>What changes when the scheduler selects B?</h2><p>The scheduler already changes the stack and saved registers. It now also selects B’s translation table. ARM’s <code>TTBR0</code> register holds the table’s address.</p><p>The CPU caches recent translations in a structure called the translation lookaside buffer, or TLB. Our first implementation clears this cache when switching tables. This prevents A’s cached translation for <code>0x41010000</code> from being reused while B runs.</p><p>Kernel code and kernel stacks have the same mappings in every table, so the scheduler can keep executing while it changes the user mappings.</p>
+<details><summary>ARM and code: select the table and discard old translations</summary>
+<p>In <a href="../targets/armv7/src/scheduler.rs">scheduler.rs</a>, <code>run_until_finished()</code> selects the process table before switching to the task’s saved stack:</p>
+<pre><code>crate::memory::activate_process((*task).process);
+<span class="c">// Then switch from the dispatcher context to the task context.</span></code></pre>
+<p><code>activate_process</code> uses the following assembly in <a href="../targets/armv7/src/memory.rs">memory.rs</a>. The brace names are Rust assembly placeholders: the compiler puts each input value into a CPU register.</p>
+<pre><code>dsb sy
+mcr p15, 0, {table}, c2, c0, 0
+isb
+mcr p15, 0, {zero}, c8, c7, 0
+mcr p15, 0, {zero}, c7, c5, 6
+dsb sy
+isb</code></pre>
+<table><thead><tr><th>Instruction</th><th>Purpose here</th></tr></thead><tbody>
+<tr><td><code>dsb sy</code></td><td>Data Synchronization Barrier: wait for prior relevant memory operations and maintenance to complete before proceeding.</td></tr>
+<tr><td><code>mcr … c2, c0, 0</code></td><td>Write the table base to TTBR0, the Translation Table Base Register 0.</td></tr>
+<tr><td><code>isb</code></td><td>Instruction Synchronization Barrier: subsequent instructions execute using the updated system state.</td></tr>
+<tr><td><code>mcr … c8, c7, 0</code></td><td>Invalidate the local unified TLB, discarding cached translations from the previous table.</td></tr>
+<tr><td><code>mcr … c7, c5, 6</code></td><td>Invalidate branch-prediction entries as part of this switch sequence.</td></tr>
+</tbody></table>
+<p><code>mcr</code> transfers a value from a general-purpose register to an ARM system-control register or maintenance operation. <code>p15</code> selects the system-control interface, traditionally called CP15. The <code>c2/c0</code> fields and numeric operands identify the operation; their meaning comes from the architecture’s instruction encoding.</p>
+<p>The final barriers complete the maintenance before the task resumes. We run this sequence with IRQs masked, so a timer cannot interrupt a partially completed scheduler change. We currently flush the TLB on each table change; a later optimization could tag cached translations with address-space identifiers (ASIDs).</p>
+<p>There is also a separate step when <em>building</em> a table: <code>mcr p15, 0, {address}, c7, c10, 1</code> cleans a data-cache line. This makes the new descriptors visible to the hardware that reads translation tables. Cleaning table memory and invalidating cached translations solve different problems.</p>
+</details>
+<h2>Why can’t A read B’s physical address directly?</h2><p>An address used by A is still checked through A’s translation table. The mapping at B’s physical address is available only to privileged kernel code. A executes in user mode, so that access fails its permission check.</p><p>The CPU then enters the kernel’s memory-fault handler. For a scheduled user process, the handler records the fault and finishes that process. The scheduler continues with the other ready process.</p><p><strong>Prediction:</strong> A tries to read <code>0x02200000</code>. Does it read B’s memory, read A’s private memory, or fault?</p><details><summary>Check the answer</summary><p>It faults. A can access its private allocation through the permitted user mappings at <code>0x41000000–0x411fffff</code>. The mapping at <code>0x02200000</code> requires kernel privilege.</p></details>
+<details><summary>ARM and code: permission bits and the fault handler</summary>
+<p>These constants in <a href="../targets/armv7/src/memory.rs">memory.rs</a> set the section descriptor’s <strong>access-permission (AP)</strong> bits:</p>
+<pre><code>const PRIVILEGED_READ_WRITE: u32 = 0b01 &lt;&lt; 10;
+const USER_READ_WRITE: u32       = 0b11 &lt;&lt; 10;</code></pre>
+<p>In our configured permission mode, with AP[2] clear, the first setting permits kernel read/write access and denies user access. The second permits both. The kernel initially creates privileged mappings, then replaces only the process’s two user-section entries. Domain 0 is configured as a <em>client</em>, which makes the MMU enforce these descriptor permissions.</p>
+<p>Stack descriptors also set <strong>XN</strong>, execute-never, at bit 4. Reading and writing the stack is allowed; fetching an instruction from it generates a fault.</p>
+<p>For a forbidden load or store, ARM enters a <strong>Data Abort</strong> exception. The handler in <a href="../targets/armv7/src/boot.S">boot.S</a> reads two system registers:</p>
+<pre><code>mrc p15, 0, r0, c6, c0, 0   <span class="c">// DFAR: faulting data address</span>
+mrc p15, 0, r1, c5, c0, 0   <span class="c">// DFSR: reason for the fault</span></code></pre>
+<p><code>mrc</code> reads system state into a general-purpose register. Here DFAR means Data Fault Address Register; DFSR means Data Fault Status Register. The boot check expects a section-permission fault, status code <code>0xD</code>. DFSR bit 11 additionally identifies a write.</p>
+<p>An attempted instruction fetch from the stack generates a <strong>Prefetch Abort</strong>. Its handler reads the instruction equivalents, IFAR and IFSR. Both handlers call <code>handle_memory_abort</code> in <a href="../targets/armv7/src/process.rs">process.rs</a>. That function checks the saved processor mode, records a scheduled user process’s fault, and finishes that process. The other process can continue.</p>
+</details>
+<h2>How do we actually enter user mode?</h2>
+<p>Permissions depend on the CPU’s current privilege mode. Our kernel runs in ARM’s Supervisor mode, abbreviated SVC. A user process runs in User mode, which cannot change the kernel’s translation-table selection or interrupt controls.</p>
+<details><summary>ARM and code: enter user mode and preserve its stack</summary>
+<p><a href="../targets/armv7/src/user.rs">user::enter(entry, stack)</a> receives the program’s entry address in r0 and its initial stack pointer in r1. It prepares an exception return into User mode:</p>
+<pre><code>cpsid i                 <span class="c">// Mask IRQs during setup.</span>
+cps #0x1f               <span class="c">// Select System mode.</span>
+mov sp, r1              <span class="c">// Set the stack shared by System/User modes.</span>
+cps #0x13               <span class="c">// Return to Supervisor mode.</span>
+mov r2, #0x10           <span class="c">// Desired status: User mode, IRQs enabled.</span>
+msr spsr_cxsf, r2       <span class="c">// Prepare the status to restore.</span>
+mov lr, r0              <span class="c">// Prepare the program's starting address.</span>
+movs pc, lr             <span class="c">// Restore status and begin user execution.</span></code></pre>
+<p>System mode is privileged but shares the User-mode stack and link registers. This lets the kernel initialize the user stack. Supervisor mode has its own stack and link registers. These separate copies are called <strong>banked registers</strong>.</p>
+<p>The Current Program Status Register (CPSR) holds the current mode, condition flags, and interrupt masks. The Saved Program Status Register (SPSR) holds status to restore on an exception return. Here the kernel deliberately prepares SPSR for the first user entry. In this exception-return form, the <code>s</code> in <code>movs pc, lr</code> causes the saved status to be restored along with the branch.</p>
+<p>When a timer later switches processes, <a href="../targets/armv7/src/context.rs">context::switch</a> preserves each process’s User-mode stack and link registers:</p>
+<pre><code>add r2, r0, #4
+stmia r2, {sp, lr}^     <span class="c">// Save the outgoing User-bank SP/LR.</span>
+add r2, r1, #4
+ldmia r2, {sp, lr}^     <span class="c">// Restore the incoming User-bank SP/LR.</span></code></pre>
+<p>In this function, r0 points to the outgoing <code>TaskContext</code> and r1 to the incoming one. The first four-byte field holds the kernel stack pointer; adding 4 reaches <code>user_sp</code> and <code>user_lr</code>. The <code>^</code> suffix selects the user register bank while the kernel remains in SVC mode.</p>
+<p>The full switch also saves the kernel call-preserved registers and changes the kernel stack. Its <code>clrex</code> instruction clears the CPU’s exclusive-access reservation, so a reservation used for an atomic operation is not carried into another task. The IRQ wrapper separately preserves the registers and status of the interrupted instruction sequence.</p>
+</details>
+<h2>Trace one instruction through the code</h2>
+<p>In <a href="../targets/armv7/src/process_probe.S">process_probe.S</a>, both programs execute this store after loading their process ID into r4:</p>
+<pre><code>movw r5, #0
+movt r5, #0x4101    <span class="c">// Together these set r5 = 0x41010000.</span>
+str r4, [r5]       <span class="c">// Store the process ID through its current mapping.</span></code></pre>
+<p><code>movw</code> sets the lower half of the register and clears its upper half; <code>movt</code> sets the upper half. The resulting address is identical in both programs. The table selected by <code>activate_process</code> determines which physical memory receives the store.</p>
+<p><strong>Check your understanding:</strong> after the scheduler selects B’s translation table, B executes <code>ldr r8, [r5]</code>. Which physical address supplies the value, and what value should B receive?</p>
+<details><summary>Check the address and value</summary><p>B’s table maps section <code>0x410</code> to physical base <code>0x02200000</code>. The offset is <code>0x10000</code>, so the load reads <code>0x02210000</code> and returns 2.</p></details>
+<h2>What the tests check</h2><ul><li>Both user programs keep their distinct value at the same virtual address through timer switches.</li><li>Each retains its private user stack and function-return address.</li><li>A cannot read or write the other process’s physical-memory mapping, or read kernel memory.</li><li>A cannot execute instructions from its user stack.</li><li>When A faults, B completes and the kernel can continue to its UART/Ethernet service.</li></ul>
+<h2>The current limits</h2><p>This first implementation has two fixed process allocations of 2 MiB each. Mappings use 1 MiB ARM sections. The code/data section is readable, writable and executable; the stack section is readable and writable with execution disabled. Smaller pages and separate read-only code permissions remain future work.</p><p>The boot check loads small flat test images. The existing UART ELF loader remains a separate single-program path. General process creation, ELF exec, fork, wait and dynamic memory allocation are later steps.</p><p>Start reading at <a href="../targets/armv7/src/memory.rs">prepare_process_table and activate_process</a>, then the scheduler’s <a href="../targets/armv7/src/scheduler.rs">run_until_finished</a>. The user test instructions are in <a href="../targets/armv7/src/process_probe.S">process_probe.S</a>; test outcomes and fault termination are in <a href="../targets/armv7/src/process.rs">process.rs</a>.</p><p>Ask me about any missing connection between the address a program uses, the table selected by the scheduler, and the physical memory accessed.</p><p>Primary references: Arm’s <a href="https://documentation-service.arm.com/static/6893ad23e7f7ce6150e88d37">Cortex-A programmer’s guide</a> and <a href="https://arm-software.github.io/CMSIS_5/Core_A/html/group__CMSIS__TLB.html">TLB maintenance documentation</a>. <a href="../reference/modules.html">Course map</a>.</p>
+</div></article></body></html>

@@ -1,5 +1,9 @@
 # Teaching Notes
 
+## Clarity plus implementation detail — 2026-11-13
+
+The user likes the revised lesson’s clarity and wants explicit connections to assembly and ARM features. Preserve the concrete scenario and readable main explanation. Add optional code sections at the relevant point, explain operands and bit fields, link the actual functions, and finish with one instruction traced through the example. Clarity should retain the implementation details needed to read the source.
+
 ## Meet the learner at the mechanism — 2026-11-12
 
 User explicitly found the register simulator hard to follow and visually unappealing. Their gap: how the timer causes another task to run, with the scenario previously implicit. Start by naming the tasks, what each is doing, the one-core constraint, and what we want to happen. Explain timer request → CPU handler entry → scheduler choice before introducing saved registers or ARM modes. Use a stable component diagram and progressive disclosure. Ask for a short explanation to check understanding; do not infer mastery from delivering a lesson.

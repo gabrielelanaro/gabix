@@ -9,7 +9,7 @@ Approach: follow the "Writing an OS in Rust" tutorial (phil-opp.com) as the spin
 ### x86 / ARM feature parity (current objective)
 - [x] Cooperative ARM kernel tasks: private stacks, round-robin yield, completion; verify QEMU and physical Pi
 - [x] Timer-driven ARM preemption and interrupt-safe scheduler state (single-core kernel tasks)
-- [ ] Per-process ARM address spaces and memory isolation
+- [x] Per-process ARM address spaces and memory isolation (two fixed user allocations; section mappings)
 - [ ] ARM process lifecycle: fork, exec, wait, exit
 - [ ] Shared file descriptors, VFS, and file syscalls on both architectures
 - [ ] Shared userspace sockets, blocking I/O, and TCP on ARM
@@ -550,6 +550,26 @@ A milestone is a "demo-able" checkpoint. Worth a commit + tag + log entry.
 ---
 
 ## Progress Log
+
+### 2026-11-15 — Ethernet update and recovery design discussion
+- **Request:** Compared streamed Ethernet-to-SD kernel updates and a factory recovery area with established update designs. No implementation or SD writes performed; parity roadmap unchanged.
+- **Source findings:** Pi SDHCI currently implements CMD17 sector reads only. The resident Gabix UART loader receives a development kernel into RAM at 0x00100000 and branches there; we control this loader after the Raspberry Pi firmware stage.
+- **Proposed direction:** Preserve the firmware/loader area, add inactive-slot streaming and read-back verification, then trial boot with persistent attempt state, watchdog, and explicit kernel confirmation. A/B slots preserve the previous working image; a separate recovery image can provide Ethernet repair when both normal slots fail. UART remains the last-resort path. SD-controller power-loss behavior still requires physical fault-injection testing.
+- **References:** RAUC basic concepts (inactive slots, streaming, boot confirmation/fallback) https://rauc.readthedocs.io/en/stable/basic.html and U-Boot boot-count limits https://docs.u-boot.org/en/latest/api/bootcount.html . These are reference designs; adopting either framework is not implied.
+- **Next if selected:** Establish physical SD read/write/read-back on a dedicated test area, before adding network transfer or changing boot selection. This is a proposed side project, not a completed or scheduled parity milestone.
+
+### 2026-11-13 — Connect the memory lesson to ARM instructions
+- **Teaching:** Enhanced lesson 2.01 while preserving its two-process scenario. Added optional sections explaining section descriptors and address splitting, TTBR0 writes and TLB/cache maintenance, AP/XN permission bits, abort-status registers, User-mode entry, and banked SP/LR switching. A worked STR/LDR example connects the program’s address to the actual physical mappings.
+- **Validation:** Excerpts checked against memory.rs, scheduler.rs, context.rs, user.rs, process_probe.S, and boot.S. HTML nesting, local links, and whitespace checks passed. Kernel unchanged; no hardware rerun needed. Browser rendering remains unverified.
+- **Preference:** User values the new clarity and wants sufficient ARM/assembly detail to follow the implementation. Recorded progressive code detail in NOTES.md.
+
+### 2026-11-12 — Isolated ARM userspace processes on the physical Pi
+- **Built:** Two fixed 2 MiB user allocations with separate 16 KiB translation tables. The scheduler changes TTBR0 and invalidates cached translations before entering a process, then restores the boot mappings for the dispatcher. Context switching preserves user-bank SP/LR as well as the SVC call context. User exit and memory faults finish only the current process.
+- **Protection:** Kernel/device mappings remain privileged. Each process maps its own allocation at the same user VA; stack execution is disabled. Scheduled processes have bounded write-syscall pointers and cannot invoke the legacy UART reboot syscall. Kernel memory faults retain a diagnostic halt.
+- **Verified:** QEMU virt and raspi2b isolation suites pass. Both user programs retain distinct sentinels at 0x41010000 and private stack/return state without yielding. Separate batches contain other-process reads, other-process writes, kernel reads, and stack instruction-fetch faults while the peer exits successfully. Existing virt user-write, Pi userspace-start, and repeated UART reload regressions pass. Fixed a Linux-specific llvm-objcopy path in the virt regression to use the actual Rust host.
+- **Physical proof:** All five batches passed on the Pi, with hundreds of timer switches per process. UART reboot from the new kernel, re-upload, DHCP, and exact UDP echo passed without power cycling. Saved serial/results in artifacts/pi2-isolation-physical.log. Initial uploader timeout was too short for noncacheable test loops; the repeat used --user-ready-timeout 90 and captured every result.
+- **Tools/teaching:** Added scripts/check-pi2-isolation.py and hardware instructions. Added lesson 2.01, starting with two programs writing different values to the same virtual address. Local lesson links checked; browser rendering was not verified.
+- **Scope / next:** Checked private address spaces in the roadmap. This is fixed-slot flat-image execution with 1 MiB sections; code/data remains RWX and the stack is XN. The UART ELF path remains separate. General ELF process creation, dynamic allocation, fine-grained code permissions, and fork/exec/wait remain future work; start with loading ELF images into these private address spaces.
 
 ### 2026-11-12 — Rebuild timer lesson around the learner’s question
 - **Feedback:** User did not understand how the timer changes the running task; the previous scenario was implicit and the interface too dense.

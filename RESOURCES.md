@@ -148,3 +148,5 @@
 - ARM32 scheduling, Linux maintainer walkthrough: https://people.kernel.org/linusw/the-arm32-scheduling-and-kernelspace-userspace-boundary
 
 - ARM preemption: [Arm CMSIS ARMv7-A IRQ implementation](https://github.com/ARM-software/CMSIS_5/blob/develop/CMSIS/RTOS2/RTX/Source/GCC/irq_armv7a.S) — primary implementation reference for SRS/RFE exception state handling; read alongside gabix lesson 3.06.
+
+- ARM process memory: [Cortex-A programmer’s guide](https://documentation-service.arm.com/static/6893ad23e7f7ce6150e88d37) and [Arm TLB maintenance](https://arm-software.github.io/CMSIS_5/Core_A/html/group__CMSIS__TLB.html) — translation tables, privilege checks, and invalidation when changing address spaces. Used in lesson 2.01.

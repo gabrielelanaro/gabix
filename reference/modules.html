@@ -47,7 +47,7 @@
   <h2><span class="mod-num">Module 2 —</span> Memory</h2>
   <p class="cover">Every program must see its own memory and must not see another program's memory or the kernel's. The CPU enforces that with a table it checks on every memory access: the table says, for each range of addresses, where the bytes really live and whether this program is allowed to reach them. This module covers how that table is built and how the CPU is switched on to start using it. x86 gives each process its own table; the ARM port so far uses one shared table for everything.</p>
   <ul class="lessons one">
-    <li><span class="planned">2.01 the translation table — how each memory access is checked and redirected</span></li>
+    <li><a class="lid done" href="../lessons/2.01-arm-process-memory.html">2.01 Two programs using the same address</a></li>
     <li><span class="planned">2.02 turning the table on — the sequence that makes the CPU start using it</span></li>
   </ul>
 </section>
