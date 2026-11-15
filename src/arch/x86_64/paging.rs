@@ -36,7 +36,7 @@ const HEAP_START: u64 = 0x4444_4444_0000;
 /// Heap size in bytes. 100 KB is plenty for early kernel Box/Vec usage.
 const HEAP_SIZE: u64 = 100 * 1024;
 
-// The kernel's active page-table mapper.
+// Mapper for the page table captured during boot; switching CR3 does not retarget it.
 //
 // Stored as `Option<...>` because `lazy_static!` can't see `BootInfo` at
 // construction time — we fill it in from `init()`. After init, callers can
@@ -106,6 +106,10 @@ pub fn phys_offset() -> u64 {
 ///     cache device register reads/writes, breaking the device protocol.
 ///   - `NO_EXECUTE` because MMIO must never be executable.
 ///
+/// The presence check uses the boot mapper while insertion uses current CR3;
+/// callers must ensure those mappings agree. Existing mappings keep their flags.
+/// A zero-size request still examines its containing page. Address arithmetic,
+/// mapping ownership and concurrent mutation are not validated here.
 /// Returns the virtual address of the start of the region.
 pub fn map_mmio(phys_start: u64, size: u64) -> u64 {
     let offset = phys_offset();
@@ -179,7 +183,10 @@ pub type UnmapError = x86_64::structures::paging::mapper::UnmapError;
 /// A handle to a PML4 (top-level page table) frame that can be loaded into CR3.
 /// `new()` allocates the frame; `from_current()` refers to an existing frame.
 /// This type has no destructor: page tables and copied user frames remain
-/// allocated after the handle is dropped.
+/// allocated after the handle is dropped. Multiple handles can refer to the same
+/// frame. Methods do not lock tables or mask interrupts; the caller must serialize
+/// access, including shared subtrees and aliases through the global mapper.
+/// Several safe methods rely on these unchecked low-level requirements.
 pub struct AddressSpace {
     /// The physical frame holding this address space's PML4.
     pml4_frame: PhysFrame,
@@ -272,10 +279,10 @@ impl AddressSpace {
     /// PML4, then run `f` on it. The mapper only lives for the duration of
     /// the closure — we don't keep it around between calls.
     ///
-    /// This is the bridge between "we own a PML4 frame" and "the x86_64
-    /// crate's mapper API wants a `&mut PageTable`". We compute the PML4's
-    /// virtual address from the global physical-memory offset, cast to a
-    /// page-table pointer, wrap in `OffsetPageTable`, and hand it to `f`.
+    /// The physical-memory offset gives access to the PML4 bytes. Constructing
+    /// a mutable reference additionally requires exclusive access to that table.
+    /// A handle's &self does not establish exclusivity; aliased handles and the
+    /// global mapper can refer to the same underlying memory.
     fn with_mapper<R>(&self, f: impl FnOnce(&mut OffsetPageTable) -> R) -> R {
         let pml4_virt = phys_to_virt(self.pml4_frame.start_address());
         let phys_offset = VirtAddr::new(PHYS_OFFSET.load(Ordering::SeqCst));
@@ -311,6 +318,8 @@ impl AddressSpace {
     /// Unmap a virtual page from THIS address space. The physical frame it
     /// pointed at is not freed — just no longer reachable via this virtual
     /// address. (Caller responsible for freeing the frame if appropriate.)
+    /// Caller must prevent concurrent table access and live references through
+    /// the removed mapping; the safe signature does not enforce this.
     pub fn unmap(&self, virt: VirtAddr) -> Result<(), UnmapError> {
         let page: Page<Size4KiB> = Page::containing_address(virt);
         self.with_mapper(|m| {
@@ -375,13 +384,15 @@ impl AddressSpace {
     /// Without deep cloning, two processes share their intermediate PT
     /// frames via PML4 entry aliasing. Then `child_as.unmap(virt)` writes
     /// to the shared PT and silently unmaps the page in the parent too.
-    /// With deep cloning, each process has its own PT frames for the user
-    /// half, so this never happens.
+    /// This implementation creates private low-half intermediate tables for
+    /// ordinary page mappings. Huge-page mappings and high-half subtrees retain
+    /// the sharing described above.
+    /// Caller must keep the source stable, exclusively own the destination and
+    /// prevent task switches during the clone. The method does not mask IRQs.
     pub fn deep_clone_from_current(&mut self) {
-        // SAFETY: we read the source frames via the bootloader's direct
-        // map (covers all of physical RAM). Destination frames are owned
-        // by us, freshly allocated, exclusively accessed (we're holding
-        // no locks but we're also the only CPU).
+        // The direct map supplies addressability. The caller must also provide
+        // exclusion from preemption/other table users and a distinct destination.
+        // Single-core execution alone does not guarantee those conditions.
         unsafe {
             let (src_pml4_frame, _) = Cr3::read();
             let src_pml4: *const PageTable = phys_to_virt(src_pml4_frame.start_address()).as_ptr();
@@ -517,8 +528,8 @@ fn phys_to_virt(phys: PhysAddr) -> VirtAddr {
 pub fn copy_frame(src_phys: PhysAddr, dst_phys: PhysAddr) {
     let src = phys_to_virt(src_phys).as_u64() as *const u8;
     let dst = phys_to_virt(dst_phys).as_u64() as *mut u8;
-    // SAFETY: both frames are mapped via the direct map (bootloader guarantee).
-    // They're distinct frames so nonoverlapping is sound.
+    // Caller must supply mapped, distinct frames and exclusive destination
+    // access. This safe wrapper checks neither ownership nor overlap.
     unsafe {
         core::ptr::copy_nonoverlapping(src, dst, FRAME_BYTES);
     }
@@ -531,14 +542,15 @@ pub fn copy_frame(src_phys: PhysAddr, dst_phys: PhysAddr) {
 /// Used by `sys_exec` to load program bytes into a freshly-allocated
 /// user code page. Operates via the direct map — no AS switch needed.
 ///
-/// Caller must guarantee `bytes.len() <= 4096`.
+/// Length is checked. Caller must additionally supply writable owned RAM and
+/// an input slice that does not overlap the destination frame.
 pub fn write_to_frame(dst_phys: PhysAddr, bytes: &[u8]) {
     assert!(
         bytes.len() <= FRAME_BYTES,
         "write_to_frame: bytes too long for one frame"
     );
     let dst = phys_to_virt(dst_phys).as_u64() as *mut u8;
-    // SAFETY: frame is mapped via the direct map.
+    // The caller supplies mapped, exclusively writable RAM; this is unchecked.
     unsafe {
         core::ptr::write_bytes(dst, 0, FRAME_BYTES);
         core::ptr::copy_nonoverlapping(bytes.as_ptr(), dst, bytes.len());
@@ -547,10 +559,11 @@ pub fn write_to_frame(dst_phys: PhysAddr, bytes: &[u8]) {
 
 /// Zero an entire 4 KB frame via the direct map. Used by the ELF loader
 /// (Lesson 16) to ensure freshly-allocated user pages have no stale
-/// bytes before the segment's file bytes are written in.
+/// bytes before the segment's file bytes are written in. Caller must own writable
+/// RAM at this address and exclude live references to the bytes being cleared.
 pub fn zero_frame(dst_phys: PhysAddr) {
     let dst = phys_to_virt(dst_phys).as_u64() as *mut u8;
-    // SAFETY: frame is mapped via the direct map.
+    // The caller supplies mapped, exclusively writable RAM; this is unchecked.
     unsafe {
         core::ptr::write_bytes(dst, 0, FRAME_BYTES);
     }
@@ -562,7 +575,8 @@ pub fn zero_frame(dst_phys: PhysAddr) {
 /// lands inside a particular page when the segment's `p_vaddr` isn't
 /// page-aligned (or when `p_filesz` doesn't fill the page).
 ///
-/// Caller must guarantee `offset + bytes.len() <= 4096`.
+/// Bounds are checked. Caller must additionally supply writable owned RAM and
+/// a source slice disjoint from the destination range.
 pub fn write_to_frame_at(dst_phys: PhysAddr, offset: usize, bytes: &[u8]) {
     assert!(
         offset
@@ -627,6 +641,8 @@ fn heap_end() -> VirtAddr {
 
 /// Lock the global MAPPER and run `f` on a shared reference. Panics if the
 /// mapper hasn't been initialized yet (i.e., `init()` not called).
+/// This lock excludes other global-mapper users only; AddressSpace operations
+/// bypass it and therefore need separate caller coordination.
 fn with_mapper<R>(f: impl FnOnce(&OffsetPageTable) -> R) -> R {
     let guard = MAPPER.lock();
     let mapper = guard
@@ -666,7 +682,8 @@ unsafe impl FrameAllocator<Size4KiB> for BitmapFrameAllocator {
 ///
 /// SAFETY: caller must guarantee `phys_offset` is a valid mapping that covers
 /// the PML4's physical address, and that no other code is concurrently
-/// mutating this PageTable.
+/// accessing this PageTable through an incompatible reference. The returned
+/// static mutable borrow must not overlap a separately constructed mapper.
 unsafe fn level_4_table(phys_offset: VirtAddr) -> &'static mut PageTable {
     let (frame, _) = Cr3::read();
     let virt = phys_offset + frame.start_address().as_u64();

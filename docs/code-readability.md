@@ -106,7 +106,7 @@ will be checked alongside the implementation they exercise.
   - [x] SYSCALL/SYSRET entry, saved argument offsets and STAR selector setup
   - [x] Page-table dimensions, frame arithmetic and clone/copy explanations
   - [x] Interrupt/exception wrapper explanations, stack offsets and fault-bit names (existing exception defects recorded below)
-  - [ ] Page-table ownership/synchronization contracts
+  - [x] Page-table ownership/synchronization contracts (unchecked requirements recorded)
 - [x] x86 PCI and VirtIO drivers (source review; existing QEMU checks pass)
   - [x] PCI bus-0 discovery, BAR fields and configuration access contract
   - [x] VirtIO capability regions and MSI-X table/control parsing
@@ -1385,3 +1385,24 @@ serialization. These are existing semantics made explicit, without behavior fixe
 The managed kernel build passes. Physical persistence/reboot and write-failure
 checks remain pending while the Pi is disconnected. Broader memory assumptions,
 hardware probes, orchestration and lesson-reference checks remain open.
+
+### x86 mapper ownership and synchronization
+
+`src/arch/x86_64/paging.rs` now distinguishes addressability through the direct
+map from exclusive access. The global IrqMutex serializes only global-mapper
+users; AddressSpace constructs temporary mutable table references independently.
+Multiple handles can alias the same PML4, and intermediate subtrees may be shared.
+Safe methods do not enforce all required ownership, mapping or synchronization
+conditions. The static global mapper and separately constructed aliases require
+a deeper ownership redesign; comments alone do not establish soundness.
+
+Clone comments remove the claim that one CPU proves exclusion: source stability,
+distinct destination and prevention of task switches remain caller requirements.
+Direct-frame copy/write helpers likewise rely on valid owned RAM and disjoint
+source/destination ranges beyond their length checks. map_mmio checks presence
+through the boot mapper but inserts through current CR3, keeps existing flags,
+and examines a page even for size zero. These existing limitations are preserved.
+
+Cargo check passes. This slice changes comments only, so behavioral tests were
+not repeated. The source-contract review is checked off; the implementation gaps
+are recorded rather than claimed repaired. ARM memory/cache review remains open.

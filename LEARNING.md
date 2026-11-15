@@ -563,6 +563,11 @@ A milestone is a "demo-able" checkpoint. Worth a commit + tag + log entry.
 
 ## Progress Log
 
+### 2026-11-15 — Readability audit: x86 mapper ownership
+- Corrected overly strong safety claims about single-core exclusion, mapper ownership and direct-map frame copying. Documented aliasing/synchronization requirements and MMIO lookup/insertion assumptions.
+- Cargo check passes; comment-only edits preserve behavior. Existing safe-API ownership gaps are recorded, not repaired by this audit.
+- Checked off x86 ownership source review. ARM cache/memory assumptions and remaining audit/physical validation work stay open.
+
 ### 2026-11-15 — Readability audit: persistent diagnostics
 - Named journal fields, RAM capacities and flush/scan timings. Explained queue serialization, record splitting, write/read-back, retry timing, approximate drop counts and formatting truncation.
 - Managed kernel build passes with unchanged values/behavior. No SD writes or physical reboot were performed.
