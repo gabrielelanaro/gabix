@@ -98,7 +98,8 @@ will be checked alongside the implementation they exercise.
 - [ ] x86 scheduling, process lifecycle, file operations, and network stack
   - [x] Syscall user-range/path helpers, file/time handlers and process-entry conventions
   - [x] Socket ABI fields, protocol selection, configuration operations and polling contracts
-  - [ ] Scheduler/process lifecycle internals
+  - [x] Scheduler state selection, block/wake and lifecycle helper contracts
+  - [ ] Remaining task creation, fork layout and process-table ownership contracts
 - [ ] Learning snippets and test helpers affected by the edits
 
 ## First slice: Wi-Fi power-on
@@ -828,3 +829,24 @@ Reference: Linux UAPI [in.h](https://raw.githubusercontent.com/torvalds/linux/ma
 for sockaddr_in layout and protocol numbers. Existing QEMU poll and passive TCP
 echo checks pass; the latter covers bind/listen/accept and payload exchange,
 not the separate global active-open connection path. No new tests were added.
+
+### Scheduler task states and lifecycle helpers
+
+`src/task/scheduler.rs` gives the repeated Ready/Running decision one
+`TaskState::is_runnable` predicate. For the existing five enum variants it
+selects exactly the states previously accepted by the three exclusion checks.
+Stack allocation uses the shared frame size, retaining all strides and sizes.
+Comments explain that block helpers change state before the caller yields,
+wake changes Blocked to Ready, and descriptor callbacks hold PROCESS_TABLE
+rather than SCHEDULER. Callback reentry and scheduling restrictions are explicit.
+
+`src/task/lifecycle.rs` documents that exit/replacement leave interrupts disabled
+for their caller's next step. Reaping removes Process state while retaining Dead
+Task storage and stack allocations. The idle branch of yield_now currently
+enables interrupts and returns without rechecking the current task's state;
+this review documents that behavior rather than changing its semantics.
+
+Existing wait-status and poll-ready QEMU tests pass, exercising child exit/reap
+and socket wakeups. These do not establish correctness of every preemption gap,
+idle-return state or memory-lifetime invariant. Remaining task-creation and
+process ownership review is still open.

@@ -1,18 +1,9 @@
 //! Task abstraction: data structures + constructor + context switch.
 //!
-//! - Slice 3.1: `Task`, `TaskState`, `TaskContext`, `Task::new`.
-//! - Slice 3.2: `switch()` (the actual register swap) and a minimal
-//!   cooperative scheduler (`spawn`, `yield_now`).
-//!
-//! Lesson 17 split the process-shaped fields (id/name/parent/children/
-//! exit_status/address_space/fd_table) off to `Process` in `src/process.rs`.
-//! What stays on `Task` is purely the scheduler side: how to resume a
-//! paused register frame on a known stack. A `Task` carries a `pid`
-//! back-reference so the scheduler can ask the process table "what
-//! address space / fd table / parent does this task belong to?"
-//!
-//! See `docs/context-switch.html` for the visual walkthrough of how
-//! the saved state and the switch work.
+//! Each Task holds its scheduling state and saved kernel-stack pointer.
+//! Its PID selects the Process containing memory, file and parent/child state.
+//! `yield_now` serves both voluntary yields and timer-driven preemption.
+//! See `docs/context-switch.html` for the saved-stack walkthrough.
 
 use crate::arch::x86_64::context::{fork_trampoline, saved_stack, switch, TaskContext};
 use crate::frame_allocator;
@@ -23,6 +14,7 @@ use crate::process::{Pid, Process, PROCESS_TABLE};
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 use lazy_static::lazy_static;
+use gabix_kernel::memory::FRAME_SIZE;
 use x86_64::structures::paging::PageTableFlags;
 use x86_64::{PhysAddr, VirtAddr};
 
@@ -42,14 +34,21 @@ pub enum TaskState {
     Ready,
     /// Currently executing on the CPU.
     Running,
-    /// Waiting for something (sleep, I/O). Not yet used.
+    /// Waiting for a wakeup, such as socket data or a child exiting.
     Blocked,
-    /// Exited but not yet reaped by a parent via `wait`. The task struct
-    /// stays around so the parent can read its exit status. Reaped by
-    /// `wait` -> Dead.
+    /// Exited and awaiting wait/reap. The Process stores the exit status.
+    /// Reaping removes that Process and changes this task to Dead.
     Zombie,
-    /// Fully done — can be cleaned up.
+    /// Reaped and never scheduled. Task storage and stack frames remain allocated.
     Dead,
+}
+
+impl TaskState {
+    /// States that the round-robin scan can select. Blocked tasks need a
+    /// wakeup; Zombie and Dead tasks have finished executing.
+    fn is_runnable(self) -> bool {
+        matches!(self, Self::Ready | Self::Running)
+    }
 }
 
 /// A schedulable task — the scheduler-side view of a paused register
@@ -105,7 +104,7 @@ impl Task {
         while virt < stack_top {
             let frame_number =
                 frame_allocator::allocate().expect("out of frames while allocating task stack");
-            let phys = PhysAddr::new(frame_number * 4096);
+            let phys = PhysAddr::new(frame_number * FRAME_SIZE);
             // SAFETY: virtual range is freshly picked (unmapped), frame is fresh.
             unsafe {
                 memory::map_to(
@@ -116,7 +115,7 @@ impl Task {
                 .expect("map_to failed while allocating task stack");
             }
             frames_allocated += 1;
-            virt += 4096;
+            virt += FRAME_SIZE;
         }
 
         // Pre-populate the stack with faked saved state. After this, the
@@ -404,7 +403,7 @@ pub fn spawn_fork_child(parent_pid: Pid, saved_callee_saves: SavedCalleeSaves) -
     while virt < stack_top {
         let frame_number =
             frame_allocator::allocate().expect("out of frames while allocating fork-child stack");
-        let phys = PhysAddr::new(frame_number * 4096);
+        let phys = PhysAddr::new(frame_number * FRAME_SIZE);
         // SAFETY: virtual range is freshly picked, frame is fresh.
         unsafe {
             current_as
@@ -416,7 +415,7 @@ pub fn spawn_fork_child(parent_pid: Pid, saved_callee_saves: SavedCalleeSaves) -
                 .expect("map_to failed while allocating fork-child stack");
         }
         frames_allocated += 1;
-        virt += 4096;
+        virt += FRAME_SIZE;
     }
 
     // Allocate a dedicated entry stack for the child. Shared entry stacks
@@ -436,7 +435,7 @@ pub fn spawn_fork_child(parent_pid: Pid, saved_callee_saves: SavedCalleeSaves) -
         while virt < child_entry_stack_top {
             let frame_number = frame_allocator::allocate()
                 .expect("out of frames while allocating child syscall stack");
-            let phys = PhysAddr::new(frame_number * 4096);
+            let phys = PhysAddr::new(frame_number * FRAME_SIZE);
             // SAFETY: virtual range is freshly picked, frame is fresh.
             // Uses `current_as` (live CR3) — see comment above the kernel-
             // stack loop for why the global `memory::map_to` is wrong here.
@@ -449,7 +448,7 @@ pub fn spawn_fork_child(parent_pid: Pid, saved_callee_saves: SavedCalleeSaves) -
                     )
                     .expect("map_to failed while allocating child syscall stack");
             }
-            virt += 4096;
+            virt += FRAME_SIZE;
         }
     }
 
@@ -620,6 +619,7 @@ pub fn current_pid() -> Pid {
     })
 }
 
+/// Mark the current task Blocked. Execution continues until the caller yields.
 pub fn block_current() {
     x86_64::instructions::interrupts::without_interrupts(|| {
         let mut sched = SCHEDULER.lock();
@@ -628,11 +628,10 @@ pub fn block_current() {
     });
 }
 
-/// Run `register` with the current PID and mark the task Blocked when it
-/// returns true, under one interrupt-disabled scheduler critical section.
-/// Wait paths use this to make "publish waiter + sleep" atomic without
-/// reacquiring the scheduler lock through `current_pid()` and
-/// `block_current()` separately.
+/// Publish a waiter and, when `register` returns true, mark the task Blocked
+/// in one interrupt-disabled critical section. The callback runs with SCHEDULER
+/// locked, so it must not yield or reacquire that lock. This function does not
+/// switch tasks; the caller decides when to yield and how to protect that gap.
 pub fn block_current_if(register: impl FnOnce(Pid) -> bool) -> bool {
     x86_64::instructions::interrupts::without_interrupts(|| {
         let mut sched = SCHEDULER.lock();
@@ -647,6 +646,8 @@ pub fn block_current_if(register: impl FnOnce(Pid) -> bool) -> bool {
     })
 }
 
+/// Change a matching Blocked task to Ready. It runs on a later scheduling
+/// decision. Missing PIDs and tasks in other states are left unchanged.
 pub fn wake(pid: Pid) {
     x86_64::instructions::interrupts::without_interrupts(|| {
         if let Some(task) = SCHEDULER
@@ -662,6 +663,8 @@ pub fn wake(pid: Pid) {
     });
 }
 
+/// Set the matching task to Blocked, regardless of its previous state.
+/// Callers must use this only for live tasks; it performs no state validation.
 pub fn block(pid: Pid) {
     x86_64::instructions::interrupts::without_interrupts(|| {
         if let Some(task) = SCHEDULER
@@ -675,20 +678,10 @@ pub fn block(pid: Pid) {
     });
 }
 
-/// Run `f` on the currently-running task's FD (File Descriptor) table.
-///
-/// Locks SCHEDULER for the duration of `f`, finds the running task, passes
-/// its `fd_table` to `f` as `&mut`. The lock is released when `f` returns.
-/// Use this from syscall handlers (`sys_open`, `sys_read`, `sys_close`, etc.)
-/// to reach the calling process's FD table.
-///
-/// The closure form (vs. returning `&mut FdTable`) sidesteps lifetime pain:
-/// the borrow would have to be tied to the SCHEDULER lock guard, which is
-/// awkward to thread through callers.
-///
-/// **Interrupt safety:** see `current_pid` — same `without_interrupts`
-/// wrap. Disabling interrupts before locking is the only correct pattern;
-/// without it, a timer tick during `f` would deadlock the kernel.
+/// Read the current PID under SCHEDULER, release that lock, then run `f`
+/// with its Process's descriptor table under PROCESS_TABLE. Interrupts stay
+/// disabled across both lookups and the closure. `f` must not yield or reenter
+/// PROCESS_TABLE; it may clone handles for use after this function returns.
 pub fn with_current_fd_table<F, R>(f: F) -> R
 where
     F: FnOnce(&mut crate::fs::FdTable) -> R,
@@ -727,15 +720,16 @@ pub fn current_pml4_frame() -> x86_64::structures::paging::PhysFrame {
     })
 }
 
-/// Yield the CPU to the next task. Round-robin: advances to
-/// `(current + 1) % tasks.len()`.
+/// Scan forward, wrapping around the task list, for the next runnable task.
+/// Keep the current task if it is the only runnable one.
 ///
 /// Used both for cooperative yields (a task calls this directly) and
 /// preemptive yields (the timer interrupt handler calls this on the
 /// current task's behalf). Same code path, same `switch`.
 ///
-/// **Re-entrancy safety:** we disable interrupts at the top and restore
-/// them at the end. Without this, if `yield_now` was running with
+/// **Re-entrancy safety:** we disable interrupts at the top. The ordinary
+/// return path restores their prior state; the no-runnable/blocked-task branch
+/// enables interrupts to halt and returns without that restoration. Without this, if `yield_now` was running with
 /// interrupts enabled and the timer fired again mid-switch, the handler
 /// would call `yield_now` again and try to lock SCHEDULER → deadlock.
 /// Disabling interrupts makes the whole pick-and-switch atomic with
@@ -756,7 +750,7 @@ pub fn yield_now() {
     // Pick the next task and grab raw pointers to both contexts.
     // Also grab the new task's AS frame so we can switch CR3 if needed.
     //
-    // Scan forward from the current task to find the next non-Zombie task.
+    // Scan forward from the current task to find the next runnable task.
     // This lets sys_exit mark the current task as Zombie and then yield,
     // knowing yield_now will pick somebody else (or halt if nobody can).
     let switch_result: Option<(*mut TaskContext, *const TaskContext, Pid, u64)> = {
@@ -769,16 +763,12 @@ pub fn yield_now() {
         } else {
             let old_index = sched.current;
             // Find next runnable task. Skip Zombie (exited, awaiting reap),
-            // Blocked (sleeping, e.g. waiting on wait()), and Dead (already
-            // reaped, awaiting cleanup).
+            // Blocked (waiting for an event), and Dead (already reaped).
             let mut new_index_opt = None;
             for offset in 1..sched.tasks.len() {
                 let candidate = (old_index + offset) % sched.tasks.len();
                 let state = sched.tasks[candidate].state;
-                if state != TaskState::Zombie
-                    && state != TaskState::Blocked
-                    && state != TaskState::Dead
-                {
+                if state.is_runnable() {
                     new_index_opt = Some(candidate);
                     break;
                 }
@@ -787,10 +777,7 @@ pub fn yield_now() {
                 None => {
                     // No other runnable task.
                     let current_state = sched.tasks[old_index].state;
-                    if current_state == TaskState::Zombie
-                        || current_state == TaskState::Blocked
-                        || current_state == TaskState::Dead
-                    {
+                    if !current_state.is_runnable() {
                         let any_blocked = sched
                             .tasks
                             .iter()
@@ -800,8 +787,10 @@ pub fn yield_now() {
                             // interrupt can deliver (a socket datagram, a
                             // disk completion). Sleep the CPU until the
                             // next interrupt, then let the caller rescan.
-                            // STI;HLT is atomic: a pending interrupt is
-                            // taken before the halt, so no wakeup is lost.
+                            // enable_and_hlt uses STI;HLT to avoid a gap
+                            // between enabling interrupts and halting.
+                            // This branch returns with interrupts enabled and
+                            // does not recheck the current task's state here.
                             drop(sched);
                             x86_64::instructions::interrupts::enable_and_hlt();
                             return;
@@ -838,10 +827,7 @@ pub fn yield_now() {
                     // (Zombie, Blocked, Dead) — those states must persist
                     // across yield so future yields still skip them.
                     let old_state = sched.tasks[old_index].state;
-                    if old_state != TaskState::Zombie
-                        && old_state != TaskState::Blocked
-                        && old_state != TaskState::Dead
-                    {
+                    if old_state.is_runnable() {
                         sched.tasks[old_index].state = TaskState::Ready;
                     }
                     sched.tasks[new_index].state = TaskState::Running;

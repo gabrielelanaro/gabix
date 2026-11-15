@@ -563,6 +563,11 @@ A milestone is a "demo-able" checkpoint. Worth a commit + tag + log entry.
 
 ## Progress Log
 
+### 2026-11-15 — Readability audit: scheduler states and lifecycle
+- Factored the existing Ready/Running choice into is_runnable and reused the shared frame size for task stacks. Clarified block/yield/wake sequencing, descriptor callback locks and retained Dead-task allocations.
+- Documented interrupt-state contracts for exit, exec replacement and the current idle halt branch. Scheduling behavior and state selection are unchanged.
+- Existing wait-status and socket poll QEMU tests pass. Task creation/fork/process ownership review and physical Pi checks remain open.
+
 ### 2026-11-15 — Readability audit: socket syscall ABI
 - Named socket-address fields and sizes, protocol selection, poll wait modes, configuration operations and active-open sequence parameters. Explained byte order, raw-memory requirements and receive/output ordering.
 - Documented the existing single-global-active-connection limitation and deterministic initial sequence calculation. Values and behavior remain unchanged.
