@@ -563,6 +563,11 @@ A milestone is a "demo-able" checkpoint. Worth a commit + tag + log entry.
 
 ## Progress Log
 
+### 2026-11-15 — Readability audit: UDP queues and runtime network state
+- Documented weak port bindings, shared socket ownership, unbounded datagram queues, single receive waiter, poll-waiter registration and lock release before wakeup.
+- Clarified ARP learning/cache limits and network configuration's stored lease metadata and destination filter. Comments follow the existing implementation; no behavior changed.
+- Cargo check passes. Behavioral tests were not repeated for comment-only changes. TCP, remaining ARM and page-table review plus physical Pi verification remain open.
+
 ### 2026-11-15 — Readability audit: network service and ARP waits
 - Named ARP iteration limit, task sentinel, broadcast addresses and dump width. Clarified device locking, receive side effects, task enabling and ARP request/wait sequencing.
 - Corrected atomicity/timing claims against the actual driver and decoder paths. Documented discarded transmit results, invalid-frame drain termination and optional UDP checksums.

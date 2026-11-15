@@ -104,6 +104,7 @@ will be checked alongside the implementation they exercise.
   - [x] x86 ext2 adapter storage units, pointer roles and read limits
   - [x] x86 ext2 serialized superblock, group, inode and directory field offsets
   - [x] Network-device ownership, receive dispatch and ARP wait contracts
+  - [x] UDP queue/waiter ownership, runtime ARP cache and network configuration
 - [ ] Learning snippets and test helpers affected by the edits
 
 ## First slice: Wi-Fi power-on
@@ -946,3 +947,20 @@ The existing QEMU UDP echo test passes across receive dispatch, socket delivery,
 ARP and reply transmission. It does not prove concurrency safety under every
 wake/transmit ordering or precise timeout duration. These documented limitations
 were preserved; no new tests or runtime policies were introduced.
+
+### UDP queue ownership and runtime network state
+
+Reviewed `src/net/socket.rs`, `src/net/arp.rs` and `src/net/mod.rs`. Comments
+now state that ports are global weak bindings; strong descriptor handles own
+sockets; dead registry entries remain; receive payloads enter an unbounded FIFO;
+one receive waiter can be overwritten while poll waiters are deduplicated.
+Registration does not block a task itself, and delivery releases socket locks
+before scheduler wakeups. Delivery success means queued, not read by userspace.
+
+ARP cache comments describe sender learning, previous-value returns, lack of
+expiry/interface keys and the distinction from authentication. Configuration
+comments identify lease duration as stored metadata rather than a renewal timer,
+and document the current destination filter. These are source-derived contracts;
+no behavior changed. Cargo check passes. Existing behavioral tests were not
+repeated for this comment-only slice, and no queue bound, aging or concurrency
+repair is claimed.
