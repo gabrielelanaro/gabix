@@ -563,6 +563,11 @@ A milestone is a "demo-able" checkpoint. Worth a commit + tag + log entry.
 
 ## Progress Log
 
+### 2026-11-15 — Readability audit: SD boot record
+- Named record and copy-descriptor fields, checksum parameters, and MBR fields. Explained trial state and the callers' responsibility to persist selection/confirmation.
+- Existing boot-record tests pass (3), and the loader-only library compiles without kernel features. Preserved disk format and selection order; no physical SD operations performed.
+- Broader audit and physical validation remain pending.
+
 ### 2026-11-15 — Readability audit: UART upload framing
 - Named header ranges and CRC parameters; documented partial-image storage, the final byte carried by Complete, and transport-owned timeout timing.
 - Verified against the existing Python sender. Existing decoder tests (5) and uploader tests (9) pass; protocol bytes and behavior are unchanged.

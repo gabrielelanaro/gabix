@@ -50,6 +50,7 @@ will be checked alongside the implementation they exercise.
   - [x] DHCP options/header fields and ARM lease retry policy; stack dispatch contracts
   - [ ] Remaining Wi-Fi/WPA2 fields
 - [ ] Shared ELF, partitions, ext2, memory, loader protocol, and boot records
+  - [x] Boot record: field layout, copy-selection state, persistence ownership and MBR bounds
   - [x] UART upload decoder: header fields, incremental storage events, checksum and timeout ownership
   - [x] Shared frame bitmap and both heap wrappers: frame/address units, availability bits, IRQ locking
   - [x] Shared ext2 boot reader: disk fields, inode/group arithmetic, directory records and direct-block limit
@@ -225,3 +226,14 @@ The matching sender is `scripts/upload-pi2-kernel.py` (little-endian three-word
 header and Python binascii CRC32). Existing decoder tests pass (5), including
 fixed CRC vectors, timeout recovery and rejection cases; uploader tests pass (9).
 No UART or Pi access occurred in this check.
+
+## SD boot record
+
+Named the record/version/checksum fields, copy-descriptor layout and MBR fields.
+Documented confirmed, pending, attempted and running state. next_attempt and
+confirm change memory; their callers in pi2_loader.rs and boot_trial.rs persist
+and read back the encoded sector. This corrects the prior method comment that
+implied next_attempt itself wrote to disk. Record bytes and selection order are
+preserved. Existing corruption/extent, fallback/confirmation and partition-bound
+unit tests pass (3); the loader-only library also compiles without kernel
+features. No SD writes were made; physical validation remains pending.
