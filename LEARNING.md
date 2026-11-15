@@ -563,6 +563,10 @@ A milestone is a "demo-able" checkpoint. Worth a commit + tag + log entry.
 
 ## Progress Log
 
+### 2026-11-15 — Readability audit: Pi reset/watchdog
+- Named watchdog time units, protected-write key, reset bits and status address; documented countdown ordering and timeout field limits using the Linux reference driver.
+- Managed Pi release build passes. No live reset performed; physical verification and remaining audit areas stay pending.
+
 ### 2026-11-15 — Readability audit: RNDIS and Ethernet selection
 - Named control/header fields, USB requests, packet filters and fixed adapter identities. Explained RNDIS's relative data offsets and unsupported link-status reporting.
 - Existing Pi QEMU UDP echo test passes through initialization and frame transfer. Preserved wire bytes and existing QEMU-specific assumptions; USB controller/hub review remains pending.

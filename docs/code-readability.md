@@ -41,7 +41,8 @@ will be checked alongside the implementation they exercise.
   - [x] Timer: source rates, interrupt routing/acknowledgement, rollover-safe uptime read
   - [x] Random generator: enable/warm-up, FIFO word count, whole-nonce timeout
   - [x] Mailbox: request layout, power flags, reply fields, RAM/cache ownership
-  - [ ] SD, reset
+  - [x] Reset/watchdog: protected-write key, countdown units and field limits
+  - [ ] SD
 - [ ] ARM boot, page tables, interrupts, scheduling, processes, and syscalls
   - [x] Kernel task context switch and scheduler frame creation: named saved-word layout, user-bank offset and IRQ mask
   - [ ] Boot/exception assembly, process operations, memory and syscalls
@@ -264,3 +265,12 @@ References: Microsoft [RNDIS packet message](https://learn.microsoft.com/en-us/w
 Existing Pi QEMU UDP echo test passes through RNDIS initialization and bidirectional
 bulk frames. This adapter remains specific to the configured QEMU device: fixed
 MAC, no link query, and no generic device/response negotiation added.
+
+## Pi reset/watchdog
+
+Named the protected-write key, reset configuration bits, status register,
+watchdog counts per second and short reboot delay. Documented the existing
+20-bit timeout masking and the order of countdown/configuration writes.
+Reference: [Linux bcm2835_wdt.c](https://github.com/torvalds/linux/blob/master/drivers/watchdog/bcm2835_wdt.c), start/stop/restart sequences. Register values and barriers are unchanged.
+Managed Pi release build passes. No live reset was attempted: physical watchdog
+and reboot verification remains pending while the Pi is disconnected.
