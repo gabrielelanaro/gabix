@@ -1,4 +1,8 @@
 //! RTL8188CU factory programming tables from OpenBSD r92creg.h.
+//! Each pair is an adapter register address and the value written there.
+//! Initialization consumes these entries in order; repeated addresses can be
+//! deliberate steps. Keep the reference values together so they can be compared
+//! with the upstream tables. Per-device eFuse calibration is read separately.
 /*-
  * Copyright (c) 2010 Damien Bergamini <damien.bergamini@free.fr>
  * Copyright (c) 2015 Stefan Sperling <stsp@openbsd.org>

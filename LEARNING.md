@@ -563,6 +563,11 @@ A milestone is a "demo-able" checkpoint. Worth a commit + tag + log entry.
 
 ## Progress Log
 
+### 2026-11-15 — Readability audit: Wi-Fi I/Q calibration
+- Named calibration registers, coefficient positions, validity/failure fields, sample limits and timing. Replaced the receive-correction boolean with explicit choices; documented the preserved second-trigger policy and reference tuning recipe.
+- Managed Wi-Fi release build passes. An ignored host harness compared the complete old/new calibration register traces for success, RX failure, TX failure and both failures; results and writes match in all four cases.
+- Reference programming tables remain in their original order with an explanatory contract. Physical calibration verification is pending; remaining radio initialization and shared frame/security review continue.
+
 ### 2026-11-15 — Readability audit: Wi-Fi key table and rate registration
 - Named key-table commands, busy polling, entry layout and security enable flags. Explained invalidating an entry before writing it and setting validity last. Named firmware station IDs and rate-table fields.
 - Managed Wi-Fi release build passes. An ignored host harness compared old/new key-installation register writes and results for 90 synthetic cases, including rejected entry/key IDs; every trace matched.

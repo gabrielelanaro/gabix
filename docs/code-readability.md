@@ -34,7 +34,8 @@ will be checked alongside the implementation they exercise.
   - [x] Station phases, retry timings, and basic management-frame tags
   - [x] Packet descriptor fields, queue/rate selection and USB PID toggling
   - [x] Adapter key-table commands/layout, security enable fields and station-rate registration
-  - [ ] Calibration, remaining frame/security fields
+  - [x] I/Q calibration result fields, consistency policy and correction selection; reference table contract
+  - [ ] Remaining radio initialization and shared frame/security fields
 - [ ] Pi USB controller, hub enumeration, Ethernet, and RNDIS
   - [x] LAN9512 register transport, PHY access and SMSC frame headers
   - [x] Ethernet selection and QEMU RNDIS setup/frame fields
@@ -375,3 +376,22 @@ key patterns produced identical results and writes. Busy reads returned clear,
 so this check covers encoding/order and invalid-input rejection; it does not
 exercise USB or hardware completion timing. No real key material was used.
 Physical validation remains pending.
+
+## Wi-Fi I/Q calibration
+
+Named measured coefficient positions, validity flags, failure sentinel values,
+measurement timing and calibration/correction registers. Receive correction now
+uses an explicit choice; the reference tuning recipe remains visible with its
+original values/order. Corrected the method description to reflect up to three
+rounds, each retaining its second trigger. Programming tables were reviewed as
+ordered reference data and their contract documented without changing entries.
+Reference: OpenBSD [rtwn.c](https://github.com/openbsd/src/blob/master/sys/dev/ic/rtwn.c)
+`rtwn_iq_calib_chain` and `rtwn_iq_calib_write_results`, with register names from
+[r92creg.h](https://github.com/openbsd/src/blob/master/sys/dev/ic/r92creg.h).
+
+Managed Wi-Fi release build passes. An ignored host harness compiled the actual
+old/new calibration modules against a recording register transport. Success,
+RX-failure, TX-failure and combined-failure scenarios produced identical return
+values, receive-correction state and register traces. This covers the exercised
+selection/application paths; analog behavior, varying measurements and transport
+failures remain outside that check. Physical Pi calibration remains pending.
