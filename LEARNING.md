@@ -563,6 +563,11 @@ A milestone is a "demo-able" checkpoint. Worth a commit + tag + log entry.
 
 ## Progress Log
 
+### 2026-11-15 — Readability audit: resident loader startup
+- Named startup GPIO/UART fields and baud divisors. Linked the source-clock assumption to boot/config.txt and documented inherited CPU mode/MMU/cache/vector state.
+- Existing firmware-address test and SD-loader build pass. Values and instruction order are unchanged; physical re-entry was not tested.
+- Installer/management/diagnostics, memory assumptions and other audit work remain open. Pi validation is pending.
+
 ### 2026-11-15 — Readability audit: SD boot selection
 - Named UART override/watchdog timings and SD transfer units. Clarified record persistence, image-failure fallback, UART recovery, streaming CRC and loader-return assumptions.
 - Existing UART-loader firmware-address test and SD-loader build pass. No device writes or physical boot tests were performed.

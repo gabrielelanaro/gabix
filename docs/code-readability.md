@@ -71,6 +71,7 @@ will be checked alongside the implementation they exercise.
 - [ ] ARM loader, SD update/install, authenticated management, and diagnostics
   - [x] Loader/kernel RAM handoff fields and trial-confirmation contracts
   - [x] Loader SD selection, streaming read and UART recovery contracts
+  - [x] Loader startup GPIO/UART fields and inherited CPU-state contract
 - [ ] ARM VirtIO adapters and hardware probes
   - [x] QEMU VirtIO network: queue roles, feature words, packet metadata and buffer reuse
   - [x] QEMU VirtIO block: feature negotiation, descriptor roles, memory ordering and polling contract
@@ -1206,3 +1207,20 @@ The existing firmware-address test passes for the UART loader; the SD loader
 build passes separately. No physical SD boot or recovery was exercised in this
 slice. Loader startup assembly and remaining installer/management paths remain
 open, along with disconnected-Pi validation.
+
+### Resident loader startup
+
+`targets/armv7/src/pi2_loader.S` names the GPIO14/15 fields, UART offsets,
+control values and fixed baud divisors. The comments link the 3 MHz assumption
+to `targets/armv7/boot/config.txt`; the loader does not obtain/set UARTCLK itself.
+Register meanings follow the PL011 and BCM2835 references in the preceding
+boot-console review. All values and instruction order remain unchanged.
+
+The entry masks IRQ/FIQ and initializes the current stack, BSS and UART. It
+inherits CPU mode, MMU/cache settings and vector base. A caller therefore must
+supply a usable privileged environment with the required RAM/peripheral mappings;
+this source contains no normalization or cache cleanup for arbitrary entry state.
+
+The existing UART-loader firmware-address test passes, and the SD-loader build
+passes. These verify compilation/link location, not physical re-entry or UART
+clock configuration. Physical Pi testing remains pending.
