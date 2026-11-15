@@ -563,6 +563,11 @@ A milestone is a "demo-able" checkpoint. Worth a commit + tag + log entry.
 
 ## Progress Log
 
+### 2026-11-15 — Readability audit: persistent diagnostics
+- Named journal fields, RAM capacities and flush/scan timings. Explained queue serialization, record splitting, write/read-back, retry timing, approximate drop counts and formatting truncation.
+- Managed kernel build passes with unchanged values/behavior. No SD writes or physical reboot were performed.
+- Memory assumptions, remaining orchestration/probes and lesson-reference review remain open; physical journal validation awaits the Pi.
+
 ### 2026-11-15 — Readability audit: management authentication
 - Named signed-envelope fields, lengths and direction prefixes. Explained sequence consumption, one-reply cache, shared-peer counter and persistent boot-number dependency.
 - Managed kernel build passes with unchanged bytes/behavior. Private key material was neither printed nor committed; physical authentication tests remain pending.

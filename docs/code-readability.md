@@ -79,6 +79,7 @@ will be checked alongside the implementation they exercise.
   - [x] SD upload chunk/retry state and pending-kernel publication
   - [x] Management status payload field names and snapshot semantics
   - [x] Management authentication envelope and replay/cache contracts
+  - [x] Diagnostic queue, ring-record fields and flush/failure semantics
 - [ ] ARM VirtIO adapters and hardware probes
   - [x] QEMU VirtIO network: queue roles, feature words, packet metadata and buffer reuse
   - [x] QEMU VirtIO block: feature negotiation, descriptor roles, memory ordering and polling contract
@@ -1359,3 +1360,28 @@ The managed kernel build passes. Existing physical authentication/replay tests
 were not run while the Pi is disconnected. No private key bytes were printed or
 committed; this readability review does not establish new cryptographic assurance.
 Journal persistence and remaining audit work stay open.
+
+### Persistent diagnostic journal
+
+`diagnostics.rs` names queue/event capacities, flush/scan timings and serialized
+record fields. The layout matches `scripts/pi2-manage.py::logs`: sequence, boot,
+uptime, text length, dropped count, payload and sector CRC. Payload remains 468
+bytes; queue/event limits and timing values remain unchanged.
+
+Contracts trace the unlocked foreground queue into the journal buffer and ring
+sectors. A missing kernel partition disables logging; invalid nonzero records
+are counted, while unreadable sectors abort open. Opening scans for the greatest
+valid sequence and persists the next boot number. Flush requires write/read-back
+before advancing sequence. Failure retains journal text but updates the routine
+retry time. The disk may already contain the attempted write.
+
+Appending after a failed full-buffer flush drops the remaining batch and counts
+one drop, so dropped_lines is approximate. Records can split lines/UTF-8 bytes.
+Fixed-buffer event formatting keeps the completed prefix on overflow without a
+separate truncation counter. drain exposes counters rather than a success result;
+callers needing confirmation must check flush. All queue access requires caller
+serialization. These are existing semantics made explicit, without behavior fixes.
+
+The managed kernel build passes. Physical persistence/reboot and write-failure
+checks remain pending while the Pi is disconnected. Broader memory assumptions,
+hardware probes, orchestration and lesson-reference checks remain open.

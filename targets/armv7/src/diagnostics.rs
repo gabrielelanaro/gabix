@@ -6,19 +6,37 @@ use gabix_kernel::{boot_record::crc32, device::WritableBlockDevice};
 pub const FIRST_SECTOR: u64 = crate::sd_install::KERNEL_START + 133_120;
 pub const SECTOR_COUNT: u64 = 32_768; // Dedicated 16 MiB log area after both kernel copies.
 const MAGIC: &[u8; 8] = b"GBXLOG01";
-const PAYLOAD: usize = 468;
+const QUEUE_BYTES: usize = 2048;
+const EVENT_TEXT_BYTES: usize = 256;
+const ROUTINE_FLUSH_INTERVAL_MS: u64 = 1000;
+const SCAN_WATCHDOG_INTERVAL_SECTORS: u64 = 128;
+const SCAN_WATCHDOG_SECONDS: u32 = 15;
+// One little-endian record occupies one SD sector. Bytes 34..36 are reserved.
+// Layout is also consumed by scripts/pi2-manage.py::logs.
+mod record_field {
+    pub const SEQUENCE: usize = 8;
+    pub const BOOT: usize = 16;
+    pub const UPTIME_MS: usize = 24;
+    pub const LENGTH: core::ops::Range<usize> = 32..34;
+    pub const DROPPED_LINES: core::ops::Range<usize> = 36..40;
+    pub const TEXT: usize = 40;
+    pub const CRC: usize = 508;
+}
+const PAYLOAD: usize = record_field::CRC - record_field::TEXT;
 
 struct Queue {
-    bytes: [u8; 2048],
+    bytes: [u8; QUEUE_BYTES],
     used: usize,
     dropped: u32,
 }
 static mut QUEUE: Queue = Queue {
-    bytes: [0; 2048],
+    bytes: [0; QUEUE_BYTES],
     used: 0,
     dropped: 0,
 };
 
+/// Queue a whole line plus newline, or count it as dropped when RAM is full.
+/// Caller must serialize foreground access: this static queue has no lock.
 pub fn line(text: &[u8]) {
     unsafe {
         let queue = &mut *core::ptr::addr_of_mut!(QUEUE);
@@ -45,6 +63,10 @@ pub struct Journal {
 }
 
 impl Journal {
+    /// Scan all log sectors, recover the highest valid sequence, and persist a
+    /// new boot number. Unreadable sectors abort opening; invalid nonzero records
+    /// are counted and skipped. A missing kernel partition yields boot=0 disabled
+    /// logging, which the managed receiver refuses for authenticated service.
     pub fn open(card: &mut SdCard, now: u64) -> Option<Self> {
         let mbr = unsafe { card.try_read_sector(0)? };
         if gabix_kernel::boot_record::find_partition(&mbr, card.sector_count())
@@ -70,15 +92,15 @@ impl Journal {
         let mut previous_boot = 0;
         let mut corrupt = 0;
         for index in 0..SECTOR_COUNT {
-            if index % 128 == 0 {
-                crate::raspi2b::reset::arm_deadman(15);
+            if index % SCAN_WATCHDOG_INTERVAL_SECTORS == 0 {
+                crate::raspi2b::reset::arm_deadman(SCAN_WATCHDOG_SECONDS);
             }
             let bytes = unsafe { card.try_read_sector(FIRST_SECTOR + index)? };
             if valid_record(&bytes) {
-                let sequence = number(&bytes, 8);
+                let sequence = number(&bytes, record_field::SEQUENCE);
                 if sequence > latest {
                     latest = sequence;
-                    previous_boot = number(&bytes, 16);
+                    previous_boot = number(&bytes, record_field::BOOT);
                 }
             } else if bytes != [0; 512] {
                 corrupt += 1;
@@ -102,6 +124,9 @@ impl Journal {
         Some(journal)
     }
 
+    // Split the byte stream across records, even in the middle of a line/UTF-8
+    // character. A failed full-buffer flush drops the remaining input batch and
+    // increments dropped_lines once; that counter is not an exact lost-line total.
     fn append(&mut self, card: &mut SdCard, now: u64, mut text: &[u8]) {
         while !text.is_empty() {
             if self.used == PAYLOAD && !self.flush(card, now) {
@@ -115,6 +140,9 @@ impl Journal {
         }
     }
 
+    /// Move queued bytes into the journal buffer, then flush when critical or due.
+    /// Caller must serialize queue access. This returns no success status; inspect
+    /// counters or call flush explicitly when confirmation is required.
     pub fn drain(&mut self, card: &mut SdCard, now: u64, critical: bool) {
         unsafe {
             let queue = &mut *core::ptr::addr_of_mut!(QUEUE);
@@ -123,11 +151,14 @@ impl Journal {
             self.append(card, now, &queue.bytes[..queue.used]);
             queue.used = 0;
         }
-        if critical || now.saturating_sub(self.last_flush) >= 1000 {
+        if critical || now.saturating_sub(self.last_flush) >= ROUTINE_FLUSH_INTERVAL_MS {
             self.flush(card, now);
         }
     }
 
+    /// Write one ring record and require byte-for-byte read-back before advancing.
+    /// Failure retains buffered text but advances last_flush, delaying routine
+    /// retries; the disk write may already have succeeded. boot=0 discards text.
     pub fn flush(&mut self, card: &mut SdCard, now: u64) -> bool {
         if self.boot == 0 {
             self.used = 0;
@@ -141,14 +172,17 @@ impl Journal {
         };
         let mut bytes = [0u8; 512];
         bytes[..8].copy_from_slice(MAGIC);
-        bytes[8..16].copy_from_slice(&sequence.to_le_bytes());
-        bytes[16..24].copy_from_slice(&self.boot.to_le_bytes());
-        bytes[24..32].copy_from_slice(&now.to_le_bytes());
-        bytes[32..34].copy_from_slice(&(self.used as u16).to_le_bytes());
-        bytes[36..40].copy_from_slice(&self.dropped_lines.to_le_bytes());
-        bytes[40..40 + self.used].copy_from_slice(&self.buffer[..self.used]);
-        let crc = crc32(&bytes[..508]);
-        bytes[508..].copy_from_slice(&crc.to_le_bytes());
+        bytes[record_field::SEQUENCE..record_field::BOOT].copy_from_slice(&sequence.to_le_bytes());
+        bytes[record_field::BOOT..record_field::UPTIME_MS]
+            .copy_from_slice(&self.boot.to_le_bytes());
+        bytes[record_field::UPTIME_MS..record_field::LENGTH.start]
+            .copy_from_slice(&now.to_le_bytes());
+        bytes[record_field::LENGTH].copy_from_slice(&(self.used as u16).to_le_bytes());
+        bytes[record_field::DROPPED_LINES].copy_from_slice(&self.dropped_lines.to_le_bytes());
+        bytes[record_field::TEXT..record_field::TEXT + self.used]
+            .copy_from_slice(&self.buffer[..self.used]);
+        let crc = crc32(&bytes[..record_field::CRC]);
+        bytes[record_field::CRC..].copy_from_slice(&crc.to_le_bytes());
         let sector = FIRST_SECTOR + (sequence - 1) % SECTOR_COUNT;
         self.last_flush = now;
         if card.write_sector(sector, &bytes).is_err()
@@ -167,7 +201,8 @@ impl Journal {
             return None;
         }
         let bytes = unsafe { card.try_read_sector(FIRST_SECTOR + (sequence - 1) % SECTOR_COUNT)? };
-        (valid_record(&bytes) && number(&bytes, 8) == sequence).then_some(bytes)
+        (valid_record(&bytes) && number(&bytes, record_field::SEQUENCE) == sequence)
+            .then_some(bytes)
     }
 }
 fn number(bytes: &[u8], offset: usize) -> u64 {
@@ -175,16 +210,19 @@ fn number(bytes: &[u8], offset: usize) -> u64 {
 }
 fn valid_record(bytes: &[u8; 512]) -> bool {
     &bytes[..8] == MAGIC
-        && number(bytes, 8) > 0
-        && number(bytes, 16) > 0
-        && u16::from_le_bytes(bytes[32..34].try_into().unwrap()) as usize <= PAYLOAD
-        && crc32(&bytes[..508]) == u32::from_le_bytes(bytes[508..].try_into().unwrap())
+        && number(bytes, record_field::SEQUENCE) > 0
+        && number(bytes, record_field::BOOT) > 0
+        && u16::from_le_bytes(bytes[record_field::LENGTH].try_into().unwrap()) as usize <= PAYLOAD
+        && crc32(&bytes[..record_field::CRC])
+            == u32::from_le_bytes(bytes[record_field::CRC..].try_into().unwrap())
 }
 
+/// Format into fixed RAM storage, then queue the completed prefix. Formatting
+/// overflow is ignored, so truncated events have no separate truncation counter.
 pub fn event(arguments: core::fmt::Arguments<'_>) {
     use core::fmt::Write;
     struct Text {
-        bytes: [u8; 256],
+        bytes: [u8; EVENT_TEXT_BYTES],
         used: usize,
     }
     impl Write for Text {
@@ -198,7 +236,7 @@ pub fn event(arguments: core::fmt::Arguments<'_>) {
         }
     }
     let mut text = Text {
-        bytes: [0; 256],
+        bytes: [0; EVENT_TEXT_BYTES],
         used: 0,
     };
     let _ = text.write_fmt(arguments);
