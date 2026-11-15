@@ -99,7 +99,7 @@ will be checked alongside the implementation they exercise.
   - [x] Syscall user-range/path helpers, file/time handlers and process-entry conventions
   - [x] Socket ABI fields, protocol selection, configuration operations and polling contracts
   - [x] Scheduler state selection, block/wake and lifecycle helper contracts
-  - [ ] Remaining task creation, fork layout and process-table ownership contracts
+  - [x] Task creation, fork layout and process-table resource contracts (known limitations below)
 - [ ] Learning snippets and test helpers affected by the edits
 
 ## First slice: Wi-Fi power-on
@@ -850,3 +850,25 @@ Existing wait-status and poll-ready QEMU tests pass, exercising child exit/reap
 and socket wakeups. These do not establish correctness of every preemption gap,
 idle-return state or memory-lifetime invariant. Remaining task-creation and
 process ownership review is still open.
+
+### Process table and task creation
+
+Reviewed `src/process.rs` and the remaining creation/fork sections of
+`src/task/scheduler.rs`. Comments describe monotonically allocated PID slots,
+permanently retained holes, placeholder address-space handles, inherited
+file/socket objects, and the actual low-half clone versus shared high-half
+mapping rules. Fork stack placement now explains the pid+1 entry-stack offset
+and its unused slots. Kernel-task startup explains its interrupt transition and
+panic on return without historical implementation claims.
+
+Existing limitations are explicit: ProcessName truncates by bytes and can
+split UTF-8 before an unchecked string conversion; kernel-task spawn sets a
+parent without updating that parent's child list; kernel-task stack creation
+uses the boot-time mapper and requires its range visible in the active table.
+These comments do not fix those behaviors. Frame ownership/reclamation and
+page-table synchronization remain separate open work.
+
+The existing fork-shared-file-cursor QEMU test passes, observing inherited
+file access and cursor sharing. This slice changes comments only; it adds no
+runtime checks and does not establish safety for arbitrary process names or
+all kernel-task spawn contexts.

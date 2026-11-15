@@ -563,6 +563,11 @@ A milestone is a "demo-able" checkpoint. Worth a commit + tag + log entry.
 
 ## Progress Log
 
+### 2026-11-15 — Readability audit: process table and task creation
+- Corrected stale ownership and fork comments: monotonic PID slots, shared open objects, low-half copy versus shared mappings, per-child stack placement and startup interrupt state now follow the source.
+- Documented existing name-truncation, kernel-task child-list and boot-mapper visibility limitations. This slice changes comments only; it does not repair those behaviors.
+- Existing fork-shared-file-cursor QEMU test passes. Page-table synchronization and remaining codebase review remain open; physical Pi checks are still pending.
+
 ### 2026-11-15 — Readability audit: scheduler states and lifecycle
 - Factored the existing Ready/Running choice into is_runnable and reused the shared frame size for task stacks. Clarified block/yield/wake sequencing, descriptor callback locks and retained Dead-task allocations.
 - Documented interrupt-state contracts for exit, exec replacement and the current idle halt branch. Scheduling behavior and state selection are unchanged.
