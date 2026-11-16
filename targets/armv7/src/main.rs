@@ -391,6 +391,7 @@ extern "C" fn arm_kernel_entry() {
                         {
                             let link = network.link_up() != Some(false);
                             session.poll(&mut network, raspi2b::timer::uptime_millis()/1000, link);
+                            session.poll_discovery(&mut network, raspi2b::timer::uptime_millis());
                             record_network_progress(&session);
                             boot_trial::refresh();
                             flush_diagnostics(false);
@@ -519,6 +520,7 @@ pub fn poll_ethernet_and_reply(console: &mut Pl011, _next_dhcp_discover_tick: &m
                 // An unknown link still permits DHCP attempts. Only a known-down
                 // link pauses them; DHCP consumes seconds rather than milliseconds.
                 session.poll(network, now / 1000, LINK_STATUS != LINK_DOWN);
+                session.poll_discovery(network, now);
                 record_network_progress(session);
                 if let Some(receiver) = (&mut *core::ptr::addr_of_mut!(PI_SD_TRANSFER)).as_mut() {
                     receiver.network_status(session, LINK_STATUS);

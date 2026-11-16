@@ -42,6 +42,7 @@ pub enum LeaseState {
 
 pub struct DhcpSession {
     interface: NetworkInterface,
+    mdns: gabix_kernel::net::mdns::Host,
     client: DhcpClient,
     offer: Option<DhcpReply>,
     pub lease: Option<DhcpReply>,
@@ -65,6 +66,7 @@ impl DhcpSession {
     pub const fn new(mac: [u8; 6], transaction_id: u32) -> Self {
         Self {
             interface: NetworkInterface::new(mac, UNSPECIFIED_IP),
+            mdns: gabix_kernel::net::mdns::Host::new(),
             client: DhcpClient::new(mac, transaction_id),
             offer: None,
             lease: None,
@@ -104,6 +106,11 @@ impl DhcpSession {
 
     pub fn address(&self) -> [u8; 4] {
         self.interface.address()
+    }
+
+    /// Advance name probing and announcements independently of DHCP retries.
+    pub fn poll_discovery(&mut self, device: &mut impl FrameDevice, now_ms: u64) {
+        self.mdns.poll(&self.interface, device, now_ms);
     }
     pub fn mac_address(&self) -> [u8; 6] {
         self.interface.mac_address()
@@ -202,6 +209,9 @@ impl DhcpSession {
 
     pub fn handle_frame(&mut self, device: &mut impl FrameDevice, bytes: &[u8]) -> NetworkEvent {
         self.received_frames = self.received_frames.saturating_add(1);
+        if self.mdns.handle(&self.interface, device, bytes) {
+            return NetworkEvent::None;
+        }
         let mut reply = [0u8; MAX_FRAME_LEN];
         if self.is_configured() {
             if let Some(length) = self.interface.reply(bytes, &mut reply) {
