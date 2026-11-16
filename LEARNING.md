@@ -563,6 +563,10 @@ A milestone is a "demo-able" checkpoint. Worth a commit + tag + log entry.
 
 ## Progress Log
 
+### 2026-11-16 — Publish the Wi-Fi connection lesson
+- Added the isometric startup walkthrough, interactive connection checks, quick reference, and source-linked code tour. Source snapshots preserve the implementation used when the lesson was written; the quick reference includes the subsequently implemented mDNS hostname.
+- Verified JavaScript syntax, local lesson links, and whitespace. Roadmap checkboxes unchanged. Generated hardware output remains ignored.
+
 ### 2026-11-16 — Readability goal completed with physical recovery checks
 - Closed the source-readability validation checkbox and audit coverage parents after the remaining UART tests passed. Earlier host/QEMU results are retained in docs/code-readability.md; this session supplies the outstanding physical evidence.
 - Wi-Fi diagnostic passed deliberate disconnect, fresh WPA2 handshake and a second DHCP lease. A separate existing diagnostic passed explicit radio power-off/power-on and firmware reload. Both returned automatically to the installed Wi-Fi service.

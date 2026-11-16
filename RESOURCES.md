@@ -159,3 +159,8 @@
   Card-side rules: default-speed limit, CMD24 writes, CMD13 status, and the command/data protocol.
 - [Raspberry Pi firmware mailbox property interface: clocks](https://github.com/raspberrypi/firmware/wiki/Mailbox-property-interface#clocks)
   Query the EMMC source frequency before calculating the controller's divider. Used in lesson 7.06.
+
+## Pi USB Wi-Fi
+
+- [OpenBSD urtwn manual](https://man.openbsd.org/urtwn.4): adapter family, operation modes, and firmware requirement.
+- [Gabix primary-source research](docs/pi2-wifi-references.md): OpenBSD register sequences and WPA2 implementation references used for the port.

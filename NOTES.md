@@ -1,5 +1,9 @@
 # Teaching Notes
 
+## Wi-Fi lesson preferences — 2026-11-15
+
+Start with the actual Pi, USB dongle, router, and Mac. Use a stable isometric scene and one operation per step. Explain firmware versus Rust before register details. Keep code available through optional sections and a companion tour. The user requested maximum understandability; lesson delivery does not establish mastery.
+
 ## Clarity plus implementation detail — 2026-11-13
 
 The user likes the revised lesson’s clarity and wants explicit connections to assembly and ARM features. Preserve the concrete scenario and readable main explanation. Add optional code sections at the relevant point, explain operands and bit fields, link the actual functions, and finish with one instruction traced through the example. Clarity should retain the implementation details needed to read the source.
