@@ -8,7 +8,7 @@ Approach: follow the "Writing an OS in Rust" tutorial (phil-opp.com) as the spin
 
 ### Didactic code readability (current cleanup goal)
 - [x] Audit hardware and protocol operations across shared, x86, and ARM code; give constants, helper calls, and sequencing explanations meaningful names
-- [ ] Verify each changed area with existing relevant checks and physical Pi runs for hardware paths
+- [x] Verify each changed area with existing relevant checks and physical Pi runs for hardware paths
 
 Coverage and evidence: [code readability audit](docs/code-readability.md).
 
@@ -562,6 +562,15 @@ A milestone is a "demo-able" checkpoint. Worth a commit + tag + log entry.
 ---
 
 ## Progress Log
+
+### 2026-11-16 — Readability goal completed with physical recovery checks
+- Closed the source-readability validation checkbox and audit coverage parents after the remaining UART tests passed. Earlier host/QEMU results are retained in docs/code-readability.md; this session supplies the outstanding physical evidence.
+- Wi-Fi diagnostic passed deliberate disconnect, fresh WPA2 handshake and a second DHCP lease. A separate existing diagnostic passed explicit radio power-off/power-on and firmware reload. Both returned automatically to the installed Wi-Fi service.
+- SD write/read/restore/neighbour test passed. Added a guarded managed-layout opt-in to the existing fixture: validate the installed layout/boot record and use empty metadata sector 1024 rather than the live staging header. Committed as af46939.
+- Rebuilt loader tested from RAM: hung-candidate watchdog fallback, valid candidate confirmation, both invalid checksums entering UART recovery, and restored normal SD boot all passed. Resident loader file preserved.
+- Wired Ethernet passed DHCP, ARP, two pings, three exact UDP echoes after idle and authenticated management. Fixed two diagnostic timing defects in 1404060: extend the host timeout beyond the process-isolation checks and refresh the network-development watchdog before USB/link startup. Full diagnostic rerun passed including automatic reset.
+- Final boot 27: installed image CRC32 fedce5c8, gabix-pi2.local resolves and echoes over Wi-Fi, no pending update, no log-write errors/dropped messages. MBR and scratch/guard sectors match backups; boot-record checksum is valid. Raw output and private test packages stay under ignored target/runs/20261116-uart-validation/.
+- Next separate experiment: remove external power and verify unattended Wi-Fi/mDNS startup. The earlier intermittent reachability report remains unexplained; software resets and software-controlled radio power cycling do not establish full cold-start behaviour. Feature-parity roadmap items and documented pre-existing defects remain open.
 
 ### 2026-11-16 — mDNS installed; readability hardware validation resumed
 - Implemented shared IPv4 mDNS host discovery and integrated it into the managed ARM network service. The Pi probes/announces `gabix-pi2.local`, responds to A/ANY queries, handles compressed names and known answers, and selects a suffixed name on conflict. DNS-SD browsing, IPv6 and reverse lookup remain outside this slice.

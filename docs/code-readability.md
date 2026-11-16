@@ -20,17 +20,17 @@ site, then follow the helper to the exact bytes or register access.
 
 ## Audit coverage
 
-Unchecked parent entries retain outstanding validation requirements; checked subitems record source review. Source inventory and affected-reference review are complete at the local-validation checkpoint below.
+Checked parent entries record completed source review and the scoped host/QEMU/physical validation documented below. Subitems identify the reviewed code; known limitations remain explicit in the findings.
 There are 141 source files across the three source roots at the start of this
 pass, including assembly and bring-up probes. Scripts and behavioral fixtures
 will be checked alongside the implementation they exercise.
 
-- [ ] Pi Wi-Fi driver: power, register transport, firmware, packet descriptors,
+- [x] Pi Wi-Fi driver: power, register transport, firmware, packet descriptors,
   calibration, and station transitions
   - [x] `power_on`: named addresses/bits/delays; numbered operation explanations
   - [x] Register polling: explicit `BitState::Set` / `Clear`; bounded USB reads
   - [x] Basic register transport: named vendor-request fields; SETUP/data contract
-  - [x] Firmware pages, mailbox ownership, and power-off sequence: named fields and ordering explanations (physical check pending)
+  - [x] Firmware pages, mailbox ownership, and power-off sequence: named fields and ordering explanations (physical coverage recorded below)
   - [x] Station phases, retry timings, and basic management-frame tags
   - [x] Packet descriptor fields, queue/rate selection and USB PID toggling
   - [x] Adapter key-table commands/layout, security enable fields and station-rate registration
@@ -44,21 +44,21 @@ will be checked alongside the implementation they exercise.
   - [x] Management-frame address ranges shared with the station adapter
   - [x] WPA2 fixed message fields, reply nonce selection and derived key ranges
   - [x] Key-data element fields and RFC 3394 unwrap loop
-  - [x] Shared security helper APIs and derivation policy (physical validation pending)
-- [ ] Pi USB controller, hub enumeration, Ethernet, and RNDIS
+  - [x] Shared security helper APIs and derivation policy (physical coverage recorded below)
+- [x] Pi USB controller, hub enumeration, Ethernet, and RNDIS
   - [x] LAN9512 register transport, PHY access and SMSC frame headers
   - [x] Ethernet selection and QEMU RNDIS setup/frame fields
   - [x] USB transfer direction/retry API, DMA submission and polling contract
   - [x] USB setup requests, hub-port enumeration, descriptor fields and control stages
-  - [x] USB controller initialization and cache/address handling (physical check pending)
-- [ ] Pi SD controller, mailbox, timer, reset, and hardware random generator
+  - [x] USB controller initialization and cache/address handling (physical coverage recorded below)
+- [x] Pi SD controller, mailbox, timer, reset, and hardware random generator
   - [x] Timer: source rates, interrupt routing/acknowledgement, rollover-safe uptime read
   - [x] Random generator: enable/warm-up, FIFO word count, whole-nonce timeout
   - [x] Mailbox: request layout, power flags, reply fields, RAM/cache ownership
   - [x] Reset/watchdog: protected-write key, countdown units and field limits
   - [x] SD command indices, reset/power fields, sector units and polling contract
   - [x] SD capacity extraction and clock-divider bit packing
-- [ ] ARM boot, page tables, interrupts, scheduling, processes, and syscalls
+- [x] ARM boot, page tables, interrupts, scheduling, processes, and syscalls
   - [x] Kernel task context switch and scheduler frame creation: named saved-word layout, user-bank offset and IRQ mask
   - [x] ARM memory control bits, table dimensions and range-helper contracts
   - [x] Fixed-process isolation probe ABI and fault-status checks
@@ -68,7 +68,7 @@ will be checked alongside the implementation they exercise.
   - [x] ARM exception frame offsets, mode changes and return adjustments
   - [x] Boot GPIO/UART registers and polling console contracts
   - [x] Memory ownership/cache assumptions (caller requirements and limits recorded)
-- [ ] ARM loader, SD update/install, authenticated management, and diagnostics
+- [x] ARM loader, SD update/install, authenticated management, and diagnostics
   - [x] Loader/kernel RAM handoff fields and trial-confirmation contracts
   - [x] Loader SD selection, streaming read and UART recovery contracts
   - [x] Loader startup GPIO/UART fields and inherited CPU-state contract
@@ -82,18 +82,18 @@ will be checked alongside the implementation they exercise.
   - [x] Diagnostic queue, ring-record fields and flush/failure semantics
   - [x] UART service-loop watchdog timing and polling contracts
   - [x] Foreground network polling, boot device selection and trial-confirmation policy
-- [ ] ARM VirtIO adapters and hardware probes
+- [x] ARM VirtIO adapters and hardware probes
   - [x] QEMU VirtIO network: queue roles, feature words, packet metadata and buffer reuse
   - [x] QEMU VirtIO block: feature negotiation, descriptor roles, memory ordering and polling contract
   - [x] QEMU virt timer/GIC: named interrupt fields, counter interval and acknowledgement sequence
   - [x] Bring-up probes: atomic, boot/BSS/allocator, USB enumeration and LAN9512 diagnostics
-- [ ] Shared network parsers and state machines, including WPA2
+- [x] Shared network parsers and state machines, including WPA2
   - [x] Ethernet, ARP, IPv4, ICMP, UDP, and checksum helpers: wire layouts, abbreviations, meaningful field values, and split-buffer checksum explanation
   - [x] DHCP options/header fields and ARM lease retry policy; stack dispatch contracts
   - [x] Beacon/association information elements, capability/rate encoding and EAPOL framing
   - [x] CCMP headers, key/traffic IDs and replay-counter commit order
   - [x] WPA2 message fields, key-data parsing, unwrap and derivation helper contracts
-- [ ] Shared ELF, partitions, ext2, memory, loader protocol, and boot records
+- [x] Shared ELF, partitions, ext2, memory, loader protocol, and boot records
   - [x] Boot record: field layout, copy-selection state, persistence ownership and MBR bounds
   - [x] UART upload decoder: header fields, incremental storage events, checksum and timeout ownership
   - [x] Shared frame bitmap and both heap wrappers: frame/address units, availability bits, IRQ locking
@@ -101,7 +101,7 @@ will be checked alongside the implementation they exercise.
   - [x] ARM ELF32 parser: named header offsets, segment/callback contracts
   - [x] x86 ELF64 parser and loader: named fields, page arithmetic and explicit validation/permission limits
   - [x] MBR primary-entry lookup and offset adapter: named layout fields and explicit validation limits
-- [ ] x86 boot, paging, context switching, interrupts, PIC/PIT/APIC, and syscalls
+- [x] x86 boot, paging, context switching, interrupts, PIC/PIT/APIC, and syscalls
   - [x] PIT: named control-word fields and corrected the mode description
   - [x] PIC masks and local APIC enable/address/acknowledgement fields
   - [x] Task context switch and matching new-task/fork stack construction
@@ -116,7 +116,7 @@ will be checked alongside the implementation they exercise.
   - [x] Shared x86 VirtIO queue layout, submission/completion contracts and descriptor permissions
   - [x] x86 block initialization, interrupt routing, synchronous read and DMA-buffer contract
   - [x] x86 network initialization, queue/interrupt selection and buffer lifetime
-- [ ] x86 scheduling, process lifecycle, file operations, and network stack
+- [x] x86 scheduling, process lifecycle, file operations, and network stack
   - [x] Syscall user-range/path helpers, file/time handlers and process-entry conventions
   - [x] Socket ABI fields, protocol selection, configuration operations and polling contracts
   - [x] Scheduler state selection, block/wake and lifecycle helper contracts
@@ -1772,3 +1772,49 @@ UART/Ethernet and is away; keep the working network service available until they
 can reconnect. A true power-removal startup is separately pending. These limits
 prevent marking the complete hardware gate finished. Raw evidence is under
 `target/runs/20261116-pi-reconnect/`, excluded from Git.
+
+## UART hardware validation — 2026-11-16
+
+The user reattached UART and Ethernet to the Mac. Physical checks exercised the
+reviewed code with the installed Wi-Fi image retained as the recovery service:
+
+- `tests/test_pi2_wifi.py`: WPA2 association and DHCP, deliberate disconnect,
+  fresh handshake and second lease. Diagnostic CRC32 `0380e8e3`.
+- The same fixture's firmware stage: explicit adapter power-off, power-on and
+  firmware reload passed (`f5cbab41`). This is a software-controlled adapter
+  reset; removal of the Pi's external power remains a separate experiment.
+- `test_sd_write_restores_sector.sh` with `managed-layout-scratch`: pattern
+  write, full read-back, original restoration and unchanged neighbours passed.
+  The old fixture only recognized the recovery image. The new opt-in checks
+  the installed layout and boot record and uses unused metadata sector 1024,
+  avoiding the live staging header. Host preflight saved the original sectors.
+- `test_pi2_sd_boot.py all --ram`: hung-candidate watchdog fallback, valid
+  candidate confirmation, both invalid checksums entering UART recovery, and
+  restoration of normal SD boot passed. Rebuilt loader-trial CRC32 `26b7afb0`.
+  The resident loader file was left intact; the reviewed loader ran from RAM.
+- Wired managed kernel: DHCP, ARP, two pings, three byte-exact UDP replies after
+  idle, and authenticated management passed over the Mac's direct link.
+- `check-pi2-network.py`: the final diagnostic also passed DHCP/ARP/ping/idle
+  UDP and watchdog return (`965ac129`). Two test timing defects were corrected:
+  its 45-second host limit expired during roughly 50 seconds of isolation
+  checks; its kernel watchdog inherited the last isolation case's remaining
+  time for USB/link negotiation. The host limit is now configurable (180 seconds
+  by default), and `pi-network-dev` starts a fresh 15-second watchdog budget
+  before USB initialization. Managed production kernels keep their existing
+  watchdog policy. A complete physical rerun passed after these fixes.
+
+The Wi-Fi service is installed as CRC32 `fedce5c8`. Raw captures and checked
+installation packages are under ignored `target/runs/20261116-uart-validation/`;
+that directory is private because test packages can contain network credentials.
+The earlier local host/QEMU evidence continues to cover the architecture-specific
+paths not exercised by these Pi fixtures. Existing implementation limitations
+recorded throughout this audit remain limitations, not fixes claimed by the
+readability work.
+
+Final recovery verification: boot 27 serves `gabix-pi2.local` over Wi-Fi with
+image CRC32 `fedce5c8`, no pending update, and no dropped log lines or log-write
+errors. Fresh multicast lookup, native resolution and UDP echo pass. The MBR
+and all three scratch-test sectors match the saved originals; the boot record
+checksum is valid. This completes the readability goal's validation gate.
+A full external-power removal test remains separate, as does explaining the
+earlier intermittent loss of Wi-Fi reachability.
