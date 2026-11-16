@@ -69,16 +69,52 @@ extern "C" fn check() {
                 224, 255, 0, 64, 16, 0, 0, 64, 58, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
                 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
             ];
-            if option_env!("GABIX_SD_CHECK_WRITE") != Some("recovery-image-gap") {
+            let mode = option_env!("GABIX_SD_CHECK_WRITE");
+            // The installed layout reserves its first MiB for metadata. Sector
+            // 1024 is unused by the boot record (sector 0), both kernel extents
+            // (starting at 2048), and the log journal (starting at 133120).
+            const MANAGED_START: u64 = 4_882_432;
+            const MANAGED_SECTORS: u64 = 262_144;
+            const SCRATCH_OFFSET_SECTORS: u64 = 1024;
+            const FIRST_KERNEL_OFFSET_SECTORS: u64 = 2048;
+            // Third 16-byte MBR entry, relative to the partition-table slice.
+            const KERNEL_ENTRY: usize = 2 * 16;
+            const ENTRY_TYPE: usize = 4;
+            const ENTRY_START: usize = 8;
+            const ENTRY_SIZE: usize = 12;
+            let managed = mode == Some("managed-layout-scratch");
+            let mut expected = expected_partitions;
+            if managed {
+                expected[KERNEL_ENTRY + ENTRY_TYPE] = gabix_kernel::boot_record::PARTITION_TYPE;
+                expected[KERNEL_ENTRY + ENTRY_START..KERNEL_ENTRY + ENTRY_START + 4]
+                    .copy_from_slice(&(MANAGED_START as u32).to_le_bytes());
+                expected[KERNEL_ENTRY + ENTRY_SIZE..KERNEL_ENTRY + ENTRY_SIZE + 4]
+                    .copy_from_slice(&(MANAGED_SECTORS as u32).to_le_bytes());
+            }
+            if mode != Some("recovery-image-gap") && !managed {
                 write_line(&mut console, b"SD check: read-only; write opt-in absent");
             } else if sector[440..444] != [0x8d, 0x2d, 0x1b, 0x41]
-                || sector[446..510] != expected_partitions
+                || sector[446..510] != expected
                 || sector[510..] != [0x55, 0xaa]
             {
                 write_line(&mut console, b"SD check: unexpected card; no writes");
             } else {
                 use gabix_kernel::device::WritableBlockDevice;
-                let lba = 8192;
+                let lba = if managed {
+                    let bytes = unsafe { card.try_read_sector(MANAGED_START) }.unwrap();
+                    let record =
+                        gabix_kernel::boot_record::BootRecord::decode(&bytes, MANAGED_SECTORS)
+                            .unwrap();
+                    assert_eq!(record.pending_copy, gabix_kernel::boot_record::NO_COPY);
+                    assert!(record
+                        .copies
+                        .iter()
+                        .all(|copy| copy.offset_sectors >= FIRST_KERNEL_OFFSET_SECTORS));
+                    assert!(MANAGED_START + MANAGED_SECTORS <= card.sector_count());
+                    MANAGED_START + SCRATCH_OFFSET_SECTORS
+                } else {
+                    8192
+                };
                 let original = unsafe { card.try_read_sector(lba) }.unwrap();
                 let before = unsafe { card.try_read_sector(lba - 1) }.unwrap();
                 let after = unsafe { card.try_read_sector(lba + 1) }.unwrap();

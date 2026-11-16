@@ -41,6 +41,25 @@ loader. A loader return alone is insufficient: the runner requires the PASS line
 sh tests/test_sd_write_restores_sector.sh /dev/cu.usbserial-0001
 ```
 
+For the installed three-partition development card, select the managed layout:
+
+```sh
+sh tests/test_sd_write_restores_sector.sh /dev/cu.usbserial-0001 managed-layout-scratch
+```
+
+This mode uses sector 1024 within the kernel partition's reserved metadata
+area (absolute sector 4,883,456). It checks the exact installed partition table,
+a valid boot record with no pending update, kernel copies starting at or after
+sector 2048, card capacity, and zero contents in the scratch sector and both
+neighbours. The boot record occupies relative sector 0; persistent logs begin
+at relative sector 133120. This opt-in avoids staging-header sector 8192,
+which belongs to the Ethernet transfer service on an installed card.
+
+On 2026-11-16 the managed-layout test passed on the physical Pi: pattern
+read-back, restoration, both neighbour comparisons and automatic reset all
+succeeded. A read-only host check saved the boot record and three empty sectors
+before the test; no kernel image, boot record or staging header was modified.
+
 The test deliberately targets the registered `pi2-uart-loader-full-2026-08-15`
 recovery image in `artifacts/pi2-images.json`. Its saved original has an entirely
 zero-filled gap between the MBR and the first partition at sector 16384. Sector
