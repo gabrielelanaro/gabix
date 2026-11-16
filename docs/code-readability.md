@@ -1744,3 +1744,31 @@ a powered, reachable device and the appropriate recovery path; no running hardwa
 test is being awaited. Preserve the installed working image until a current RAM
 trial and layout checks establish the safe next step. Raw results remain ignored;
 focused commits and this evidence record are retained for review.
+
+## Physical validation resumed — 2026-11-16
+
+The Pi is reachable over Wi-Fi. The current source audit plus mDNS changes built
+as a 243,968-byte managed kernel, CRC32 `fedce5c8`, and was installed through the
+authenticated inactive-copy update. Every byte read back correctly. Boot 16
+selected and confirmed copy A; there is no pending update. This evidence
+supersedes the disconnected-device checkpoint for the paths listed here.
+
+Verified on this build:
+
+- USB/Wi-Fi initialization, WPA2 authentication, DHCP, bidirectional UDP echo,
+  native mDNS discovery and authenticated management by name.
+- Remote reboot with UART/Ethernet disconnected; previous-boot logs survive,
+  stale requests are rejected, and unsigned/modified messages are rejected.
+- Physical boot log markers for cooperative scheduling, timer preemption,
+  isolated processes and fault containment; memory mapping and heap startup.
+- SD kernel write/read-back, boot confirmation and persistent journal reads.
+  Read-only layout checks validate the current boot record and bounded kernel
+  extents. The installed loader itself remains the earlier build.
+
+Still open: deliberate Wi-Fi reconnect diagnostics, wired Ethernet, physical
+scratch write/restore/neighbours, and the updated loader's UART recovery/fallback
+paths. Their existing fixtures require UART or enter recovery. The user removed
+UART/Ethernet and is away; keep the working network service available until they
+can reconnect. A true power-removal startup is separately pending. These limits
+prevent marking the complete hardware gate finished. Raw evidence is under
+`target/runs/20261116-pi-reconnect/`, excluded from Git.

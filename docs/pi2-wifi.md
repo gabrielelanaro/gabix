@@ -74,3 +74,40 @@ bytes, CRC32 `98195a23`, 18.51 seconds). Its authenticated reboot selected
 SD copy B and confirmed startup; DHCP, management, previous-boot log reads,
 and cross-boot replay rejection passed. Copy A retains the prior Ethernet
 kernel. QEMU Ethernet UDP echo also passed after the USB transport changes.
+
+## Finding the Pi by name
+
+The managed ARM service implements IPv4 mDNS host lookup as `gabix-pi2.local`.
+On a Mac connected to the same local network, use:
+
+```sh
+python3 scripts/pi2-manage.py status --address gabix-pi2.local
+python3 scripts/pi2-manage.py logs --address gabix-pi2.local
+```
+
+DHCP still assigns the address. The Pi answers local multicast questions with
+that address, so the caller can resolve the name again after a lease changes.
+The network must permit multicast between clients; guest-network isolation can
+prevent discovery. This provides host-name lookup, not a web page or DNS-SD
+service browser. IPv6 and reverse-address lookup are not implemented.
+
+The implementation in `crates/kernel-core/src/net/mdns.rs` sends three probes
+250 ms apart before announcing its address. A name conflict selects a suffix
+such as `gabix-pi2-0002.local` and starts probing again. Incoming DNS names use
+bounded compression-pointer parsing. Queries support IPv4 A and ANY records,
+known-answer suppression, requested unicast replies and legacy DNS clients.
+The packet handling follows [RFC 6762](https://www.rfc-editor.org/rfc/rfc6762).
+The ARM network session invokes it alongside DHCP; x86 does not yet register a
+host with this responder.
+
+Run `python3 tests/test_pi2_mdns.py` on the local network for a fresh multicast
+lookup, native name resolution and UDP echo by name. Routine output belongs
+in `target/runs/`. A software reboot keeps USB power present; power-removal
+startup is a separate physical check.
+
+Physical validation on 2026-11-16: build CRC32 `fedce5c8` (243,968 bytes)
+was written/read back over Wi-Fi and confirmed on boot 16. Fresh multicast
+lookup, native macOS resolution, UDP echo and authenticated management by name
+pass after reboot with UART/Ethernet disconnected. The test selects the local
+interface toward the host because a VPN may own the default multicast route;
+`--interface-address` can explicitly select the Mac's Wi-Fi IPv4 address.

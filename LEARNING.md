@@ -563,6 +563,21 @@ A milestone is a "demo-able" checkpoint. Worth a commit + tag + log entry.
 
 ## Progress Log
 
+### 2026-11-16 — mDNS installed; readability hardware validation resumed
+- Implemented shared IPv4 mDNS host discovery and integrated it into the managed ARM network service. The Pi probes/announces `gabix-pi2.local`, responds to A/ANY queries, handles compressed names and known answers, and selects a suffixed name on conflict. DNS-SD browsing, IPv6 and reverse lookup remain outside this slice.
+- Thirteen shared-library tests including Wi-Fi security pass; three mDNS cases cover packet bounds, compression, probing, reply routing, conflict handling and address changes. The existing ARM virt DHCP regression passes. Its initial local-socket permission failure was resolved by running with the required permission.
+- Installed the final 243,968-byte build over Wi-Fi, with exact SD read-back (CRC32 `fedce5c8`). Authenticated reboot by hostname selected/confirmed it as copy A, boot 16. Fresh multicast lookup, macOS name resolution, UDP echo by name, authentication rejection checks, persisted logs and cross-boot replay rejection pass with UART/Ethernet disconnected.
+- The first raw multicast test followed the Mac's VPN route (`utun7`) and timed out. Selecting the local Wi-Fi interface passed; the test now selects the interface toward the resolved host, with an explicit interface-address override. Native macOS `.local` resolution works without a router change.
+- Resumed the readability hardware gate: current-build Pi logs confirm cooperative scheduling, timer preemption, isolated userspace and fault containment. USB/Wi-Fi startup, DHCP, SD kernel writes/read-back, managed reset and persistent logging have current-build evidence. Read-only SD inspection validated the boot-record checksum and kernel extents on the 15,523,840-sector card; no pending update remains.
+- Remaining physical checks need UART/Ethernet reattached: deliberate Wi-Fi diagnostic reconnect, wired driver exercise, scratch-sector restore/neighbour test, and loader/UART recovery cases. Full power-removal startup is also pending; a software reboot leaves USB power present. User is away; keep the working Wi-Fi service running. Raw evidence stays in ignored `target/runs/20261116-pi-reconnect/`. The overall readability validation checkbox remains open.
+
+### 2026-11-16 — Reconnect diagnosis and Wi-Fi-only reboot
+- Recovered contact with the installed kernel through the existing UART user-reboot flow; authenticated Wi-Fi status and persistent logs became available at 192.168.178.128. Installed image CRC32 is 0xdefc3948; this does not validate the later readability build.
+- Previous boot 12 recorded Wi-Fi Online and a DHCP lease around 75 seconds. The earlier failed discovery therefore does not establish a failure to join; the later loss of reachability remains unexplained.
+- User disconnected Ethernet and UART while keeping power and the Wi-Fi dongle attached. Wi-Fi status continued responding. An authenticated network reboot then produced boot 14, automatically joined Wi-Fi, acquired the same address, and answered status at uptime 76.453 seconds with no reported transmit or log-write errors.
+- Startup logs show process-isolation checks completing near 72 seconds, before network initialization. This explains a substantial startup wait, but does not prove the cause of the earlier outage. A power-removal cold-start reproduction remains outstanding.
+- Evidence is in ignored target/runs/20261116-pi-reconnect/. No installed kernel or SD layout was changed; roadmap validation remains open.
+
 ### 2026-11-15 — Readability audit: local validation checkpoint
 - Completed the source-review milestone across shared, x86 and ARM code; recorded unchanged facade files and corrected affected renamed API/constant references. Checked the source-audit roadmap item only.
 - Current verification passes: 10 shared-library tests with Wi-Fi security enabled, two Wi-Fi frame tests, ARM QEMU process isolation and scheduler/preemption tests. Earlier current-revision uploader/registry checks passed 16 tests.
