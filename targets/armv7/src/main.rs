@@ -310,6 +310,10 @@ extern "C" fn arm_kernel_entry() {
             #[cfg(feature = "pi-sd-transfer")]
             flush_diagnostics(true);
         }
+        #[cfg(feature = "pi-network-dev")]
+        // Each isolation case arms its own watchdog before running. Start a
+        // full diagnostic budget here for USB setup and Ethernet negotiation.
+        raspi2b::reset::arm_deadman(BOOT_WATCHDOG_SECONDS);
         #[cfg(any(not(feature = "pi-uart-user"), feature = "pi-hardware"))]
         if let Some(mut usb) = raspi2b::usb::Dwc2::initialize() {
             if let Some(device) = usb.enumerate_root() {
