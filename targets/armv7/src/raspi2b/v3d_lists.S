@@ -50,12 +50,11 @@ shader_record:
 .balign 16
 .global vertices
 vertices:
-    .short 32*16, 8*16
+    .rept 3
+    .word 0                         // XY filled from user geometry before submission
     .word 0x3f800000, 0x3f800000, 0x3e200000, 0x3f4e0000, 0x3f800000    // Z, reciprocal W, and three varying values
-    .short 8*16, 56*16
-    .word 0x3f800000, 0x3f800000, 0x3e200000, 0x3f4e0000, 0x3f800000
-    .short 56*16, 56*16
-    .word 0x3f800000, 0x3f800000, 0x3e200000, 0x3f4e0000, 0x3f800000
+    .endr
+
 
 .balign 64
 fragment_code:

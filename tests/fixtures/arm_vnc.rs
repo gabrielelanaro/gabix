@@ -2,38 +2,30 @@
 #![no_main]
 
 mod arm_tcp_common;
+mod arm_v3d;
 use arm_tcp_common::*;
 
 const SIDE: usize = 64;
 const NAME: &[u8] = b"Gabix V3D triangle";
 const VERSION: &[u8; 12] = b"RFB 003.008\n";
 const NATIVE: [u8; 16] = [32, 24, 0, 1, 0, 255, 0, 255, 0, 255, 16, 8, 0, 0, 0, 0];
-const DRAW_TRANSLATED_TRIANGLE: u32 = 0x4702;
+const MODEL: arm_v3d::Triangle = [[32, 8], [8, 56], [56, 56]];
 const BACKGROUND: u32 = 0xff194296;
 const GOLD: u32 = 0xffffcd28;
 
-fn draw(frame: &mut [u8], (dx, dy): (i16, i16)) -> Result<(), ()> {
-    let offset = u32::from(dx as u16) | (u32::from(dy as u16) << 16);
-    let mut result = frame.as_mut_ptr() as u32;
-    unsafe {
-        core::arch::asm!("svc #0", in("r7") DRAW_TRANSLATED_TRIANGLE,
-        inout("r0") result, in("r1") BACKGROUND, in("r2") GOLD, in("r3") offset);
-    }
-    if result == frame.len() as u32 {
-        Ok(())
-    } else {
-        Err(())
-    }
+struct Stream {
+    fd: u32,
+    output: [u8; 536], // One payload for the current Pi TCP sender.
+    used: usize,
 }
 
-struct Stream(u32);
-
 impl Stream {
-    fn read(&self, mut bytes: &mut [u8]) -> Result<(), ()> {
+    fn read(&mut self, mut bytes: &mut [u8]) -> Result<(), ()> {
+        self.flush()?;
         while !bytes.is_empty() {
             let n = call(
                 SYS_READ,
-                self.0,
+                self.fd,
                 bytes.as_mut_ptr() as u32,
                 bytes.len() as u32,
             );
@@ -45,24 +37,45 @@ impl Stream {
         Ok(())
     }
 
-    fn write(&self, mut bytes: &[u8]) -> Result<(), ()> {
+    fn write(&mut self, mut bytes: &[u8]) -> Result<(), ()> {
         while !bytes.is_empty() {
-            let n = call(SYS_WRITE, self.0, bytes.as_ptr() as u32, bytes.len() as u32);
+            let n = bytes.len().min(self.output.len() - self.used);
+            self.output[self.used..self.used + n].copy_from_slice(&bytes[..n]);
+            self.used += n;
+            bytes = &bytes[n..];
+            if self.used == self.output.len() {
+                self.flush()?;
+            }
+        }
+        Ok(())
+    }
+
+    // Send any pending reply before waiting for the next client message.
+    fn flush(&mut self) -> Result<(), ()> {
+        let mut bytes = &self.output[..self.used];
+        while !bytes.is_empty() {
+            let n = call(
+                SYS_WRITE,
+                self.fd,
+                bytes.as_ptr() as u32,
+                bytes.len() as u32,
+            );
             if n == 0 || n == ERROR {
                 return Err(());
             }
             bytes = &bytes[n as usize..];
         }
+        self.used = 0;
         Ok(())
     }
 
-    fn take<const N: usize>(&self) -> Result<[u8; N], ()> {
+    fn take<const N: usize>(&mut self) -> Result<[u8; N], ()> {
         let mut bytes = [0; N];
         self.read(&mut bytes)?;
         Ok(bytes)
     }
 
-    fn skip(&self, mut count: usize) -> Result<(), ()> {
+    fn skip(&mut self, mut count: usize) -> Result<(), ()> {
         let mut buffer = [0; 128];
         while count > 0 {
             let n = count.min(buffer.len());
@@ -187,7 +200,7 @@ fn dot_bounds((x, y): Point) -> Rect {
 }
 
 struct Scene<'a> {
-    frame: &'a mut [u8],
+    frame: &'a mut arm_v3d::Frame,
     pointer: Option<Point>,
 }
 impl Scene<'_> {
@@ -196,7 +209,7 @@ impl Scene<'_> {
         &self.frame[offset..offset + 4]
     }
 
-    fn raw(&self, stream: &Stream, format: &Format, rect: Rect) -> Result<(), ()> {
+    fn raw(&self, stream: &mut Stream, format: &Format, rect: Rect) -> Result<(), ()> {
         let mut row = [0; DESKTOP * 4];
         let stride = rect.w * format.size;
         let mut used = 0;
@@ -265,35 +278,26 @@ impl Scene<'_> {
         Ok(())
     }
 
-    fn rre(&self, stream: &Stream, format: &Format, rect: Rect) -> Result<(), ()> {
+    fn rre(&self, stream: &mut Stream, format: &Format, rect: Rect) -> Result<(), ()> {
         let mut count = 0u32;
         self.runs(rect, |_, _| {
             count += 1;
             Ok(())
         })?;
-        // Pack runs together so a drag frame needs only a few TCP segments.
-        let mut buf = [0; 536];
-        buf[..4].copy_from_slice(&count.to_be_bytes());
-        format.encode(self.pixel(0, 0), &mut buf[4..4 + format.size]);
-        let mut used = 4 + format.size;
+        stream.write(&count.to_be_bytes())?;
+        let mut buf = [0; 12];
+        format.encode(self.pixel(0, 0), &mut buf[..format.size]);
+        stream.write(&buf[..format.size])?;
         self.runs(rect, |pixel, run| {
-            let end = used + format.size + 8;
-            if end > buf.len() {
-                stream.write(&buf[..used])?;
-                used = 0;
-            }
-            format.encode(pixel, &mut buf[used..used + format.size]);
-            used += format.size;
-            buf[used..used + 8].copy_from_slice(&run.wire());
-            used += 8;
-            Ok(())
-        })?;
-        stream.write(&buf[..used])
+            format.encode(pixel, &mut buf[..format.size]);
+            buf[format.size..format.size + 8].copy_from_slice(&run.wire());
+            stream.write(&buf[..format.size + 8])
+        })
     }
 
     fn update(
         &self,
-        stream: &Stream,
+        stream: &mut Stream,
         format: &Format,
         region: Rect,
         full: bool,
@@ -341,7 +345,7 @@ impl Scene<'_> {
 
 // RFC 6143 Cursor pseudo-rectangle. TigerVNC positions this sprite locally,
 // so moving the pointer does not wait for a Wi-Fi round trip.
-fn cursor_shape(stream: &Stream, format: &Format) -> Result<(), ()> {
+fn cursor_shape(stream: &mut Stream, format: &Format) -> Result<(), ()> {
     let mut data = [0u8; 12 + 11 * 11 * 4 + 22];
     data[..8].copy_from_slice(
         &Rect {
@@ -370,7 +374,7 @@ fn cursor_shape(stream: &Stream, format: &Format) -> Result<(), ()> {
     stream.write(&data[..mask + 22])
 }
 
-fn serve(stream: &Stream) -> Result<(), ()> {
+fn serve(stream: &mut Stream) -> Result<(), ()> {
     stream.write(VERSION)?;
     if &stream.take::<12>()? != VERSION {
         return Err(());
@@ -388,7 +392,7 @@ fn serve(stream: &Stream) -> Result<(), ()> {
     stream.write(NAME)?;
 
     let mut frame = [0; SIDE * SIDE * 4];
-    draw(&mut frame, (0, 0))?;
+    arm_v3d::draw(&mut frame, &MODEL, BACKGROUND, GOLD)?;
     let mut format = Format::parse(&NATIVE)?;
     let mut fresh = true;
     let mut scene = Scene {
@@ -466,7 +470,8 @@ fn serve(stream: &Stream) -> Result<(), ()> {
                 if let Some((gx, gy)) = grab_offset {
                     let next = (gpu.0 - gx, gpu.1 - gy);
                     if next != translation {
-                        draw(scene.frame, next)?;
+                        let points = MODEL.map(|[x, y]| [x + next.0, y + next.1]);
+                        arm_v3d::draw(scene.frame, &points, BACKGROUND, GOLD)?;
                         translation = next;
                         fresh = true;
                     }
@@ -509,6 +514,10 @@ fn serve(stream: &Stream) -> Result<(), ()> {
 #[no_mangle]
 pub extern "C" fn _start() -> ! {
     let (listener, fd) = accept(5900);
-    let _ = serve(&Stream(fd));
+    let _ = serve(&mut Stream {
+        fd,
+        output: [0; 536],
+        used: 0,
+    });
     finish(listener, fd)
 }

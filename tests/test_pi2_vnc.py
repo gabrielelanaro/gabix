@@ -116,6 +116,10 @@ def check_board(address):
         pi = client.management.Pi(address)
         try:
             before = pi.status()
+            shapes = Path(tmp) / "shapes.elf"
+            subprocess.run(["sh", "scripts/build-arm-user.sh", "tests/fixtures/arm_v3d_shapes.rs", shapes],
+                           cwd=ROOT, check=True)
+            assert client.wait_for_exit(pi, client.start(pi, shapes)) == 0
             session = client.start(pi, elf)
             with socket.create_connection((address, 5900), timeout=20) as sock:
                 with sock.makefile("rb") as reader:

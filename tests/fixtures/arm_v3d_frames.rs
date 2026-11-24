@@ -2,11 +2,12 @@
 #![no_main]
 
 mod arm_tcp_common;
+mod arm_v3d;
 use arm_tcp_common::*;
 
 #[no_mangle]
 pub extern "C" fn _start() -> ! {
-    const SYS_V3D_TRIANGLE: u32 = 0x4701;
+    let points = [[32, 8], [8, 56], [56, 56]];
     let (listener, stream) = accept(18081);
     let mut request = [0u8; 8];
     let mut frame = [0u8; 64 * 64 * 4];
@@ -30,13 +31,7 @@ pub extern "C" fn _start() -> ! {
         }
         let background = u32::from_le_bytes(request[..4].try_into().unwrap());
         let foreground = u32::from_le_bytes(request[4..].try_into().unwrap());
-        if call(
-            SYS_V3D_TRIANGLE,
-            frame.as_mut_ptr() as u32,
-            background,
-            foreground,
-        ) != frame.len() as u32
-        {
+        if arm_v3d::draw(&mut frame, &points, background, foreground).is_err() {
             exit(17);
         }
         let mut sent = 0;

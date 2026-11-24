@@ -51,12 +51,15 @@ pub unsafe fn dispatch(frame: &mut UserFrame) {
     }
     let result = match frame.registers[SYSCALL_NUMBER_REGISTER] {
         #[cfg(all(feature = "pi-wifi", feature = "pi-managed"))]
-        draw @ (0x4701 | 0x4702) if crate::user_upload::wifi::running() => {
+        0x4703 if crate::user_upload::wifi::running() => {
             use crate::raspi2b::v3d;
-            let [destination, background, foreground] = [frame.registers[0], frame.registers[1], frame.registers[2]];
-            if crate::memory::bootstrap_user_range(destination, v3d::FRAME_BYTES as u32) {
-                let offset = if draw == 0x4702 { frame.registers[3] } else { 0 };
-                v3d::triangle(destination as *mut u8, background, foreground, offset) as u32
+            let destination = frame.registers[0];
+            let points = frame.registers[3];
+            if crate::memory::bootstrap_user_range(destination, v3d::FRAME_BYTES as u32)
+                && crate::memory::bootstrap_user_range(points, core::mem::size_of::<v3d::Triangle>() as u32)
+            {
+                let triangle = (points as *const v3d::Triangle).read_unaligned();
+                v3d::triangle(destination as *mut u8, frame.registers[1], frame.registers[2], triangle) as u32
             } else {
                 SYSCALL_ERROR
             }

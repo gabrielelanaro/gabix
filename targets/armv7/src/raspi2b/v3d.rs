@@ -199,12 +199,12 @@ unsafe fn stop_stalled_job(error: i32) -> i32 {
     error
 }
 
+pub type Triangle = [[i16; 2]; 3];
+
 /// Called by the single foreground SVC after validating the destination.
-pub unsafe fn triangle(output: *mut u8, background: u32, foreground: u32, offset: u32) -> i32 {
-    // Signed GPU pixel offsets packed as X (low half) and Y (high half).
-    let dx = offset as i16;
-    let dy = (offset >> 16) as i16;
-    if !(-64..=64).contains(&dx) || !(-64..=64).contains(&dy) {
+pub unsafe fn triangle(output: *mut u8, background: u32, foreground: u32, points: Triangle) -> i32 {
+    // XY in the NV vertex record uses signed 12.4 fixed-point coordinates.
+    if points.iter().flatten().any(|c| !(-2048..=2047).contains(c)) {
         return -1;
     }
     if let Err(error) = set_v3d_power(true) {
@@ -214,8 +214,8 @@ pub unsafe fn triangle(output: *mut u8, background: u32, foreground: u32, offset
     if id != EXPECTED_ID {
         return -13;
     }
-    for (index, (x, y)) in [(32, 8), (8, 56), (56, 56)].into_iter().enumerate() {
-        let xy = u32::from(((x + dx) * 16) as u16) | (u32::from(((y + dy) * 16) as u16) << 16);
+    for (index, [x, y]) in points.into_iter().enumerate() {
+        let xy = u32::from((x * 16) as u16) | (u32::from((y * 16) as u16) << 16);
         addr_of_mut!(vertices[index][0]).write(xy);
     }
     let clear = addr_of_mut!(clear_color).cast::<u32>();

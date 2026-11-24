@@ -48,6 +48,7 @@ through UART reboot/upload. Preserve the working server as the recovery image.
 - [x] Transfer two V3D frames over one ARM TCP connection and verify every byte during slow reads and retransmission. [Physical frame test](tests/test_pi2_v3d_frames.py)
 - [x] Display the V3D triangle with a hover dot in TigerVNC on the Mac over Wi-Fi. [Physical VNC test](tests/test_pi2_vnc.py)
 - [x] Drag the triangle from TigerVNC. V3D redraws its translated vertices on each move.
+- [x] Submit three vertices from an uploaded user program and verify two distinct triangle shapes on one Pi boot.
 
 ### TCP arc — the connection-oriented transport
 - [x] Lesson 31 TCP segment, three-way handshake, and first byte exchanged
@@ -567,6 +568,11 @@ A milestone is a "demo-able" checkpoint. Worth a commit + tag + log entry.
 ---
 
 ## Progress Log
+
+### 2026-11-24 — Submit user-space vertices to V3D
+
+- On Pi boot 39 (kernel `5ca30ba4`), the uploaded shape test checked all 4,096 pixels of an isosceles triangle and a right triangle with identical colors. The VNC drag, clip, release and re-grab checks passed on the same boot. Both user programs use the same three-vertex draw syscall.
+- Packing the VNC headers and rectangle data together reduced median Mac pointer-request-to-complete-RRE-reply time from 100.25 to 70.35 ms across 14 moves per build. Seven alternating zero-draw and 128-draw batches estimated 0.30 ms per draw including frame readback. The timings exclude Mac display presentation. The next experiment can merge adjacent rows of the same color and width before transmission.
 
 ### 2026-11-24 — Drag the V3D triangle in TigerVNC
 

@@ -43,8 +43,12 @@ order. The server asks the kernel to render a fresh triangle, then writes 64
 rows of 64 BGRA pixels to the stream. Each reply is exactly 16,384 bytes.
 The client can send another request on the same connection.
 
-On a managed Wi-Fi Pi, syscall `0x4701` takes the user destination address in
-`r0`, the packed background in `r1` and the packed foreground in `r2`. It returns
+On a managed Wi-Fi Pi, syscall `0x4703` takes a 16,384-byte user destination in
+`r0`, the packed background in `r1`, the packed foreground in `r2` and a pointer
+to three user-space vertices in `r3`. Each vertex contains signed 16-bit X and Y
+coordinates in whole pixels, each in the range −2048 through 2047. The kernel
+checks both user ranges, copies the 12 coordinate bytes and converts them to
+V3D’s signed 12.4 fixed-point representation. It returns
 the byte count, or a negative error. The driver owns the GPU command lists,
 shader and render target. After V3D signals frame completion the driver makes
 the pixels visible to the ARM and copies them to the validated user buffer.
@@ -65,7 +69,7 @@ then reads up to 73 bytes at a time and compares both frames byte for byte.
 
 ## Drag the triangle in TigerVNC
 
-With the managed Wi-Fi kernel that supports positioned draws running, build the VNC user program and upload it
+With the managed Wi-Fi kernel that accepts user-supplied vertices running, build the VNC user program and upload it
 to RAM. On the Mac, start TigerVNC Viewer and connect to the Pi.
 
 ```sh
@@ -92,9 +96,11 @@ pixel. Each move to a new GPU pixel changes the three vertex positions and
 asks V3D to render again. The framebuffer clips the triangle at its edges.
 Pressing the blue background leaves the triangle in place.
 
-The positioned draw call (`0x4702`) uses the same first three arguments as
-`0x4701`. Register `r3` contains signed pixel offsets packed into 16-bit halves,
-X low and Y high. The original draw call always uses zero offsets.
+The GUI owns the triangle. At each new position it adds the drag offset to
+its three model vertices and submits the resulting coordinates. The physical
+test first uploads an ELF that draws two shapes with the same colors and checks
+every pixel of each. It then uploads the GUI and checks dragging on the same
+boot. Rebuild older ELFs that used the fixed or translated demo draw calls.
 
 This LAN demo uses RFB 3.8 security type None (no VNC password or
 encryption). The ELF serves one viewer and exits when it disconnects. Repeat
