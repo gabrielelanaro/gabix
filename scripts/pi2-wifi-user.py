@@ -46,14 +46,21 @@ def main():
     parser.add_argument("elf", type=Path, nargs="+")
     parser.add_argument("--address", default="gabix-pi2.local")
     parser.add_argument("--wait-seconds", type=float, default=15, help="Time to wait for user exit")
+    parser.add_argument("--detach", action="store_true", help="Return after starting a single long-running program")
     args = parser.parse_args()
+    if args.detach and len(args.elf) != 1:
+        parser.error("--detach requires exactly one ELF")
     if os.environ.get("GABIX_PI_LEGACY") == "1":
         parser.error("Wi-Fi user upload requires authenticated management")
     pi = management.Pi(args.address)
     try:
         initial = pi.status()
         for path in args.elf:
-            code = wait_for_exit(pi, start(pi, path), args.wait_seconds)
+            session = start(pi, path)
+            if args.detach:
+                print(json.dumps({"elf": path.name, "boot": initial["boot"], "session": session}))
+                return
+            code = wait_for_exit(pi, session, args.wait_seconds)
             status = pi.status()
             if (status["boot"], status["kernel_crc32"]) != (initial["boot"], initial["kernel_crc32"]):
                 raise RuntimeError("Pi boot or installed kernel changed during the run")

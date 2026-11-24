@@ -62,3 +62,30 @@ sender withholds one data segment on port 18081 after 16,384 bytes. The test
 checks the Pi journal for a successful retransmission of the same sequence,
 size and payload checksum. The Mac pauses before reading the second frame,
 then reads up to 73 bytes at a time and compares both frames byte for byte.
+
+## View the triangle in TigerVNC
+
+With the frame-transfer kernel running, build the VNC user program and upload it
+to RAM. On the Mac, start TigerVNC Viewer and connect to the Pi.
+
+```sh
+sh scripts/build-arm-user.sh tests/fixtures/arm_vnc.rs
+python3 scripts/pi2-wifi-user.py --detach target/arm_vnc.elf
+open -a TigerVNC --args -SecurityTypes None gabix-pi2.local::5900
+```
+
+The **Gabix V3D triangle** window shows a gold triangle on a blue 512×512
+desktop. The GPU renders 64×64 pixels. The server displays each pixel as an
+8×8 block and sends the requested region using the viewer's color format.
+Viewers can request RRE to receive runs of solid color. Raw pixels are also
+supported.
+
+The white hover dot has a black outline. TigerVNC receives its shape and
+positions it locally. For viewers using framebuffer pixels for the pointer,
+the server restores the old dot's background and paints the new position on
+each update. Run `python3 tests/test_pi2_vnc.py` to check the enlarged frame,
+pointer updates, cursor shape and a cropped RGB565 region on the physical Pi.
+
+This view-only LAN demo uses RFB 3.8 security type None (no VNC password or
+encryption). The ELF serves one viewer and exits when it disconnects. Repeat
+the upload command for another session on the same Pi boot.

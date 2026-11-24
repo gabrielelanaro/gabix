@@ -46,6 +46,7 @@ through UART reboot/upload. Preserve the working server as the recovery image.
 - [x] Upload two distinct ARM user executables over authenticated Wi-Fi and read their exit statuses on the same physical Pi boot. [User loader](docs/pi2-wifi-user.md)
 - [x] Keep Wi-Fi responsive during blocking TCP calls from an uploaded ARM user program. [Physical echo check](tests/test_pi2_wifi_tcp_echo.py)
 - [x] Transfer two V3D frames over one ARM TCP connection and verify every byte during slow reads and retransmission. [Physical frame test](tests/test_pi2_v3d_frames.py)
+- [x] Display the V3D triangle with a hover dot in TigerVNC on the Mac over Wi-Fi. [Physical VNC test](tests/test_pi2_vnc.py)
 
 ### TCP arc — the connection-oriented transport
 - [x] Lesson 31 TCP segment, three-way handshake, and first byte exchanged
@@ -565,6 +566,11 @@ A milestone is a "demo-able" checkpoint. Worth a commit + tag + log entry.
 ---
 
 ## Progress Log
+
+### 2026-11-24 — View the V3D triangle in TigerVNC
+
+- Uploaded the RFB server as a user ELF on physical Pi boot 37. TigerVNC on the Mac displayed the gold V3D triangle on a blue 512×512 desktop. The GPU supplies the 64×64 image; each pixel covers an 8×8 block.
+- Added an outlined hover dot. The physical test checks every scaled pixel, pointer updates, restoration after motion, a cropped RGB565 request and the cursor sprite. Marked the TigerVNC milestone complete. Next, drag the triangle.
 
 ### 2026-11-24 — Transfer two V3D triangles over one TCP connection
 
