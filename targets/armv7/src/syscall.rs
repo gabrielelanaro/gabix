@@ -15,7 +15,7 @@ const STDOUT_FD: u32 = 1;
 const MAX_WRITE_BYTES: u32 = 4096;
 
 /// Matches boot.S .Lsvc: r0 through r12, followed by LR_svc.
-/// r7 selects the call; r0-r2 carry arguments; the saved r0 becomes the result.
+/// r7 selects the call; r0-r3 carry arguments; the saved r0 becomes the result.
 /// The saved processor status remains in SPSR_svc, outside this frame.
 #[repr(C)]
 pub struct UserFrame {
@@ -51,11 +51,12 @@ pub unsafe fn dispatch(frame: &mut UserFrame) {
     }
     let result = match frame.registers[SYSCALL_NUMBER_REGISTER] {
         #[cfg(all(feature = "pi-wifi", feature = "pi-managed"))]
-        0x4701 if crate::user_upload::wifi::running() => {
+        draw @ (0x4701 | 0x4702) if crate::user_upload::wifi::running() => {
             use crate::raspi2b::v3d;
             let [destination, background, foreground] = [frame.registers[0], frame.registers[1], frame.registers[2]];
             if crate::memory::bootstrap_user_range(destination, v3d::FRAME_BYTES as u32) {
-                v3d::triangle(destination as *mut u8, background, foreground) as u32
+                let offset = if draw == 0x4702 { frame.registers[3] } else { 0 };
+                v3d::triangle(destination as *mut u8, background, foreground, offset) as u32
             } else {
                 SYSCALL_ERROR
             }

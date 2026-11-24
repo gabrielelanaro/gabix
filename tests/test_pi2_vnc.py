@@ -34,6 +34,10 @@ def request(peer, incremental=False, rect=(0, 0, DESKTOP, DESKTOP)):
 def check_scene(peer):
     peer.write(struct.pack(">BBHi", 2, 0, 1, 2))  # advertise RRE
     request(peer)
+    read_scene(peer)
+
+
+def read_scene(peer, dx=0, dy=0):
     assert peer.read(16) == struct.pack(">BBH4Hi", 0, 0, 1, 0, 0, DESKTOP, DESKTOP, 2)
     count, = struct.unpack(">I", peer.read(4))
     assert count <= 4096
@@ -45,7 +49,7 @@ def check_scene(peer):
         for row in range(y,y+h):
             off = 4*(row*DESKTOP+x)
             actual[off:off+4*w] = color*w
-    assert actual == b"".join(expected(x,y) for y in range(DESKTOP) for x in range(DESKTOP))
+    assert actual == b"".join(expected(x-dx,y-dy) for y in range(DESKTOP) for x in range(DESKTOP))
 
 
 def check_hover(peer):
@@ -63,6 +67,45 @@ def check_hover(peer):
                     color = bytes.fromhex("ffffff00") if d <= 9 else bytes(4) if d <= 25 else expected(px,py)
                     assert peer.read(4) == color, (px,py)
         previous = (x,y)
+
+
+def check_drag(peer):
+    def pointer(button, x, y):
+        peer.write(struct.pack(">BBHH", 5, button, x, y))
+
+    # Restore the native format and keep the viewer-local cursor enabled.
+    peer.write(bytes.fromhex("00000000 2018000100ff00ff00ff100800000000"))
+    peer.write(struct.pack(">BBHii", 2, 0, 2, 2, -239))
+    request(peer)
+    assert peer.read(16) == struct.pack(">BBH4Hi", 0, 0, 2, 5, 5, 11, 11, -239)
+    peer.read(121*4+22)
+    # The update header and cursor rectangle are already consumed.
+    assert peer.read(12) == struct.pack(">4Hi", 0, 0, DESKTOP, DESKTOP, 2)
+    runs, = struct.unpack(">I", peer.read(4))
+    peer.read(4 + runs*12)
+
+    pointer(1, 20, 20)  # Pressing the background and crossing gold cannot grab.
+    pointer(1, 240, 320)
+    pointer(0, 240, 320)
+    request(peer)
+    read_scene(peer)
+
+    request(peer, incremental=True)  # The update can precede the motion.
+    pointer(1, 240, 320)
+    pointer(1, 280, 296)
+    read_scene(peer, 40, -24)
+    request(peer, incremental=True)
+    pointer(1, 320, 272)
+    read_scene(peer, 80, -48)  # Crosses the right clipping edge.
+    pointer(0, 312, 280)  # Final motion delivered with button release.
+    pointer(0, 32, 32)
+    request(peer)
+    read_scene(peer, 72, -40)
+
+    pointer(1, 312, 280)  # Grab again from the translated frame.
+    pointer(0, 240, 320)
+    request(peer)
+    read_scene(peer)
 
 
 def check_board(address):
@@ -110,12 +153,13 @@ def check_board(address):
                             offset = 2*(11*y+x)
                             assert sprite[offset:offset+2] == (b"\xff\xff" if d <= 9 else bytes(2))
                     assert rfb.read(14) == struct.pack(">4Hi", 0, 0, 1, 1, 0) + colors[0]
+                    check_drag(rfb)
                     sock.shutdown(socket.SHUT_WR)
                     assert rfb.read(1) == b""
             assert client.wait_for_exit(pi, session) == 0
             after = pi.status()
             assert (before["boot"], before["kernel_crc32"]) == (after["boot"], after["kernel_crc32"])
-            print(f"Boot {after['boot']}: 512x512 frame, two hover positions, old dot restoration and RGB565 crop matched")
+            print(f"Boot {after['boot']}: 512x512 frame, two hover positions, cursor restoration, RGB565 crop and drag frames matched")
         finally:
             pi.close()
 

@@ -63,9 +63,9 @@ checks the Pi journal for a successful retransmission of the same sequence,
 size and payload checksum. The Mac pauses before reading the second frame,
 then reads up to 73 bytes at a time and compares both frames byte for byte.
 
-## View the triangle in TigerVNC
+## Drag the triangle in TigerVNC
 
-With the frame-transfer kernel running, build the VNC user program and upload it
+With the managed Wi-Fi kernel that supports positioned draws running, build the VNC user program and upload it
 to RAM. On the Mac, start TigerVNC Viewer and connect to the Pi.
 
 ```sh
@@ -84,8 +84,18 @@ The white hover dot has a black outline. TigerVNC receives its shape and
 positions it locally. For viewers using framebuffer pixels for the pointer,
 the server restores the old dot's background and paints the new position on
 each update. Run `python3 tests/test_pi2_vnc.py` to check the enlarged frame,
-pointer updates, cursor shape and a cropped RGB565 region on the physical Pi.
+drag and release, pointer updates, cursor shape and a cropped RGB565 region on the physical Pi.
 
-This view-only LAN demo uses RFB 3.8 security type None (no VNC password or
+Hold the left mouse button on a gold pixel, move the mouse, then release it.
+The server keeps the point you grabbed under the cursor to the nearest GPU
+pixel. Each move to a new GPU pixel changes the three vertex positions and
+asks V3D to render again. The framebuffer clips the triangle at its edges.
+Pressing the blue background leaves the triangle in place.
+
+The positioned draw call (`0x4702`) uses the same first three arguments as
+`0x4701`. Register `r3` contains signed pixel offsets packed into 16-bit halves,
+X low and Y high. The original draw call always uses zero offsets.
+
+This LAN demo uses RFB 3.8 security type None (no VNC password or
 encryption). The ELF serves one viewer and exits when it disconnects. Repeat
 the upload command for another session on the same Pi boot.

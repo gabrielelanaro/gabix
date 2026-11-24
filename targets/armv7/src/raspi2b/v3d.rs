@@ -17,6 +17,7 @@ extern "C" {
     static fragment_code: u8;
     static fragment_end: u8;
     static shader_storage: u8;
+    static mut vertices: [[u32; 6]; 3];
     static mut fragment_color: u32;
 }
 
@@ -199,13 +200,23 @@ unsafe fn stop_stalled_job(error: i32) -> i32 {
 }
 
 /// Called by the single foreground SVC after validating the destination.
-pub unsafe fn triangle(output: *mut u8, background: u32, foreground: u32) -> i32 {
+pub unsafe fn triangle(output: *mut u8, background: u32, foreground: u32, offset: u32) -> i32 {
+    // Signed GPU pixel offsets packed as X (low half) and Y (high half).
+    let dx = offset as i16;
+    let dy = (offset >> 16) as i16;
+    if !(-64..=64).contains(&dx) || !(-64..=64).contains(&dy) {
+        return -1;
+    }
     if let Err(error) = set_v3d_power(true) {
         return error;
     }
     let id = read(V3D + IDENT0);
     if id != EXPECTED_ID {
         return -13;
+    }
+    for (index, (x, y)) in [(32, 8), (8, 56), (56, 56)].into_iter().enumerate() {
+        let xy = u32::from(((x + dx) * 16) as u16) | (u32::from(((y + dy) * 16) as u16) << 16);
+        addr_of_mut!(vertices[index][0]).write(xy);
     }
     let clear = addr_of_mut!(clear_color).cast::<u32>();
     clear.write_unaligned(background);

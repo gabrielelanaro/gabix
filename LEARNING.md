@@ -47,6 +47,7 @@ through UART reboot/upload. Preserve the working server as the recovery image.
 - [x] Keep Wi-Fi responsive during blocking TCP calls from an uploaded ARM user program. [Physical echo check](tests/test_pi2_wifi_tcp_echo.py)
 - [x] Transfer two V3D frames over one ARM TCP connection and verify every byte during slow reads and retransmission. [Physical frame test](tests/test_pi2_v3d_frames.py)
 - [x] Display the V3D triangle with a hover dot in TigerVNC on the Mac over Wi-Fi. [Physical VNC test](tests/test_pi2_vnc.py)
+- [x] Drag the triangle from TigerVNC. V3D redraws its translated vertices on each move.
 
 ### TCP arc — the connection-oriented transport
 - [x] Lesson 31 TCP segment, three-way handshake, and first byte exchanged
@@ -566,6 +567,11 @@ A milestone is a "demo-able" checkpoint. Worth a commit + tag + log entry.
 ---
 
 ## Progress Log
+
+### 2026-11-24 — Drag the V3D triangle in TigerVNC
+
+- The VNC program picks the gold pixel under a left-button press and preserves its offset while dragging. The driver writes translated X/Y coordinates into the three vertex records and resubmits the draw. Release fixes the final position.
+- Physical Pi boot 38 (kernel `f5175863`) passed full-frame comparisons for an off-center grab, repeated motion, clipping, release, background presses and a second grab. Marked the drag milestone complete.
 
 ### 2026-11-24 — View the V3D triangle in TigerVNC
 

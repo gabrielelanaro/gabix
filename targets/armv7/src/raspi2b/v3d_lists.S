@@ -48,6 +48,7 @@ shader_record:
     .byte 1, 24, 0, 3               // Single threaded, vertex stride 24, RGB varyings
     .word shader_storage + CODE_BUS, 0, vertices + BUS
 .balign 16
+.global vertices
 vertices:
     .short 32*16, 8*16
     .word 0x3f800000, 0x3f800000, 0x3e200000, 0x3f4e0000, 0x3f800000    // Z, reciprocal W, and three varying values

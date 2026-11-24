@@ -8,7 +8,23 @@ const SIDE: usize = 64;
 const NAME: &[u8] = b"Gabix V3D triangle";
 const VERSION: &[u8; 12] = b"RFB 003.008\n";
 const NATIVE: [u8; 16] = [32, 24, 0, 1, 0, 255, 0, 255, 0, 255, 16, 8, 0, 0, 0, 0];
-const DRAW_TRIANGLE: u32 = 0x4701;
+const DRAW_TRANSLATED_TRIANGLE: u32 = 0x4702;
+const BACKGROUND: u32 = 0xff194296;
+const GOLD: u32 = 0xffffcd28;
+
+fn draw(frame: &mut [u8], (dx, dy): (i16, i16)) -> Result<(), ()> {
+    let offset = u32::from(dx as u16) | (u32::from(dy as u16) << 16);
+    let mut result = frame.as_mut_ptr() as u32;
+    unsafe {
+        core::arch::asm!("svc #0", in("r7") DRAW_TRANSLATED_TRIANGLE,
+        inout("r0") result, in("r1") BACKGROUND, in("r2") GOLD, in("r3") offset);
+    }
+    if result == frame.len() as u32 {
+        Ok(())
+    } else {
+        Err(())
+    }
+}
 
 struct Stream(u32);
 
@@ -171,7 +187,7 @@ fn dot_bounds((x, y): Point) -> Rect {
 }
 
 struct Scene<'a> {
-    frame: &'a [u8],
+    frame: &'a mut [u8],
     pointer: Option<Point>,
 }
 impl Scene<'_> {
@@ -255,15 +271,24 @@ impl Scene<'_> {
             count += 1;
             Ok(())
         })?;
-        stream.write(&count.to_be_bytes())?;
-        let mut buf = [0; 12];
-        format.encode(self.pixel(0, 0), &mut buf[..format.size]);
-        stream.write(&buf[..format.size])?;
+        // Pack runs together so a drag frame needs only a few TCP segments.
+        let mut buf = [0; 536];
+        buf[..4].copy_from_slice(&count.to_be_bytes());
+        format.encode(self.pixel(0, 0), &mut buf[4..4 + format.size]);
+        let mut used = 4 + format.size;
         self.runs(rect, |pixel, run| {
-            format.encode(pixel, &mut buf[..format.size]);
-            buf[format.size..format.size + 8].copy_from_slice(&run.wire());
-            stream.write(&buf[..format.size + 8])
-        })
+            let end = used + format.size + 8;
+            if end > buf.len() {
+                stream.write(&buf[..used])?;
+                used = 0;
+            }
+            format.encode(pixel, &mut buf[used..used + format.size]);
+            used += format.size;
+            buf[used..used + 8].copy_from_slice(&run.wire());
+            used += 8;
+            Ok(())
+        })?;
+        stream.write(&buf[..used])
     }
 
     fn update(
@@ -363,19 +388,11 @@ fn serve(stream: &Stream) -> Result<(), ()> {
     stream.write(NAME)?;
 
     let mut frame = [0; SIDE * SIDE * 4];
-    if call(
-        DRAW_TRIANGLE,
-        frame.as_mut_ptr() as u32,
-        0xff194296,
-        0xffffcd28,
-    ) != frame.len() as u32
-    {
-        return Err(());
-    }
+    draw(&mut frame, (0, 0))?;
     let mut format = Format::parse(&NATIVE)?;
     let mut fresh = true;
     let mut scene = Scene {
-        frame: &frame,
+        frame: &mut frame,
         pointer: None,
     };
     let bounds = Rect {
@@ -384,6 +401,9 @@ fn serve(stream: &Stream) -> Result<(), ()> {
         w: DESKTOP,
         h: DESKTOP,
     };
+    let mut translation = (0i16, 0i16);
+    let mut grab_offset = None;
+    let mut primary_down = false;
     let mut shown = None;
     let mut pending = None;
     let mut rre = false;
@@ -431,12 +451,30 @@ fn serve(stream: &Stream) -> Result<(), ()> {
             4 => stream.skip(7)?, // KeyEvent
             5 => {
                 let motion = stream.take::<5>()?;
+                let point = (
+                    short(&motion[1..]).min(DESKTOP - 1),
+                    short(&motion[3..]).min(DESKTOP - 1),
+                );
                 if !local_cursor {
-                    scene.pointer = Some((
-                        short(&motion[1..]).min(DESKTOP - 1),
-                        short(&motion[3..]).min(DESKTOP - 1),
-                    ));
+                    scene.pointer = Some(point);
                 }
+                let down = motion[0] & 1 != 0;
+                let gpu = ((point.0 / SCALE) as i16, (point.1 / SCALE) as i16);
+                if down && !primary_down && scene.pixel(point.0, point.1) == GOLD.to_le_bytes() {
+                    grab_offset = Some((gpu.0 - translation.0, gpu.1 - translation.1));
+                }
+                if let Some((gx, gy)) = grab_offset {
+                    let next = (gpu.0 - gx, gpu.1 - gy);
+                    if next != translation {
+                        draw(scene.frame, next)?;
+                        translation = next;
+                        fresh = true;
+                    }
+                }
+                if !down {
+                    grab_offset = None;
+                }
+                primary_down = down;
             }
             6 => {
                 stream.skip(3)?;
@@ -449,8 +487,16 @@ fn serve(stream: &Stream) -> Result<(), ()> {
             _ => return Err(()),
         }
         if let Some((region, full)) = pending {
-            if full || send_cursor || scene.pointer != shown {
-                scene.update(stream, &format, region, full, rre, shown, send_cursor)?;
+            if full || fresh || send_cursor || scene.pointer != shown {
+                scene.update(
+                    stream,
+                    &format,
+                    region,
+                    full || fresh,
+                    rre,
+                    shown,
+                    send_cursor,
+                )?;
                 send_cursor = false;
                 pending = None;
                 fresh = false;
