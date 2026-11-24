@@ -472,6 +472,15 @@ impl Receiver {
                 _ => {}
             }
         }
+        #[cfg(all(feature = "pi-wifi", feature = "pi-managed"))]
+        if let Some(result) = crate::user_upload::wifi::command(
+            operation, session, argument, value, data, &mut reply[HEADER_LEN..],
+        ) {
+            match result {
+                Ok(length) => { reply_data_len = length; status = OK; }
+                Err(error) => status = error,
+            }
+        }
         if status != OK {
             if self.last_error != (operation, status) {
                 self.repeated_errors = 0;

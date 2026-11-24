@@ -63,6 +63,8 @@ unsafe fn exit(_frame: &mut UserFrame) -> u32 {
     {
         #[cfg(feature = "pi-hardware")]
         crate::raspi2b::reset::stop_deadman();
+        #[cfg(all(feature = "pi-wifi", feature = "pi-managed"))]
+        crate::user_upload::wifi::exited(_frame.registers[0]);
         _frame.return_address =
             crate::arm_kernel_after_user_trampoline as *const () as usize as u32;
         // The epilogue restores this status, entering Supervisor mode with
