@@ -42,6 +42,13 @@ pub unsafe fn dispatch(frame: &mut UserFrame) {
             _ => {}
         }
     }
+    #[cfg(all(feature = "pi-wifi", feature = "pi-managed"))]
+    if let Some(value) = crate::user_upload::tcp::syscall(
+        frame.registers[SYSCALL_NUMBER_REGISTER], frame.registers[0], frame.registers[1], frame.registers[2],
+    ) {
+        frame.registers[RESULT_REGISTER] = value;
+        return;
+    }
     let result = match frame.registers[SYSCALL_NUMBER_REGISTER] {
         SYS_WRITE => write(frame.registers[0], frame.registers[1], frame.registers[2]),
         SYS_EXIT => exit(frame),

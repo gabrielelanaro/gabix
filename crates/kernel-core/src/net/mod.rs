@@ -9,6 +9,7 @@ pub mod ipv4;
 pub mod mdns;
 pub mod smsc95xx;
 pub mod stack;
+pub mod tcp;
 pub mod udp;
 pub mod wifi;
 

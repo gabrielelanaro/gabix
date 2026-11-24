@@ -7,7 +7,7 @@ use gabix_kernel::{boot_record::crc32, elf::Elf32};
 const BEGIN: u32 = 24;
 const WRITE: u32 = 25;
 const START: u32 = 26;
-const RESULT: u32 = 27;
+pub const RESULT: u32 = 27;
 const INVALID: u32 = 1;
 const ORDER: u32 = 2;
 const CHECKSUM: u32 = 4;
@@ -143,7 +143,12 @@ pub fn run_pending() {
     }
 }
 
+pub fn running() -> bool {
+    unsafe { matches!((*core::ptr::addr_of!(UPLOAD)).state, State::Running) }
+}
+
 pub fn exited(code: u32) {
+    super::tcp::reset();
     let upload = unsafe { &mut *addr_of_mut!(UPLOAD) };
     if matches!(upload.state, State::Running) {
         upload.state = State::Exited(code);
