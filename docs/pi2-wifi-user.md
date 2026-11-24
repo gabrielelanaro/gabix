@@ -33,4 +33,32 @@ python3 tests/test_pi2_wifi_tcp_echo.py --address gabix-pi2.local
 
 The test uploads an ARM ELF into RAM. It binds TCP port 8080, accepts one connection, reads incoming bytes and writes them back. The Mac checks the first echo, waits 12 seconds on that connection, requests authenticated management status, then checks the second echo. It half-closes the stream and checks the server’s exit status.
 
-The foreground ELF can open one IPv4 stream listener and accept one peer at a time. The socket calls use the Gabix syscall numbers for socket, bind, listen, accept, read, write and close. Bind accepts a wildcard IPv4 address. Accept takes null peer-address arguments. Reads and writes can return partial counts. A zero-byte read indicates peer shutdown. The ARM sender keeps one segment in flight and retries it while the kernel polls. Testing a full framebuffer with packet loss and a slow reader is a separate milestone.
+The foreground ELF can open one IPv4 stream listener and accept one peer at a time. The socket calls use the Gabix syscall numbers for socket, bind, listen, accept, read, write and close. Bind accepts a wildcard IPv4 address. Accept takes null peer-address arguments. Reads and writes can return partial counts. A zero-byte read indicates peer shutdown. The ARM sender keeps one segment in flight and retries it while the kernel polls.
+
+## Transfer a V3D frame
+
+The uploaded example listens on TCP port 18081. Each eight-byte request contains
+the background color followed by the triangle color, both as four bytes in BGRA
+order. The server asks the kernel to render a fresh triangle, then writes 64
+rows of 64 BGRA pixels to the stream. Each reply is exactly 16,384 bytes.
+The client can send another request on the same connection.
+
+On a managed Wi-Fi Pi, syscall `0x4701` takes the user destination address in
+`r0`, the packed background in `r1` and the packed foreground in `r2`. It returns
+the byte count, or a negative error. The driver owns the GPU command lists,
+shader and render target. After V3D signals frame completion the driver makes
+the pixels visible to the ARM and copies them to the validated user buffer.
+
+Run the physical test from the Mac with the usual Wi-Fi firmware environment:
+
+```sh
+python3 tests/test_pi2_v3d_frames.py --address gabix-pi2.local
+```
+
+To exercise TCP loss recovery, build the Wi-Fi kernel with
+`GABIX_PI_FRAME_LOSS_TEST=1 sh scripts/build-arm.sh pi2-wifi-managed`, deploy
+that image once, and run the same test with `--expect-drop`. In this build the
+sender withholds one data segment on port 18081 after 16,384 bytes. The test
+checks the Pi journal for a successful retransmission of the same sequence,
+size and payload checksum. The Mac pauses before reading the second frame,
+then reads up to 73 bytes at a time and compares both frames byte for byte.

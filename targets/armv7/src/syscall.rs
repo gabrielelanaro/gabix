@@ -50,6 +50,16 @@ pub unsafe fn dispatch(frame: &mut UserFrame) {
         return;
     }
     let result = match frame.registers[SYSCALL_NUMBER_REGISTER] {
+        #[cfg(all(feature = "pi-wifi", feature = "pi-managed"))]
+        0x4701 if crate::user_upload::wifi::running() => {
+            use crate::raspi2b::v3d;
+            let [destination, background, foreground] = [frame.registers[0], frame.registers[1], frame.registers[2]];
+            if crate::memory::bootstrap_user_range(destination, v3d::FRAME_BYTES as u32) {
+                v3d::triangle(destination as *mut u8, background, foreground) as u32
+            } else {
+                SYSCALL_ERROR
+            }
+        }
         SYS_WRITE => write(frame.registers[0], frame.registers[1], frame.registers[2]),
         SYS_EXIT => exit(frame),
         SYS_REBOOT => crate::platform::reset(),

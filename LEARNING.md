@@ -45,6 +45,7 @@ through UART reboot/upload. Preserve the working server as the recovery image.
 - [x] USB Wi-Fi: RTL8188CU initialization, WPA2-Personal, DHCP, authenticated management, reconnect, and permanent SD boot verified on the Pi
 - [x] Upload two distinct ARM user executables over authenticated Wi-Fi and read their exit statuses on the same physical Pi boot. [User loader](docs/pi2-wifi-user.md)
 - [x] Keep Wi-Fi responsive during blocking TCP calls from an uploaded ARM user program. [Physical echo check](tests/test_pi2_wifi_tcp_echo.py)
+- [x] Transfer two V3D frames over one ARM TCP connection and verify every byte during slow reads and retransmission. [Physical frame test](tests/test_pi2_v3d_frames.py)
 
 ### TCP arc — the connection-oriented transport
 - [x] Lesson 31 TCP segment, three-way handshake, and first byte exchanged
@@ -564,6 +565,11 @@ A milestone is a "demo-able" checkpoint. Worth a commit + tag + log entry.
 ---
 
 ## Progress Log
+
+### 2026-11-24 — Transfer two V3D triangles over one TCP connection
+
+- Added the ARM triangle syscall and an uploadable TCP frame server. On physical Pi boot 37, the Mac verified all 32,768 bytes against pixel-center coverage for two color pairs. Frame CRC32 values were `c8b588bb` and `545a5cc4`.
+- During the slow read the test kernel withheld 536 bytes at sequence 534824842 and logged the same sequence, size and payload CRC32 (`e3d6be36`) on retransmission. The ELF exited 0 on kernel `4588ba2b`. Marked frame transfer complete. Next, serve the pixels as an RFB framebuffer update to a VNC viewer.
 
 ### 2026-11-24 — Keep Wi-Fi responsive during ARM userspace TCP waits
 

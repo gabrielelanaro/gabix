@@ -80,6 +80,9 @@ case "$platform" in
             feature=pi-managed,pi-wifi
             image_name=kernel-pi2-wifi-managed.img
         fi
+        if [ "${GABIX_PI_FRAME_LOSS_TEST:-0}" = 1 ] && [ "$platform" != pi2-managed ]; then
+            feature=$feature,pi-frame-loss-test
+        fi
         GABIX_PI_MANAGEMENT_KEY=${GABIX_PI_MANAGEMENT_KEY:-$HOME/.config/gabix/pi2-management.key}
         export GABIX_PI_MANAGEMENT_KEY
         if [ ! -f "$GABIX_PI_MANAGEMENT_KEY" ]; then

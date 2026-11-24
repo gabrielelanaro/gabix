@@ -37,6 +37,8 @@ struct PendingSegment {
 }
 
 struct Peer {
+    #[cfg(feature = "pi-frame-loss-test")]
+    loss: FrameLoss,
     endpoints: Endpoints,
     mac: [u8; 6],
     send_next: u32,
@@ -48,6 +50,16 @@ struct Peer {
     received_fin: bool,
     ack_due: bool,
     received: VecDeque<u8>,
+}
+
+// Physical-test build only. Withhold the first segment of frame two once,
+// leaving its normal TCP retransmission timer and queued payload intact.
+#[cfg(feature = "pi-frame-loss-test")]
+#[derive(Default)]
+struct FrameLoss {
+    sent: usize,
+    dropped: Option<u32>,
+    retried: bool,
 }
 
 impl Peer {
@@ -112,16 +124,21 @@ impl Peer {
         if !retry && !self.ack_due {
             return true;
         }
-        let (sequence, flags, data) = if retry {
+        let (sequence, flags, data, _attempt) = if retry {
             let pending = self.flight.as_mut().unwrap();
             if pending.attempts == RETRY_LIMIT {
                 return false;
             }
             pending.attempts += 1;
             pending.due = now + RETRY_MS;
-            (pending.sequence, pending.flags, pending.bytes.as_slice())
+            (
+                pending.sequence,
+                pending.flags,
+                pending.bytes.as_slice(),
+                pending.attempts,
+            )
         } else {
-            (self.send_next, FLAG_ACK, &[][..])
+            (self.send_next, FLAG_ACK, &[][..], 0)
         };
         let mut frame = [0; MAX_FRAME_LEN];
         let size = write_segment_with_window(
@@ -148,7 +165,34 @@ impl Peer {
             self.endpoints.remote_ip,
             size,
         ));
+        #[cfg(feature = "pi-frame-loss-test")]
+        if self.endpoints.local_port == 18081 && retry && !data.is_empty() {
+            if _attempt == 1 {
+                if self.loss.sent == crate::raspi2b::v3d::FRAME_BYTES && self.loss.dropped.is_none()
+                {
+                    self.loss.dropped = Some(sequence);
+                    crate::diagnostics::event(format_args!(
+                        "frame drop {} {} {:08x}",
+                        sequence,
+                        data.len(),
+                        gabix_kernel::boot_record::crc32(data)
+                    ));
+                    return true;
+                }
+                self.loss.sent += data.len();
+            }
+        }
         self.ack_due = !device.transmit(&frame[..TCP_OFFSET + size]);
+        #[cfg(feature = "pi-frame-loss-test")]
+        if retry && !self.ack_due && self.loss.dropped == Some(sequence) && !self.loss.retried {
+            self.loss.retried = true;
+            crate::diagnostics::event(format_args!(
+                "frame retry {} {} {:08x}",
+                sequence,
+                data.len(),
+                gabix_kernel::boot_record::crc32(data)
+            ));
+        }
         true
     }
 }
@@ -225,6 +269,8 @@ pub fn receive(local_ip: [u8; 4], local_mac: [u8; 6], frame: &[u8]) {
             && header.flags & (FLAG_SYN | FLAG_RST | FLAG_ACK | FLAG_FIN) == FLAG_SYN
         {
             let mut peer = Peer {
+                #[cfg(feature = "pi-frame-loss-test")]
+                loss: FrameLoss::default(),
                 endpoints: Endpoints {
                     local_ip,
                     remote_ip: ip.src_ip,

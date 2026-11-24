@@ -93,6 +93,7 @@ pi-lifecycle = ["raspi2b"]
 pi-uart-user = ["raspi2b"]
 pi-sd-loader = ["gabix-kernel/kernel"]
 pi-sd-transfer = ["pi-hardware", "pi-uart-user"]
+pi-frame-loss-test = ["pi-managed", "pi-wifi"]
 pi-managed = ["pi-sd-transfer", "dep:hmac", "dep:sha2"]
 
 [profile.dev]
