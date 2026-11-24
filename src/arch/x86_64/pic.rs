@@ -1,12 +1,8 @@
 //! 8259 PIC (Programmable Interrupt Controller) setup.
 //!
-//! The PIC routes hardware interrupts from devices to the CPU. By default
-//! it maps IRQs 0-15 to CPU vectors 8-15, which conflicts with CPU
-//! exceptions (which use vectors 0-31). We remap to vectors 32-47 so
-//! hardware interrupts don't get confused with exceptions.
-//!
-//! After `init()`, all IRQs are masked (no interrupts delivered yet).
-//! Later slices will unmask specific ones — the timer first.
+//! The two PICs route legacy device IRQs to CPU interrupt vectors.
+//! We assign IRQs 0–15 to vectors 32–47, above CPU exceptions 0–31.
+//! Initialization enables only the timer IRQ; all other PIC inputs stay masked.
 
 use crate::irq_mutex::IrqMutex;
 use pic8259::ChainedPics;
@@ -16,6 +12,9 @@ pub const PIC_1_OFFSET: u8 = 0x20;
 
 /// Offset for the slave PIC. IRQs 8-15 → CPU vectors 0x28-0x2F (40-47).
 pub const PIC_2_OFFSET: u8 = 0x28;
+
+const ALL_IRQS_MASKED: u8 = 0xff;
+const TIMER_IRQ_BIT: u8 = 1 << 0;
 
 /// The chained 8259 PICs (master + slave = 15 usable IRQs).
 ///
@@ -39,6 +38,6 @@ pub fn init() {
         //   bit 0 = 0 → master IRQ 0 (timer) UNMASKED
         //   bits 1-7 = 1 → all other master IRQs masked
         // Slave mask 0xFF: all slave IRQs masked (no devices yet).
-        pics.write_masks(0xFE, 0xFF);
+        pics.write_masks(ALL_IRQS_MASKED & !TIMER_IRQ_BIT, ALL_IRQS_MASKED);
     }
 }

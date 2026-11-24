@@ -1,6 +1,8 @@
 /target
 /targets/armv7/target/
 /crates/kernel-core/target/
+# Application lockfiles are tracked; standalone library tests generate this one.
+/crates/kernel-core/Cargo.lock
 **/__pycache__/
 **/.pytest_cache/
 **/.DS_Store

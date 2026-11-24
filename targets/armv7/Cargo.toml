@@ -2,6 +2,8 @@
 name = "gabix-armv7"
 version = "0.1.0"
 edition = "2021"
+# Bare-metal fixtures below are explicit binaries, not hosted test harnesses.
+autotests = false
 
 [[bin]]
 name = "gabix-armv7"
@@ -70,12 +72,15 @@ path = "src/pi2_lan9512_receive_probe.rs"
 [dependencies]
 gabix-kernel = { path = "../../crates/kernel-core", default-features = false }
 linked_list_allocator = "0.10"
+hmac = { version = "0.13", default-features = false, optional = true }
+sha2 = { version = "0.11", default-features = false, optional = true }
 
 [features]
 default = []
 virt = ["gabix-kernel/kernel"]
 raspi2b = ["gabix-kernel/kernel"]
 pi-hardware = ["raspi2b"]
+pi-wifi = ["pi-hardware", "gabix-kernel/wifi-security"]
 pi-network-dev = ["pi-hardware"]
 pi-network-dhcp-size-probe = []
 pi-network-dhcp-packet-probe = []
@@ -86,9 +91,31 @@ pi-network-repeated-receive-probe = []
 pi-network-no-irq-dev = ["pi-hardware"]
 pi-lifecycle = ["raspi2b"]
 pi-uart-user = ["raspi2b"]
+pi-sd-loader = ["gabix-kernel/kernel"]
+pi-sd-transfer = ["pi-hardware", "pi-uart-user"]
+pi-frame-loss-test = ["pi-managed", "pi-wifi"]
+pi-managed = ["pi-sd-transfer", "dep:hmac", "dep:sha2"]
 
 [profile.dev]
 panic = "abort"
 
 [profile.release]
 panic = "abort"
+
+[[bin]]
+name = "pi2-sd-check"
+path = "tests/sd_write.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "pi2-loader-trial"
+path = "tests/loader_trial.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "pi2-wifi-check"
+path = "tests/wifi.rs"
+test = false
+bench = false

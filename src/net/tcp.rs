@@ -1,25 +1,34 @@
-//! Minimal active-open TCP with a reliable send stream.
+//! TCP active-open connection and passive sockets.
+//! Active-open sends have a retransmission queue; passive sends are submitted once.
 
 use crate::irq_mutex::IrqMutex;
-use crate::net::checksum;
 use crate::println;
 use crate::process::Pid;
 use alloc::collections::{BTreeMap, VecDeque};
 use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
 
-pub const PROTOCOL_TCP: u8 = 6;
-pub const TCP_HEADER_LEN: usize = 20;
-pub const FLAG_FIN: u8 = 0x01;
-pub const FLAG_SYN: u8 = 0x02;
-pub const FLAG_RST: u8 = 0x04;
-pub const FLAG_PSH: u8 = 0x08;
-pub const FLAG_ACK: u8 = 0x10;
+pub use gabix_kernel::net::tcp::*;
+
 const CLOCK_GRANULARITY_TICKS: usize = 1;
+// Current x86 timer rate is 100 Hz: initial/minimum RTO is 1 s, cap is 60 s.
 const INITIAL_RTO_TICKS: usize = 100;
 const MAX_RTO_TICKS: usize = 6000;
 const SEND_MSS: usize = 1460;
+// Predictable teaching-kernel sequence generator; no secret or random input.
+const SERVER_ISN_TICK_MULTIPLIER: u32 = 1_103_515_245;
+const SERVER_ISN_OFFSET: u32 = 0x33ec_0001;
+// Fixed send cap, not an adaptive congestion-control implementation.
 const CONGESTION_WINDOW_SEGMENTS: usize = 4;
+// Integer weights from RFC 6298 section 2: alpha=1/8, beta=1/4, K=4.
+const SRTT_OLD_WEIGHT: usize = 7;
+const SRTT_TOTAL_WEIGHT: usize = 8;
+const RTTVAR_OLD_WEIGHT: usize = 3;
+const RTTVAR_TOTAL_WEIGHT: usize = 4;
+const RTO_VARIATION_MULTIPLIER: usize = 4;
+const RTO_BACKOFF_MULTIPLIER: usize = 2;
+const INITIAL_VARIATION_DIVISOR: usize = 2;
+const INITIAL_PEER_WINDOW: u16 = 4096;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TcpState {
@@ -34,98 +43,6 @@ pub enum TcpState {
     Closing,
     LastAck,
     TimeWait,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct TcpHeader {
-    pub src_port: u16,
-    pub dst_port: u16,
-    pub sequence: u32,
-    pub acknowledgment: u32,
-    pub flags: u8,
-    pub window: u16,
-    pub header_len: usize,
-}
-
-pub struct TcpSegment<'a> {
-    pub header: TcpHeader,
-    pub payload: &'a [u8],
-}
-
-impl<'a> TcpSegment<'a> {
-    pub fn parse(bytes: &'a [u8], src_ip: [u8; 4], dst_ip: [u8; 4]) -> Option<Self> {
-        if bytes.len() < TCP_HEADER_LEN || tcp_checksum(src_ip, dst_ip, bytes) != 0 {
-            return None;
-        }
-        let header_len = ((bytes[12] >> 4) as usize) * 4;
-        if header_len < TCP_HEADER_LEN || header_len > bytes.len() {
-            return None;
-        }
-        Some(Self {
-            header: TcpHeader {
-                src_port: u16::from_be_bytes([bytes[0], bytes[1]]),
-                dst_port: u16::from_be_bytes([bytes[2], bytes[3]]),
-                sequence: u32::from_be_bytes(bytes[4..8].try_into().ok()?),
-                acknowledgment: u32::from_be_bytes(bytes[8..12].try_into().ok()?),
-                flags: bytes[13],
-                window: u16::from_be_bytes([bytes[14], bytes[15]]),
-                header_len,
-            },
-            payload: &bytes[header_len..],
-        })
-    }
-}
-
-/// Write a TCP segment. SYN segments include the four-byte MSS option.
-pub fn write_segment(
-    out: &mut [u8],
-    endpoints: Endpoints,
-    sequence: u32,
-    acknowledgment: u32,
-    flags: u8,
-    payload: &[u8],
-) -> Option<usize> {
-    let header_len = if flags & FLAG_SYN != 0 {
-        24
-    } else {
-        TCP_HEADER_LEN
-    };
-    let length = header_len.checked_add(payload.len())?;
-    if length > u16::MAX as usize || out.len() < length {
-        return None;
-    }
-    out[..length].fill(0);
-    out[0..2].copy_from_slice(&endpoints.local_port.to_be_bytes());
-    out[2..4].copy_from_slice(&endpoints.remote_port.to_be_bytes());
-    out[4..8].copy_from_slice(&sequence.to_be_bytes());
-    out[8..12].copy_from_slice(&acknowledgment.to_be_bytes());
-    out[12] = ((header_len / 4) as u8) << 4;
-    out[13] = flags;
-    out[14..16].copy_from_slice(&4096u16.to_be_bytes());
-    if header_len == 24 {
-        out[20..24].copy_from_slice(&[2, 4, 0x05, 0xb4]);
-    }
-    out[header_len..length].copy_from_slice(payload);
-    let sum = tcp_checksum(endpoints.local_ip, endpoints.remote_ip, &out[..length]);
-    out[16..18].copy_from_slice(&sum.to_be_bytes());
-    Some(length)
-}
-
-fn tcp_checksum(src_ip: [u8; 4], dst_ip: [u8; 4], bytes: &[u8]) -> u16 {
-    let mut pseudo = [0u8; 12];
-    pseudo[0..4].copy_from_slice(&src_ip);
-    pseudo[4..8].copy_from_slice(&dst_ip);
-    pseudo[9] = PROTOCOL_TCP;
-    pseudo[10..12].copy_from_slice(&(bytes.len() as u16).to_be_bytes());
-    checksum::internet_checksum_parts(&[&pseudo, bytes])
-}
-
-#[derive(Clone, Copy)]
-pub struct Endpoints {
-    pub local_ip: [u8; 4],
-    pub remote_ip: [u8; 4],
-    pub local_port: u16,
-    pub remote_port: u16,
 }
 
 struct TcpControlBlock {
@@ -159,6 +76,9 @@ struct ConnectionKey {
     remote_port: u16,
 }
 
+// Created on SYN and owned by CONNECTIONS before accept() returns a descriptor.
+// Receive bytes accumulate without a queue limit. No retransmission queue or
+// peer-window accounting is implemented for these passive connections.
 struct ServerConnection {
     endpoints: Endpoints,
     state: TcpState,
@@ -191,8 +111,11 @@ pub struct TcpSocket {
 }
 
 lazy_static::lazy_static! {
+    // Descriptors keep listeners alive. Stale weak entries remain until reused.
     static ref LISTENERS: IrqMutex<BTreeMap<u16, Weak<TcpSocket>>> =
         IrqMutex::new(BTreeMap::new());
+    // Strong references retain connections, including closed ones: removal and
+    // TIME_WAIT expiration have not been implemented yet.
     static ref CONNECTIONS: IrqMutex<BTreeMap<ConnectionKey, Arc<TcpSocket>>> =
         IrqMutex::new(BTreeMap::new());
 }
@@ -224,6 +147,8 @@ impl TcpSocket {
         }
     }
 
+    /// Register this port and queue completed handshakes for accept().
+    /// Backlog limits the completed queue; half-open connections are unbounded.
     pub fn listen(self: &Arc<Self>, backlog: usize) -> Result<(), ()> {
         let port = match *self.inner.lock() {
             SocketState::Unbound { port: Some(port) } => port,
@@ -255,6 +180,8 @@ impl TcpSocket {
         }
     }
 
+    /// Remember one task while the accept queue is empty. A later registration
+    /// replaces it; the caller handles blocking after this lock is released.
     pub fn register_accept_waiter(&self, pid: Pid) -> bool {
         let mut state = self.inner.lock();
         match &mut *state {
@@ -270,6 +197,8 @@ impl TcpSocket {
         }
     }
 
+    /// Consume queued bytes first. An empty queue returns Some(0) after FIN,
+    /// or None while waiting for data (also None for a non-connection socket).
     pub fn read(&self, out: &mut [u8]) -> Option<usize> {
         let mut state = self.inner.lock();
         let SocketState::Connection(connection) = &mut *state else {
@@ -298,6 +227,8 @@ impl TcpSocket {
         }
     }
 
+    /// Prepare segments and advance send_next; the caller transmits them.
+    /// This path has no retry queue and does not consult the peer's window.
     pub fn send(&self, payload: &[u8]) -> Option<Vec<Outbound>> {
         let mut state = self.inner.lock();
         let SocketState::Connection(connection) = &mut *state else {
@@ -307,7 +238,7 @@ impl TcpSocket {
             return None;
         }
         let mut result = Vec::new();
-        for chunk in payload.chunks(1460) {
+        for chunk in payload.chunks(SEND_MSS) {
             let sequence = connection.send_next;
             result.push(build_server(
                 connection,
@@ -369,7 +300,7 @@ fn build_server(
     payload: &[u8],
 ) -> Option<Outbound> {
     let mut bytes = Vec::new();
-    bytes.resize(24 + payload.len(), 0);
+    bytes.resize(SYN_HEADER_BYTES + payload.len(), 0);
     let len = write_segment(
         &mut bytes,
         connection.endpoints,
@@ -401,6 +332,9 @@ struct RetransmitEntry {
 }
 
 impl RetransmitEntry {
+    /// Exclusive sequence end used for cumulative ACK removal. SYN or FIN
+    /// contributes one position here; the generated retained entries never
+    /// combine them. Payload length counts sequence positions byte by byte.
     fn sequence_end(&self) -> u32 {
         self.sequence
             .wrapping_add(self.payload.len() as u32)
@@ -408,6 +342,9 @@ impl RetransmitEntry {
     }
 }
 
+/// Integer-tick round-trip estimator for the global active-open connection.
+/// SRTT smooths measured delay; RTTVAR smooths its absolute deviation. The
+/// current timeout includes backoff; a fresh sample resets it to the estimate.
 struct RttEstimator {
     srtt_ticks: Option<usize>,
     rttvar_ticks: usize,
@@ -426,19 +363,23 @@ impl RttEstimator {
     }
 
     fn record_sample(&mut self, sample_ticks: usize) {
-        let sample = sample_ticks.max(1);
+        let sample = sample_ticks.max(CLOCK_GRANULARITY_TICKS);
         match self.srtt_ticks {
             None => {
                 self.srtt_ticks = Some(sample);
-                self.rttvar_ticks = (sample / 2).max(1);
+                self.rttvar_ticks =
+                    (sample / INITIAL_VARIATION_DIVISOR).max(CLOCK_GRANULARITY_TICKS);
             }
             Some(old_srtt) => {
+                // Update variation using the previous smoothed RTT, then
+                // update SRTT. Integer division truncates fractional ticks.
                 let deviation = old_srtt.abs_diff(sample);
-                self.rttvar_ticks = (3 * self.rttvar_ticks + deviation) / 4;
-                self.srtt_ticks = Some((7 * old_srtt + sample) / 8);
+                self.rttvar_ticks =
+                    (RTTVAR_OLD_WEIGHT * self.rttvar_ticks + deviation) / RTTVAR_TOTAL_WEIGHT;
+                self.srtt_ticks = Some((SRTT_OLD_WEIGHT * old_srtt + sample) / SRTT_TOTAL_WEIGHT);
             }
         }
-        let variation = (4 * self.rttvar_ticks).max(CLOCK_GRANULARITY_TICKS);
+        let variation = (RTO_VARIATION_MULTIPLIER * self.rttvar_ticks).max(CLOCK_GRANULARITY_TICKS);
         self.computed_rto_ticks = self
             .srtt_ticks
             .unwrap_or(sample)
@@ -455,7 +396,10 @@ impl RttEstimator {
     }
 
     fn back_off(&mut self) {
-        self.current_rto_ticks = self.current_rto_ticks.saturating_mul(2).min(MAX_RTO_TICKS);
+        self.current_rto_ticks = self
+            .current_rto_ticks
+            .saturating_mul(RTO_BACKOFF_MULTIPLIER)
+            .min(MAX_RTO_TICKS);
     }
 }
 
@@ -465,7 +409,7 @@ fn now_ticks() -> usize {
 
 fn build_at(tcb: &TcpControlBlock, sequence: u32, flags: u8, payload: &[u8]) -> Option<Outbound> {
     let mut bytes = Vec::new();
-    bytes.resize(24 + payload.len(), 0);
+    bytes.resize(SYN_HEADER_BYTES + payload.len(), 0);
     let len = write_segment(
         &mut bytes,
         tcb.endpoints,
@@ -491,6 +435,8 @@ fn build(tcb: &TcpControlBlock, flags: u8, payload: &[u8]) -> Option<Outbound> {
     build_at(tcb, tcb.send_next, flags, payload)
 }
 
+// Retain a copy and timestamp when preparing outbound work. Actual device
+// transmission happens later, so these times include caller/driver delay.
 fn retain_for_ack(tcb: &mut TcpControlBlock, sequence: u32, flags: u8, payload: &[u8]) {
     tcb.retransmit_queue.push(RetransmitEntry {
         sequence,
@@ -508,7 +454,7 @@ pub fn active_open(endpoints: Endpoints, isn: u32) -> Option<Outbound> {
         send_next: isn,
         send_unacked: isn,
         recv_next: 0,
-        send_window: 4096,
+        send_window: INITIAL_PEER_WINDOW,
         receive: Vec::new(),
         connect_waiter: None,
         recv_waiter: None,
@@ -534,7 +480,10 @@ pub fn register_connect_waiter(pid: Pid) -> bool {
     true
 }
 
-/// Queue as many payload bytes as the peer and fixed congestion windows allow.
+/// Prepare at most the peer window or fixed four-segment cap, subtracting
+/// bytes already in flight. Return the accepted prefix length and segments;
+/// callers transmit them separately. Zero accepted bytes is a full window,
+/// while None means no established connection, empty input or build failure.
 pub fn send_data(payload: &[u8]) -> Option<(usize, Vec<Outbound>)> {
     let mut slot = TCB.lock();
     let tcb = slot.as_mut()?;
@@ -591,7 +540,8 @@ pub fn register_recv_waiter(pid: Pid) -> bool {
     true
 }
 
-/// Process one valid segment for the single active connection and return an ACK to transmit.
+/// Parse a segment, try the global active connection, then passive sockets.
+/// Any returned segment still needs transmission by the caller.
 pub fn receive(src_ip: [u8; 4], dst_ip: [u8; 4], bytes: &[u8]) -> Option<Outbound> {
     let segment = TcpSegment::parse(bytes, src_ip, dst_ip)?;
     {
@@ -632,6 +582,8 @@ pub fn receive(src_ip: [u8; 4], dst_ip: [u8; 4], bytes: &[u8]) -> Option<Outboun
                     acknowledge(tcb, segment.header.acknowledgment, now_ticks());
                     tcb.send_window = segment.header.window;
                 }
+                // Only the exact next sequence is buffered. Duplicate/out-of-order
+                // data gets no ACK here; active FIN/RST handling is still absent.
                 if !segment.payload.is_empty() && segment.header.sequence == tcb.recv_next {
                     tcb.receive.extend_from_slice(segment.payload);
                     tcb.recv_next = tcb.recv_next.wrapping_add(segment.payload.len() as u32);
@@ -671,6 +623,8 @@ fn receive_server(src_ip: [u8; 4], dst_ip: [u8; 4], segment: &TcpSegment<'_>) ->
             && segment.header.acknowledgment == connection.send_next
         {
             connection.send_unacked = segment.header.acknowledgment;
+            // This branch consumes the handshake ACK without processing any
+            // accompanying payload. Queue admission happens after state changes.
             connection.state = TcpState::Established;
             let listener = connection.listener.upgrade()?;
             drop(state);
@@ -685,6 +639,8 @@ fn receive_server(src_ip: [u8; 4], dst_ip: [u8; 4], segment: &TcpSegment<'_>) ->
                 else {
                     return None;
                 };
+                // A full queue leaves this established connection in CONNECTIONS
+                // without exposing it to accept(); there is no retry admission.
                 if accepted.len() >= *backlog {
                     return None;
                 }
@@ -698,6 +654,8 @@ fn receive_server(src_ip: [u8; 4], dst_ip: [u8; 4], segment: &TcpSegment<'_>) ->
             return None;
         }
 
+        // Current teardown advances on any ACK flag; it does not validate that
+        // the acknowledgment covers our FIN. Keep this limitation explicit.
         if segment.header.flags & FLAG_ACK != 0 {
             connection.send_unacked = segment.header.acknowledgment;
             let old = connection.state;
@@ -720,6 +678,8 @@ fn receive_server(src_ip: [u8; 4], dst_ip: [u8; 4], segment: &TcpSegment<'_>) ->
             }
         }
 
+        // Buffer only contiguous data; duplicates and gaps return without ACK.
+        // RST handling and receive-window enforcement are still unimplemented.
         if segment.header.sequence != connection.recv_next {
             return None;
         }
@@ -776,8 +736,8 @@ fn receive_server(src_ip: [u8; 4], dst_ip: [u8; 4], segment: &TcpSegment<'_>) ->
     }
 
     let isn = (now_ticks() as u32)
-        .wrapping_mul(1_103_515_245)
-        .wrapping_add(0x33ec_0001);
+        .wrapping_mul(SERVER_ISN_TICK_MULTIPLIER)
+        .wrapping_add(SERVER_ISN_OFFSET);
     let connection = ServerConnection {
         endpoints: Endpoints {
             local_ip: dst_ip,
@@ -807,6 +767,9 @@ fn receive_server(src_ip: [u8; 4], dst_ip: [u8; 4], segment: &TcpSegment<'_>) ->
     Some(reply)
 }
 
+// Accept advancing cumulative ACKs up to send_next. Remove only fully
+// acknowledged entries; partial entries retain their full payload. If this
+// ACK removes any retransmitted entry, skip its timing sample (Karn's rule).
 fn acknowledge(tcb: &mut TcpControlBlock, acknowledgment: u32, now: usize) {
     if !sequence_after(acknowledgment, tcb.send_unacked)
         || sequence_after(acknowledgment, tcb.send_next)
@@ -850,8 +813,11 @@ fn sequence_after(left: u32, right: u32) -> bool {
 
 /// Return the oldest expired segment for transmission.
 ///
-/// The network task calls this once per timer wake. Karn's algorithm marks
-/// the entry so its eventual ACK cannot produce an ambiguous RTT sample.
+/// The network task polls this after receive processing. Only the global
+/// active-open queue is examined; passive ServerConnection has no such queue.
+/// Before returning a segment, update its timestamp, mark it retransmitted
+/// and double the timeout up to the cap. The caller performs transmission;
+/// failure there does not undo these changes. There is no retry-count limit.
 pub fn poll_retransmit(now: usize) -> Option<Outbound> {
     let mut slot = TCB.lock();
     let tcb = slot.as_mut()?;

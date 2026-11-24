@@ -83,7 +83,7 @@
 
 <p>The LAN9512 is a USB device. It connects to the DWC2's port &mdash; the same port 7.04 brought up. gabix enumerates it with the routine from 7.02; it reports vendor <code>0x0424</code> and product <code>0xec00</code>, the part on the Pi 2B, and <code>is_lan9512()</code> matches that pair. Inside the package are a two-port USB hub (further devices could attach to it) and an Ethernet MAC and PHY. gabix uses only the Ethernet controller.</p>
 
-<p>The ARM reaches the chip through two USB endpoints: a bulk IN and a bulk OUT, which <code>configure_bulk_device()</code> from 7.04 locates. There are no memory-mapped registers and no interrupt line to wire. Configuration and frame I/O both cross those endpoints as USB transfers, plus a control endpoint for register access.</p>
+<p>The ARM reaches the chip through two USB endpoints: a bulk IN and a bulk OUT, which <code>configure_bulk_device()</code> from 7.04 locates. The ARM accesses adapter registers through control endpoint zero. Frame data uses the bulk endpoints. The current driver polls transfers through DWC2; it does not install an adapter interrupt handler.</p>
 
 <h2>2. Registers over USB: the vendor request</h2>
 
@@ -102,7 +102,7 @@
 <div class="snip-meta"><span>targets/armv7/src/raspi2b/lan9512.rs</span> · <span class="what">register access over USB</span></div>
 <pre><code><span class="k">unsafe fn</span> <span class="f">read_register</span>(host: <span class="k">&amp;mut</span> <span class="t">Dwc2</span>, device: <span class="t">UsbDevice</span>, register: <span class="t">u16</span>) -&gt; <span class="t">Option</span>&lt;<span class="t">u32</span>&gt; {
     <span class="k">let mut</span> bytes = [<span class="n">0u8</span>; <span class="n">4</span>];
-    <span class="k">if</span> host.<span class="f">control_read</span>(device, <span class="n">0xc0</span>, READ_REGISTER, <span class="n">0</span>, register, <span class="k">&amp;mut</span> bytes)? != bytes.len() {
+    <span class="k">if</span> host.<span class="f">control_read</span>(device, USB_VENDOR_DEVICE_READ, READ_REGISTER, UNUSED_REQUEST_VALUE, register, <span class="k">&amp;mut</span> bytes)? != bytes.len() {
         <span class="k">return</span> <span class="t">None</span>;
     }
     <span class="t">Some</span>(<span class="t">u32</span>::<span class="f">from_le_bytes</span>(bytes))
@@ -111,7 +111,7 @@
 <span class="k">unsafe fn</span> <span class="f">write_register</span>(
     host: <span class="k">&amp;mut</span> <span class="t">Dwc2</span>, device: <span class="t">UsbDevice</span>, register: <span class="t">u16</span>, value: <span class="t">u32</span>,
 ) -&gt; <span class="t">Option</span>&lt;()&gt; {
-    host.<span class="f">control_write</span>(device, <span class="n">0x40</span>, WRITE_REGISTER, <span class="n">0</span>, register, <span class="k">&amp;</span>value.<span class="f">to_le_bytes</span>())
+    host.<span class="f">control_write</span>(device, USB_VENDOR_DEVICE_WRITE, WRITE_REGISTER, UNUSED_REQUEST_VALUE, register, <span class="k">&amp;</span>value.<span class="f">to_le_bytes</span>())
 }</code></pre>
 </div>
 
@@ -119,7 +119,7 @@
 
 <h2>3. Bring-up: reset, MAC, enable</h2>
 
-<p><code>configure()</code> runs a fixed sequence of register writes that take the chip from reset to "transmit and receive enabled." In order: reset the MAC; read the factory MAC address out of the EEPROM; program it back into the address registers; set the hardware config (burst, offsets, flow control); then enable the MAC's transmitter and receiver and turn TX on. Each step is one <code>write_register</code> or <code>read_register</code> call &mdash; that is, one USB control transfer.</p>
+<p><code>configure()</code> runs a fixed sequence of register writes that take the chip from reset to "transmit and receive enabled." In order: reset the MAC; read the factory MAC address out of the EEPROM; program it back into the address registers; set the hardware config (burst, offsets, flow control); then enable the MAC's transmitter and receiver and turn TX on. Each register access is a USB control transfer; reset polling and EEPROM reads require several accesses. See <code>lan9512.rs::configure</code> and <code>read_mac_address</code>.</p>
 
 <div class="legend">
   <span class="lg-item"><span class="lg-chip"></span> ARM (acts)</span>
@@ -130,7 +130,7 @@
 </div>
 <div class="vignettes">
   <div class="panel">
-    <div class="hd"><span class="num">1</span><span class="ttl">Reset the MAC</span><span class="src">lan9512.rs:51</span></div>
+    <div class="hd"><span class="num">1</span><span class="ttl">Reset the MAC</span><span class="src">lan9512.rs:72</span></div>
     <div class="scene">
       <div class="chip arm active"><div class="nm">ARM</div><div class="sub">CPU</div></div>
       <div class="link write"><span class="lab">HW_CFG | LRST</span><div class="ln"></div><span class="lab2">write 0x14 ← 0x08</span></div>
@@ -138,10 +138,10 @@
       <div class="link write"><span class="lab">EP0</span><div class="ln"></div><span class="lab2">control WRITE</span></div>
       <div class="chip dev"><div class="nm">LAN9512</div><div class="sub">MAC in reset</div></div>
     </div>
-    <p class="cap">ARM writes <code>HW_CFG</code> with <code>HW_CFG_LRST</code> to reset the MAC, then polls <code>HW_CFG</code> until the chip clears LRST (<code>lan9512.rs:51-52</code>).</p>
+    <p class="cap">ARM writes <code>HW_CFG</code> with <code>LITE_RESET_REQUEST</code> to reset the MAC, then polls <code>HW_CFG</code> until the chip clears LRST (<code>lan9512.rs:72-73</code>).</p>
   </div>
   <div class="panel">
-    <div class="hd"><span class="num">2</span><span class="ttl">Read MAC from EEPROM</span><span class="src">lan9512.rs:54</span></div>
+    <div class="hd"><span class="num">2</span><span class="ttl">Read MAC from EEPROM</span><span class="src">lan9512.rs:76</span></div>
     <div class="scene">
       <div class="chip arm active"><div class="nm">ARM</div><div class="sub">CPU</div></div>
       <div class="link read"><span class="lab">E2P_CMD / E2P_DATA</span><div class="ln"></div><span class="lab2">read 0x30 / 0x34</span></div>
@@ -149,10 +149,10 @@
       <div class="link read"><span class="lab">EP0</span><div class="ln"></div><span class="lab2">control READ</span></div>
       <div class="chip dev"><div class="nm">LAN9512</div><div class="sub">MAC read</div></div>
     </div>
-    <p class="cap">ARM reads the factory MAC one byte at a time through the <code>E2P_CMD</code>/<code>E2P_DATA</code> register pair, substituting a fixed locally-administered address if the EEPROM is absent (<code>lan9512.rs:54, 195-209</code>).</p>
+    <p class="cap">ARM reads the factory MAC one byte at a time through the <code>E2P_CMD</code>/<code>E2P_DATA</code> register pair, substituting a fixed locally-administered address if the EEPROM is absent (<code>lan9512.rs:76-78, 255</code>).</p>
   </div>
   <div class="panel">
-    <div class="hd"><span class="num">3</span><span class="ttl">Program the MAC</span><span class="src">lan9512.rs:60</span></div>
+    <div class="hd"><span class="num">3</span><span class="ttl">Program the MAC</span><span class="src">lan9512.rs:79</span></div>
     <div class="scene">
       <div class="chip arm active"><div class="nm">ARM</div><div class="sub">CPU</div></div>
       <div class="link write"><span class="lab">ADDRL / ADDRH</span><div class="ln"></div><span class="lab2">write 0x108 / 0x104</span></div>
@@ -160,10 +160,10 @@
       <div class="link write"><span class="lab">EP0</span><div class="ln"></div><span class="lab2">control WRITE</span></div>
       <div class="chip dev"><div class="nm">LAN9512</div><div class="sub">MAC programmed</div></div>
     </div>
-    <p class="cap">ARM writes the MAC low word to <code>ADDRL</code> and the high word to <code>ADDRH</code> (<code>lan9512.rs:60, 66</code>).</p>
+    <p class="cap">ARM writes the MAC low word to <code>ADDRL</code> and the high word to <code>ADDRH</code> (<code>lan9512.rs:79-90</code>).</p>
   </div>
   <div class="panel">
-    <div class="hd"><span class="num">4</span><span class="ttl">Configure hardware</span><span class="src">lan9512.rs:75</span></div>
+    <div class="hd"><span class="num">4</span><span class="ttl">Configure hardware</span><span class="src">lan9512.rs:93</span></div>
     <div class="scene">
       <div class="chip arm active"><div class="nm">ARM</div><div class="sub">CPU</div></div>
       <div class="link write"><span class="lab">HW_CFG, BURST_CAP,</span><div class="ln"></div><span class="lab2">AFC_CFG, COE_CR</span></div>
@@ -171,10 +171,10 @@
       <div class="link write"><span class="lab">EP0</span><div class="ln"></div><span class="lab2">control WRITE</span></div>
       <div class="chip dev"><div class="nm">LAN9512</div><div class="sub">HW configured</div></div>
     </div>
-    <p class="cap">ARM sets <code>HW_CFG</code> <code>HW_CFG_BIR</code> and clears <code>HW_CFG_RXDOFF</code>, then writes <code>BURST_CAP</code>=0, <code>AFC_CFG</code>=default, <code>COE_CR</code>=0 (<code>lan9512.rs:75-80</code>).</p>
+    <p class="cap">ARM sets <code>HW_CFG</code> <code>BULK_IN_EMPTY_RESPONSE</code> and clears <code>RX_DATA_OFFSET_MASK</code>, then writes <code>BURST_CAP</code>=0, <code>AFC_CFG</code>=default, <code>COE_CR</code>=0 (<code>lan9512.rs:93-104</code>).</p>
   </div>
   <div class="panel">
-    <div class="hd"><span class="num">5</span><span class="ttl">Enable TX and RX</span><span class="src">lan9512.rs:87</span></div>
+    <div class="hd"><span class="num">5</span><span class="ttl">Enable TX and RX</span><span class="src">lan9512.rs:106</span></div>
     <div class="scene">
       <div class="chip arm active"><div class="nm">ARM</div><div class="sub">CPU</div></div>
       <div class="link write"><span class="lab">MAC_CR | FDX|TX|RX</span><div class="ln"></div><span class="lab2">then TX_CFG_ON</span></div>
@@ -182,14 +182,14 @@
       <div class="link write"><span class="lab">EP0</span><div class="ln"></div><span class="lab2">control WRITE</span></div>
       <div class="chip dev"><div class="nm">LAN9512</div><div class="sub">TX/RX on</div></div>
     </div>
-    <p class="cap">ARM sets <code>MAC_CR</code> <code>FULL_DUPLEX|TX_ENABLE|RX_ENABLE</code> and writes <code>TX_CFG_ON</code>; the chip now accepts frames for sending and delivers received frames to the bulk IN endpoint (<code>lan9512.rs:87, 89</code>).</p>
+    <p class="cap">ARM sets <code>MAC_CR</code> <code>FULL_DUPLEX|TX_ENABLE|RX_ENABLE</code> and writes <code>TX_CFG_ON</code>; the chip now accepts frames for sending and delivers received frames to the bulk IN endpoint (<code>lan9512.rs:106-113</code>).</p>
   </div>
 </div>
 
 <div class="snip">
 <div class="snip-meta"><span>targets/armv7/src/raspi2b/lan9512.rs</span> · <span class="what">configure, trimmed</span></div>
-<pre><code><span class="f">write_register</span>(<span class="k">&amp;mut</span> host, device, HW_CFG, HW_CFG_LRST)?;            <span class="c">// reset the MAC</span>
-<span class="f">wait_register_clear</span>(<span class="k">&amp;mut</span> host, device, HW_CFG, HW_CFG_LRST)?;
+<pre><code><span class="f">write_register</span>(<span class="k">&amp;mut</span> host, device, HW_CFG, LITE_RESET_REQUEST)?;            <span class="c">// reset the MAC</span>
+<span class="f">wait_register_clear</span>(<span class="k">&amp;mut</span> host, device, HW_CFG, LITE_RESET_REQUEST)?;
 
 <span class="k">let</span> mac = <span class="f">read_mac_address</span>(<span class="k">&amp;mut</span> host, device)                     <span class="c">// MAC from the EEPROM</span>
     .<span class="f">filter</span>(valid_mac_address)
@@ -197,11 +197,11 @@
 <span class="f">write_register</span>(<span class="k">&amp;mut</span> host, device, ADDRL, <span class="n">...</span>)?;                    <span class="c">// program the MAC low</span>
 <span class="f">write_register</span>(<span class="k">&amp;mut</span> host, device, ADDRH, <span class="n">...</span>)?;                    <span class="c">// program the MAC high</span>
 
-<span class="k">let</span> hardware = <span class="f">read_register</span>(<span class="k">&amp;mut</span> host, device, HW_CFG)?;          <span class="c">// HW_CFG: bursts on, RX offset off</span>
-<span class="f">write_register</span>(<span class="k">&amp;mut</span> host, device, HW_CFG, (hardware | HW_CFG_BIR) &amp; !HW_CFG_RXDOFF)?;
+<span class="k">let</span> hardware = <span class="f">read_register</span>(<span class="k">&amp;mut</span> host, device, HW_CFG)?;          <span class="c">// read current hardware configuration</span>
+<span class="f">write_register</span>(<span class="k">&amp;mut</span> host, device, HW_CFG, (hardware | BULK_IN_EMPTY_RESPONSE) &amp; !RX_DATA_OFFSET_MASK)?;
 <span class="f">write_register</span>(<span class="k">&amp;mut</span> host, device, BURST_CAP, <span class="n">0</span>)?;
 <span class="f">write_register</span>(<span class="k">&amp;mut</span> host, device, AFC_CFG, AFC_CFG_DEFAULT)?;
-<span class="f">write_register</span>(<span class="k">&amp;mut</span> host, device, COE_CR, <span class="n">0</span>)?;
+<span class="f">write_register</span>(<span class="k">&amp;mut</span> host, device, COE_CR, CHECKSUM_OFFLOAD_DISABLED)?;
 
 <span class="k">let</span> mac_control = <span class="f">read_register</span>(<span class="k">&amp;mut</span> host, device, MAC_CR)?;        <span class="c">// enable MAC: full duplex, TX, RX</span>
 <span class="f">write_register</span>(<span class="k">&amp;mut</span> host, device, MAC_CR,
@@ -209,7 +209,7 @@
 <span class="f">write_register</span>(<span class="k">&amp;mut</span> host, device, TX_CFG, TX_CFG_ON)?;               <span class="c">// transmit on</span></code></pre>
 </div>
 
-<p>The reset write sets <code>HW_CFG_LRST</code>; <code>wait_register_clear</code> polls <code>HW_CFG</code> over USB until the chip clears that bit, which signals reset finished. The MAC address comes out of the EEPROM one byte at a time through the <code>E2P_CMD</code>/<code>E2P_DATA</code> register pair (<code>read_mac_address</code>); if the EEPROM is absent or the address is the all-zero or broadcast default, gabix substitutes a fixed locally-administered address. The final two writes set <code>MAC_CR_FULL_DUPLEX | MAC_CR_TX_ENABLE | MAC_CR_RX_ENABLE</code> and write <code>TX_CFG_ON</code>, after which the chip accepts frames for sending and delivers received frames to the bulk IN endpoint.</p>
+<p>The reset write sets <code>LITE_RESET_REQUEST</code>; <code>wait_register_clear</code> polls <code>HW_CFG</code> over USB until the chip clears that bit, which signals reset finished. The MAC address comes out of the EEPROM one byte at a time through the <code>E2P_CMD</code>/<code>E2P_DATA</code> register pair (<code>read_mac_address</code>); if the EEPROM is absent or the address is the all-zero or broadcast default, gabix substitutes a fixed locally-administered address. The final two writes set <code>MAC_CR_FULL_DUPLEX | MAC_CR_TX_ENABLE | MAC_CR_RX_ENABLE</code> and write <code>TX_CFG_ON</code>, after which the chip accepts frames for sending and delivers received frames to the bulk IN endpoint.</p>
 
 <h2>4. Frames over bulk: TX and RX</h2>
 
@@ -241,7 +241,7 @@
   <div class="link read" style="grid-column:6;grid-row:4"><span class="lab">⑤ frame</span><div class="ln"></div><span class="lab2">from wire</span></div>
   <div class="wireblock" style="grid-column:7;grid-row:4">Ethernet wire<span class="sub">network stack</span></div>
 </div>
-<p class="cap2">TX: the ARM prefixes the frame with the eight-byte smsc95xx TX header (command/length word + length word) and calls <code>bulk_out</code>; the DWC2 sends it to the LAN9512's bulk OUT endpoint, which puts the bytes on the wire. RX reverses: <code>bulk_in</code> reads framed bytes, then <code>read_rx_frame</code> strips the four-byte RX status header and the four-byte FCS. <code>write_tx_frame</code> <code>smsc95xx.rs:25-28</code>; <code>bulk_out</code> <code>lan9512.rs:126</code>; <code>bulk_in</code> <code>lan9512.rs:143</code>; <code>read_rx_frame</code> <code>smsc95xx.rs:32-45</code>.</p>
+<p class="cap2">TX: the ARM prefixes the frame with the eight-byte smsc95xx TX header (command/length word + length word) and calls <code>bulk_out</code>; the DWC2 sends it to the LAN9512's bulk OUT endpoint, which puts the bytes on the wire. RX reverses: <code>bulk_in</code> reads framed bytes, then <code>read_rx_frame</code> strips the four-byte RX status header and the four-byte FCS. <code>write_tx_frame</code> <code>smsc95xx.rs:27-42</code>; <code>bulk_out</code> <code>lan9512.rs:143</code>; <code>bulk_in</code> <code>lan9512.rs:178</code>; <code>read_rx_frame</code> <code>smsc95xx.rs:45-63</code>.</p>
 
 <div class="snip">
 <div class="snip-meta"><span>crates/kernel-core/src/net/smsc95xx.rs</span> · <span class="what">TX header</span></div>
@@ -255,21 +255,15 @@ out[TX_HEADER_LEN..total].<span class="f">copy_from_slice</span>(frame);        
 
 <div class="snip">
 <div class="snip-meta"><span>targets/armv7/src/raspi2b/lan9512.rs</span> · <span class="what">transmit / receive over bulk</span></div>
-<pre><code><span class="k">fn</span> <span class="f">transmit</span>(<span class="k">&amp;mut</span> self, frame: <span class="k">&amp;</span>[<span class="t">u8</span>]) {
-    <span class="k">let mut</span> bytes = [<span class="n">0u8</span>; TX_HEADER_LEN + MAX_ETHERNET_FRAME_LEN];
-    <span class="k">let</span> <span class="t">Some</span>(length) = <span class="f">write_tx_frame</span>(frame, <span class="k">&amp;mut</span> bytes) <span class="k">else</span> { <span class="k">return</span>; };
-    <span class="k">unsafe</span> {
-        <span class="k">if</span> self.host.<span class="f">bulk_out</span>(self.device, self.bulk_out_endpoint,
-            self.bulk_max_packet, self.tx_pid, <span class="k">&amp;</span>bytes[..length]).<span class="f">is_some</span>() {
-            <span class="t">Self</span>::<span class="f">update_pid</span>(<span class="k">&amp;mut</span> self.tx_pid, length, self.bulk_max_packet <span class="k">as</span> <span class="t">usize</span>);
-        }
-    }
+<pre><code><span class="k">fn</span> <span class="f">transmit</span>(<span class="k">&amp;mut</span> self, frame: <span class="k">&amp;</span>[<span class="t">u8</span>]) -&gt; <span class="t">bool</span> {
+    <span class="k">unsafe</span> { self.transmit_frame(frame) }
 }</code></pre>
+<p><code>transmit_frame</code> builds the eight-byte adapter header, submits the buffer with <code>bulk_out</code>, and advances the USB data PID after success. Its boolean reports local submission success. Confirming that another computer received the Ethernet frame requires a reply or a packet capture. Source: <code>lan9512.rs</code>, lines 135–156 and 170–172.</p>
 </div>
 
-<h2>5. One trait, two chips</h2>
+<h2>5. A shared frame interface</h2>
 
-<p>The network stack above this point (ARP, IP, UDP &mdash; modules 5 and 6) never names the LAN9512. It holds a <code>FrameDevice</code>: a trait with <code>mac_address()</code>, <code>transmit()</code>, and <code>receive()</code>. On the Pi, <code>UsbEthernet::Lan9512</code> supplies it; in QEMU, <code>UsbEthernet::Rndis</code> supplies it. <code>configure()</code> picks which by reading the vendor and product ID from enumeration.</p>
+<p>The network stack above this point (ARP, IP, UDP &mdash; modules 5 and 6) never names the LAN9512. It holds a <code>FrameDevice</code>: a trait with <code>mac_address()</code>, <code>transmit()</code>, and <code>receive()</code>. On the Pi, <code>UsbEthernet::Lan9512</code> supplies it; in QEMU, <code>UsbEthernet::Rndis</code> supplies it. <code>configure()</code> selects an adapter using the enumerated vendor/product IDs. Wi-Fi builds also support <code>UsbEthernet::Wifi</code>; that adapter converts between Ethernet frames and Wi-Fi frames. See <code>raspi2b/ethernet.rs::UsbEthernet</code>. The diagram below shows the two wired adapters.</p>
 
 <div class="legend">
   <span class="lg-item"><span class="lg-chip"></span> LAN9512 (Pi 2B)</span>

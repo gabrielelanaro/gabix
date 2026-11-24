@@ -1,15 +1,23 @@
 //! File-descriptor syscall handlers.
+//!
+//! Raw user slices below require accessible memory with suitable aliasing.
+//! The numeric range check alone does not establish those requirements.
+//! Regular-file writes modify the cached inode data; this path has no disk
+//! writeback. File cursors belong to shared File objects, including after fork.
 
 use super::socket::{active_tcp_recv, active_tcp_send, transmit_tcp, ACTIVE_TCP_FD};
-use super::user::{is_user_range, read_user_path};
+use super::user::{is_low_half_range, read_user_path};
 use crate::fs;
 use crate::println;
 use crate::serial;
 use alloc::sync::Arc;
 use core::sync::atomic::Ordering;
 
+const STANDARD_OUTPUT_FD: u64 = 1;
+const STANDARD_ERROR_FD: u64 = 2;
+
 pub(super) fn read(fd: u64, buffer_ptr: u64, length: u64) -> u64 {
-    if !is_user_range(buffer_ptr, length) {
+    if !is_low_half_range(buffer_ptr, length) {
         println!(
             "[syscall] sys_read: bad user pointer buf=0x{:x} len={}",
             buffer_ptr, length
@@ -49,12 +57,12 @@ pub(super) fn read(fd: u64, buffer_ptr: u64, length: u64) -> u64 {
 }
 
 pub(super) fn write(fd: u64, buffer_ptr: u64, length: u64) -> u64 {
-    if !is_user_range(buffer_ptr, length) {
+    if !is_low_half_range(buffer_ptr, length) {
         return u64::MAX;
     }
     let input = unsafe { core::slice::from_raw_parts(buffer_ptr as *const u8, length as usize) };
 
-    if fd == 1 || fd == 2 {
+    if fd == STANDARD_OUTPUT_FD || fd == STANDARD_ERROR_FD {
         let mut serial = serial::SERIAL1.lock();
         for &byte in input {
             serial.write_byte(byte);

@@ -28,6 +28,8 @@ pub struct NetworkConfig {
 
 static CONFIG: IrqMutex<Option<NetworkConfig>> = IrqMutex::new(None);
 
+/// Replace the stored network settings. lease_seconds is metadata here;
+/// this module does not expire or renew leases, flush ARP, or rebind sockets.
 pub fn configure(config: NetworkConfig) {
     *CONFIG.lock() = Some(config);
 }
@@ -36,6 +38,7 @@ pub fn config() -> Option<NetworkConfig> {
     *CONFIG.lock()
 }
 
+/// Use 0.0.0.0 until configured, including initial DHCP transmissions.
 pub fn source_ip() -> [u8; 4] {
     config().map(|value| value.address).unwrap_or([0; 4])
 }
@@ -44,6 +47,8 @@ pub fn gateway_ip() -> Option<[u8; 4]> {
     config().map(|value| value.gateway)
 }
 
+/// Accept limited broadcast and the configured local address. Subnet-directed
+/// broadcast, multicast and other unicast addresses are not accepted here.
 pub fn accepts_destination(address: [u8; 4]) -> bool {
     address == [255; 4]
         || config()

@@ -7,9 +7,10 @@ if [ "$#" -ne 1 ] ||
         [ "$1" != "raspi2b-hardware" ] && [ "$1" != "raspi2b-lifecycle" ] &&
         [ "$1" != "raspi2b-uart-user" ] && [ "$1" != "pi2-loader" ] &&
         [ "$1" != "pi2-dev" ] && [ "$1" != "pi2-network-dev" ] &&
+        [ "$1" != "pi2-managed" ] && [ "$1" != "pi2-wifi-managed" ] && [ "$1" != "pi2-loader-trial" ] && [ "$1" != "pi2-sd-loader" ] && [ "$1" != "pi2-sd-check" ] && [ "$1" != "pi2-sd-transfer" ] &&
         [ "$1" != "pi2-network-pre-timer-probe" ] &&
         [ "$1" != "pi2-network-no-irq-dev" ]; }; then
-    echo "usage: $0 <virt|raspi2b|raspi2b-hardware|raspi2b-lifecycle|raspi2b-uart-user|pi2-loader|pi2-dev|pi2-network-dev|pi2-network-pre-timer-probe|pi2-network-no-irq-dev>" >&2
+    echo "usage: $0 <pi2-wifi-managed|pi2-managed|pi2-loader-trial|pi2-sd-loader|pi2-sd-transfer|pi2-sd-check|virt|raspi2b|raspi2b-hardware|raspi2b-lifecycle|raspi2b-uart-user|pi2-loader|pi2-dev|pi2-network-dev|pi2-network-pre-timer-probe|pi2-network-no-irq-dev>" >&2
     exit 2
 fi
 
@@ -56,6 +57,50 @@ case "$platform" in
         binary=pi2-loader
         image_name=kernel-pi2-loader.img
         ;;
+    pi2-loader-trial)
+        GABIX_TRIAL_LOADER=$(sh "$script_dir/build-arm.sh" pi2-sd-loader | tail -1)
+        export GABIX_TRIAL_LOADER
+        kernel_base=0x00100000
+        feature=
+        binary=pi2-loader-trial
+        image_name=kernel-pi2-loader-trial.img
+        ;;
+    pi2-sd-loader)
+        kernel_base=0x00008000
+        feature=pi-sd-loader
+        binary=pi2-loader
+        image_name=kernel-pi2-sd-loader.img
+        ;;
+    pi2-managed|pi2-wifi-managed)
+        kernel_base=0x00100000
+        feature=pi-managed
+        image_name=kernel-pi2-managed.img
+        if [ "$platform" = pi2-wifi-managed ]; then
+            . "$script_dir/prepare-pi2-wifi-env.sh"
+            feature=pi-managed,pi-wifi
+            image_name=kernel-pi2-wifi-managed.img
+        fi
+        if [ "${GABIX_PI_FRAME_LOSS_TEST:-0}" = 1 ] && [ "$platform" != pi2-managed ]; then
+            feature=$feature,pi-frame-loss-test
+        fi
+        GABIX_PI_MANAGEMENT_KEY=${GABIX_PI_MANAGEMENT_KEY:-$HOME/.config/gabix/pi2-management.key}
+        export GABIX_PI_MANAGEMENT_KEY
+        if [ ! -f "$GABIX_PI_MANAGEMENT_KEY" ]; then
+            echo "Missing private management key: $GABIX_PI_MANAGEMENT_KEY" >&2
+            exit 1
+        fi
+        ;;
+    pi2-sd-transfer)
+        kernel_base=0x00100000
+        feature=pi-sd-transfer
+        image_name=kernel-pi2-sd-transfer.img
+        ;;
+    pi2-sd-check)
+        kernel_base=0x00100000
+        feature=pi-hardware
+        binary=pi2-sd-check
+        image_name=kernel-pi2-sd-check.img
+        ;;
     pi2-dev)
         kernel_base=0x00100000
         feature=pi-hardware,pi-uart-user
@@ -80,8 +125,9 @@ esac
 rust_sysroot=$(rustc --print sysroot)
 rust_host=$(rustc -vV | sed -n 's/^host: //p')
 llvm_objcopy="$rust_sysroot/lib/rustlib/$rust_host/bin/llvm-objcopy"
-elf="$repo_root/targets/armv7/target/armv7a-none-eabihf/$profile/$binary"
-image="$repo_root/targets/armv7/target/armv7a-none-eabihf/$profile/$image_name"
+build_root=${CARGO_TARGET_DIR:-"$repo_root/targets/armv7/target"}
+elf="$build_root/armv7a-none-eabihf/$profile/$binary"
+image="$build_root/armv7a-none-eabihf/$profile/$image_name"
 
 if [ ! -x "$llvm_objcopy" ]; then
     echo "llvm-objcopy was not found in the active Rust toolchain" >&2

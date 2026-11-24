@@ -1,22 +1,37 @@
+//! DWC2 USB host transfers use channel 0 and DMA buffers in RAM.
+//! The CPU supplies the buffer address, packet count and endpoint, then polls
+//! channel status until the controller releases the buffer. Global USB IRQ
+//! signaling stays disabled; status-register bits still record transfer events.
+
 use core::arch::asm;
 
 const BASE: usize = 0x3f98_0000;
 const SYSTEM_TIMER_LOW: *const u32 = 0x3f00_3004 as *const u32;
 
-const GAHBCFG: usize = 0x008;
+// Register names follow the controller manual: G* are global core registers,
+// H* are host registers, and HC* configure/status one host channel.
+const GAHBCFG: usize = 0x008; // AHB bus configuration (DMA and IRQ controls).
 #[cfg(feature = "pi-hardware")]
-const GUSBCFG: usize = 0x00c;
+const GUSBCFG: usize = 0x00c; // USB physical interface and host/device mode.
 #[cfg(feature = "pi-hardware")]
-const GRSTCTL: usize = 0x010;
+const GRSTCTL: usize = 0x010; // Core reset and FIFO flush requests.
 const GINTSTS: usize = 0x014;
-const HCFG: usize = 0x400;
-const HPRT: usize = 0x440;
+#[cfg(feature = "pi-hardware")]
+const GRXFSIZ: usize = 0x024;
+#[cfg(feature = "pi-hardware")]
+const GNPTXFSIZ: usize = 0x028;
+#[cfg(feature = "pi-hardware")]
+const GHWCFG3: usize = 0x04c;
+#[cfg(feature = "pi-hardware")]
+const HPTXFSIZ: usize = 0x100;
+const HCFG: usize = 0x400; // Host clock/speed configuration.
+const HPRT: usize = 0x440; // Root-port status, power and reset.
 const CHANNEL_BASE: usize = 0x500;
-const HCCHAR: usize = 0x00;
-const HCINT: usize = 0x08;
+const HCCHAR: usize = 0x00; // Channel endpoint, direction and enable/halt bits.
+const HCINT: usize = 0x08; // Latched channel events, acknowledged by writing one.
 const HCINTMSK: usize = 0x0c;
-const HCTSIZ: usize = 0x10;
-const HCDMA: usize = 0x14;
+const HCTSIZ: usize = 0x10; // Byte count, packet count and packet identifier.
+const HCDMA: usize = 0x14; // DMA buffer's bus address.
 #[cfg(feature = "pi-hardware")]
 const PCGCCTL: usize = 0xe00;
 
@@ -73,20 +88,108 @@ const INTERRUPT_CHANNEL_HALTED: u32 = 1 << 1;
 const INTERRUPT_STALL: u32 = 1 << 3;
 const INTERRUPT_NAK: u32 = 1 << 4;
 const INTERRUPT_TRANSACTION_ERROR: u32 = 1 << 7;
-const INTERRUPT_ERRORS: u32 = (1 << 2) | (1 << 7) | (1 << 8) | (1 << 10);
+const INTERRUPT_AHB_ERROR: u32 = 1 << 2;
+const INTERRUPT_BABBLE_ERROR: u32 = 1 << 8;
+const INTERRUPT_DATA_TOGGLE_ERROR: u32 = 1 << 10;
+const INTERRUPT_ERRORS: u32 = INTERRUPT_AHB_ERROR
+    | INTERRUPT_TRANSACTION_ERROR
+    | INTERRUPT_BABBLE_ERROR
+    | INTERRUPT_DATA_TOGGLE_ERROR;
 const PID_DATA1: u32 = 2;
 const PID_SETUP: u32 = 3;
 const PID_SHIFT: u32 = 29;
 const PACKET_COUNT_SHIFT: u32 = 19;
+const TRANSFER_SIZE_MASK: u32 = 0x7ffff;
+const TRANSFER_ATTEMPT_LIMIT: usize = 1000;
 const POLL_LIMIT: usize = 1_000_000;
+
+#[derive(Clone, Copy, PartialEq)]
+enum Direction {
+    HostToDevice,
+    DeviceToHost,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum RetryPolicy {
+    // Control requests and outgoing bulk data may retry NAK/transaction errors.
+    RetryTransient,
+    // Incoming bulk polling returns when the device has no packet available.
+    ReturnOnNak,
+}
 const DATA_CACHE_LINE_SIZE: usize = 64;
+const ROOT_POWER_SETTLE_US: u32 = 100_000;
+const ROOT_RESET_HOLD_US: u32 = 50_000;
+const ROOT_RESET_RECOVERY_US: u32 = 20_000;
+#[cfg(not(feature = "pi-hardware"))]
+const HOST_FS_LS_CLOCK_48_MHZ: u32 = 1;
+
+#[cfg(feature = "pi-hardware")]
+mod hardware_setup {
+    pub const CONNECTION_TIMEOUT_US: u32 = 1_000_000;
+    pub const CORE_RESET_SETTLE_US: u32 = 100_000;
+    pub const HOST_MODE_SETTLE_US: u32 = 50_000;
+    pub const FIFO_FLUSH_SETTLE_US: u32 = 1;
+    pub const HOST_FS_LS_CLOCK_30_OR_60_MHZ: u32 = 0;
+    pub const FIFO_DEPTH_SHIFT: u32 = 16;
+    pub const FIFO_REGION_WORDS: u32 = 1024;
+    pub const FIFO_REGION_COUNT: u32 = 3;
+    pub const RAM_ADDRESS_MASK: u32 = 0x3fff_ffff;
+    pub const VIDEOCORE_BUS_ALIAS: u32 = 0xc000_0000;
+}
+
+// USB setup-packet values, independent of the DWC2 register encodings above.
+mod request {
+    pub const STANDARD_DEVICE_OUT: u8 = 0x00;
+    pub const STANDARD_DEVICE_IN: u8 = 0x80;
+    pub const CLASS_HUB_IN: u8 = 0xa0;
+    pub const CLASS_PORT_OUT: u8 = 0x23;
+    pub const CLASS_PORT_IN: u8 = 0xa3;
+    pub const GET_STATUS: u8 = 0;
+    pub const CLEAR_FEATURE: u8 = 1;
+    pub const SET_FEATURE: u8 = 3;
+    pub const SET_ADDRESS: u8 = 5;
+    pub const GET_DESCRIPTOR: u8 = 6;
+    pub const SET_CONFIGURATION: u8 = 9;
+    // GET_DESCRIPTOR puts the type in the high byte and descriptor index in
+    // the low byte of wValue. We request index zero in each case.
+    pub const DEVICE_DESCRIPTOR: u16 = 0x0100;
+    pub const CONFIGURATION_DESCRIPTOR: u16 = 0x0200;
+    pub const HUB_DESCRIPTOR: u16 = 0x2900;
+}
+
+mod hub_port {
+    pub const FEATURE_RESET: u16 = 4;
+    pub const FEATURE_POWER: u16 = 8;
+    pub const FEATURE_RESET_CHANGE: u16 = 20;
+    pub const STATUS_CONNECTED: u16 = 1;
+    pub const STATUS_ENABLED: u16 = 2;
+}
+
+const HUB_DEVICE_CLASS: u8 = 9;
+const DEFAULT_DEVICE_ADDRESS: u8 = 0;
+const ROOT_DEVICE_ADDRESS: u8 = 1;
+const MAX_DEVICE_ADDRESS: u8 = 127;
+const INITIAL_CONTROL_PACKET_SIZE: u8 = 64;
+const DEVICE_DESCRIPTOR_BYTES: usize = 18;
+const DEVICE_DESCRIPTOR_TYPE: u8 = 1;
+const CONFIGURATION_HEADER_BYTES: usize = 9;
+const CONTROL_BUFFER_BYTES: usize = 256;
+const SETUP_PACKET_BYTES: usize = 8;
+const ADDRESS_SETTLE_US: u32 = 10_000;
+const HUB_POWER_SETTLE_US: u32 = 100_000;
+const HUB_RESET_SETTLE_US: u32 = 50_000;
+const ENDPOINT_DESCRIPTOR_TYPE: u8 = 5;
+const ENDPOINT_DESCRIPTOR_BYTES: usize = 7;
+const ENDPOINT_TRANSFER_TYPE_MASK: u8 = 3;
+const ENDPOINT_TRANSFER_BULK: u8 = 2;
+const ENDPOINT_ADDRESS_IN: u8 = 0x80;
+const ENDPOINT_ADDRESS_NUMBER_MASK: u8 = 0x0f;
 
 #[repr(C, align(64))]
-struct DmaBuffer([u8; 256]);
+struct DmaBuffer([u8; CONTROL_BUFFER_BYTES]);
 
-static mut SETUP: DmaBuffer = DmaBuffer([0; 256]);
-static mut DATA: DmaBuffer = DmaBuffer([0; 256]);
-
+static mut SETUP: DmaBuffer = DmaBuffer([0; CONTROL_BUFFER_BYTES]);
+static mut DATA: DmaBuffer = DmaBuffer([0; CONTROL_BUFFER_BYTES]);
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct UsbDevice {
     pub address: u8,
@@ -99,6 +202,8 @@ pub struct UsbDevice {
 pub struct BulkEndpoints {
     pub input: u8,
     pub output: u8,
+    pub outputs: [u8; 3],
+    pub output_count: usize,
     pub max_packet_size: u16,
 }
 
@@ -120,6 +225,18 @@ pub enum HubEnumerationError {
 pub struct Dwc2;
 
 impl Dwc2 {
+    /// Snapshot the most recent channel result for a failed device operation.
+    pub fn channel_status(&self) -> [u32; 4] {
+        unsafe {
+            [
+                read32(CHANNEL_BASE + HCINT),
+                read32(CHANNEL_BASE + HCTSIZ),
+                read32(CHANNEL_BASE + HCCHAR),
+                read32(CHANNEL_BASE + HCDMA),
+            ]
+        }
+    }
+
     pub unsafe fn initialize() -> Option<Self> {
         #[cfg(feature = "pi-hardware")]
         initialize_hardware()?;
@@ -133,27 +250,29 @@ impl Dwc2 {
                 GAHBCFG,
                 (read32(GAHBCFG) | AHB_DMA_ENABLE) & !AHB_GLOBAL_INTERRUPT_ENABLE,
             );
-            write32(HCFG, 1);
+            write32(HCFG, HOST_FS_LS_CLOCK_48_MHZ);
         }
 
         write32(HPRT, port_value() | PORT_POWER);
         #[cfg(feature = "pi-hardware")]
-        wait_for_us(1_000_000, || read32(HPRT) & PORT_CONNECTED != 0)?;
+        wait_for_us(hardware_setup::CONNECTION_TIMEOUT_US, || {
+            read32(HPRT) & PORT_CONNECTED != 0
+        })?;
         #[cfg(not(feature = "pi-hardware"))]
         if port_value() & PORT_CONNECTED == 0 {
             return None;
         }
-        delay_us(100_000);
+        delay_us(ROOT_POWER_SETTLE_US);
         write32(HPRT, port_value() | PORT_POWER | PORT_RESET);
-        delay_us(50_000);
+        delay_us(ROOT_RESET_HOLD_US);
         write32(HPRT, port_value() & !PORT_RESET | PORT_POWER);
-        delay_us(20_000);
+        delay_us(ROOT_RESET_RECOVERY_US);
         wait_until(|| read32(HPRT) & PORT_ENABLE != 0)?;
         Some(Self)
     }
 
     pub unsafe fn enumerate_root(&mut self) -> Option<UsbDevice> {
-        self.enumerate_device(1)
+        self.enumerate_device(ROOT_DEVICE_ADDRESS)
     }
 
     pub unsafe fn enumerate_hub_child(&mut self, hub: UsbDevice) -> Option<UsbDevice> {
@@ -164,51 +283,124 @@ impl Dwc2 {
         &mut self,
         hub: UsbDevice,
     ) -> Result<UsbDevice, HubEnumerationError> {
-        if hub.device_class != 9 {
+        let mut first = None;
+        self.visit_hub_children(hub, |_, device| {
+            first = Some(device);
+            false
+        })?;
+        first.ok_or(HubEnumerationError::EnumerateChild)
+    }
+
+    /// Enumerate directly attached hub children with distinct USB addresses.
+    /// Return true from `visit` to inspect the next port, or false to stop.
+    /// Call once after root enumeration; resetting ports interrupts their devices.
+    pub unsafe fn visit_hub_children(
+        &mut self,
+        hub: UsbDevice,
+        mut visit: impl FnMut(u8, UsbDevice) -> bool,
+    ) -> Result<(), HubEnumerationError> {
+        if hub.device_class != HUB_DEVICE_CLASS {
             return Err(HubEnumerationError::NotHub);
         }
-        self.control_write_no_data(hub, 0, 9, 1, 0)
-            .ok_or(HubEnumerationError::SetConfiguration)?;
+        self.control_write_no_data(
+            hub,
+            request::STANDARD_DEVICE_OUT,
+            request::SET_CONFIGURATION,
+            1,
+            0,
+        )
+        .ok_or(HubEnumerationError::SetConfiguration)?;
         let mut descriptor = [0u8; 9];
-        self.control_read(hub, 0xa0, 6, 0x2900, 0, &mut descriptor)
-            .ok_or(HubEnumerationError::ReadDescriptor)?;
+        self.control_read(
+            hub,
+            request::CLASS_HUB_IN,
+            request::GET_DESCRIPTOR,
+            request::HUB_DESCRIPTOR,
+            0,
+            &mut descriptor,
+        )
+        .ok_or(HubEnumerationError::ReadDescriptor)?;
+        // bNbrPorts follows the descriptor length and type bytes.
         let ports = descriptor[2];
         if ports == 0 {
             return Err(HubEnumerationError::NoPorts);
         }
         for port in 1..=ports {
-            self.control_write_no_data(hub, 0x23, 3, 8, port as u16)
-                .ok_or(HubEnumerationError::PowerPort)?;
+            self.control_write_no_data(
+                hub,
+                request::CLASS_PORT_OUT,
+                request::SET_FEATURE,
+                hub_port::FEATURE_POWER,
+                port as u16,
+            )
+            .ok_or(HubEnumerationError::PowerPort)?;
         }
-        delay_us(100_000);
+        delay_us(HUB_POWER_SETTLE_US);
 
         let mut connected = false;
         let mut enabled = false;
+        let mut found = false;
         for port in 1..=ports {
             let mut status = [0u8; 4];
-            self.control_read(hub, 0xa3, 0, 0, port as u16, &mut status)
-                .ok_or(HubEnumerationError::ReadPortStatus)?;
+            self.control_read(
+                hub,
+                request::CLASS_PORT_IN,
+                request::GET_STATUS,
+                0,
+                port as u16,
+                &mut status,
+            )
+            .ok_or(HubEnumerationError::ReadPortStatus)?;
             let port_status = u16::from_le_bytes([status[0], status[1]]);
-            if port_status & 1 == 0 {
+            if port_status & hub_port::STATUS_CONNECTED == 0 {
                 continue;
             }
             connected = true;
-            self.control_write_no_data(hub, 0x23, 3, 4, port as u16)
-                .ok_or(HubEnumerationError::ResetPort)?;
-            delay_us(50_000);
-            self.control_read(hub, 0xa3, 0, 0, port as u16, &mut status)
-                .ok_or(HubEnumerationError::ReadResetStatus)?;
+            self.control_write_no_data(
+                hub,
+                request::CLASS_PORT_OUT,
+                request::SET_FEATURE,
+                hub_port::FEATURE_RESET,
+                port as u16,
+            )
+            .ok_or(HubEnumerationError::ResetPort)?;
+            delay_us(HUB_RESET_SETTLE_US);
+            self.control_read(
+                hub,
+                request::CLASS_PORT_IN,
+                request::GET_STATUS,
+                0,
+                port as u16,
+                &mut status,
+            )
+            .ok_or(HubEnumerationError::ReadResetStatus)?;
             let port_status = u16::from_le_bytes([status[0], status[1]]);
-            if port_status & 2 == 0 {
+            if port_status & hub_port::STATUS_ENABLED == 0 {
                 continue;
             }
             enabled = true;
-            let _ = self.control_write_no_data(hub, 0x23, 1, 20, port as u16);
-            if let Some(device) = self.enumerate_device(2) {
-                return Ok(device);
+            let _ = self.control_write_no_data(
+                hub,
+                request::CLASS_PORT_OUT,
+                request::CLEAR_FEATURE,
+                hub_port::FEATURE_RESET_CHANGE,
+                port as u16,
+            );
+            // Address 1 belongs to the hub. Each child keeps its own address
+            // while later ports are reset and enumerated at address zero.
+            if port >= MAX_DEVICE_ADDRESS {
+                break;
+            }
+            if let Some(device) = self.enumerate_device(port + 1) {
+                found = true;
+                if !visit(port, device) {
+                    return Ok(());
+                }
             }
         }
-        if !connected {
+        if found {
+            Ok(())
+        } else if !connected {
             Err(HubEnumerationError::NoConnectedChild)
         } else if !enabled {
             Err(HubEnumerationError::NoEnabledChild)
@@ -218,36 +410,59 @@ impl Dwc2 {
     }
 
     unsafe fn enumerate_device(&mut self, new_address: u8) -> Option<UsbDevice> {
+        // The first eight descriptor bytes include bMaxPacketSize0 at byte 7.
+        // The device answers at address zero until SET_ADDRESS completes.
         let mut first = [0u8; 8];
         let first_len = self.control_in(
-            0,
-            64,
-            SetupPacket::new(0x80, 6, 0x0100, 0, first.len() as u16),
+            DEFAULT_DEVICE_ADDRESS,
+            INITIAL_CONTROL_PACKET_SIZE,
+            SetupPacket::new(
+                request::STANDARD_DEVICE_IN,
+                request::GET_DESCRIPTOR,
+                request::DEVICE_DESCRIPTOR,
+                0,
+                first.len() as u16,
+            ),
             &mut first,
         )?;
-        if first_len != first.len() || first[0] != 18 || first[1] != 1 {
+        if first_len != first.len()
+            || first[0] as usize != DEVICE_DESCRIPTOR_BYTES
+            || first[1] != DEVICE_DESCRIPTOR_TYPE
+        {
             return None;
         }
         let max_packet_size = first[7];
-        if max_packet_size == 0 {
+        if !matches!(max_packet_size, 8 | 16 | 32 | 64) {
             return None;
         }
 
         self.control_no_data(
-            0,
+            DEFAULT_DEVICE_ADDRESS,
             max_packet_size,
-            SetupPacket::new(0, 5, new_address as u16, 0, 0),
+            SetupPacket::new(
+                request::STANDARD_DEVICE_OUT,
+                request::SET_ADDRESS,
+                new_address as u16,
+                0,
+                0,
+            ),
         )?;
-        delay_us(10_000);
+        delay_us(ADDRESS_SETTLE_US);
 
-        let mut descriptor = [0u8; 18];
+        let mut descriptor = [0u8; DEVICE_DESCRIPTOR_BYTES];
         let length = self.control_in(
             new_address,
             max_packet_size,
-            SetupPacket::new(0x80, 6, 0x0100, 0, descriptor.len() as u16),
+            SetupPacket::new(
+                request::STANDARD_DEVICE_IN,
+                request::GET_DESCRIPTOR,
+                request::DEVICE_DESCRIPTOR,
+                0,
+                descriptor.len() as u16,
+            ),
             &mut descriptor,
         )?;
-        if length != descriptor.len() || descriptor[1] != 1 {
+        if length != descriptor.len() || descriptor[1] != DEVICE_DESCRIPTOR_TYPE {
             return None;
         }
         Some(UsbDevice {
@@ -309,22 +524,45 @@ impl Dwc2 {
     }
 
     pub unsafe fn configure_bulk_device(&mut self, device: UsbDevice) -> Option<BulkEndpoints> {
-        let mut header = [0u8; 9];
-        self.control_read(device, 0x80, 6, 0x0200, 0, &mut header)?;
+        let mut header = [0u8; CONFIGURATION_HEADER_BYTES];
+        self.control_read(
+            device,
+            request::STANDARD_DEVICE_IN,
+            request::GET_DESCRIPTOR,
+            request::CONFIGURATION_DESCRIPTOR,
+            0,
+            &mut header,
+        )?;
+        // wTotalLength (bytes 2..4) includes all interface/endpoint descriptors;
+        // bConfigurationValue (byte 5) is the value used to enable this setup.
         let total = u16::from_le_bytes([header[2], header[3]]) as usize;
-        if total < header.len() || total > 256 || header[5] == 0 {
+        if total < header.len() || total > CONTROL_BUFFER_BYTES || header[5] == 0 {
             return None;
         }
 
-        let mut descriptors = [0u8; 256];
-        if self.control_read(device, 0x80, 6, 0x0200, 0, &mut descriptors[..total])? != total {
+        let mut descriptors = [0u8; CONTROL_BUFFER_BYTES];
+        if self.control_read(
+            device,
+            request::STANDARD_DEVICE_IN,
+            request::GET_DESCRIPTOR,
+            request::CONFIGURATION_DESCRIPTOR,
+            0,
+            &mut descriptors[..total],
+        )? != total
+        {
             return None;
         }
         let endpoints = parse_bulk_endpoints(&descriptors[..total])?;
         // This LAN9512 revision may report a transaction error for the status
         // handshake after accepting SET_CONFIGURATION. The vendor-register
         // operations performed by its driver validate that it is configured.
-        let _ = self.control_write_no_data(device, 0, 9, header[5] as u16, 0);
+        let _ = self.control_write_no_data(
+            device,
+            request::STANDARD_DEVICE_OUT,
+            request::SET_CONFIGURATION,
+            header[5] as u16,
+            0,
+        );
         Some(endpoints)
     }
 
@@ -341,11 +579,11 @@ impl Dwc2 {
             endpoint,
             ENDPOINT_TYPE_BULK,
             max_packet_size,
-            false,
+            Direction::HostToDevice,
             data_pid,
             bytes.as_ptr(),
             bytes.len(),
-            true,
+            RetryPolicy::RetryTransient,
         )
     }
 
@@ -362,11 +600,11 @@ impl Dwc2 {
             endpoint,
             ENDPOINT_TYPE_BULK,
             max_packet_size,
-            true,
+            Direction::DeviceToHost,
             data_pid,
             bytes.as_mut_ptr(),
             bytes.len(),
-            false,
+            RetryPolicy::ReturnOnNak,
         )
     }
 
@@ -377,47 +615,60 @@ impl Dwc2 {
         setup: SetupPacket,
         out: &mut [u8],
     ) -> Option<usize> {
-        if out.len() > 256 {
+        if out.len() > CONTROL_BUFFER_BYTES {
             return None;
         }
+        // SETUP stage: send the eight request bytes on endpoint zero.
         write_setup(setup);
         transfer(
             address,
             0,
             ENDPOINT_TYPE_CONTROL,
             max_packet_size as u16,
-            false,
+            Direction::HostToDevice,
             PID_SETUP,
             core::ptr::addr_of!(SETUP.0).cast::<u8>(),
-            8,
-            true,
+            SETUP_PACKET_BYTES,
+            RetryPolicy::RetryTransient,
         )?;
 
-        core::ptr::write_bytes(core::ptr::addr_of_mut!(DATA.0).cast::<u8>(), 0, 256);
+        core::ptr::write_bytes(
+            core::ptr::addr_of_mut!(DATA.0).cast::<u8>(),
+            0,
+            CONTROL_BUFFER_BYTES,
+        );
+        // DATA stage: receive the requested bytes into the shared DMA buffer.
         let received = transfer(
             address,
             0,
             ENDPOINT_TYPE_CONTROL,
             max_packet_size as u16,
-            true,
+            Direction::DeviceToHost,
             PID_DATA1,
             core::ptr::addr_of!(DATA.0).cast::<u8>(),
-            out.len(),
-            true,
+            // DWC2 IN DMA requires room for whole USB packets even when
+            // wLength asks for a smaller register value. DATA has 256 bytes;
+            // the validated EP0 packet sizes divide that capacity exactly.
+            out.len().div_ceil(max_packet_size as usize) * max_packet_size as usize,
+            RetryPolicy::RetryTransient,
         )?;
+        if received > out.len() {
+            return None;
+        }
         for (offset, byte) in out.iter_mut().take(received).enumerate() {
             *byte = core::ptr::read_volatile(core::ptr::addr_of!(DATA.0).cast::<u8>().add(offset));
         }
+        // STATUS stage: acknowledge the read with a zero-length OUT packet.
         transfer(
             address,
             0,
             ENDPOINT_TYPE_CONTROL,
             max_packet_size as u16,
-            false,
+            Direction::HostToDevice,
             PID_DATA1,
             core::ptr::addr_of!(DATA.0).cast::<u8>(),
             0,
-            true,
+            RetryPolicy::RetryTransient,
         )?;
         Some(received)
     }
@@ -428,28 +679,30 @@ impl Dwc2 {
         max_packet_size: u8,
         setup: SetupPacket,
     ) -> Option<()> {
+        // SETUP stage: send the eight request bytes on endpoint zero.
         write_setup(setup);
         transfer(
             address,
             0,
             ENDPOINT_TYPE_CONTROL,
             max_packet_size as u16,
-            false,
+            Direction::HostToDevice,
             PID_SETUP,
             core::ptr::addr_of!(SETUP.0).cast::<u8>(),
-            8,
-            true,
+            SETUP_PACKET_BYTES,
+            RetryPolicy::RetryTransient,
         )?;
+        // This request has no DATA stage; receive its STATUS acknowledgement.
         transfer(
             address,
             0,
             ENDPOINT_TYPE_CONTROL,
             max_packet_size as u16,
-            true,
+            Direction::DeviceToHost,
             PID_DATA1,
             core::ptr::addr_of!(DATA.0).cast::<u8>(),
             0,
-            true,
+            RetryPolicy::RetryTransient,
         )?;
         Some(())
     }
@@ -461,21 +714,23 @@ impl Dwc2 {
         setup: SetupPacket,
         bytes: &[u8],
     ) -> Option<()> {
-        if bytes.len() > 256 {
+        if bytes.len() > CONTROL_BUFFER_BYTES {
             return None;
         }
+        // SETUP stage: send the eight request bytes on endpoint zero.
         write_setup(setup);
         transfer(
             address,
             0,
             ENDPOINT_TYPE_CONTROL,
             max_packet_size as u16,
-            false,
+            Direction::HostToDevice,
             PID_SETUP,
             core::ptr::addr_of!(SETUP.0).cast::<u8>(),
-            8,
-            true,
+            SETUP_PACKET_BYTES,
+            RetryPolicy::RetryTransient,
         )?;
+        // DATA stage: copy the payload into DMA storage, then send it.
         for (offset, byte) in bytes.iter().enumerate() {
             core::ptr::write_volatile(
                 core::ptr::addr_of_mut!(DATA.0).cast::<u8>().add(offset),
@@ -487,22 +742,23 @@ impl Dwc2 {
             0,
             ENDPOINT_TYPE_CONTROL,
             max_packet_size as u16,
-            false,
+            Direction::HostToDevice,
             PID_DATA1,
             core::ptr::addr_of!(DATA.0).cast::<u8>(),
             bytes.len(),
-            true,
+            RetryPolicy::RetryTransient,
         )?;
+        // STATUS stage: receive the device's zero-length acknowledgement.
         transfer(
             address,
             0,
             ENDPOINT_TYPE_CONTROL,
             max_packet_size as u16,
-            true,
+            Direction::DeviceToHost,
             PID_DATA1,
             core::ptr::addr_of!(DATA.0).cast::<u8>(),
             0,
-            true,
+            RetryPolicy::RetryTransient,
         )?;
         Some(())
     }
@@ -553,20 +809,23 @@ unsafe fn transfer(
     endpoint: u8,
     endpoint_type: u32,
     max_packet_size: u16,
-    direction_in: bool,
+    direction: Direction,
     pid: u32,
     buffer: *const u8,
     length: usize,
-    retry_transient: bool,
+    retry_policy: RetryPolicy,
 ) -> Option<usize> {
+    let direction_in = direction == Direction::DeviceToHost;
+    let retry_transient = retry_policy == RetryPolicy::RetryTransient;
     let packet_size = max_packet_size as usize;
     let packet_count = if length == 0 {
         1
     } else {
         length.div_ceil(packet_size)
     };
-    for _ in 0..1000 {
+    for _ in 0..TRANSFER_ATTEMPT_LIMIT {
         prepare_dma_buffer(buffer, length, direction_in);
+        // Clear the previous attempt's latched events by writing ones.
         write32(CHANNEL_BASE + HCINT, u32::MAX);
         write32(
             CHANNEL_BASE + HCINTMSK,
@@ -576,22 +835,24 @@ unsafe fn transfer(
                 | INTERRUPT_STALL
                 | INTERRUPT_ERRORS,
         );
+        // HCDMA receives a bus address. The controller reads/writes RAM itself.
         write32(CHANNEL_BASE + HCDMA, dma_address(buffer));
         write32(
             CHANNEL_BASE + HCTSIZ,
             length as u32 | (packet_count as u32) << PACKET_COUNT_SHIFT | pid << PID_SHIFT,
         );
-        let direction = if direction_in {
+        let direction_bits = if direction_in {
             ENDPOINT_DIRECTION_IN
         } else {
             0
         };
+        // Enabling the channel starts the configured transfer.
         write32(
             CHANNEL_BASE + HCCHAR,
             CHANNEL_ENABLE
                 | (address as u32) << DEVICE_ADDRESS_SHIFT
                 | endpoint_type
-                | direction
+                | direction_bits
                 | (endpoint as u32) << ENDPOINT_NUMBER_SHIFT
                 | max_packet_size as u32,
         );
@@ -599,13 +860,15 @@ unsafe fn transfer(
             read32(CHANNEL_BASE + HCINT)
                 & (INTERRUPT_TRANSFER_COMPLETE
                     | INTERRUPT_CHANNEL_HALTED
-                    | INTERRUPT_NAK
+                    | (if retry_transient { 0 } else { INTERRUPT_NAK })
                     | INTERRUPT_STALL
                     | INTERRUPT_ERRORS)
                 != 0
         })
         .is_none()
         {
+            stop_channel_before_returning();
+            complete_dma_buffer(buffer, length, direction_in);
             return None;
         }
         // 1. NAK means the device cannot supply or accept data yet.
@@ -613,13 +876,17 @@ unsafe fn transfer(
         // not mean that it has stopped accessing our buffer.
         let status = read32(CHANNEL_BASE + HCINT);
         let device_not_ready = status & INTERRUPT_NAK != 0;
-        if device_not_ready && channel_is_enabled() {
+        if device_not_ready && !retry_transient && channel_is_enabled() {
             request_channel_halt();
         }
 
         // 2. Wait until the controller releases the channel before reusing
         // its registers or the memory buffer passed to this function.
-        wait_until(|| !channel_is_enabled())?;
+        if wait_until(|| !channel_is_enabled()).is_none() {
+            stop_channel_before_returning();
+            complete_dma_buffer(buffer, length, direction_in);
+            return None;
+        }
 
         // 3. Read status again: the transfer may have completed while we
         // were requesting the halt. Keep a completed transfer's result.
@@ -640,7 +907,12 @@ unsafe fn transfer(
         if transfer_failed || !transfer_completed {
             return None;
         }
-        let remaining = (read32(CHANNEL_BASE + HCTSIZ) & 0x7ffff) as usize;
+        // OUT completion confirms the whole submitted payload. DWC2 leaves
+        // the OUT byte-count field unchanged; only IN reports residual bytes.
+        if !direction_in {
+            return Some(length);
+        }
+        let remaining = (read32(CHANNEL_BASE + HCTSIZ) & TRANSFER_SIZE_MASK) as usize;
         return Some(length.saturating_sub(remaining));
     }
     None
@@ -661,6 +933,21 @@ unsafe fn request_channel_halt() {
     );
 }
 
+/// A timed-out transfer may still own the caller's memory. Returning while
+/// DMA remains active would let hardware overwrite a reused stack buffer.
+unsafe fn stop_channel_before_returning() {
+    if channel_is_enabled() {
+        request_channel_halt();
+        if wait_until(|| !channel_is_enabled()).is_none() {
+            // Keep the transfer's stack frame alive until watchdog recovery.
+            panic!("USB channel did not halt; DMA buffer cannot be released");
+        }
+    }
+}
+
+// OUT: write dirty CPU cache lines back before the controller reads RAM.
+// IN: clean and invalidate before DMA, then invalidate again after completion.
+// Callers must keep the buffer's cache lines free of CPU writes during DMA.
 unsafe fn prepare_dma_buffer(buffer: *const u8, length: usize, direction_in: bool) {
     #[cfg(feature = "pi-hardware")]
     if length != 0 {
@@ -693,6 +980,8 @@ enum CacheOperation {
 
 #[cfg(feature = "pi-hardware")]
 unsafe fn cache_lines(buffer: *const u8, length: usize, operation: CacheOperation) {
+    // Maintenance works on entire cache lines, including the partial lines
+    // at either end of the buffer. Round the start down and the end up.
     let mut line = buffer as usize & !(DATA_CACHE_LINE_SIZE - 1);
     let end = (buffer as usize)
         .saturating_add(length)
@@ -701,20 +990,28 @@ unsafe fn cache_lines(buffer: *const u8, length: usize, operation: CacheOperatio
     while line < end {
         match operation {
             CacheOperation::Clean => {
+                // DCCMVAC: clean by address to the point of coherency.
                 asm!("mcr p15, 0, {address}, c7, c10, 1", address = in(reg) line as u32);
             }
             CacheOperation::Invalidate => {
+                // DCIMVAC: invalidate by address to the point of coherency.
+                // Cortex-A7 upgrades this to clean-and-invalidate locally;
+                // the CPU must not dirty these lines while DMA owns them.
                 asm!("mcr p15, 0, {address}, c7, c6, 1", address = in(reg) line as u32);
             }
             CacheOperation::CleanInvalidate => {
+                // DCCIMVAC: clean and invalidate by address.
                 asm!("mcr p15, 0, {address}, c7, c14, 1", address = in(reg) line as u32);
             }
         }
         line += DATA_CACHE_LINE_SIZE;
     }
+    // Complete the cache maintenance before subsequent memory/device access.
     asm!("dsb sy");
 }
 
+// Reusing status bits in a port write can acknowledge changes or disable the
+// port. Clear those action bits before composing a power/reset update.
 unsafe fn port_value() -> u32 {
     read32(HPRT) & !PORT_WRITE_TO_CLEAR
 }
@@ -728,6 +1025,7 @@ unsafe fn delay_us(microseconds: u32) {
 
 #[cfg(feature = "pi-hardware")]
 unsafe fn initialize_hardware() -> Option<()> {
+    use hardware_setup::*;
     super::mailbox::power_on_usb()?;
 
     let mut usb_config = read32(GUSBCFG);
@@ -736,7 +1034,7 @@ unsafe fn initialize_hardware() -> Option<()> {
     wait_until(|| read32(GRSTCTL) & RESET_AHB_IDLE != 0)?;
     write32(GRSTCTL, read32(GRSTCTL) | RESET_CORE_SOFT);
     wait_until(|| read32(GRSTCTL) & RESET_CORE_SOFT == 0)?;
-    delay_us(100_000);
+    delay_us(CORE_RESET_SETTLE_US);
 
     usb_config = read32(GUSBCFG);
     usb_config &= !(USB_PHY_INTERFACE_16_BIT
@@ -746,21 +1044,39 @@ unsafe fn initialize_hardware() -> Option<()> {
         | USB_FORCE_DEVICE_MODE);
     usb_config |= USB_FORCE_HOST_MODE;
     write32(GUSBCFG, usb_config);
-    delay_us(50_000);
+    delay_us(HOST_MODE_SETTLE_US);
 
     let ahb_config = (read32(GAHBCFG) | AHB_DMA_ENABLE | AHB_WAIT_AXI_WRITES)
         & !AHB_MAX_BURST_MASK
         & !AHB_GLOBAL_INTERRUPT_ENABLE;
     write32(GAHBCFG, ahb_config);
+    // Clear the power/clock gating control so the USB core can run.
     write32(PCGCCTL, 0);
-    write32(HCFG, 0);
+    write32(HCFG, HOST_FS_LS_CLOCK_30_OR_60_MHZ);
+
+    // FIFO sizes and addresses are measured in 32-bit words. The reset
+    // receive depth exceeds the BCM2836 controller's available FIFO RAM.
+    // Give receive, non-periodic transmit, and periodic transmit distinct
+    // 1024-word regions within its reported capacity.
+    let fifo_words = read32(GHWCFG3) >> FIFO_DEPTH_SHIFT;
+    if fifo_words < FIFO_REGION_COUNT * FIFO_REGION_WORDS {
+        return None;
+    }
+    // RX starts at word zero. TX registers combine depth (high half) with
+    // the starting word offset (low half).
+    let transmit_depth = FIFO_REGION_WORDS << FIFO_DEPTH_SHIFT;
+    let nonperiodic_start = FIFO_REGION_WORDS;
+    let periodic_start = 2 * FIFO_REGION_WORDS;
+    write32(GRXFSIZ, FIFO_REGION_WORDS);
+    write32(GNPTXFSIZ, transmit_depth | nonperiodic_start);
+    write32(HPTXFSIZ, transmit_depth | periodic_start);
 
     write32(GRSTCTL, RESET_TX_FIFO | RESET_TX_FIFO_ALL);
     wait_until(|| read32(GRSTCTL) & RESET_TX_FIFO == 0)?;
-    delay_us(1);
+    delay_us(FIFO_FLUSH_SETTLE_US);
     write32(GRSTCTL, RESET_RX_FIFO);
     wait_until(|| read32(GRSTCTL) & RESET_RX_FIFO == 0)?;
-    delay_us(1);
+    delay_us(FIFO_FLUSH_SETTLE_US);
     Some(())
 }
 
@@ -779,7 +1095,9 @@ unsafe fn wait_for_us(microseconds: u32, mut condition: impl FnMut() -> bool) ->
 fn dma_address(buffer: *const u8) -> u32 {
     #[cfg(feature = "pi-hardware")]
     {
-        (buffer as u32 & 0x3fff_ffff) | 0xc000_0000
+        // Buffers use identity-mapped low RAM. Preserve its physical offset
+        // and select the VideoCore bus alias used by this DMA controller.
+        (buffer as u32 & hardware_setup::RAM_ADDRESS_MASK) | hardware_setup::VIDEOCORE_BUS_ALIAS
     }
     #[cfg(not(feature = "pi-hardware"))]
     {
@@ -787,6 +1105,8 @@ fn dma_address(buffer: *const u8) -> u32 {
     }
 }
 
+// Busy-poll a condition for a bounded number of attempts. POLL_LIMIT counts
+// register checks; it is not a duration and does not put the task to sleep.
 unsafe fn wait_until(mut condition: impl FnMut() -> bool) -> Option<()> {
     for _ in 0..POLL_LIMIT {
         if condition() {
@@ -805,9 +1125,15 @@ unsafe fn write32(offset: usize, value: u32) {
     core::ptr::write_volatile((BASE + offset) as *mut u32, value);
 }
 
+// Walk length-prefixed descriptors. For each endpoint descriptor, byte 2 is
+// its address, byte 3 its transfer type, and bytes 4..6 its maximum packet size.
+// This parser retains the last IN/OUT endpoint and up to three OUT addresses;
+// interface/alternate-setting selection is outside its current scope.
 fn parse_bulk_endpoints(descriptors: &[u8]) -> Option<BulkEndpoints> {
     let mut input = None;
     let mut output = None;
+    let mut outputs = [0; 3];
+    let mut output_count = 0;
     let mut max_packet_size = 0;
     let mut offset = 0;
     while offset + 2 <= descriptors.len() {
@@ -815,14 +1141,22 @@ fn parse_bulk_endpoints(descriptors: &[u8]) -> Option<BulkEndpoints> {
         if length < 2 || offset + length > descriptors.len() {
             return None;
         }
-        if descriptors[offset + 1] == 5 && length >= 7 && descriptors[offset + 3] & 3 == 2 {
+        if descriptors[offset + 1] == ENDPOINT_DESCRIPTOR_TYPE
+            && length >= ENDPOINT_DESCRIPTOR_BYTES
+            && descriptors[offset + 3] & ENDPOINT_TRANSFER_TYPE_MASK == ENDPOINT_TRANSFER_BULK
+        {
             let endpoint = descriptors[offset + 2];
             max_packet_size =
                 u16::from_le_bytes([descriptors[offset + 4], descriptors[offset + 5]]);
-            if endpoint & 0x80 != 0 {
-                input = Some(endpoint & 0x0f);
+            if endpoint & ENDPOINT_ADDRESS_IN != 0 {
+                input = Some(endpoint & ENDPOINT_ADDRESS_NUMBER_MASK);
             } else {
-                output = Some(endpoint & 0x0f);
+                output = Some(endpoint & ENDPOINT_ADDRESS_NUMBER_MASK);
+                if output_count >= outputs.len() {
+                    return None;
+                }
+                outputs[output_count] = endpoint & ENDPOINT_ADDRESS_NUMBER_MASK;
+                output_count += 1;
             }
         }
         offset += length;
@@ -830,6 +1164,8 @@ fn parse_bulk_endpoints(descriptors: &[u8]) -> Option<BulkEndpoints> {
     Some(BulkEndpoints {
         input: input?,
         output: output?,
+        outputs,
+        output_count,
         max_packet_size: max_packet_size.max(1),
     })
 }

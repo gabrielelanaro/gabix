@@ -78,10 +78,16 @@ def main():
     parser.add_argument("--address", default="10.0.2.15")
     parser.add_argument("--message", default="Hello Pi! This is the Mac.")
     parser.add_argument(
+        "--timeout", type=float, default=180,
+        help="Seconds after upload for boot checks, DHCP, echo and watchdog return",
+    )
+    parser.add_argument(
         "--kernel", type=Path,
         default=ROOT / "targets/armv7/target/armv7a-none-eabihf/release/kernel-pi2-network-dev.img",
     )
     args = parser.parse_args()
+    if args.timeout <= 0:
+        parser.error("timeout must be positive")
     if len(args.message.encode("utf-8")) > 1000:
         parser.error("message must fit in 1000 UTF-8 bytes")
     kernel = args.kernel.read_bytes()
@@ -93,7 +99,9 @@ def main():
     try:
         print(f"Uploading {len(kernel):,} bytes to the Pi...", flush=True)
         UPLOADER.write_all(fd, UPLOADER.build_upload(kernel), 4096, 500)
-        deadline = time.monotonic() + 45
+        # Physical process-isolation checks alone take about 50 seconds.
+        # Leave time for the rest of boot, link negotiation and the watchdog.
+        deadline = time.monotonic() + args.timeout
         received = bytearray()
         pending = bytearray()
         while time.monotonic() < deadline:
@@ -118,7 +126,7 @@ def main():
         if worker:
             worker.join()
         if not ready:
-            print("FAIL: no watchdog return to the loader; a power cycle may be needed.")
+            print(f"FAIL: no loader-ready marker within {args.timeout:g} seconds after upload.")
         elif worker is None:
             print("FAIL: kernel did not complete DHCP; check the Mac DHCP peer and cable.")
         passed = ready and all(results.values())

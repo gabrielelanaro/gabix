@@ -8,6 +8,24 @@ use ::x86_64::structures::paging::PageTableFlags;
 use ::x86_64::{PhysAddr, VirtAddr};
 use core::arch::naked_asm;
 use core::sync::atomic::AtomicU64;
+use gabix_kernel::memory::FRAME_SIZE;
+
+const STAR_KERNEL_SELECTOR_SHIFT: u32 = 32;
+const STAR_USER_SELECTOR_SHIFT: u32 = 48;
+const SELECTOR_PRIVILEGE_MASK: u64 = 3;
+const SYSRET_CODE_SELECTOR_BIAS: u64 = 16;
+const SYSCALL_STACK_FRAMES: u64 = 16;
+
+// Byte offsets after the entry's 15 pushes, measured from saved RFLAGS.
+// Low to high: RFLAGS, RIP, R15..R12, RBX, RBP, R9, R8, R10, RDX, RSI, RDI, RSP.
+const SAVED_ARG1_RDI: usize = 13 * 8;
+const SAVED_ARG2_RSI: usize = 12 * 8;
+const SAVED_ARG3_RDX: usize = 11 * 8;
+const SAVED_ARG4_R10: usize = 10 * 8;
+const SAVED_ARG5_R8: usize = 9 * 8;
+const SAVED_ARG6_R9: usize = 8 * 8;
+// Reserving the seventh C argument also restores 16-byte pre-call alignment.
+const STACK_ARGUMENT_BYTES: usize = 8;
 
 /// MSR (Model-Specific Register) addresses for the syscall configuration.
 /// These are well-known constants documented in the Intel SDM
@@ -28,8 +46,8 @@ const RFLAGS_IF: u64 = 0x200;
 /// Picked to be far from everything else (kernel image, heap, task
 /// stacks, user code/stack).
 pub(crate) const SYSCALL_STACK_BOTTOM: u64 = 0x6000_0000_0000;
-/// 16 KB syscall stack (4 frames) — matches Linux's kernel stack size.
-pub(crate) const SYSCALL_STACK_SIZE: u64 = 16 * 4096;
+/// 64 KiB syscall entry stack (16 allocator frames).
+pub(crate) const SYSCALL_STACK_SIZE: u64 = SYSCALL_STACK_FRAMES * FRAME_SIZE;
 pub(crate) const SYSCALL_STACK_TOP: u64 = SYSCALL_STACK_BOTTOM + SYSCALL_STACK_SIZE;
 
 /// Saved user state, captured by `syscall_entry` on every syscall.
@@ -38,23 +56,9 @@ pub(crate) const SYSCALL_STACK_TOP: u64 = SYSCALL_STACK_BOTTOM + SYSCALL_STACK_S
 /// snapshotting the user-mode register state at the moment the syscall
 /// fired, then constructing a child task whose saved state matches.
 ///
-/// The alternative — fishing these values out of the parent's kernel
-/// stack frames from inside `sys_fork` — would require knowing the exact
-/// stack layout at the time `sys_fork` runs, which is fragile. Global
-/// atomics are simpler.
-///
-/// Only the registers `sys_fork` actually needs are saved here:
-///   - user RIP (where to resume in user code — was in RCX)
-///   - user RSP (where the user stack pointer was)
-///   - user RFLAGS (was in R11)
-///   - the 6 callee-saved registers (RBX, RBP, R12-R15) — these MUST be
-///     preserved across the syscall per the System V AMD64 ABI, so the
-///     child needs the parent's values to look like a true copy.
-///
-/// Caller-saved registers (RAX, RCX, RDX, RSI, RDI, R8, R9, R10, R11) are
-/// NOT saved here: the calling convention allows them to be clobbered
-/// across a syscall, so the parent's compiler already treats them as
-/// garbage after the syscall. The child gets the same treatment.
+/// The fork snapshot stores return state and six callee-saved registers.
+/// Ordinary syscall return also restores the argument registers from the
+/// current task's stack. The fork-child path restores the smaller snapshot.
 pub(crate) static USER_RIP_SAVE: AtomicU64 = AtomicU64::new(0);
 pub(crate) static USER_RFLAGS_SAVE: AtomicU64 = AtomicU64::new(0);
 pub(crate) static USER_RSP_SAVE: AtomicU64 = AtomicU64::new(0);
@@ -66,7 +70,7 @@ pub(crate) static USER_R14_SAVE: AtomicU64 = AtomicU64::new(0);
 pub(crate) static USER_R15_SAVE: AtomicU64 = AtomicU64::new(0);
 
 /// Kernel RSP to switch to on syscall entry. Set during init to the top
-/// of a dedicated 16 KB stack region with room below for handler frames.
+/// of a dedicated 64 KiB stack region with room below for handler frames.
 ///
 /// Updated by `task::yield_now` on every context switch to point at the
 /// NEW current task's `entry_stack_top`. This is what makes per-task
@@ -85,14 +89,14 @@ pub(crate) fn set_kernel_rsp(rsp: u64) {
 /// set up the MSRs, and save the kernel stack pointer. Must be called
 /// from kernel code, before any user program runs.
 pub fn init() {
-    // Allocate and map a dedicated 16 KB stack for syscall entry.
+    // Allocate and map a dedicated 64 KiB stack for syscall entry.
     // Using a fresh stack (instead of the captured mid-stack RSP) means
     // we always have plenty of room for handler frames.
     let mut frames_allocated = 0;
     let mut virt = SYSCALL_STACK_BOTTOM;
     while virt < SYSCALL_STACK_TOP {
         let frame = frame_allocator::allocate().expect("out of frames for syscall stack");
-        let phys = PhysAddr::new(frame * 4096);
+        let phys = PhysAddr::new(frame * FRAME_SIZE);
         // SAFETY: virtual range is fresh (unused), frame is fresh.
         unsafe {
             memory::map_to(
@@ -103,7 +107,7 @@ pub fn init() {
             .expect("map_to failed for syscall stack");
         }
         frames_allocated += 1;
-        virt += 4096;
+        virt += FRAME_SIZE;
     }
     // KERNEL_RSP = top of the stack region (stack grows DOWN, so the
     // top is where we start).
@@ -122,30 +126,15 @@ pub fn init() {
         let efer = rdmsr(MSR_EFER);
         wrmsr(MSR_EFER, efer | EFER_SCE);
 
-        // STAR: kernel CS base in bits 32-47, user CS base in bits 48-63.
-        // On SYSCALL: CPU loads CS = STAR[32:47], SS = STAR[32:47] + 8.
-        // On SYSRET:  CPU loads CS = STAR[48:63] + 16, SS = STAR[48:63] + 8
-        //             (both with RPL=3 added on AMD hardware).
-        //
-        // Our GDT layout (after the fix in slice 4.5):
-        //   index 1 (sel 0x08): kernel code
-        //   index 2 (sel 0x10): kernel data
-        //   index 3 (sel 0x18): USER DATA   ← (swapped from previous order)
-        //   index 4 (sel 0x20): USER CODE
-        //   index 5 (sel 0x28): TSS
-        //
-        // With STAR[32:47] = 0x08 and STAR[48:63] = 0x10:
-        //   SYSCALL: CS = 0x08, SS = 0x10 ✓
-        //   SYSRET:  CS = 0x10 + 16 = 0x20 | RPL=3 = 0x23 (USER CODE) ✓
-        //            SS = 0x10 + 8  = 0x18 | RPL=3 = 0x1B (USER DATA) ✓
-        //
-        // Previously STAR[48:63] was 0x08, which made SYSRET compute
-        // SS = 0x10 (kernel data). sysretq itself doesn't check DPL in
-        // long mode, so user code ran with cached SS pointing at kernel
-        // data — but the next iretq (e.g., timer firing on user mode)
-        // checked DPL ≠ CPL and #GP'd. Fixed by swapping USER_CS / USER_DS
-        // in the GDT and setting STAR[48:63] = 0x10.
-        wrmsr(MSR_STAR, 0x0010_0008_0000_0000);
+        // SYSCALL takes kernel CS from STAR[32:47]; kernel SS follows it.
+        // SYSRET adds 16 to STAR[48:63] for user CS and 8 for user SS.
+        // Derive these bases from the GDT selectors used for initial user entry.
+        let kernel_code = super::gdt::GDT.1.kernel_code.0 as u64;
+        let user_code = super::gdt::GDT.1.user_code.0 as u64;
+        let user_base = (user_code & !SELECTOR_PRIVILEGE_MASK) - SYSRET_CODE_SELECTOR_BIAS;
+        let selectors =
+            (kernel_code << STAR_KERNEL_SELECTOR_SHIFT) | (user_base << STAR_USER_SELECTOR_SHIFT);
+        wrmsr(MSR_STAR, selectors);
 
         // LSTAR: address of the syscall entry point.
         wrmsr(MSR_LSTAR, syscall_entry as *const () as u64);
@@ -200,15 +189,9 @@ unsafe fn wrmsr(msr: u32, value: u64) {
 ///   - Loaded CS from STAR[32:47] (we're now ring 0)
 ///   - Cleared the bits in RFLAGS that FMASK specifies (we cleared IF)
 ///
-/// We still need to:
-///   - Switch from the user stack to the kernel stack
-///   - Save callee-saved registers (the Rust handler will preserve them
-///     anyway, but we also need RAX preserved across the call, and we
-///     don't have a free caller-saved slot — so we save everything we
-///     care about)
-///   - Enable interrupts (the handler can be preempted)
-///   - Call the Rust handler
-///   - Restore everything and SYSRET back
+/// The assembly selects the kernel stack, saves user state, translates the
+/// syscall arguments into the Rust dispatcher’s C calling convention, and
+/// restores the saved state after the dispatcher returns.
 #[unsafe(naked)]
 unsafe extern "C" fn syscall_entry() {
     naked_asm!(
@@ -229,8 +212,7 @@ unsafe extern "C" fn syscall_entry() {
         "push r8",
         "push r9",
 
-        // Step 3: Push callee-saved registers (handler might clobber them
-        // if it doesn't follow the convention, and we want them back).
+        // Step 3: Save the six callee-saved registers in this entry frame.
         "push rbp",
         "push rbx",
         "push r12",
@@ -242,13 +224,8 @@ unsafe extern "C" fn syscall_entry() {
         "push rcx",                        // user RIP
         "push r11",                        // user RFLAGS
 
-        // Step 5: Snapshot user state to globals so sys_fork can read it.
-        // All the values we need are still in their original registers
-        // (we just pushed copies above). We use R8 as scratch — it's
-        // caller-saved, not used for syscall args 1-4, and we don't use
-        // args 5-6 in our kernel. Doing this BEFORE step 4 is important:
-        // step 4 clobbers RCX (writes the user's arg3 there), so we have
-        // to grab user RIP from RCX first.
+        // Step 5: Snapshot fork state before reusing RCX and R8 for C arguments.
+        // Original arguments 5 and 6 remain in the saved stack frame.
         "mov r8, rcx",
         "mov [{user_rip_save}], r8",
         "mov r8, r11",
@@ -270,17 +247,17 @@ unsafe extern "C" fn syscall_entry() {
         // syscall_handler(num, arg1, arg2, arg3, arg4, arg5, arg6). The first
         // six values use registers. The seventh value goes on the stack.
         // Offsets refer to the 15 saved words above.
-        "mov rsi, [rsp + 104]",             // arg1: saved RDI
-        "mov rdx, [rsp + 96]",              // arg2: saved RSI
-        "mov rcx, [rsp + 88]",              // arg3: saved RDX
-        "mov r8,  [rsp + 80]",              // arg4: saved R10
-        "mov r9,  [rsp + 72]",              // arg5: saved R8
+        "mov rsi, [rsp + {arg1}]",             // arg1: saved RDI
+        "mov rdx, [rsp + {arg2}]",              // arg2: saved RSI
+        "mov rcx, [rsp + {arg3}]",              // arg3: saved RDX
+        "mov r8,  [rsp + {arg4}]",              // arg4: saved R10
+        "mov r9,  [rsp + {arg5}]",              // arg5: saved R8
         "mov rdi, rax",                     // num: syscall RAX
 
         // Fifteen pushes leave RSP 8 bytes short of call alignment. This slot
         // both aligns the stack and carries arg6 as the seventh C argument.
-        "sub rsp, 8",
-        "mov r10, [rsp + 72]",              // arg6: saved R9
+        "sub rsp, {stack_arg_bytes}",
+        "mov r10, [rsp + {arg6_after_reserve}]",              // arg6: saved R9
         "mov [rsp], r10",
 
         // Step 7: Enable interrupts in the kernel.
@@ -293,7 +270,7 @@ unsafe extern "C" fn syscall_entry() {
         "cli",
 
         // Step 10: Remove the stacked seventh argument.
-        "add rsp, 8",
+        "add rsp, {stack_arg_bytes}",
 
         // Step 11: Pop user state. RAX keeps the handler return value.
         "pop r11",                         // user RFLAGS
@@ -321,6 +298,13 @@ unsafe extern "C" fn syscall_entry() {
         // Step 15: Return to user. SYSRET uses RCX=RIP, R11=RFLAGS, RAX=return.
         "sysretq",
 
+        arg1 = const SAVED_ARG1_RDI,
+        arg2 = const SAVED_ARG2_RSI,
+        arg3 = const SAVED_ARG3_RDX,
+        arg4 = const SAVED_ARG4_R10,
+        arg5 = const SAVED_ARG5_R8,
+        arg6_after_reserve = const SAVED_ARG6_R9 + STACK_ARGUMENT_BYTES,
+        stack_arg_bytes = const STACK_ARGUMENT_BYTES,
         kernel_rsp = sym KERNEL_RSP,
         handler = sym dispatch,
         user_rsp_save = sym USER_RSP_SAVE,

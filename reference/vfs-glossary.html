@@ -299,24 +299,19 @@
     <h2>Syscall / user-kernel boundary</h2>
 
     <div class="term">
-      <div class="term-name"><code>USER_ADDR_LIMIT</code></div>
-      <p class="term-def">
-        Constant in mini-os (<code>0x0000_8000_0000_0000</code>, 2^47 — first
-        non-canonical address). Any pointer at or above this is in the kernel upper half
-        or the non-canonical hole. Used by <code>is_user_range()</code> to validate
-        syscall arguments.
-      </p>
+      <div class="term-name"><code>LOW_HALF_END</code></div>
+      <p class="term-def">The exclusive numeric limit <code>0x0000_8000_0000_0000</code>
+      for the low canonical address half in four-level x86 paging. Gabix also has
+      kernel mappings below this limit, so it does not identify memory owned by a
+      user process. Source: <code>src/syscall/user.rs:3</code>.</p>
     </div>
-
     <div class="term">
-      <div class="term-name"><code>is_user_range(ptr, len)</code></div>
-      <p class="term-def">
-        mini-os helper that returns <code>true</code> if <code>[ptr, ptr+len)</code> is
-        entirely within user space. Used by every syscall taking a user pointer
-        (<code>sys_read</code>, <code>sys_write</code>) to reject kernel-pointer attacks.
-        Returns <code>u64::MAX</code> (EFAULT sentinel) on failure. Does NOT catch
-        in-range-but-unmapped pointers — that requires a page-fault handler.
-      </p>
+      <div class="term-name"><code>is_low_half_range(ptr, len)</code></div>
+      <p class="term-def">Returns a boolean after checking addition overflow and
+      whether the numeric interval stays below that limit. It accepts zero and
+      does not inspect page presence or access permissions. Callers still need
+      readable or writable mappings before dereferencing a pointer; an invalid
+      mapping can fault inside the kernel. Source: <code>src/syscall/user.rs:10</code>.</p>
     </div>
   </section>
 

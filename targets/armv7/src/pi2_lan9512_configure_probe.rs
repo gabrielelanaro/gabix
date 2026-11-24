@@ -19,6 +19,8 @@ use gabix_kernel::device::FrameDevice;
 
 core::arch::global_asm!(include_str!("pi2_lan9512_configure_probe.S"));
 
+const USB_HUB_DEVICE_CLASS: u8 = 9;
+
 const UART_BASE: usize = 0x3f20_1000;
 const UART_FLAGS: usize = UART_BASE + 0x18;
 const UART_TX_FULL: u32 = 1 << 5;
@@ -41,7 +43,8 @@ extern "C" fn pi2_lan9512_configure_probe_main() -> ! {
     let Some(root) = (unsafe { usb.enumerate_root() }) else {
         fail(b"NET9 ROOT FAILED");
     };
-    let network_device = if root.device_class == 9 {
+    // This diagnostic selects the first enumerated child, without searching by device ID.
+    let network_device = if root.device_class == USB_HUB_DEVICE_CLASS {
         let child = match unsafe { usb.enumerate_hub_child_diagnostic(root) } {
             Ok(child) => child,
             Err(error) => {
@@ -63,6 +66,7 @@ extern "C" fn pi2_lan9512_configure_probe_main() -> ! {
     write_bytes(b"NET9 LAN9512 MAC ");
     write_mac(network.mac_address());
     write_byte(b'\n');
+    // Configuration completed; this probe has not transmitted or received a frame.
     write_line(b"NET9 LAN9512 CONFIG OK");
     wait_for_reset();
 }

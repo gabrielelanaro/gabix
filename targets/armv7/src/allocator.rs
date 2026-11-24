@@ -1,7 +1,12 @@
+//! Kernel heap backed by a fixed RAM array. linked_list_allocator handles free
+//! regions; this wrapper masks IRQs around its lock so a timer cannot switch to
+//! another task that waits for the lock while the interrupted task still owns it.
+
 use core::alloc::{GlobalAlloc, Layout};
 use core::arch::asm;
 use linked_list_allocator::LockedHeap;
 
+const CPSR_IRQ_MASK: u32 = 1 << 7;
 const HEAP_SIZE: usize = 1024 * 1024;
 
 #[repr(C, align(16))]
@@ -20,6 +25,8 @@ impl IrqLockedHeap {
         }
     }
 
+    /// Safety: the writable region must belong exclusively to this heap and
+    /// remain valid for every allocation until the kernel stops using it.
     pub unsafe fn init(&self, start: *mut u8, size: usize) {
         without_interrupts(|| self.inner.lock().init(start, size));
     }
@@ -33,7 +40,7 @@ fn without_interrupts<R>(operation: impl FnOnce() -> R) -> R {
     }
 
     let result = operation();
-    if status & (1 << 7) == 0 {
+    if status & CPSR_IRQ_MASK == 0 {
         unsafe {
             asm!("cpsie i", "isb");
         }

@@ -20,9 +20,30 @@ pub enum Outcome {
         instruction: bool,
     },
 }
-static mut OUTCOMES: [Outcome; 2] = [Outcome::Running; 2];
-static mut PREEMPTIONS: [u32; 2] = [0; 2];
-const DATA: u32 = memory::PROCESS_BASE + 0x10000;
+// Single-core state: callers serialize updates with the scheduler/exception path.
+static mut OUTCOMES: [Outcome; memory::PROCESS_COUNT] = [Outcome::Running; memory::PROCESS_COUNT];
+static mut PREEMPTIONS: [u32; memory::PROCESS_COUNT] = [0; memory::PROCESS_COUNT];
+const CPSR_MODE_MASK: u32 = 0x1f;
+const CPSR_USER_MODE: u32 = 0x10;
+// Short-descriptor fault status is split between bits [3:0] and bit 10.
+const FAULT_STATUS_LOW_MASK: u32 = 0xf;
+const FAULT_STATUS_HIGH_BIT: u32 = 1 << 10;
+const SECTION_PERMISSION_FAULT: u32 = 0xd;
+const DATA_FAULT_WAS_WRITE: u32 = 1 << 11;
+
+// Probe ABI shared with process_probe.S: sentinel, forbidden address, access kind.
+const PROBE_DATA_OFFSET: u32 = 0x10000;
+const PROBE_DATA: u32 = memory::PROCESS_BASE + PROBE_DATA_OFFSET;
+const PROBE_ADDRESS_OFFSET: u32 = 4;
+const PROBE_ACCESS_OFFSET: u32 = 8;
+const PROBE_READ: u32 = 0;
+const PROBE_WRITE: u32 = 1;
+const PROBE_EXECUTE: u32 = 2;
+const PROBE_STACK_SEPARATION: u32 = 0x100;
+const PROBE_EXECUTE_STACK_OFFSET: u32 = 0x200;
+const MINIMUM_PREEMPTIONS: u32 = 2;
+#[cfg(feature = "pi-hardware")]
+const PROBE_WATCHDOG_SECONDS: u32 = 15;
 
 pub unsafe fn record_preemption(id: usize) {
     PREEMPTIONS[id] += 1;
@@ -35,7 +56,7 @@ pub fn enter_current_process() {
         // observable even though both processes use the same stack section VA.
         crate::user::enter(
             memory::PROCESS_BASE,
-            memory::PROCESS_STACK_TOP - id as u32 * 0x100,
+            memory::PROCESS_STACK_TOP - id as u32 * PROBE_STACK_SEPARATION,
         );
     }
 }
@@ -53,7 +74,7 @@ pub unsafe fn handle_memory_abort(
     saved_status: u32,
     instruction: bool,
 ) -> ! {
-    if saved_status & 0x1f == 0x10 {
+    if saved_status & CPSR_MODE_MASK == CPSR_USER_MODE {
         if let Some(id) = scheduler::current_process() {
             OUTCOMES[id] = Outcome::Fault {
                 address,
@@ -73,8 +94,10 @@ pub unsafe fn handle_memory_abort(
 /// Load a small position-independent flat image into a stopped process.
 /// Tables and backing regions are fixed for this first implementation.
 /// Loading through the noncacheable user mapping avoids a cached physical alias.
+/// Caller must mask IRQs and stop both processes: this changes the current table,
+/// clears the whole allocation, then returns to the boot table.
 unsafe fn prepare(id: usize, image: &[u8], forbidden_address: u32, access_kind: u32) {
-    assert!(image.len() < 0x10000);
+    assert!(image.len() < PROBE_DATA_OFFSET as usize);
     memory::prepare_process_table(id);
     memory::activate_process(Some(id));
     core::ptr::write_bytes(
@@ -83,8 +106,11 @@ unsafe fn prepare(id: usize, image: &[u8], forbidden_address: u32, access_kind: 
         (memory::PROCESS_END - memory::PROCESS_BASE) as usize,
     );
     core::ptr::copy_nonoverlapping(image.as_ptr(), memory::PROCESS_BASE as *mut u8, image.len());
-    core::ptr::write_volatile((DATA + 4) as *mut u32, forbidden_address);
-    core::ptr::write_volatile((DATA + 8) as *mut u32, access_kind);
+    core::ptr::write_volatile(
+        (PROBE_DATA + PROBE_ADDRESS_OFFSET) as *mut u32,
+        forbidden_address,
+    );
+    core::ptr::write_volatile((PROBE_DATA + PROBE_ACCESS_OFFSET) as *mut u32, access_kind);
     memory::synchronize_process_code();
     memory::activate_process(None);
     OUTCOMES[id] = Outcome::Running;
@@ -101,20 +127,23 @@ pub unsafe fn verify_isolation() -> bool {
     let kernel_address = 0x4001_0000;
     #[cfg(feature = "raspi2b")]
     let kernel_address = 0x0010_0000;
-    // Baseline, other-process read, other-process write, kernel read.
+    // Baseline, other-process read/write, kernel read, and stack execution.
     for (forbidden, access_kind) in [
-        (0, 0),
-        (memory::process_physical_base(1), 0),
-        (memory::process_physical_base(1), 1),
-        (kernel_address, 0),
-        (memory::PROCESS_STACK_TOP - 0x200, 2),
+        (0, PROBE_READ),
+        (memory::process_physical_base(1), PROBE_READ),
+        (memory::process_physical_base(1), PROBE_WRITE),
+        (kernel_address, PROBE_READ),
+        (
+            memory::PROCESS_STACK_TOP - PROBE_EXECUTE_STACK_OFFSET,
+            PROBE_EXECUTE,
+        ),
     ] {
         #[cfg(feature = "pi-hardware")]
-        crate::raspi2b::reset::arm_deadman(15);
+        crate::raspi2b::reset::arm_deadman(PROBE_WATCHDOG_SECONDS);
         asm!("cpsid i");
         scheduler::reset_finished_tasks();
         prepare(0, image, forbidden, access_kind);
-        prepare(1, image, 0, 0);
+        prepare(1, image, 0, PROBE_READ);
         if scheduler::spawn_process(0).is_none() || scheduler::spawn_process(1).is_none() {
             return false;
         }
@@ -124,7 +153,9 @@ pub unsafe fn verify_isolation() -> bool {
         let preemptions = PREEMPTIONS;
         let mut console = crate::console::Pl011::new(crate::platform::UART_BASE);
         crate::write_line(&mut console, alloc::format!("gabix isolation address={forbidden:#x} access={access_kind} outcomes={outcomes:?} ticks={preemptions:?}").as_bytes());
-        if OUTCOMES[1] != Outcome::Exited(0) || preemptions.iter().any(|&ticks| ticks < 2) {
+        if OUTCOMES[1] != Outcome::Exited(0)
+            || preemptions.iter().any(|&ticks| ticks < MINIMUM_PREEMPTIONS)
+        {
             return false;
         }
         if forbidden == 0 {
@@ -138,10 +169,12 @@ pub unsafe fn verify_isolation() -> bool {
                     status,
                     instruction,
                 } if address == forbidden
-                    && (status & 0xf) == 0xd
-                    && status & (1 << 10) == 0
-                    && instruction == (access_kind == 2)
-                    && (instruction || (status & (1 << 11) != 0) == (access_kind == 1)) => {}
+                    && (status & FAULT_STATUS_LOW_MASK) == SECTION_PERMISSION_FAULT
+                    && status & FAULT_STATUS_HIGH_BIT == 0
+                    && instruction == (access_kind == PROBE_EXECUTE)
+                    && (instruction
+                        || (status & DATA_FAULT_WAS_WRITE != 0)
+                            == (access_kind == PROBE_WRITE)) => {}
                 _ => return false,
             }
         }

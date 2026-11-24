@@ -6,6 +6,9 @@ use crate::println;
 use crate::process::{Pid, PROCESS_TABLE};
 use alloc::vec::Vec;
 
+/// Stop scheduling the current task, store its exit status, release its
+/// descriptor table and wake a blocked parent. Leaves interrupts disabled;
+/// the caller must yield without resuming ordinary work in the exited task.
 pub fn mark_current_zombie(exit_code: i64) {
     let was_enabled = crate::arch::interrupts::are_enabled();
     if was_enabled {
@@ -43,6 +46,8 @@ pub fn mark_current_zombie(exit_code: i64) {
     }
 }
 
+/// Reaping returns the saved status. WouldBlock means the parent has already
+/// been marked Blocked and must yield; NoChildren leaves its state unchanged.
 pub enum WaitResult {
     Reaped { child_pid: Pid, exit_status: i64 },
     NoChildren,
@@ -64,6 +69,10 @@ impl WaitTarget {
     }
 }
 
+/// Reap one matching zombie child or prepare the parent to wait. Scheduler
+/// and process locks are acquired separately with interrupts disabled across
+/// the operation. Reaping removes the Process but retains the Dead Task and
+/// its allocated stacks; address-space reclamation is not implemented here.
 pub fn wait_for_zombie_child(parent_pid: Pid, target: WaitTarget) -> WaitResult {
     crate::arch::interrupts::without_interrupts(|| {
         let zombie_pids = {
@@ -136,6 +145,9 @@ pub fn wait_for_zombie_child(parent_pid: Pid, target: WaitTarget) -> WaitResult 
     })
 }
 
+/// Replace the current Process's address-space handle and name. Leaves
+/// interrupts disabled for the caller's CR3 update and user-entry sequence.
+/// This function neither switches CR3 nor frees the old mappings.
 pub fn replace_current_address_space(new_as: crate::memory::AddressSpace, new_name: &str) {
     let was_enabled = crate::arch::interrupts::are_enabled();
     if was_enabled {

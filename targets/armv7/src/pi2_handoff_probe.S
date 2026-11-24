@@ -7,6 +7,8 @@
     .equ UART_FLAGS, 0x18
     .equ UART_TX_FULL, 0x20
 
+// P shows that the loader reached this payload. Return through its supplied LR.
+// UART setup and a valid return address are required; this probe uses no stack.
 _start:
     ldr r1, =UART_BASE
     mov r0, #'P'

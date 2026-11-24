@@ -9,3 +9,9 @@ path = "src/lib.rs"
 [features]
 default = ["kernel"]
 kernel = []
+wifi-security = ["kernel", "dep:hmac", "dep:sha1", "dep:aes"]
+
+[dependencies]
+hmac = { version = "0.13", default-features = false, optional = true }
+sha1 = { version = "0.11", default-features = false, optional = true }
+aes = { version = "0.9", default-features = false, optional = true }

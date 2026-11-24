@@ -1,4 +1,5 @@
 use super::*;
+use gabix_kernel::memory::FRAME_SIZE;
 
 // ============================================================
 // VirtQueue — the shared-memory ring buffer (Lesson 7)
@@ -6,10 +7,20 @@ use super::*;
 
 /// Bytes occupied by one descriptor entry: addr(8) + len(4) + flags(2) + next(2).
 const VIRTQ_DESC_SIZE: usize = 16;
+// Both rings start with u16 flags and a u16 index, then their entries.
+const RING_INDEX_OFFSET: u64 = 2;
+const RING_ENTRIES_OFFSET: u64 = 4;
+const RING_FIXED_BYTES: usize = 6; // flags + index + optional event field
+const AVAILABLE_ENTRY_BYTES: usize = 2; // descriptor head index
+const USED_ENTRY_BYTES: usize = 8; // descriptor head (u32), written bytes (u32)
+const USED_LENGTH_OFFSET: u64 = 4;
+const BLOCK_HEADER_BYTES: u32 = 16;
+const BLOCK_SECTOR_BYTES: u32 = 512;
+const BLOCK_STATUS_BYTES: u32 = 1;
 
 // Descriptor flags (bits in the `flags` field).
 const VIRTQ_DESC_F_NEXT: u16 = 0x01;
-pub(super) const VIRTQ_DESC_F_WRITE: u16 = 0x02;
+pub(super) const VIRTQ_DESC_F_DEVICE_WRITES: u16 = 0x02;
 
 /// Layout of one descriptor entry. `repr(C)` guarantees the fields land
 /// at the spec-mandated offsets: addr at 0, len at 8, flags at 12, next at 14.
@@ -24,13 +35,13 @@ struct VirtqDesc {
 /// the device use to exchange requests.
 ///
 /// Each region is allocated as a single 4 KiB frame from the frame allocator.
-/// That gives us page alignment and physical contiguity for free, both of
-/// which the device requires. The frame is reachable from kernel code via
+/// This exceeds the split queue's 16/2/4-byte alignment requirements and
+/// supplies contiguous storage. The frame is reachable from kernel code via
 /// the bootloader's direct map (`phys_offset() + phys`).
 ///
 /// For `queue_size <= 64`, each region fits in one frame:
 ///   - descriptor table: 64 × 16 = 1024 B
-///   - available ring:    2 + 2 + (64 × 2) + 2 = 132 B
+///   - available ring:    2 + 2 + (64 × 2) + 2 = 134 B
 ///   - used ring:         2 + 2 + (64 × 8) + 2 = 518 B
 pub struct VirtQueue {
     queue_size: u16,
@@ -69,20 +80,23 @@ impl VirtQueue {
     pub fn new(queue_size: u16) -> Self {
         let q = queue_size as usize;
         let desc_bytes = q * VIRTQ_DESC_SIZE;
-        let avail_bytes = 6 + q * 2; // flags + idx + ring + used_event
-        let used_bytes = 6 + q * 8; // flags + idx + ring entries + avail_event
+        let avail_bytes = RING_FIXED_BYTES + q * AVAILABLE_ENTRY_BYTES; // flags + idx + ring + used_event
+        let used_bytes = RING_FIXED_BYTES + q * USED_ENTRY_BYTES; // flags + idx + ring entries + avail_event
 
         // Assert our single-frame-per-region assumption. Larger queues
         // would need multi-frame allocations; we don't need that yet.
         assert!(
-            desc_bytes <= 4096,
+            desc_bytes <= FRAME_SIZE as usize,
             "descriptor table doesn't fit in one frame"
         );
         assert!(
-            avail_bytes <= 4096,
+            avail_bytes <= FRAME_SIZE as usize,
             "available ring doesn't fit in one frame"
         );
-        assert!(used_bytes <= 4096, "used ring doesn't fit in one frame");
+        assert!(
+            used_bytes <= FRAME_SIZE as usize,
+            "used ring doesn't fit in one frame"
+        );
 
         let desc_frame =
             crate::frame_allocator::allocate().expect("out of frames for descriptor table");
@@ -91,9 +105,9 @@ impl VirtQueue {
         let used_frame = crate::frame_allocator::allocate().expect("out of frames for used ring");
 
         let offset = crate::memory::phys_offset();
-        let desc_phys = desc_frame * 4096;
-        let avail_phys = avail_frame * 4096;
-        let used_phys = used_frame * 4096;
+        let desc_phys = desc_frame * FRAME_SIZE;
+        let avail_phys = avail_frame * FRAME_SIZE;
+        let used_phys = used_frame * FRAME_SIZE;
         let desc_virt = desc_phys + offset;
         let avail_virt = avail_phys + offset;
         let used_virt = used_phys + offset;
@@ -104,9 +118,9 @@ impl VirtQueue {
         // SAFETY: frames are freshly allocated and reachable via the
         // direct map. No aliases.
         unsafe {
-            core::ptr::write_bytes(desc_virt as *mut u8, 0, 4096);
-            core::ptr::write_bytes(avail_virt as *mut u8, 0, 4096);
-            core::ptr::write_bytes(used_virt as *mut u8, 0, 4096);
+            core::ptr::write_bytes(desc_virt as *mut u8, 0, FRAME_SIZE as usize);
+            core::ptr::write_bytes(avail_virt as *mut u8, 0, FRAME_SIZE as usize);
+            core::ptr::write_bytes(used_virt as *mut u8, 0, FRAME_SIZE as usize);
         }
 
         println!("[virtio] virtqueue allocated (queue_size={})", queue_size);
@@ -183,18 +197,18 @@ impl VirtQueue {
     /// Diagnostic: snapshot of (avail_idx, used_idx, last_used_idx) for
     /// debugging queue state. Useful when a request seems to vanish.
     pub fn debug_state(&self) -> (u16, u16, u16) {
-        let avail_idx_atomic: *const AtomicU16 = (self.avail_virt + 2) as *const AtomicU16;
-        let used_idx_atomic: *const AtomicU16 = (self.used_virt + 2) as *const AtomicU16;
+        let avail_idx_atomic: *const AtomicU16 =
+            (self.avail_virt + RING_INDEX_OFFSET) as *const AtomicU16;
+        let used_idx_atomic: *const AtomicU16 =
+            (self.used_virt + RING_INDEX_OFFSET) as *const AtomicU16;
         let avail = unsafe { (*avail_idx_atomic).load(Ordering::Acquire) };
         let used = unsafe { (*used_idx_atomic).load(Ordering::Acquire) };
         (avail, used, self.last_used_idx)
     }
 
-    /// Write the four fields of descriptor `idx`. Used by future steps
-    /// to build a descriptor chain before submitting it.
-    ///
-    /// SAFETY-conscious: writes via volatile so the compiler can't
-    /// reorder or coalesce with device reads.
+    /// Fill a descriptor before publishing its chain. The caller owns this
+    /// in-range slot until submission. Volatile writes preserve the accesses;
+    /// `submit_chain` orders them before the device sees the available index.
     pub fn write_descriptor(&self, idx: u16, addr: u64, len: u32, flags: u16, next: u16) {
         let entry_virt = self.desc_virt + (idx as u64) * VIRTQ_DESC_SIZE as u64;
         // SAFETY: `idx` is in range (caller contract), `entry_virt`
@@ -232,28 +246,27 @@ impl VirtQueue {
         let mid = self.alloc_descriptor().expect("no free descriptors");
         let tail = self.alloc_descriptor().expect("no free descriptors");
 
-        self.write_descriptor(head, header_phys, 16, VIRTQ_DESC_F_NEXT, mid);
+        self.write_descriptor(
+            head,
+            header_phys,
+            BLOCK_HEADER_BYTES,
+            VIRTQ_DESC_F_NEXT,
+            mid,
+        );
         self.write_descriptor(
             mid,
             data_phys,
-            512,
-            VIRTQ_DESC_F_NEXT | VIRTQ_DESC_F_WRITE,
+            BLOCK_SECTOR_BYTES,
+            VIRTQ_DESC_F_NEXT | VIRTQ_DESC_F_DEVICE_WRITES,
             tail,
         );
-        self.write_descriptor(tail, status_phys, 1, VIRTQ_DESC_F_WRITE, 0);
-
-        // println!(
-        //     "[virtio]   desc[head={}] addr=0x{:X} len=16  flags=0x{:02X} (F_NEXT)         next={}",
-        //     head, header_phys, VIRTQ_DESC_F_NEXT, mid
-        // );
-        // println!(
-        //     "[virtio]   desc[mid ={}] addr=0x{:X} len=512 flags=0x{:02X} (F_NEXT|F_WRITE) next={}",
-        //     mid, data_phys, VIRTQ_DESC_F_NEXT | VIRTQ_DESC_F_WRITE, tail
-        // );
-        // println!(
-        //     "[virtio]   desc[tail={}] addr=0x{:X} len=1   flags=0x{:02X} (F_WRITE)        next=0",
-        //     tail, status_phys, VIRTQ_DESC_F_WRITE
-        // );
+        self.write_descriptor(
+            tail,
+            status_phys,
+            BLOCK_STATUS_BYTES,
+            VIRTQ_DESC_F_DEVICE_WRITES,
+            0,
+        );
 
         (head, mid, tail)
     }
@@ -279,25 +292,17 @@ impl VirtQueue {
         (head, tail)
     }
 
-    /// Publish a chain head to the available ring and advance `idx`.
-    ///
-    /// The spec requires a write memory barrier between filling in the
-    /// descriptor data and bumping `idx` — otherwise the CPU may make
-    /// the new `idx` visible to the device *before* the descriptor
-    /// fields are visible, and the device would DMA from a half-written
-    /// descriptor.
-    ///
-    /// We achieve this with `AtomicU16::fetch_add(1, Ordering::Release)`
-    /// on `avail->idx`. Release ordering inserts the barrier for us.
-    ///
-    /// Returns the old `idx` value (i.e., the slot we just wrote into).
+    /// Publish a chain head; the caller separately notifies the device.
+    /// Release ordering publishes descriptor and ring writes before the index.
+    /// Callers must serialize submissions even though the index is atomic.
+    /// Returns the previous index; its remainder modulo queue_size is the slot.
     pub fn submit_chain(&self, head_index: u16) -> u16 {
         let q = self.queue_size as u64;
 
         // Pointer to avail->idx (offset 2 from the region base).
-        // SAFETY: avail_virt is the kernel-side address of a freshly
-        // allocated frame; +2 lands on the idx field inside it.
-        let idx_atomic: *const AtomicU16 = (self.avail_virt + 2) as *const AtomicU16;
+        // SAFETY: this aligned field lies inside the queue's allocated frame.
+        let idx_atomic: *const AtomicU16 =
+            (self.avail_virt + RING_INDEX_OFFSET) as *const AtomicU16;
 
         // Read current idx. Relaxed is fine here — no other publication
         // depends on this read.
@@ -306,24 +311,14 @@ impl VirtQueue {
         // Write the head descriptor index into ring[old_idx % N].
         // Offset 4 (past flags + idx) + slot * 2 bytes.
         let slot = (old_idx as u64) % q;
-        let ring_entry_virt = self.avail_virt + 4 + slot * 2;
+        let ring_entry_virt =
+            self.avail_virt + RING_ENTRIES_OFFSET + slot * AVAILABLE_ENTRY_BYTES as u64;
         unsafe {
             write_volatile(ring_entry_virt as *mut u16, head_index);
         }
 
-        // Advance idx with Release ordering. This is the memory barrier:
-        // all prior writes (the ring entry AND the descriptor fields the
-        // caller filled in) become globally visible before the new idx
-        // does. The device, polling idx, will see the new value only
-        // after the data is on record.
-        let _new_idx = unsafe { (*idx_atomic).fetch_add(1, Ordering::Release) };
-
-        // println!(
-        //     "[virtio] submit_chain({}): avail->idx {} -> {}",
-        //     head_index,
-        //     old_idx,
-        //     old_idx.wrapping_add(1)
-        // );
+        // Release publishes the descriptor and ring entry before the new index.
+        unsafe { (*idx_atomic).fetch_add(1, Ordering::Release) };
 
         old_idx
     }
@@ -334,21 +329,18 @@ impl VirtQueue {
     ///
     /// - `id` is the head descriptor index the kernel originally
     ///   submitted — use it to find and free the chain.
-    /// - `len` is the number of bytes the device actually wrote to the
-    ///   data buffer. For a read: the bytes read. For a write: 0.
+    /// - `len` counts device-written bytes across the chain, including status
+    ///   bytes for block requests. The caller interprets device-specific data.
     ///
-    /// Reads `used->idx` with Acquire ordering. This pairs with the
-    /// device's Release-ordered store: we won't see the new idx until
-    /// the device's prior writes (the used ring entry fields) are also
-    /// visible to us. So reading the entry right after seeing idx
-    /// advance is safe.
+    /// Acquire ordering keeps subsequent entry reads after the index read.
+    /// VirtIO requires the device to publish its writes before advancing idx.
     pub fn poll_completion(&mut self) -> Option<(u32, u32)> {
         let q = self.queue_size as u64;
 
         // Pointer to used->idx (offset 2 from region base).
-        let idx_atomic: *const AtomicU16 = (self.used_virt + 2) as *const AtomicU16;
+        let idx_atomic: *const AtomicU16 = (self.used_virt + RING_INDEX_OFFSET) as *const AtomicU16;
 
-        // Acquire load pairs with the device's Release store.
+        // Observe device completion before reading the used entry.
         let current = unsafe { (*idx_atomic).load(Ordering::Acquire) };
 
         if current == self.last_used_idx {
@@ -358,23 +350,15 @@ impl VirtQueue {
         // Read the entry at last_used_idx % N. Layout: offset 4 (past
         // flags+idx), each entry is 8 bytes (id u32, len u32).
         let slot = (self.last_used_idx as u64) % q;
-        let entry_virt = self.used_virt + 4 + slot * 8;
+        let entry_virt = self.used_virt + RING_ENTRIES_OFFSET + slot * USED_ENTRY_BYTES as u64;
         let (id, len) = unsafe {
             (
                 read_volatile(entry_virt as *const u32),
-                read_volatile((entry_virt + 4) as *const u32),
+                read_volatile((entry_virt + USED_LENGTH_OFFSET) as *const u32),
             )
         };
 
         self.last_used_idx = self.last_used_idx.wrapping_add(1);
-
-        // println!(
-        //     "[virtio] poll_completion: used->idx {} -> {}, id={} len={}",
-        //     self.last_used_idx.wrapping_sub(1),
-        //     current,
-        //     id,
-        //     len
-        // );
 
         Some((id, len))
     }

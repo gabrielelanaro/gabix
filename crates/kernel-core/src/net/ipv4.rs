@@ -1,9 +1,20 @@
-//! IPv4 header parsing and building.
+//! IPv4 header parsing and building (RFC 791).
+//!
+//! This implementation accepts the fixed 20-byte header and unfragmented data.
+//! Byte 0 packs version in the high four bits and header length in the low
+//! four bits. Header length is measured in 32-bit words, so five means 20 bytes.
+//! Remaining fields: total length (2..4), identification (4..6), flags/fragment
+//! offset (6..8), hop limit/TTL (8), payload protocol (9), checksum (10..12),
+//! source address (12..16), destination address (16..20). u16 fields are big-endian.
 
 use super::checksum;
 
 pub const IPV4_HEADER_LEN: usize = 20;
-pub const VERSION_IHL_NO_OPTIONS: u8 = 0x45;
+const VERSION: u8 = 4;
+const HEADER_WORDS_WITHOUT_OPTIONS: u8 = 5;
+const VERSION_SHIFT: u8 = 4;
+const HEADER_WORD_COUNT_MASK: u8 = 0x0f;
+pub const VERSION_IHL_NO_OPTIONS: u8 = (VERSION << VERSION_SHIFT) | HEADER_WORDS_WITHOUT_OPTIONS;
 pub const DEFAULT_TTL: u8 = 64;
 pub const FLAG_DONT_FRAGMENT: u16 = 0x4000;
 pub const FLAG_MORE_FRAGMENTS: u16 = 0x2000;
@@ -29,9 +40,9 @@ impl Ipv4Header {
         if packet.len() < IPV4_HEADER_LEN {
             return None;
         }
-        let version = packet[0] >> 4;
-        let ihl = packet[0] & 0x0f;
-        if version != 4 || ihl != 5 {
+        let version = packet[0] >> VERSION_SHIFT;
+        let ihl = packet[0] & HEADER_WORD_COUNT_MASK;
+        if version != VERSION || ihl != HEADER_WORDS_WITHOUT_OPTIONS {
             return None;
         }
         let total_len = u16::from_be_bytes([packet[2], packet[3]]);

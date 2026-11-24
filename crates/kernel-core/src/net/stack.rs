@@ -6,7 +6,10 @@ use super::icmp::{self, EchoMessage, ECHO_CODE, ECHO_REQUEST};
 use super::ipv4::{self, Ipv4Header, IPV4_HEADER_LEN};
 use super::udp::{self, UdpDatagram, UDP_HEADER_LEN};
 
+// Maximum payload carried by the Ethernet header, excluding that header.
 pub const ETHERNET_MTU: usize = 1500;
+const BROADCAST_MAC: [u8; 6] = [0xff; 6];
+const BROADCAST_IP: [u8; 4] = [255; 4];
 pub const MAX_FRAME_LEN: usize = ETHERNET_HEADER_LEN + ETHERNET_MTU;
 
 pub struct NetworkInterface {
@@ -40,9 +43,11 @@ impl NetworkInterface {
         self.address = address;
     }
 
+    /// Parse one layer at a time, then build an ARP reply, ping reply, or UDP
+    /// echo. Unsupported/malformed frames return None without a transmission.
     pub fn reply(&self, frame: &[u8], out: &mut [u8]) -> Option<usize> {
         let ethernet = EthernetHeader::parse(frame)?;
-        if ethernet.dst != self.mac && ethernet.dst != [0xff; 6] {
+        if ethernet.dst != self.mac && ethernet.dst != BROADCAST_MAC {
             return None;
         }
         let payload = frame.get(ETHERNET_HEADER_LEN..)?;
@@ -63,7 +68,7 @@ impl NetworkInterface {
             return None;
         }
         let ip = Ipv4Header::parse(payload)?;
-        if ip.dst_ip != self.address && ip.dst_ip != [255; 4] {
+        if ip.dst_ip != self.address && ip.dst_ip != BROADCAST_IP {
             return None;
         }
         let ip_payload = payload.get(IPV4_HEADER_LEN..ip.total_len as usize)?;
@@ -105,16 +110,19 @@ impl NetworkInterface {
         None
     }
 
+    /// Validate Ethernet destination, IPv4 header, and UDP checksum before
+    /// exposing the borrowed payload. The caller must keep the frame alive.
     pub fn receive_udp<'a>(&self, frame: &'a [u8]) -> Option<ReceivedUdp<'a>> {
         let ethernet = EthernetHeader::parse(frame)?;
         if ethernet.ethertype != ETHERTYPE_IPV4
-            || (ethernet.dst != self.mac && ethernet.dst != [0xff; 6])
+            || (ethernet.dst != self.mac && ethernet.dst != BROADCAST_MAC)
         {
             return None;
         }
         let bytes = frame.get(ETHERNET_HEADER_LEN..)?;
         let ip = Ipv4Header::parse(bytes)?;
-        if ip.protocol != ipv4::PROTOCOL_UDP || (ip.dst_ip != self.address && ip.dst_ip != [255; 4])
+        if ip.protocol != ipv4::PROTOCOL_UDP
+            || (ip.dst_ip != self.address && ip.dst_ip != BROADCAST_IP)
         {
             return None;
         }
@@ -181,7 +189,7 @@ impl NetworkInterface {
 
     pub fn write_arp_request(&self, target_ip: [u8; 4], out: &mut [u8]) -> Option<usize> {
         let request = ArpPacket::request(self.mac, self.address, target_ip);
-        self.write_ethernet([0xff; 6], ETHERTYPE_ARP, &request.to_bytes(), out)
+        self.write_ethernet(BROADCAST_MAC, ETHERTYPE_ARP, &request.to_bytes(), out)
     }
 
     fn write_ipv4(

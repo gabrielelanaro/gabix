@@ -16,6 +16,8 @@ pub fn timer_ticks() -> usize {
     interrupts::TICKS.load(Ordering::Relaxed)
 }
 
+/// Wait repeatedly with the current interrupt-enable state unchanged. Enabled
+/// interrupts can wake HLT and run handlers before the next iteration.
 pub fn halt() -> ! {
     loop {
         ::x86_64::instructions::hlt();

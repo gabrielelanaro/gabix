@@ -331,7 +331,7 @@ free_list: (<span class="n">0</span>..queue_size).collect(),
 }
 
 <span class="k">const</span> <span class="n">VIRTQ_DESC_F_NEXT</span>:  <span class="t">u16</span> = <span class="n">0x01</span>;
-<span class="k">const</span> <span class="n">VIRTQ_DESC_F_WRITE</span>: <span class="t">u16</span> = <span class="n">0x02</span>;</pre>
+<span class="k">const</span> <span class="n">VIRTQ_DESC_F_DEVICE_WRITES</span>: <span class="t">u16</span> = <span class="n">0x02</span>;</pre>
 
     <p>
       Test output confirms the LIFO behavior — pop from the high end,

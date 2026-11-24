@@ -150,3 +150,17 @@
 - ARM preemption: [Arm CMSIS ARMv7-A IRQ implementation](https://github.com/ARM-software/CMSIS_5/blob/develop/CMSIS/RTOS2/RTX/Source/GCC/irq_armv7a.S) — primary implementation reference for SRS/RFE exception state handling; read alongside gabix lesson 3.06.
 
 - ARM process memory: [Cortex-A programmer’s guide](https://documentation-service.arm.com/static/6893ad23e7f7ce6150e88d37) and [Arm TLB maintenance](https://arm-software.github.io/CMSIS_5/Core_A/html/group__CMSIS__TLB.html) — translation tables, privilege checks, and invalidation when changing address spaces. Used in lesson 2.01.
+
+## SD controller clocks and transfers
+
+- [BCM2835 ARM Peripherals, section 5](https://pip-assets.raspberrypi.com/categories/579-raspberry-pi-zero/documents/RP-008249-DS-1-bcm2835-peripherals.pdf)
+  Controller register definitions used by the Pi driver: CONTROL1 clock fields, DATA FIFO, CMDTM, and completion/error flags.
+- [SD Physical Layer Simplified Specification 7.10](https://www.sdcard.org/cms/wp-content/themes/sdcard-org/dl.php?f=Part1_Physical_Layer_Simplified_Specification_Ver7.10.pdf)
+  Card-side rules: default-speed limit, CMD24 writes, CMD13 status, and the command/data protocol.
+- [Raspberry Pi firmware mailbox property interface: clocks](https://github.com/raspberrypi/firmware/wiki/Mailbox-property-interface#clocks)
+  Query the EMMC source frequency before calculating the controller's divider. Used in lesson 7.06.
+
+## Pi USB Wi-Fi
+
+- [OpenBSD urtwn manual](https://man.openbsd.org/urtwn.4): adapter family, operation modes, and firmware requirement.
+- [Gabix primary-source research](docs/pi2-wifi-references.md): OpenBSD register sequences and WPA2 implementation references used for the port.

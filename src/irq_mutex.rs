@@ -32,12 +32,14 @@ impl<T: ?Sized> IrqMutex<T> {
         }
     }
 
-    /// Release a poisoned console lock during a fatal panic.
+    /// Force-release a console lock during a fatal panic (spin locks have no poisoning).
     ///
     /// # Safety
     ///
-    /// The caller must ensure no live guard will subsequently access the
-    /// protected value. The panic handlers satisfy this by halting the kernel.
+    /// The caller must ensure no existing guard or reference will access the
+    /// protected value after this operation, including on another CPU. Fatal
+    /// panic callers intend to abandon their old stack and exit/halt; this method
+    /// itself neither stops other execution nor disables interrupts.
     pub unsafe fn force_unlock(&self) {
         unsafe { self.inner.force_unlock() };
     }

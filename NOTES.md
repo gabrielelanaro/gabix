@@ -1,5 +1,9 @@
 # Teaching Notes
 
+## Wi-Fi lesson preferences — 2026-11-15
+
+Start with the actual Pi, USB dongle, router, and Mac. Use a stable isometric scene and one operation per step. Explain firmware versus Rust before register details. Keep code available through optional sections and a companion tour. The user requested maximum understandability; lesson delivery does not establish mastery.
+
 ## Clarity plus implementation detail — 2026-11-13
 
 The user likes the revised lesson’s clarity and wants explicit connections to assembly and ARM features. Preserve the concrete scenario and readable main explanation. Add optional code sections at the relevant point, explain operands and bit fields, link the actual functions, and finish with one instruction traced through the example. Clarity should retain the implementation details needed to read the source.
@@ -423,3 +427,12 @@ markers. The Pi 2 was running Gabix on real hardware.
 - For a production-quality Gabix boot path, query the UART clock through the
   Raspberry Pi firmware mailbox or calculate the divisor from an explicit
   clock contract instead of relying only on `init_uart_clock`.
+
+## 2026-11-15 — SD lesson context and visual preference
+
+The user requested an interactive isometric microworld showing actual components,
+data flow, and clocks. Begin with the concrete source/destination scenario: a
+512-byte RAM buffer and a numbered card sector. Explicitly distinguish CPU PIO
+copies from device access to RAM through VirtIO descriptors. Include optional
+register and ARM-instruction detail, plus polling versus interrupt wakeup.
+Questions show these are teaching needs; understanding has not yet been assessed.

@@ -11,8 +11,9 @@
 //!   - `EXIT_SUCCESS` (0x10) → QEMU exits 33 → wrapper script returns 0
 //!   - `EXIT_FAILURE` (0x11) → QEMU exits 35 → wrapper script returns 1
 //!
-//! The LSB=1 invariant lets callers distinguish "guest exited via
-//! isa-debug-exit" from "QEMU itself crashed" (which would be exit 0).
+//! Wrappers recognize the specific expected status codes. An odd exit status
+//! alone cannot distinguish this device from every host-side failure.
+//! Reference: QEMU hw/misc/debugexit.c::debug_exit_write.
 
 use x86_64::instructions::port::Port;
 
@@ -30,11 +31,10 @@ pub const EXIT_FAILURE: u8 = 0x11;
 
 /// Terminate the QEMU process with the given exit byte.
 ///
-/// # Safety
-/// Requires the `isa-debug-exit` device attached at port `0xf4`. If the
-/// device isn't attached, the `out` instruction is a no-op and execution
-/// continues into `unreachable!()`, which panics — and the panic handler
-/// tries to call this function again, producing an infinite panic loop.
+/// Requires the `isa-debug-exit` device attached at port `0xf4` for the intended
+/// shutdown behavior. If execution continues after the port write, this function
+/// panics. The effect of that port without the device depends on the machine;
+/// this helper does not discover or validate the attached device.
 pub fn exit_qemu(exit_code: u8) -> ! {
     let mut port: Port<u8> = Port::new(EXIT_PORT);
     unsafe {

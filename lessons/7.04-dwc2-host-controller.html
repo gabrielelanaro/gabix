@@ -95,7 +95,7 @@
 
 <h2>3. The transfer, end to end</h2>
 
-<p>The <code>transfer()</code> function in <code>usb.rs</code> fills those four registers, sets ENABLE, and waits for the result. Trimmed to the essential writes:</p>
+<p>The <code>transfer()</code> function in <code>usb.rs</code> fills those four registers, sets ENABLE, and waits for the result. The sketch below shows register submission; the production function also manages DMA-buffer ownership, direction and retries:</p>
 
 <div class="xfer-scene">
   <div class="chip arm active" style="grid-column:1;grid-row:1"><div class="nm">ARM</div><div class="sub">CPU</div></div>
@@ -107,10 +107,10 @@
   <div class="vlink" style="grid-column:3;grid-row:2"><span class="vlab">③ DMA</span><div class="varrow"></div></div>
   <div class="chip mem" style="grid-column:3;grid-row:3"><div class="nm">memory</div><div class="sub">buffer</div></div>
 </div>
-<p class="cap2">① The ARM clears stale flags in HCINT (line 519) and writes the three describing registers — HCDMA (528), HCTSIZ (529), HCCHAR (538). ② Setting <code>CHANNEL_ENABLE = 1 << 31</code> (line 61) in HCCHAR (538) starts the transfer. ③ The DWC2 performs the transfer on the USB wire to the device and moves the bytes to or from the buffer in memory by DMA, using the bus address written into HCDMA (528). ④ The ARM polls HCINT (line 547), reads the interrupt bits (556), then reads HCTSIZ again for the byte count not moved (565).</p>
+<p class="cap2">① The ARM clears old HCINT events and writes the buffer address, transfer size and endpoint fields. ② CHANNEL_ENABLE starts the transfer. ③ DWC2 accesses RAM through DMA and communicates with the USB device. ④ The ARM polls status and waits for the channel to stop before reusing its buffer. Source: <code>usb.rs::transfer</code>, lines 807–918 in the readability revision.</p>
 
 <div class="snip">
-<div class="snip-meta"><span>targets/armv7/src/raspi2b/usb.rs</span> · <span class="what">transfer, trimmed</span></div>
+<div class="snip-meta"><span>targets/armv7/src/raspi2b/usb.rs</span> · <span class="what">submission sketch — completion cleanup omitted</span></div>
 <pre><code>write32(CHANNEL_BASE + HCINT, <span class="t">u32</span>::MAX);            <span class="c">// clear old completion flags</span>
 write32(CHANNEL_BASE + HCDMA, dma_address(buffer)); <span class="c">// the buffer's BUS address (section 4)</span>
 write32(CHANNEL_BASE + HCTSIZ,                      <span class="c">// how much to move</span>
@@ -119,18 +119,20 @@ write32(CHANNEL_BASE + HCCHAR,                      <span class="c">// the targe
     CHANNEL_ENABLE | (address <span class="k">as</span> <span class="t">u32</span>) &lt;&lt; <span class="n">22</span> | endpoint_type
     | (endpoint <span class="k">as</span> <span class="t">u32</span>) &lt;&lt; <span class="n">11</span> | max_packet_size <span class="k">as</span> <span class="t">u32</span>);
 
-wait_until(|| read32(CHANNEL_BASE + HCINT) &amp; DONE != <span class="n">0</span>)?; <span class="c">// poll until it finishes</span>
+wait_until(|| read32(CHANNEL_BASE + HCINT) &amp; DONE != <span class="n">0</span>)?; <span class="c">// sketch: production code also stops the channel before returning</span>
 <span class="k">let</span> interrupt = read32(CHANNEL_BASE + HCINT);
 <span class="k">if</span> interrupt &amp; (STALL | ERRORS) != <span class="n">0</span> || interrupt &amp; TRANSFER_COMPLETE == <span class="n">0</span> {
     <span class="k">return</span> <span class="t">None</span>;                                           <span class="c">// device refused or errored</span>
 }
+<span class="c">// IN-transfer result only; successful OUT returns the submitted length.</span>
 <span class="k">let</span> remaining = read32(CHANNEL_BASE + HCTSIZ) &amp; <span class="n">0x7ffff</span>;  <span class="c">// bytes not moved</span>
 <span class="t">Some</span>(length.saturating_sub(remaining))</code></pre>
 </div>
 
 <p>Read it top to bottom. The first three writes describe the transfer: the buffer's bus address, the byte count plus packet count plus PID, then the device and endpoint fields. Writing HCCHAR with the ENABLE bit set is what starts the transfer — from that point the DWC2 performs it on the wire. Then the ARM polls HCINT until one of the completion bits appears.</p>
 
-<p>When a bit appears, the ARM reads HCINT to see which one. TRANSFER_COMPLETE means the transfer moved bytes; the ARM reads HCTSIZ again to learn how many bytes <em>remain</em>, in case the device sent a short packet (fewer bytes than requested). NAK means the device was not ready; the full driver loops and retries. STALL or an error bit means the transfer failed. (This listing drops the NAK-retry loop and the outer retry limit for brevity; the real <code>transfer()</code> has both.)</p>
+<p>The production driver reads status again after the channel stops. For an IN transfer (device to RAM), it subtracts the remaining byte count from the requested length. For an OUT transfer (RAM to device), successful completion returns the submitted length. Source: <code>usb.rs::transfer</code>, lines 890–916.</p>
+<p>NAK means the device cannot accept or supply data yet. <code>RetryPolicy::RetryTransient</code> permits retries; the receive polling path can instead stop after a NAK. A NAK can arrive while DMA still owns the buffer, so that path requests a halt and waits for CHANNEL_ENABLE to clear. Timeout cleanup also stops the channel before returning; failure to stop triggers a panic. Source: <code>usb.rs::transfer</code> and <code>stop_channel_before_returning</code>, lines 875–945. The sketch above omits this cleanup and should not be copied as a complete transfer implementation.</p>
 
 <h2>4. DMA: the controller moves the bytes itself</h2>
 
@@ -260,7 +262,8 @@ wait_until(|| read32(HPRT) &amp; PORT_ENABLE != <span class="n">0</span>)?;     
 
 <h2>6. Why it polls, again</h2>
 
-<p>The DWC2 can raise an interrupt when a channel completes. gabix spin-polls HCINT in a bounded loop instead of wiring the channel-completion interrupt — the same poll-everything pattern as the mailbox, the SD card, and the timer. For a controller that runs one transfer at a time on a kernel that has no other work yet, polling is enough. Wiring the completion interrupt is the same unfinished piece carried over from lessons 7.01 and 7.02; it returns in the next lessons, when the LAN9512 — the chip that adds a USB hub and an Ethernet controller to the Pi — moves real Ethernet traffic over the USB port.</p>
+<p>gabix currently polls USB channel status synchronously. <code>wait_until</code> repeatedly checks a condition until it succeeds or its bounded wait expires (<code>usb.rs</code>, line 1110). An interrupt-status register can be polled by software; reading it does not mean an interrupt handler is doing the work.</p>
+<p>The Pi timer has its own interrupt handler for scheduling. The UART/network service calls USB polling from its foreground loop, so a USB wait delays that service call. See <code>raspi2b/timer.rs::handle_interrupt</code>, <code>main.rs::arm_irq_entry</code> and <code>user_upload.rs::serve_uart_uploads_and_ethernet</code>. USB completion interrupts remain a separate implementation task.</p>
 
 <h2>One channel, four registers</h2>
 

@@ -1,20 +1,8 @@
-//! The process table — the single source of truth for "which processes
-//! exist, and whose child is this one?"
+//! Process identity, parent/child links, address spaces and file tables.
 //!
-//! Lesson 17 pulls process identity out of the scheduler. Up to this
-//! lesson the scheduler's `Vec<Task>` doubled as the process table, and
-//! a task's identifier was `tasks.len() as u64`. That works while the
-//! vector only grows, but the moment a task is removed the next fork
-//! recycles its index — two different processes seen as the same PID.
-//!
-//! This module owns the stable-identifier side of that story. The
-//! scheduler keeps holding `Task`s (the runnable register-frame side);
-//! `Process` holds the identity / process-tree / per-process-memory side.
-//! A `Task` carries a `pid: Pid` back-reference so the scheduler can ask
-//!
-//! PID allocation never recycles. `next_pid` only goes up; a reaped slot
-//! becomes `None` permanently. The simplest shape that satisfies the
-//! "once a process has been named N, no other process is ever N" rule.
+//! A Task stores the PID used to look up its Process. PIDs increase on each
+//! allocation; reaping leaves an empty slot and never reuses that PID.
+//! The slot vector therefore grows with total allocations, not live processes.
 
 use crate::fs::FdTable;
 use crate::irq_mutex::IrqMutex;
@@ -98,6 +86,8 @@ impl ProcessName {
         process_name
     }
 
+    /// Keep at most PROCESS_NAME_MAX bytes. Truncation currently uses a byte
+    /// boundary, which can split a UTF-8 character; see as_str's limitation.
     pub fn set(&mut self, name: &str) {
         let bytes = name.as_bytes();
         let len = bytes.len().min(PROCESS_NAME_MAX);
@@ -109,8 +99,9 @@ impl ProcessName {
     }
 
     pub fn as_str(&self) -> &str {
-        // SAFETY: the only way to populate `bytes[..len]` is through
-        // `set`, which copies from a valid UTF-8 `&str`.
+        // TODO: set() can truncate inside a UTF-8 character, so this unchecked
+        // conversion is only valid when the retained prefix ends on a character
+        // boundary. Existing ASCII names satisfy it; arbitrary names may not.
         unsafe { core::str::from_utf8_unchecked(&self.bytes[..self.len]) }
     }
 }
@@ -121,13 +112,8 @@ impl core::fmt::Display for ProcessName {
     }
 }
 
-/// The identity / process-tree / per-process-memory side of "a program
-/// in flight." Everything that answers "who am I, what do I own" lives
-/// here; everything that answers "how do I resume this paused register
-/// frame" stays on `Task`.
-///
-/// Owned by `ProcessTable`. Looked up by the `Pid` that `Task` carries
-/// as its back-reference.
+/// Process resources stored in ProcessTable and selected by a Task's PID.
+/// Scheduling state and saved kernel-stack registers live in Task.
 pub struct Process {
     /// This process's own identifier. Set by `ProcessTable::allocate`
     /// (the value passed at construction is overwritten), so callers
@@ -136,8 +122,8 @@ pub struct Process {
     /// Parent process, or `None` for the boot process. Set at fork
     /// time; walked by `wait` and for orphan reparenting (later).
     pub parent: Option<Pid>,
-    /// Child process identifiers. Empty until `fork` adds one. Walked
-    /// by `wait(-1)` (wait for any child).
+    /// Child PIDs recorded by fork and inspected by wait. Kernel-task spawn
+    /// currently sets parent without adding to this list.
     pub children: Vec<Pid>,
     /// Exit code set by `sys_exit`. `None` while the process runs;
     /// read by the parent's `wait`. Kept until the parent reaps.
@@ -148,14 +134,14 @@ pub struct Process {
     /// This process's address space — the PML4 the CPU should use when
     /// running it. Switched via CR3 on context switch.
     pub address_space: AddressSpace,
-    /// Per-process file descriptor table. Empty at creation in this
-    /// lesson; fork inheritance lands later.
+    /// Per-process descriptor entries. Fork clones the entries while sharing
+    /// the underlying open-file/socket objects; kernel tasks start empty.
     pub fd_table: FdTable,
 }
 
 impl Process {
-    /// Build a `Process` ready for `ProcessTable::allocate`. `pid` is
-    /// filled in by the table; callers pass whatever (it is ignored).
+    /// Build a Process with a placeholder PID. ProcessTable::allocate assigns
+    /// its actual identifier; the caller supplies its initial resources.
     pub fn new(
         name: &str,
         parent: Option<Pid>,
@@ -178,15 +164,10 @@ impl Process {
 // ProcessTable
 // ============================================================
 
-/// The process table. Indexed by `Pid` (which is also the slot index),
-/// so lookup is `O(1)`. We pay for that with sparse slots whenever a
-/// process is reaped — acceptable in a teaching kernel that won't live
-/// long enough to wrap even a 32-bit counter, and the right call over
-/// `BTreeMap` for mini-os because of the constant-time lookup.
-///
-/// `next_pid` only ever increases; slots go `Some` → `None` on reap,
-/// never back. This is the invariant that makes PID references held
-/// anywhere else in the kernel stable across scheduler-vector mutation.
+/// PID-indexed process slots with constant-time lookup on this 64-bit target.
+/// Allocation appends monotonically; removal leaves None without shrinking
+/// the vector. Historical slots therefore continue consuming memory.
+/// Counter overflow panics instead of recycling an identifier.
 pub struct ProcessTable {
     /// The next pid `allocate` will hand out.
     next_pid: Pid,
@@ -240,8 +221,10 @@ impl ProcessTable {
             .and_then(|slot| slot.as_mut())
     }
 
-    /// Reap a process: pull it out of its slot. The pid is now retired
-    /// for good — a later `allocate` gets a higher pid, never this one.
+    /// Take the Process from its slot and permanently retire the PID.
+    /// The caller performs parent/child and Task-state updates separately.
+    /// Returning the Process transfers its Rust-owned fields to the caller;
+    /// dropping its AddressSpace handle does not reclaim mapped frames.
     pub fn remove(&mut self, pid: Pid) -> Option<Process> {
         self.processes
             .get_mut(pid.as_u64() as usize)
@@ -261,10 +244,7 @@ lazy_static! {
 /// `_start`, before `task::init_main`. The boot process owns the
 /// address space the bootloader set up (`AddressSpace::from_current`),
 /// has no parent, and starts with an empty FD table.
-///
-/// Nothing reads the table until Lesson 17 step 3 wires the accessors
-/// at it; this just establishes the slot so `init_main` can point the
-/// main `Task` at `Pid(0)`.
+/// The matching Task registered by task::init_main refers to this PID.
 pub fn init() {
     crate::arch::interrupts::without_interrupts(|| {
         let mut table = PROCESS_TABLE.lock();

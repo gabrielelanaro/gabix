@@ -27,6 +27,11 @@ const SYS_WAIT4: u64 = 61;
 const SYS_CLOCK_GETTIME: u64 = 228;
 const SYS_NET_CONFIGURE: u64 = 904;
 
+/// Route the register arguments prepared by arch/x86_64/syscall.rs. Each handler
+/// validates its own user pointers and supported arguments; this dispatcher only
+/// selects the operation. Open/exec/accept/wait implement the argument subsets
+/// visible below. Reboot currently ignores arguments and performs no privilege
+/// check here. Unknown numbers return the project's generic u64::MAX error.
 pub(crate) extern "C" fn dispatch(
     num: u64,
     arg1: u64,

@@ -1,6 +1,25 @@
-use super::queue::VIRTQ_DESC_F_WRITE;
+use super::queue::VIRTQ_DESC_F_DEVICE_WRITES;
 use super::*;
 use crate::drivers::{EthernetFrame, FrameDevice, MAX_ETHERNET_FRAME_LEN};
+use gabix_kernel::memory::FRAME_SIZE;
+
+const RX_QUEUE: u16 = 0;
+const TX_QUEUE: u16 = 1;
+const RX_INTERRUPT_ENTRY: u16 = 0;
+const TX_INTERRUPT_ENTRY: u16 = 1;
+const REQUIRED_INTERRUPT_ENTRIES: u16 = 2;
+const MSIX_ENTRY_BYTES: u64 = 16;
+const MSIX_ADDRESS_HIGH_OFFSET: u64 = 4;
+const MSIX_MESSAGE_DATA_OFFSET: u64 = 8;
+const MSIX_VECTOR_CONTROL_OFFSET: u64 = 12;
+const MSIX_VECTOR_UNMASKED: u32 = 0;
+const FEATURE_WORD_LOW: u32 = 0;
+const FEATURE_WORD_HIGH: u32 = 1;
+const FEATURE_VERSION_1_IN_HIGH_WORD: u32 = (VIRTIO_F_VERSION_1 >> 32) as u32;
+const DEVICE_RESET: u8 = 0;
+const QUEUE_ENABLED: u16 = 1;
+// Existing driver padding policy: submit at least 64 Ethernet bytes.
+const MIN_TX_BYTES: usize = 64;
 
 const ETHERNET_HEADER_LEN: usize = 14;
 
@@ -13,6 +32,8 @@ pub struct RxBuffer {
     frame: u64,
 }
 
+// Each transmit allocates two frames. Descriptors are reclaimed on completion;
+// these frames currently remain allocated (8 KiB per transmit).
 struct NetTxBuffers {
     header_phys: u64,
     frame_phys: u64,
@@ -21,7 +42,7 @@ struct NetTxBuffers {
 impl NetTxBuffers {
     fn new(eth_frame: &[u8]) -> Self {
         assert!(
-            eth_frame.len() <= 4096,
+            eth_frame.len() <= FRAME_SIZE as usize,
             "single-frame TX buffer cannot hold {} bytes",
             eth_frame.len()
         );
@@ -31,14 +52,16 @@ impl NetTxBuffers {
         let frame_frame =
             crate::frame_allocator::allocate().expect("out of frames for virtio-net TX frame");
         let offset = crate::memory::phys_offset();
-        let header_phys = header_frame * 4096;
-        let frame_phys = frame_frame * 4096;
+        let header_phys = header_frame * FRAME_SIZE;
+        let frame_phys = frame_frame * FRAME_SIZE;
         let header_virt = header_phys + offset;
         let frame_virt = frame_phys + offset;
 
+        // Zero header requests no checksum or segmentation work from the device.
+        // Zero frame bytes also supply the padding after the caller's packet.
         unsafe {
-            core::ptr::write_bytes(header_virt as *mut u8, 0, 4096);
-            core::ptr::write_bytes(frame_virt as *mut u8, 0, 4096);
+            core::ptr::write_bytes(header_virt as *mut u8, 0, FRAME_SIZE as usize);
+            core::ptr::write_bytes(frame_virt as *mut u8, 0, FRAME_SIZE as usize);
             core::ptr::copy_nonoverlapping(
                 eth_frame.as_ptr(),
                 frame_virt as *mut u8,
@@ -74,8 +97,7 @@ impl FrameDevice for VirtioNet {
         self.mac
     }
 
-    fn transmit(&mut self, eth_frame: &[u8]) {
-        const ETHERNET_MIN_TX_BUFFER: usize = 64;
+    fn transmit(&mut self, eth_frame: &[u8]) -> bool {
         assert!(
             eth_frame.len() >= ETHERNET_HEADER_LEN,
             "transmit needs at least an Ethernet header"
@@ -87,7 +109,7 @@ impl FrameDevice for VirtioNet {
             MAX_ETHERNET_FRAME_LEN
         );
 
-        let tx_len = core::cmp::max(eth_frame.len(), ETHERNET_MIN_TX_BUFFER);
+        let tx_len = core::cmp::max(eth_frame.len(), MIN_TX_BYTES);
         let buffers = NetTxBuffers::new(eth_frame);
         let (head, tail) = {
             let tx_queue = self
@@ -104,9 +126,11 @@ impl FrameDevice for VirtioNet {
             (head, tail)
         };
 
-        self.kick_queue(1);
+        self.kick_queue(TX_QUEUE);
 
         let interrupts_were_enabled = x86_64::instructions::interrupts::are_enabled();
+        // Check with interrupts disabled, then enable-and-halt to avoid missing
+        // a completion interrupt between the empty check and sleep. No timeout.
         let completion = loop {
             x86_64::instructions::interrupts::disable();
             if let Some(completion) = self
@@ -138,6 +162,8 @@ impl FrameDevice for VirtioNet {
             completion.1,
             VIRTIO_NET_HDR_LEN + tx_len
         );
+        // The used-ring completion confirms the device consumed our buffers.
+        true
     }
 
     fn receive(&mut self) -> Option<EthernetFrame> {
@@ -154,6 +180,7 @@ impl FrameDevice for VirtioNet {
             .expect("virtio-net RX completion used an unknown descriptor");
         let rx_len = core::cmp::min(written_len as usize, buffer.len as usize);
 
+        // Each buffer starts with VirtIO metadata; copy only the Ethernet bytes.
         let frame = if rx_len >= VIRTIO_NET_HDR_LEN + ETHERNET_HEADER_LEN {
             let eth_start = buffer.virt + VIRTIO_NET_HDR_LEN as u64;
             let eth_len = core::cmp::min(rx_len - VIRTIO_NET_HDR_LEN, MAX_ETHERNET_FRAME_LEN);
@@ -167,6 +194,7 @@ impl FrameDevice for VirtioNet {
             None
         };
 
+        // The returned frame owns its copy, so the device can reuse this buffer.
         self.recycle_rx_buffer(desc_idx);
         frame
     }
@@ -174,7 +202,7 @@ impl FrameDevice for VirtioNet {
 
 impl VirtioNet {
     /// Find the modern virtio-net PCI device and map the common,
-    /// notification, and device-config capability regions.
+    /// notification, and device-config capability regions. Requires MSI-X.
     pub fn probe() -> Option<Self> {
         let dev = pci::find_virtio_device(pci::VIRTIO_NET_NON_TRANSITIONAL)?;
         let caps = parse_virtio_capabilities(dev.bus, dev.device, dev.func);
@@ -282,13 +310,16 @@ impl VirtioNet {
             self.bus, self.device, self.func, before
         );
 
-        self.write_status(0);
+        self.write_status(DEVICE_RESET);
         let after_reset = self.read_status();
         println!(
             "[virtio-net] device_status after reset:  0x{:02X}",
             after_reset
         );
-        assert_eq!(after_reset, 0, "virtio-net did not reset cleanly");
+        assert_eq!(
+            after_reset, DEVICE_RESET,
+            "virtio-net did not reset cleanly"
+        );
 
         self.write_status(STATUS_ACKNOWLEDGE);
         let after_ack = self.read_status();
@@ -307,9 +338,9 @@ impl VirtioNet {
 
     /// Negotiate the modern transport bit plus NET_F_MAC.
     pub fn negotiate_features(&self) {
-        self.write_common_u32(COMMON_DEVICE_FEATURE_SELECT, 0);
+        self.write_common_u32(COMMON_DEVICE_FEATURE_SELECT, FEATURE_WORD_LOW);
         let device_features_low = self.read_common_u32(COMMON_DEVICE_FEATURE);
-        self.write_common_u32(COMMON_DEVICE_FEATURE_SELECT, 1);
+        self.write_common_u32(COMMON_DEVICE_FEATURE_SELECT, FEATURE_WORD_HIGH);
         let device_features_high = self.read_common_u32(COMMON_DEVICE_FEATURE);
 
         println!(
@@ -326,12 +357,12 @@ impl VirtioNet {
             "virtio-net did not advertise VIRTIO_NET_F_MAC"
         );
         assert!(
-            device_features_high & 0x1 != 0,
+            device_features_high & FEATURE_VERSION_1_IN_HIGH_WORD != 0,
             "virtio-net did not advertise VIRTIO_F_VERSION_1"
         );
 
         let supported_low = VIRTIO_NET_F_MAC;
-        let supported_high = 0x1;
+        let supported_high = FEATURE_VERSION_1_IN_HIGH_WORD;
 
         println!(
             "[virtio-net] driver features low:  0x{:08X} (VIRTIO_NET_F_MAC)",
@@ -342,9 +373,9 @@ impl VirtioNet {
             supported_high
         );
 
-        self.write_common_u32(COMMON_DRIVER_FEATURE_SELECT, 0);
+        self.write_common_u32(COMMON_DRIVER_FEATURE_SELECT, FEATURE_WORD_LOW);
         self.write_common_u32(COMMON_DRIVER_FEATURE, supported_low);
-        self.write_common_u32(COMMON_DRIVER_FEATURE_SELECT, 1);
+        self.write_common_u32(COMMON_DRIVER_FEATURE_SELECT, FEATURE_WORD_HIGH);
         self.write_common_u32(COMMON_DRIVER_FEATURE, supported_high);
 
         self.write_status(STATUS_ACKNOWLEDGE | STATUS_DRIVER | STATUS_FEATURES_OK);
@@ -375,11 +406,11 @@ impl VirtioNet {
 
     pub fn setup_queues(&mut self, queue_size: u16) {
         let rx_queue = VirtQueue::new(queue_size);
-        self.configure_queue_at(0, &rx_queue, "RX");
+        self.configure_queue_at(RX_QUEUE, &rx_queue, "RX");
         self.rx_queue = Some(rx_queue);
 
         let tx_queue = VirtQueue::new(queue_size);
-        self.configure_queue_at(1, &tx_queue, "TX");
+        self.configure_queue_at(TX_QUEUE, &tx_queue, "TX");
         self.tx_queue = Some(tx_queue);
 
         self.configure_queue_interrupts();
@@ -391,36 +422,54 @@ impl VirtioNet {
     /// virtio-blk's entry 0 lives in a different device's table.
     fn configure_queue_interrupts(&self) {
         assert!(
-            self.msix.entries >= 2,
+            self.msix.entries >= REQUIRED_INTERRUPT_ENTRIES,
             "virtio-net MSI-X table has {} entries, need at least 2 (RX + TX)",
             self.msix.entries
         );
         for (entry_index, vector) in [
-            (0u64, crate::arch::x86_64::interrupts::VIRTIO_NET_RX_VECTOR),
-            (1u64, crate::arch::x86_64::interrupts::VIRTIO_NET_TX_VECTOR),
+            (
+                RX_INTERRUPT_ENTRY as u64,
+                crate::arch::x86_64::interrupts::VIRTIO_NET_RX_VECTOR,
+            ),
+            (
+                TX_INTERRUPT_ENTRY as u64,
+                crate::arch::x86_64::interrupts::VIRTIO_NET_TX_VECTOR,
+            ),
         ] {
-            let entry = self.msix.table_virt + entry_index * 16;
+            let entry = self.msix.table_virt + entry_index * MSIX_ENTRY_BYTES;
             unsafe {
                 write_volatile(entry as *mut u32, crate::arch::x86_64::apic::MSI_ADDRESS);
-                write_volatile((entry + 4) as *mut u32, 0);
-                write_volatile((entry + 8) as *mut u32, vector as u32);
-                write_volatile((entry + 12) as *mut u32, 0);
+                write_volatile((entry + MSIX_ADDRESS_HIGH_OFFSET) as *mut u32, 0);
+                write_volatile(
+                    (entry + MSIX_MESSAGE_DATA_OFFSET) as *mut u32,
+                    vector as u32,
+                );
+                write_volatile(
+                    (entry + MSIX_VECTOR_CONTROL_OFFSET) as *mut u32,
+                    MSIX_VECTOR_UNMASKED,
+                );
             }
         }
 
-        self.write_common_u16(COMMON_QUEUE_SELECT, 0);
-        self.write_common_u16(COMMON_QUEUE_MSIX_VECTOR, 0);
+        self.write_common_u16(COMMON_QUEUE_SELECT, RX_QUEUE);
+        self.write_common_u16(COMMON_QUEUE_MSIX_VECTOR, RX_INTERRUPT_ENTRY);
         let rx_assigned = self.read_common_u16(COMMON_QUEUE_MSIX_VECTOR);
-        assert_eq!(rx_assigned, 0, "virtio-net RX queue rejected MSI-X entry 0");
+        assert_eq!(
+            rx_assigned, RX_INTERRUPT_ENTRY,
+            "virtio-net RX queue rejected MSI-X entry 0"
+        );
         println!(
             "[virtio-net] MSI-X queue 0 (RX) -> table 0 -> vector 0x{:02x}",
             crate::arch::x86_64::interrupts::VIRTIO_NET_RX_VECTOR
         );
 
-        self.write_common_u16(COMMON_QUEUE_SELECT, 1);
-        self.write_common_u16(COMMON_QUEUE_MSIX_VECTOR, 1);
+        self.write_common_u16(COMMON_QUEUE_SELECT, TX_QUEUE);
+        self.write_common_u16(COMMON_QUEUE_MSIX_VECTOR, TX_INTERRUPT_ENTRY);
         let tx_assigned = self.read_common_u16(COMMON_QUEUE_MSIX_VECTOR);
-        assert_eq!(tx_assigned, 1, "virtio-net TX queue rejected MSI-X entry 1");
+        assert_eq!(
+            tx_assigned, TX_INTERRUPT_ENTRY,
+            "virtio-net TX queue rejected MSI-X entry 1"
+        );
         println!(
             "[virtio-net] MSI-X queue 1 (TX) -> table 1 -> vector 0x{:02x}",
             crate::arch::x86_64::interrupts::VIRTIO_NET_TX_VECTOR
@@ -450,7 +499,7 @@ impl VirtioNet {
         self.write_common_u64(COMMON_QUEUE_DESC, queue.desc_phys());
         self.write_common_u64(COMMON_QUEUE_AVAIL, queue.avail_phys());
         self.write_common_u64(COMMON_QUEUE_USED, queue.used_phys());
-        self.write_common_u16(COMMON_QUEUE_ENABLE, 1);
+        self.write_common_u16(COMMON_QUEUE_ENABLE, QUEUE_ENABLED);
 
         let enable_readback = self.read_common_u16(COMMON_QUEUE_ENABLE);
         println!(
@@ -458,14 +507,15 @@ impl VirtioNet {
             queue_index, enable_readback
         );
         assert_eq!(
-            enable_readback, 1,
+            enable_readback, QUEUE_ENABLED,
             "virtio-net queue {} was rejected",
             queue_index
         );
         println!("[virtio-net] queue {} ({}) active", queue_index, label);
     }
 
-    /// Allocate and publish the initial receive-buffer supply.
+    /// Allocate reusable receive buffers, each in its own frame.
+    /// Publishing gives the device permission to write; notification happens later.
     pub fn post_initial_rx_buffers(&mut self) {
         let rx_queue = self
             .rx_queue
@@ -479,11 +529,11 @@ impl VirtioNet {
         for _ in 0..VIRTIO_NET_RX_BUFFER_COUNT {
             let frame =
                 crate::frame_allocator::allocate().expect("out of frames for virtio-net RX buffer");
-            let phys = frame * 4096;
+            let phys = frame * FRAME_SIZE;
             let virt = phys + crate::memory::phys_offset();
 
             unsafe {
-                core::ptr::write_bytes(virt as *mut u8, 0, 4096);
+                core::ptr::write_bytes(virt as *mut u8, 0, FRAME_SIZE as usize);
             }
 
             let desc_idx = rx_queue.alloc_descriptor().expect("no free RX descriptors");
@@ -491,7 +541,7 @@ impl VirtioNet {
                 desc_idx,
                 phys,
                 VIRTIO_NET_RX_BUFFER_LEN,
-                VIRTQ_DESC_F_WRITE,
+                VIRTQ_DESC_F_DEVICE_WRITES,
                 0,
             );
             rx_queue.submit_chain(desc_idx);
@@ -574,9 +624,10 @@ impl VirtioNet {
             );
         }
 
-        self.kick_queue(0);
+        self.kick_queue(RX_QUEUE);
     }
 
+    // Each queue has its own device-provided notification offset.
     fn kick_queue(&self, queue_index: u16) {
         self.write_common_u16(COMMON_QUEUE_SELECT, queue_index);
         let queue_notify_off = self.read_common_u16(COMMON_QUEUE_NOTIFY_OFF) as u64;

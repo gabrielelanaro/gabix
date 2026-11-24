@@ -13,6 +13,18 @@ mod platform;
 #[cfg(feature = "raspi2b")]
 mod raspi2b;
 mod scheduler;
+#[cfg(feature = "pi-sd-transfer")]
+mod sd_transfer;
+#[cfg(feature = "pi-sd-transfer")]
+mod sd_install;
+#[cfg(feature = "pi-sd-transfer")]
+mod diagnostics;
+#[cfg(feature = "pi-managed")]
+mod management_auth;
+#[cfg(feature = "pi-sd-transfer")]
+mod boot_trial;
+#[cfg(feature = "pi-sd-transfer")]
+static mut PI_SD_TRANSFER: Option<sd_transfer::Receiver> = None;
 mod process;
 mod syscall;
 mod user;
@@ -30,6 +42,28 @@ use core::panic::PanicInfo;
 use gabix_kernel::device::FrameDevice;
 use network::{DhcpSession, NetworkEvent};
 use platform::{PLATFORM, UART_BASE};
+
+// Fixed transaction ID used by the boot diagnostics on both platforms.
+const BOOT_DHCP_TRANSACTION_ID: u32 = 0x4741_4258;
+#[cfg(feature = "raspi2b")]
+const BOOT_WATCHDOG_SECONDS: u32 = 15;
+#[cfg(feature = "raspi2b")]
+const USB_HUB_DEVICE_CLASS: u8 = 9;
+#[cfg(feature = "pi-wifi")]
+const SUPPORTED_WIFI_USB_ID: (u16, u16) = (0x0bda, 0x8176);
+#[cfg(feature = "pi-hardware")]
+const ETHERNET_SETTLE_MICROS: u32 = 5_000_000;
+// Pi timer ticks are 10 ms. These windows start when device setup completes.
+#[cfg(all(feature = "raspi2b", feature = "pi-hardware"))]
+const BOOT_NETWORK_WINDOW_TICKS: u64 = 2_000;
+#[cfg(all(feature = "raspi2b", not(feature = "pi-hardware")))]
+const BOOT_NETWORK_WINDOW_TICKS: u64 = 200;
+#[cfg(feature = "pi-network-pre-timer-probe")]
+const PRE_TIMER_DISCOVER_COUNT: usize = 16;
+#[cfg(all(feature = "raspi2b", not(feature = "pi-uart-user")))]
+const LINUX_PARTITION_TYPE: u8 = 0x83;
+#[cfg(all(feature = "raspi2b", not(feature = "pi-uart-user")))]
+const AFTER_USER_DISCOVER_INTERVAL_TICKS: u64 = 500;
 
 #[cfg(any(
     feature = "pi-hardware",
@@ -94,6 +128,10 @@ global_asm!(
 
 #[no_mangle]
 extern "C" fn arm_kernel_entry() {
+    #[cfg(feature = "pi-sd-transfer")]
+    unsafe {
+        boot_trial::begin();
+    }
     let mut console = Pl011::new(UART_BASE);
     gabix_kernel::announce_boot(&mut console, PLATFORM);
 
@@ -103,7 +141,7 @@ extern "C" fn arm_kernel_entry() {
         feature = "pi-network-no-irq-dev"
     ))]
     {
-        raspi2b::reset::arm_deadman(15);
+        raspi2b::reset::arm_deadman(BOOT_WATCHDOG_SECONDS);
         write_line(&mut console, b"gabix raspi2b development watchdog armed");
     }
 
@@ -118,6 +156,20 @@ extern "C" fn arm_kernel_entry() {
             write_line(&mut console, b"gabix raspi2b memory mapped");
         }
         allocator::init();
+        #[cfg(feature = "pi-sd-transfer")]
+        {
+            raspi2b::reset::arm_deadman(BOOT_WATCHDOG_SECONDS);
+            let receiver = sd_transfer::Receiver::initialize();
+            let ready = receiver.is_some();
+            PI_SD_TRANSFER = receiver;
+            release_boot_test_watchdog();
+            if ready {
+                write_line(&mut console, b"gabix SD transfer region ready");
+                flush_diagnostics(true);
+            } else {
+                write_line(&mut console, b"gabix SD transfer unavailable: card or region check failed");
+            }
+        }
     }
 
     #[cfg(feature = "virt")]
@@ -162,7 +214,7 @@ extern "C" fn arm_kernel_entry() {
             }
         }
         if let Some(mut network) = virt::network::VirtioNet::probe() {
-            let mut session = DhcpSession::new(network.mac_address(), 0x4741_4258);
+            let mut session = DhcpSession::new(network.mac_address(), BOOT_DHCP_TRANSACTION_ID);
             let mut frame = [0u8; 29];
             frame[..6].fill(0xff);
             frame[6..12].copy_from_slice(&network.mac_address());
@@ -209,7 +261,7 @@ extern "C" fn arm_kernel_entry() {
             write_line(&mut console, b"gabix raspi2b heap allocated");
         }
         #[cfg(feature = "pi-hardware")]
-        raspi2b::reset::arm_deadman(15);
+        raspi2b::reset::arm_deadman(BOOT_WATCHDOG_SECONDS);
         if scheduler::task_resumes() {
             // Persistent builds release the boot-test watchdog. Diagnostic
             // builds keep their watchdog armed through device initialization.
@@ -218,7 +270,7 @@ extern "C" fn arm_kernel_entry() {
                 feature = "pi-network-pre-timer-probe",
                 feature = "pi-network-no-irq-dev"
             ))))]
-            raspi2b::reset::stop_deadman();
+            release_boot_test_watchdog();
             write_line(&mut console, b"gabix arm scheduler trace 10 20 11 21 12 22");
             write_line(&mut console, b"gabix arm scheduler tasks finished");
         }
@@ -230,7 +282,7 @@ extern "C" fn arm_kernel_entry() {
                 }
             }
             let root_start =
-                gabix_kernel::fs::partition::mbr_partition_start(&mut card, 0x83).unwrap_or(0);
+                gabix_kernel::fs::partition::mbr_partition_start(&mut card, LINUX_PARTITION_TYPE).unwrap_or(0);
             let mut root =
                 gabix_kernel::fs::partition::OffsetBlockDevice::new(&mut card, root_start);
             if let Some(file) = gabix_kernel::fs::ext2::read_file(&mut root, b"/known-block.bin") {
@@ -249,14 +301,41 @@ extern "C" fn arm_kernel_entry() {
         )))]
         {
             raspi2b::timer::init();
+            #[cfg(feature = "pi-sd-transfer")]
+            flush_diagnostics(true);
             verify_timer_preemption(&mut console);
+            #[cfg(feature = "pi-sd-transfer")]
+            flush_diagnostics(true);
             verify_process_isolation(&mut console);
+            #[cfg(feature = "pi-sd-transfer")]
+            flush_diagnostics(true);
         }
+        #[cfg(feature = "pi-network-dev")]
+        // Each isolation case arms its own watchdog before running. Start a
+        // full diagnostic budget here for USB setup and Ethernet negotiation.
+        raspi2b::reset::arm_deadman(BOOT_WATCHDOG_SECONDS);
         #[cfg(any(not(feature = "pi-uart-user"), feature = "pi-hardware"))]
         if let Some(mut usb) = raspi2b::usb::Dwc2::initialize() {
             if let Some(device) = usb.enumerate_root() {
                 write_line(&mut console, b"gabix raspi2b usb enumerated");
-                let network_device = if device.device_class == 9 {
+                let network_device = if device.device_class == USB_HUB_DEVICE_CLASS {
+                    #[cfg(feature = "pi-wifi")]
+                    {
+                        let mut wireless = None;
+                        let mut wired = None;
+                        let _ = usb.visit_hub_children(device, |_, child| {
+                            if (child.vendor_id, child.product_id) == SUPPORTED_WIFI_USB_ID {
+                                wireless = Some(child);
+                            } else if gabix_kernel::net::smsc95xx::is_lan9512(child.vendor_id, child.product_id) {
+                                wired = Some(child);
+                            }
+                            true
+                        });
+                        // Prefer Wi-Fi when discovered; enumeration errors are ignored
+                        // here, and already discovered devices remain candidates.
+                        wireless.or(wired)
+                    }
+                    #[cfg(not(feature = "pi-wifi"))]
                     usb.enumerate_hub_child(device)
                 } else {
                     Some(device)
@@ -266,14 +345,14 @@ extern "C" fn arm_kernel_entry() {
                 {
                     write_line(&mut console, b"gabix raspi2b usb network configured");
                     #[cfg(feature = "pi-hardware")]
-                    {
+                    if !network.is_wifi() {
                         match network.link_up() {
                             Some(true) => write_line(&mut console, b"gabix raspi2b ethernet link up"),
                             Some(false) => write_line(&mut console, b"gabix raspi2b ethernet link down"),
                             None => write_line(&mut console, b"gabix raspi2b ethernet link unknown"),
                         }
                         write_line(&mut console, b"gabix raspi2b waiting for ethernet link");
-                        raspi2b::timer::delay_us(5_000_000);
+                        raspi2b::timer::delay_us(ETHERNET_SETTLE_MICROS);
                         match network.link_up() {
                             Some(true) => write_line(&mut console, b"gabix raspi2b ethernet link up"),
                             Some(false) => write_line(&mut console, b"gabix raspi2b ethernet link down"),
@@ -282,14 +361,14 @@ extern "C" fn arm_kernel_entry() {
                     }
                     #[cfg(feature = "pi-network-pre-timer-probe")]
                     {
-                        let session = DhcpSession::new(network.mac_address(), 0x4741_4258);
+                        let session = DhcpSession::new(network.mac_address(), BOOT_DHCP_TRANSACTION_ID);
                         let mut transmitted = 0usize;
-                        for _ in 0..16 {
+                        for _ in 0..PRE_TIMER_DISCOVER_COUNT {
                             if session.send_discover(&mut network) {
                                 transmitted += 1;
                             }
                         }
-                        if transmitted == 16 {
+                        if transmitted == PRE_TIMER_DISCOVER_COUNT {
                             write_line(&mut console, b"gabix raspi2b pre-timer dhcp tx 16");
                         } else {
                             write_line(&mut console, b"gabix raspi2b pre-timer dhcp tx incomplete");
@@ -298,16 +377,30 @@ extern "C" fn arm_kernel_entry() {
                             core::hint::spin_loop();
                         }
                     }
-                    let mut session = DhcpSession::new(network.mac_address(), 0x4741_4258);
+                    // Initial network work is bounded by the timer window below. The
+                    // persistent service keeps the session even if DHCP is unfinished.
+                    let mut session = DhcpSession::new(network.mac_address(), BOOT_DHCP_TRANSACTION_ID);
+                    #[cfg(not(feature = "pi-managed"))]
                     let mut next_discover = raspi2b::timer::ticks();
-                    #[cfg(feature = "pi-hardware")]
+                    #[cfg(all(feature = "pi-hardware", not(feature = "pi-managed")))]
                     let mut discover_count = 0usize;
                     #[cfg(not(feature = "pi-hardware"))]
-                    let deadline = raspi2b::timer::ticks() + 200;
+                    let deadline = raspi2b::timer::ticks() + BOOT_NETWORK_WINDOW_TICKS;
                     #[cfg(feature = "pi-hardware")]
-                    let deadline = raspi2b::timer::ticks() + 2_000;
+                    let deadline = raspi2b::timer::ticks() + BOOT_NETWORK_WINDOW_TICKS;
                     while raspi2b::timer::ticks() < deadline {
+                        #[cfg(not(feature = "pi-managed"))]
                         let now = raspi2b::timer::ticks();
+                        #[cfg(feature = "pi-managed")]
+                        {
+                            let link = network.link_up() != Some(false);
+                            session.poll(&mut network, raspi2b::timer::uptime_millis()/1000, link);
+                            session.poll_discovery(&mut network, raspi2b::timer::uptime_millis());
+                            record_network_progress(&session);
+                            boot_trial::refresh();
+                            flush_diagnostics(false);
+                        }
+                        #[cfg(not(feature = "pi-managed"))]
                         if !session.is_configured() && now >= next_discover {
                             write_line(&mut console, b"gabix raspi2b dhcp discover");
                             if session.send_discover(&mut network) {
@@ -319,10 +412,14 @@ extern "C" fn arm_kernel_entry() {
                             {
                                 discover_count += 1;
                             }
+                            #[cfg(feature = "pi-sd-transfer")]
+                            boot_trial::refresh();
                             next_discover = now + 100;
                         }
-                        #[cfg(feature = "pi-hardware")]
+                        #[cfg(all(feature = "pi-hardware", not(feature = "pi-managed")))]
                         let poll_receive = discover_count >= 2;
+                        #[cfg(feature = "pi-managed")]
+                        let poll_receive = true;
                         #[cfg(not(feature = "pi-hardware"))]
                         let poll_receive = true;
                         if poll_receive {
@@ -331,7 +428,7 @@ extern "C" fn arm_kernel_entry() {
                                     NetworkEvent::Configured => {
                                         write_line(&mut console, b"gabix raspi2b dhcp configured");
                                         #[cfg(any(feature = "pi-network-dev", feature = "pi-network-no-irq-dev"))]
-                                        raspi2b::reset::arm_deadman(15);
+                                        raspi2b::reset::arm_deadman(BOOT_WATCHDOG_SECONDS);
                                         #[cfg(feature = "pi-uart-user")]
                                         break;
                                     }
@@ -347,6 +444,10 @@ extern "C" fn arm_kernel_entry() {
                         }
                         #[cfg(feature = "pi-network-no-irq-dev")]
                         core::hint::spin_loop();
+                        #[cfg(all(feature = "pi-wifi", feature = "pi-managed"))]
+                        if let Some(event) = network.take_wifi_event() {
+                            diagnostics::event(format_args!("wifi {event:?}"));
+                        }
                         #[cfg(not(feature = "pi-network-no-irq-dev"))]
                         asm!("wfi");
                     }
@@ -355,8 +456,14 @@ extern "C" fn arm_kernel_entry() {
                         PI_NETWORK = Some(network);
                         PI_DHCP = Some(session);
                     }
+                } else {
+                    write_line(&mut console, b"gabix ethernet device configuration FAILED");
                 }
+            } else {
+                write_line(&mut console, b"gabix USB root enumeration FAILED");
             }
+        } else {
+            write_line(&mut console, b"gabix USB host initialization FAILED");
         }
         while raspi2b::timer::ticks() < 2 {
             #[cfg(feature = "pi-network-no-irq-dev")]
@@ -376,22 +483,85 @@ extern "C" fn arm_kernel_entry() {
     }
 }
 
-/// Poll from the UART loader's idle loop; the IRQ handler never owns these objects.
+/// Service DHCP and at most one received frame from the UART service's idle loop.
+/// The caller must exclusively own the global network/session/receiver objects;
+/// this function is synchronous and must never run from an IRQ or another task.
+/// Device polling and SD writes can delay the caller beyond its polling interval.
 #[cfg(feature = "pi-uart-user")]
-pub fn poll_ethernet_and_reply(console: &mut Pl011, next_dhcp_discover_tick: &mut u64) {
+pub fn poll_ethernet_and_reply(console: &mut Pl011, _next_dhcp_discover_tick: &mut u64) {
     unsafe {
         let network = &mut *core::ptr::addr_of_mut!(PI_NETWORK);
         let session = &mut *core::ptr::addr_of_mut!(PI_DHCP);
         if let (Some(network), Some(session)) = (network.as_mut(), session.as_mut()) {
+            #[cfg(not(feature = "pi-managed"))]
             let current_tick = raspi2b::timer::ticks();
-            if !session.is_configured() && current_tick >= *next_dhcp_discover_tick {
-                session.send_discover(network);
-                *next_dhcp_discover_tick = current_tick + 100;
+            #[cfg(feature = "pi-managed")]
+            {
+                let now = raspi2b::timer::uptime_millis();
+                if now >= NEXT_LINK_CHECK_MILLIS {
+                    let link = match network.link_up() {
+                        Some(true) => LINK_UP,
+                        Some(false) => LINK_DOWN,
+                        None => LINK_UNKNOWN,
+                    };
+                    if link != LINK_STATUS {
+                        diagnostics::event(format_args!(
+                            "network link {}",
+                            match link {
+                                LINK_UP => "up",
+                                LINK_DOWN => "down",
+                                _ => "unknown",
+                            }
+                        ));
+                        if LINK_STATUS != LINK_UNKNOWN {
+                            session.restart("link changed");
+                        }
+                        LINK_STATUS = link;
+                        flush_diagnostics(true);
+                    }
+                    NEXT_LINK_CHECK_MILLIS = now + LINK_CHECK_INTERVAL_MILLIS;
+                }
+                // An unknown link still permits DHCP attempts. Only a known-down
+                // link pauses them; DHCP consumes seconds rather than milliseconds.
+                session.poll(network, now / 1000, LINK_STATUS != LINK_DOWN);
+                session.poll_discovery(network, now);
+                record_network_progress(session);
+                if let Some(receiver) = (&mut *core::ptr::addr_of_mut!(PI_SD_TRANSFER)).as_mut() {
+                    receiver.network_status(session, LINK_STATUS);
+                }
             }
+            #[cfg(not(feature = "pi-managed"))]
+            if !session.is_configured() && current_tick >= *_next_dhcp_discover_tick {
+                session.send_discover(network);
+                *_next_dhcp_discover_tick = current_tick + DHCP_DISCOVER_INTERVAL_TICKS;
+            }
+            #[cfg(all(feature = "pi-wifi", feature = "pi-managed"))]
+            user_upload::tcp::flush(network, session.address());
+            // Give the update/management protocol first access to this frame.
+            // A handled request returns immediately, postponing Wi-Fi event logging
+            // until a later call. Other frames go through DHCP/ARP/echo handling.
             if let Some(frame) = network.receive() {
-                if matches!(session.handle_frame(network, frame.bytes()), NetworkEvent::Configured) {
+                #[cfg(all(feature = "pi-wifi", feature = "pi-managed"))]
+                user_upload::tcp::receive(session.address(), network.mac_address(), frame.bytes());
+                #[cfg(feature = "pi-sd-transfer")]
+                if let Some(receiver) = (&mut *core::ptr::addr_of_mut!(PI_SD_TRANSFER)).as_mut() {
+                    if session.handle_sd_transfer(network, frame.bytes(), receiver) {
+                        return;
+                    }
+                }
+                if matches!(
+                    session.handle_frame(network, frame.bytes()),
+                    NetworkEvent::Configured
+                ) {
                     write_line(console, b"gabix raspi2b dhcp configured");
                 }
+            }
+            #[cfg(all(feature = "pi-wifi", feature = "pi-managed"))]
+            if let Some(event) = network.take_wifi_event() {
+                if matches!(event, raspi2b::wifi_ethernet::Event::State(raspi2b::wifi_ethernet::State::Online)) {
+                    session.restart("wifi associated");
+                }
+                diagnostics::event(format_args!("wifi {event:?}"));
             }
         }
     }
@@ -435,7 +605,7 @@ extern "C" fn arm_kernel_after_user() -> ! {
                 let now = raspi2b::timer::ticks();
                 if !session.is_configured() && now >= next_discover {
                     session.send_discover(network);
-                    next_discover = now + 500;
+                    next_discover = now + AFTER_USER_DISCOVER_INTERVAL_TICKS;
                 }
                 if let Some(frame) = network.receive() {
                     if matches!(
@@ -460,13 +630,19 @@ fn allocation_error(_: Layout) -> ! {
 
 unsafe fn verify_process_isolation(console: &mut Pl011) {
     #[cfg(feature = "pi-hardware")]
-    raspi2b::reset::arm_deadman(15);
+    raspi2b::reset::arm_deadman(BOOT_WATCHDOG_SECONDS);
     if process::verify_isolation() {
         write_line(console, b"gabix arm isolated userspace processes passed");
         write_line(console, b"gabix arm user faults contained; peer process survived");
         #[cfg(all(feature = "pi-hardware", not(any(feature = "pi-network-dev", feature = "pi-network-pre-timer-probe", feature = "pi-network-no-irq-dev"))))]
-        raspi2b::reset::stop_deadman();
-    } else { write_line(console, b"gabix arm process isolation FAILED"); }
+        release_boot_test_watchdog();
+    } else {
+        write_line(console, b"gabix arm process isolation FAILED");
+        #[cfg(feature = "pi-sd-transfer")]
+        if boot_trial::is_active() {
+            raspi2b::reset::reset();
+        }
+    }
 }
 
 #[no_mangle]
@@ -474,19 +650,23 @@ unsafe extern "C" fn arm_memory_abort_entry(address: u32, status: u32, saved_sta
     process::handle_memory_abort(address, status, saved_status, instruction != 0)
 }
 
-/// The physical watchdog returns a stalled test to the UART loader.
+/// The physical watchdog resets a stalled test into the installed boot flow.
 unsafe fn verify_timer_preemption(console: &mut Pl011) {
     #[cfg(feature = "pi-hardware")]
-    raspi2b::reset::arm_deadman(15);
+    raspi2b::reset::arm_deadman(BOOT_WATCHDOG_SECONDS);
     if scheduler::timer_preempts_tasks() {
         write_line(console, b"gabix arm timer preempted two non-yielding tasks");
         #[cfg(all(feature = "pi-hardware", not(any(
             feature = "pi-network-dev", feature = "pi-network-pre-timer-probe",
             feature = "pi-network-no-irq-dev"
         ))))]
-        raspi2b::reset::stop_deadman();
+        release_boot_test_watchdog();
     } else {
         write_line(console, b"gabix arm preemption check failed");
+        #[cfg(feature = "pi-sd-transfer")]
+        if boot_trial::is_active() {
+            raspi2b::reset::reset();
+        }
     }
 }
 
@@ -514,5 +694,125 @@ extern "C" fn arm_svc_entry(frame: *mut syscall::UserFrame) {
 fn panic(_: &PanicInfo) -> ! {
     loop {
         core::hint::spin_loop();
+    }
+}
+
+#[cfg(feature = "pi-hardware")]
+fn release_boot_test_watchdog() {
+    // A trial kernel still owes boot confirmation. Refresh its reset deadline
+    // instead of cancelling recovery when one individual boot check passes.
+    #[cfg(feature = "pi-sd-transfer")]
+    if boot_trial::is_active() {
+        boot_trial::refresh();
+        return;
+    }
+    raspi2b::reset::stop_deadman();
+}
+#[cfg(feature = "pi-sd-transfer")]
+pub fn confirm_sd_boot(console: &mut Pl011) {
+    if !boot_trial::is_active() {
+        return;
+    }
+    unsafe {
+        // Confirmation requires a configured device object, not a DHCP lease or
+        // a successful round trip to the host. Keep that distinction explicit.
+        let network_ready = (&*core::ptr::addr_of!(PI_NETWORK)).is_some();
+        if network_ready {
+            if let Some(receiver) = (&mut *core::ptr::addr_of_mut!(PI_SD_TRANSFER)).as_mut() {
+                if receiver.confirm_boot() {
+                    write_line(console, b"GABIX SD BOOT CONFIRMED");
+                    return;
+                }
+            }
+        }
+    }
+    write_line(console, b"GABIX SD BOOT UNCONFIRMED; watchdog will retry");
+}
+
+#[cfg(feature = "pi-sd-transfer")]
+pub fn flush_diagnostics(critical: bool) {
+    unsafe {
+        if let Some(receiver) = (&mut *core::ptr::addr_of_mut!(PI_SD_TRANSFER)).as_mut() {
+            receiver.maintenance(critical);
+        }
+    }
+}
+#[cfg(feature = "pi-managed")]
+// Numeric values are also exposed by the management status packet.
+const LINK_UNKNOWN: u32 = 0;
+#[cfg(feature = "pi-managed")]
+const LINK_DOWN: u32 = 1;
+#[cfg(feature = "pi-managed")]
+const LINK_UP: u32 = 2;
+#[cfg(feature = "pi-managed")]
+const LINK_CHECK_INTERVAL_MILLIS: u64 = 2000;
+#[cfg(all(feature = "pi-uart-user", not(feature = "pi-managed")))]
+const DHCP_DISCOVER_INTERVAL_TICKS: u64 = 100; // One second at the Pi timer's 100 Hz.
+#[cfg(feature = "pi-managed")]
+static mut LINK_STATUS: u32 = LINK_UNKNOWN;
+#[cfg(feature = "pi-managed")]
+static mut NEXT_LINK_CHECK_MILLIS: u64 = 0;
+#[cfg(feature = "pi-managed")]
+fn record_network_progress(session: &DhcpSession) {
+    const ATTEMPT_SUMMARY_INTERVAL: u32 = 64;
+    const LEASE_INCREASE_THRESHOLD_SECONDS: u64 = 2;
+
+    struct ProgressSnapshot {
+        state_code: u32,
+        dhcp_attempts: u32,
+        transmit_failures: u32,
+        lease_remaining_seconds: u64,
+    }
+    // An impossible initial state code forces the first call to record the state.
+    // This static snapshot requires the same exclusive foreground access as the
+    // network service. It persists when userspace exits and the service restarts.
+    static mut PREVIOUS: ProgressSnapshot = ProgressSnapshot {
+        state_code: u32::MAX,
+        dhcp_attempts: 0,
+        transmit_failures: 0,
+        lease_remaining_seconds: 0,
+    };
+    let state = session.state as u32;
+    let remaining = session.lease_remaining();
+    unsafe {
+        let previous = &mut *core::ptr::addr_of_mut!(PREVIOUS);
+        let attempt_summary = session.attempts != previous.dhcp_attempts
+            && (session.attempts.is_power_of_two() || session.attempts % ATTEMPT_SUMMARY_INTERVAL == 0);
+        // Log early retry counts at powers of two, then every 64 attempts.
+        // State changes and lease increases above two seconds get an immediate
+        // flush; ordinary retry/failure summaries use the routine flush policy.
+        if state != previous.state_code
+            || remaining > previous.lease_remaining_seconds.saturating_add(LEASE_INCREASE_THRESHOLD_SECONDS)
+        {
+            let label = match session.state {
+                network::LeaseState::Selecting => "discovering",
+                network::LeaseState::Requesting => "requesting",
+                network::LeaseState::Bound => "bound",
+                network::LeaseState::Renewing => "renewing",
+                network::LeaseState::Rebinding => "rebinding",
+            };
+            diagnostics::event(format_args!(
+                "dhcp {} ip={:?} attempts={} lease_remaining_s={} server={:?} discovery_reason={}",
+                label,
+                session.address(),
+                session.attempts,
+                remaining,
+                session.lease.map(|l| l.server).unwrap_or([0; 4]),
+                session.discovery_reason
+            ));
+            flush_diagnostics(true);
+        } else if attempt_summary || session.tx_failures != previous.transmit_failures {
+            diagnostics::event(format_args!(
+                "dhcp attempts={} transmit_failures={}",
+                session.attempts, session.tx_failures
+            ));
+        }
+        // Compare against the preceding poll, including polls that emitted no log.
+        *previous = ProgressSnapshot {
+            state_code: state,
+            dhcp_attempts: session.attempts,
+            transmit_failures: session.tx_failures,
+            lease_remaining_seconds: remaining,
+        };
     }
 }

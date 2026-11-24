@@ -1,4 +1,8 @@
-//! ICMP echo request and reply wire-format helpers.
+//! Internet Control Message Protocol (ICMP) echo request/reply helpers (RFC 792).
+//!
+//! Echo header: message type (byte 0), code (1), checksum (2..4), identifier
+//! (4..6), sequence (6..8), then payload. The identifier and sequence match a
+//! reply to its request. All two-byte fields are big-endian (high byte first).
 
 use super::checksum;
 

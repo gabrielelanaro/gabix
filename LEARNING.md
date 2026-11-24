@@ -6,6 +6,12 @@ Approach: follow the "Writing an OS in Rust" tutorial (phil-opp.com) as the spin
 
 ## Roadmap
 
+### Didactic code readability (current cleanup goal)
+- [x] Audit hardware and protocol operations across shared, x86, and ARM code; give constants, helper calls, and sequencing explanations meaningful names
+- [x] Verify each changed area with existing relevant checks and physical Pi runs for hardware paths
+
+Coverage and evidence: [code readability audit](docs/code-readability.md).
+
 ### x86 / ARM feature parity (current objective)
 - [x] Cooperative ARM kernel tasks: private stacks, round-robin yield, completion; verify QEMU and physical Pi
 - [x] Timer-driven ARM preemption and interrupt-safe scheduler state (single-core kernel tasks)
@@ -14,6 +20,7 @@ Approach: follow the "Writing an OS in Rust" tutorial (phil-opp.com) as the spin
 - [ ] Shared file descriptors, VFS, and file syscalls on both architectures
 - [ ] Shared userspace sockets, blocking I/O, and TCP on ARM
 - [ ] Equivalent behavioral suites on x86, ARM virt, and physical Pi
+- [ ] Future extension: file-backed demand paging on x86 and ARM — handle a missing mapping by reading the required file page from storage into RAM, then resume the process. Existing page tables do not provide this automatically; the boot loader can continue loading the whole kernel.
 
 Each slice includes didactic source names, a short lesson, and physical validation
 through UART reboot/upload. Preserve the working server as the recovery image.
@@ -31,6 +38,17 @@ through UART reboot/upload. Preserve the working server as the recovery image.
 - [x] Build the physical kernel and partitioned SD-card image
 - [x] Initialize Raspberry Pi USB power, DWC2 DMA, and LAN9512 Ethernet
 - [ ] Verify UART, SD, USB, Ethernet, DHCP, ping, and UDP on a physical Pi 2B
+- [x] Ethernet uploads into SD kernel storage with complete read-back verification
+- [x] Permanent SD boot with two 32 MiB copies, trial confirmation, watchdog fallback, UART recovery, and a preserved recovery image
+- [x] Router preparation: authenticated Ethernet management/reboot, persistent buffered logs, DHCP retry/renewal diagnostics; physical outage and reboot checks
+- [ ] Verify the managed Pi on the actual FRITZ!Box LAN after moving the cable
+- [x] USB Wi-Fi: RTL8188CU initialization, WPA2-Personal, DHCP, authenticated management, reconnect, and permanent SD boot verified on the Pi
+- [x] Upload two distinct ARM user executables over authenticated Wi-Fi and read their exit statuses on the same physical Pi boot. [User loader](docs/pi2-wifi-user.md)
+- [x] Keep Wi-Fi responsive during blocking TCP calls from an uploaded ARM user program. [Physical echo check](tests/test_pi2_wifi_tcp_echo.py)
+- [x] Transfer two V3D frames over one ARM TCP connection and verify every byte during slow reads and retransmission. [Physical frame test](tests/test_pi2_v3d_frames.py)
+- [x] Display the V3D triangle with a hover dot in TigerVNC on the Mac over Wi-Fi. [Physical VNC test](tests/test_pi2_vnc.py)
+- [x] Drag the triangle from TigerVNC. V3D redraws its translated vertices on each move.
+- [x] Submit three vertices from an uploaded user program and verify two distinct triangle shapes on one Pi boot.
 
 ### TCP arc — the connection-oriented transport
 - [x] Lesson 31 TCP segment, three-way handshake, and first byte exchanged
@@ -550,6 +568,616 @@ A milestone is a "demo-able" checkpoint. Worth a commit + tag + log entry.
 ---
 
 ## Progress Log
+
+### 2026-11-24 — Submit user-space vertices to V3D
+
+- On Pi boot 39 (kernel `5ca30ba4`), the uploaded shape test checked all 4,096 pixels of an isosceles triangle and a right triangle with identical colors. The VNC drag, clip, release and re-grab checks passed on the same boot. Both user programs use the same three-vertex draw syscall.
+- Packing the VNC headers and rectangle data together reduced median Mac pointer-request-to-complete-RRE-reply time from 100.25 to 70.35 ms across 14 moves per build. Seven alternating zero-draw and 128-draw batches estimated 0.30 ms per draw including frame readback. The timings exclude Mac display presentation. The next experiment can merge adjacent rows of the same color and width before transmission.
+
+### 2026-11-24 — Drag the V3D triangle in TigerVNC
+
+- The VNC program picks the gold pixel under a left-button press and preserves its offset while dragging. The driver writes translated X/Y coordinates into the three vertex records and resubmits the draw. Release fixes the final position.
+- Physical Pi boot 38 (kernel `f5175863`) passed full-frame comparisons for an off-center grab, repeated motion, clipping, release, background presses and a second grab. Marked the drag milestone complete.
+
+### 2026-11-24 — View the V3D triangle in TigerVNC
+
+- Uploaded the RFB server as a user ELF on physical Pi boot 37. TigerVNC on the Mac displayed the gold V3D triangle on a blue 512×512 desktop. The GPU supplies the 64×64 image; each pixel covers an 8×8 block.
+- Added an outlined hover dot. The physical test checks every scaled pixel, pointer updates, restoration after motion, a cropped RGB565 request and the cursor sprite. Marked the TigerVNC milestone complete. Next, drag the triangle.
+
+### 2026-11-24 — Transfer two V3D triangles over one TCP connection
+
+- Added the ARM triangle syscall and an uploadable TCP frame server. On physical Pi boot 37, the Mac verified all 32,768 bytes against pixel-center coverage for two color pairs. Frame CRC32 values were `c8b588bb` and `545a5cc4`.
+- During the slow read the test kernel withheld 536 bytes at sequence 534824842 and logged the same sequence, size and payload CRC32 (`e3d6be36`) on retransmission. The ELF exited 0 on kernel `4588ba2b`. Marked frame transfer complete. Next, serve the pixels as an RFB framebuffer update to a VNC viewer.
+
+### 2026-11-24 — Keep Wi-Fi responsive during ARM userspace TCP waits
+
+- A RAM-uploaded echo server exchanged 27 bytes and 290 bytes on a single TCP connection on physical Pi boot 36 (kernel CRC32 `1f560926`). The Mac checked authenticated status during a 12-second idle interval, then half-closed its socket. The ELF exited with status 0. The same port served a second run on that boot.
+- Added one passive IPv4 listener for the foreground ELF. The kernel polls Wi-Fi while a socket syscall waits. Next, verify 16 KiB framebuffer transfers with a slow reader and a dropped segment.
+
+### 2026-11-24 — Run different ARM user programs over Wi-Fi on one Pi boot
+
+- Built and installed the Wi-Fi ELF loader once. On physical Pi 2B boot 34 (kernel CRC32 `bf587896`), uploaded two executables into RAM. The UART-write fixture exited with 0. The mode-reporting fixture read CPSR and exited with 16 (ARM user mode). No reboot or kernel upload occurred between programs.
+- Added a [Mac uploader and hardware test procedure](docs/pi2-wifi-user.md). The next GUI prerequisite is ARM TCP socket support with network service during user execution. No existing roadmap checkbox changed.
+
+### 2026-11-16 — Publish the Wi-Fi connection lesson
+- Added the isometric startup walkthrough, interactive connection checks, quick reference, and source-linked code tour. Source snapshots preserve the implementation used when the lesson was written; the quick reference includes the subsequently implemented mDNS hostname.
+- Verified JavaScript syntax, local lesson links, and whitespace. Roadmap checkboxes unchanged. Generated hardware output remains ignored.
+
+### 2026-11-16 — Readability goal completed with physical recovery checks
+- Closed the source-readability validation checkbox and audit coverage parents after the remaining UART tests passed. Earlier host/QEMU results are retained in docs/code-readability.md; this session supplies the outstanding physical evidence.
+- Wi-Fi diagnostic passed deliberate disconnect, fresh WPA2 handshake and a second DHCP lease. A separate existing diagnostic passed explicit radio power-off/power-on and firmware reload. Both returned automatically to the installed Wi-Fi service.
+- SD write/read/restore/neighbour test passed. Added a guarded managed-layout opt-in to the existing fixture: validate the installed layout/boot record and use empty metadata sector 1024 rather than the live staging header. Committed as af46939.
+- Rebuilt loader tested from RAM: hung-candidate watchdog fallback, valid candidate confirmation, both invalid checksums entering UART recovery, and restored normal SD boot all passed. Resident loader file preserved.
+- Wired Ethernet passed DHCP, ARP, two pings, three exact UDP echoes after idle and authenticated management. Fixed two diagnostic timing defects in 1404060: extend the host timeout beyond the process-isolation checks and refresh the network-development watchdog before USB/link startup. Full diagnostic rerun passed including automatic reset.
+- Final boot 27: installed image CRC32 fedce5c8, gabix-pi2.local resolves and echoes over Wi-Fi, no pending update, no log-write errors/dropped messages. MBR and scratch/guard sectors match backups; boot-record checksum is valid. Raw output and private test packages stay under ignored target/runs/20261116-uart-validation/.
+- Next separate experiment: remove external power and verify unattended Wi-Fi/mDNS startup. The earlier intermittent reachability report remains unexplained; software resets and software-controlled radio power cycling do not establish full cold-start behaviour. Feature-parity roadmap items and documented pre-existing defects remain open.
+
+### 2026-11-16 — mDNS installed; readability hardware validation resumed
+- Implemented shared IPv4 mDNS host discovery and integrated it into the managed ARM network service. The Pi probes/announces `gabix-pi2.local`, responds to A/ANY queries, handles compressed names and known answers, and selects a suffixed name on conflict. DNS-SD browsing, IPv6 and reverse lookup remain outside this slice.
+- Thirteen shared-library tests including Wi-Fi security pass; three mDNS cases cover packet bounds, compression, probing, reply routing, conflict handling and address changes. The existing ARM virt DHCP regression passes. Its initial local-socket permission failure was resolved by running with the required permission.
+- Installed the final 243,968-byte build over Wi-Fi, with exact SD read-back (CRC32 `fedce5c8`). Authenticated reboot by hostname selected/confirmed it as copy A, boot 16. Fresh multicast lookup, macOS name resolution, UDP echo by name, authentication rejection checks, persisted logs and cross-boot replay rejection pass with UART/Ethernet disconnected.
+- The first raw multicast test followed the Mac's VPN route (`utun7`) and timed out. Selecting the local Wi-Fi interface passed; the test now selects the interface toward the resolved host, with an explicit interface-address override. Native macOS `.local` resolution works without a router change.
+- Resumed the readability hardware gate: current-build Pi logs confirm cooperative scheduling, timer preemption, isolated userspace and fault containment. USB/Wi-Fi startup, DHCP, SD kernel writes/read-back, managed reset and persistent logging have current-build evidence. Read-only SD inspection validated the boot-record checksum and kernel extents on the 15,523,840-sector card; no pending update remains.
+- Remaining physical checks need UART/Ethernet reattached: deliberate Wi-Fi diagnostic reconnect, wired driver exercise, scratch-sector restore/neighbour test, and loader/UART recovery cases. Full power-removal startup is also pending; a software reboot leaves USB power present. User is away; keep the working Wi-Fi service running. Raw evidence stays in ignored `target/runs/20261116-pi-reconnect/`. The overall readability validation checkbox remains open.
+
+### 2026-11-16 — Reconnect diagnosis and Wi-Fi-only reboot
+- Recovered contact with the installed kernel through the existing UART user-reboot flow; authenticated Wi-Fi status and persistent logs became available at 192.168.178.128. Installed image CRC32 is 0xdefc3948; this does not validate the later readability build.
+- Previous boot 12 recorded Wi-Fi Online and a DHCP lease around 75 seconds. The earlier failed discovery therefore does not establish a failure to join; the later loss of reachability remains unexplained.
+- User disconnected Ethernet and UART while keeping power and the Wi-Fi dongle attached. Wi-Fi status continued responding. An authenticated network reboot then produced boot 14, automatically joined Wi-Fi, acquired the same address, and answered status at uptime 76.453 seconds with no reported transmit or log-write errors.
+- Startup logs show process-isolation checks completing near 72 seconds, before network initialization. This explains a substantial startup wait, but does not prove the cause of the earlier outage. A power-removal cold-start reproduction remains outstanding.
+- Evidence is in ignored target/runs/20261116-pi-reconnect/. No installed kernel or SD layout was changed; roadmap validation remains open.
+
+### 2026-11-15 — Readability audit: local validation checkpoint
+- Completed the source-review milestone across shared, x86 and ARM code; recorded unchanged facade files and corrected affected renamed API/constant references. Checked the source-audit roadmap item only.
+- Current verification passes: 10 shared-library tests with Wi-Fi security enabled, two Wi-Fi frame tests, ARM QEMU process isolation and scheduler/preemption tests. Earlier current-revision uploader/registry checks passed 16 tests.
+- The physical-validation roadmap item stays open. Pi is disconnected; no current hardware upload, reboot, Wi-Fi connection or SD write has been performed.
+- Next required work: reconnect the Pi and execute the explicit physical validation gate in docs/code-readability.md, confirming image identity and card layout before any write. Historical course listings beyond references affected by this cleanup remain historical material, not a new full-course rewrite.
+
+### 2026-11-15 — Readability audit: mailbox/VirtIO references
+- Scanned removed constant names and updated five VirtIO references; replaced the mailbox lesson's outdated helper with current source and polling explanation.
+- HTML parsing and whitespace checks pass. No kernel behavior changed.
+- Physical Pi validation remains pending; final consistency/evidence review continues.
+
+### 2026-11-15 — Readability audit: host compatibility and hardware gate
+- Passed all 16 uploader/registry host tests and all eight default-feature shared-library unit tests.
+- Reviewed physical helper scope and recorded concrete Wi-Fi/USB, management/logging, SD recovery and memory/scheduling checks still required.
+- Pi remains disconnected; no physical actions performed. Recovery scratch sector 8192 overlaps the staging header, so verify current layout/update state before that test.
+- Continue local reference consistency work; hardware validation remains an explicit completion gate.
+
+### 2026-11-15 — Readability audit: renamed helper references
+- Searched removed API names across teaching material and host scripts/tests; updated the VFS tour/glossary's stale user-range helper.
+- Corrected unsafe pointer-validation claims and verified the path snippet exactly matches current source. Both HTML files parse.
+- Remaining historical snippet consistency and physical validation are still open.
+
+### 2026-11-15 — Readability audit: LAN9512 lesson consistency
+- Updated register names, transmit return contract, endpoint descriptions and adapter selection context; corrected source locations.
+- Checked against current drivers/shared framing and parsed the HTML. Kernel behavior is unchanged.
+- Continue affected reference/test-helper review; physical validation remains pending.
+
+### 2026-11-15 — Readability audit: USB lesson consistency
+- Updated lesson 7.04's transfer explanation for DMA cleanup, retry policy and IN/OUT completion; corrected its claim about timer polling.
+- Source checks and HTML parsing pass. Existing styling/layout retained; no kernel changes in this slice.
+- Continue reviewing affected learning/test references. Physical Pi checks remain pending.
+
+### 2026-11-15 — Readability audit: source inventory follow-up
+- Read the remaining unchanged module/re-export/entry wrappers and recorded no-edit coverage; clarified frame allocator, dispatcher and halt contracts.
+- Offline x86 cargo check passes. Comment-only changes preserve behavior.
+- Next: learning-reference/test-helper consistency and physical validation. Source review alone does not close the broad roadmap checks.
+
+### 2026-11-15 — Readability audit: shared interfaces/reset
+- Documented sector-read error differences, frame/console interface limits and force-unlock caller requirements; named i8042 reset fields.
+- Offline x86 cargo check passes. No behavior changes, reset or hardware activity.
+- Remaining inventory/reference checks continue; physical Pi validation remains pending.
+
+### 2026-11-15 — Readability audit: UART smoke/platform exit
+- Named standalone GPIO/UART setup and heartbeat counts; documented clock assumptions and FIFO configuration.
+- Named ARM semihosting exit fields and clarified that virt reset exits the emulator.
+- UART smoke and virt builds pass. Physical checks and remaining source/reference inventory remain pending.
+
+### 2026-11-15 — Readability audit: x86 console contracts
+- Corrected serial delivery, VGA mode/font and QEMU exit-status claims; named the VGA address and replacement glyph and documented separate output locks.
+- Offline x86 cargo check passes. Behavior is unchanged; no redundant behavioral tests were added.
+- Source inventory follow-up includes UART smoke/platform helpers and learning-reference consistency; physical Pi validation remains pending.
+
+### 2026-11-15 — Readability audit: DHCP progress snapshots
+- Replaced positional logging-state fields with named fields and named the retry/lease reporting thresholds; explained snapshot updates and service-restart lifetime.
+- Managed kernel build passes; log text and conditions are preserved. Physical checks remain pending.
+- Learning-reference consistency review remains open; the existing untracked Wi-Fi tour cites historical, physically tested snippets.
+
+### 2026-11-15 — Readability audit: ARM boot network policy
+- Named boot network timing/identity constants and documented partial enumeration, device preference, retained DHCP sessions and trial-watchdog handling.
+- Clarified that boot confirmation checks device initialization, without requiring DHCP or a host round trip; policy is unchanged.
+- Five relevant build configurations pass, including managed Wi-Fi release. Physical checks remain pending; orchestration details and lesson-reference review continue.
+
+### 2026-11-15 — Readability audit: USB/LAN diagnostic probes
+- Named probe packet/timing and assembly setup values; explained first-child selection, partial enumeration, USB submission counts and receive filtering.
+- All nine existing build variants pass. Output, control flow and values are preserved; physical hardware remains disconnected.
+- Remaining orchestration and learning-reference review continue, with hardware validation still pending.
+
+### 2026-11-15 — Readability audit: boot/BSS/allocator probes
+- Reviewed eight diagnostic programs, named mode/reset/stack values and explained the scope of each UART result.
+- Corrected a false five-second comment for the existing 80-tick watchdog countdown (about 1.2 ms); preserved all timing values and instruction order.
+- All eight existing build scripts pass. Physical checks remain pending; USB/LAN probes, orchestration and learning-reference coverage remain open.
+
+### 2026-11-15 — Readability audit: atomic diagnostic probes
+- Named reset/mode/timing fields and explained UART markers, inherited entry state and the limited single-operation scope of both atomic probes.
+- Both release probe build scripts pass. Values and instruction order are preserved; no physical Pi test was performed.
+- Remaining probes, orchestration and lesson-reference review continue. Physical checks await the disconnected Pi; roadmap checkboxes remain open.
+
+### 2026-11-15 — Readability audit: network service polling
+- Named link status values and link/DHCP polling intervals; explained exclusive service ownership, synchronous work and management-frame priority.
+- Managed and UART-user builds pass with unchanged values and operation order. The Pi is disconnected, so physical checks remain pending.
+- Remaining orchestration, probes and lesson-reference review continue under the readability goal.
+
+### 2026-11-15 — Readability audit: UART service timing
+- Named managed watchdog timing and explained UART idle-timeout priority, network polling delays, static-buffer ownership and user-exit service restart.
+- Managed and UART-user builds pass with unchanged values/behavior. No physical device activity was performed.
+- Main orchestration, remaining probes/lesson references and physical checks remain open.
+
+### 2026-11-15 — Readability audit: ARM memory ownership/cache
+- Named descriptor subfields and documented static-table exclusion, inherited control state, bootstrap visibility and cached/noncacheable alias requirements.
+- Existing QEMU isolation test and Pi hardware build pass with unchanged descriptor values and instruction order. Hardware cache assumptions remain unverified in this slice.
+- Checked off ARM memory source-contract review; remaining probes/orchestration, lesson references and physical validation stay open.
+
+### 2026-11-15 — Readability audit: x86 mapper ownership
+- Corrected overly strong safety claims about single-core exclusion, mapper ownership and direct-map frame copying. Documented aliasing/synchronization requirements and MMIO lookup/insertion assumptions.
+- Cargo check passes; comment-only edits preserve behavior. Existing safe-API ownership gaps are recorded, not repaired by this audit.
+- Checked off x86 ownership source review. ARM cache/memory assumptions and remaining audit/physical validation work stay open.
+
+### 2026-11-15 — Readability audit: persistent diagnostics
+- Named journal fields, RAM capacities and flush/scan timings. Explained queue serialization, record splitting, write/read-back, retry timing, approximate drop counts and formatting truncation.
+- Managed kernel build passes with unchanged values/behavior. No SD writes or physical reboot were performed.
+- Memory assumptions, remaining orchestration/probes and lesson-reference review remain open; physical journal validation awaits the Pi.
+
+### 2026-11-15 — Readability audit: management authentication
+- Named signed-envelope fields, lengths and direction prefixes. Explained sequence consumption, one-reply cache, shared-peer counter and persistent boot-number dependency.
+- Managed kernel build passes with unchanged bytes/behavior. Private key material was neither printed nor committed; physical authentication tests remain pending.
+- Journal persistence, memory assumptions and remaining audit areas stay open.
+
+### 2026-11-15 — Readability audit: management status fields
+- Named status payload offsets/ranges and lengths, matched to the host decoder. Documented cached-network versus fresh-storage snapshots and stale boot fields after failed SD reads.
+- Managed and plain transfer builds pass; wire values remain unchanged. No physical request was sent.
+- Authentication/journal behavior, memory assumptions and other audit areas remain open. Pi validation is pending.
+
+### 2026-11-15 — Readability audit: SD upload state
+- Renamed metadata persistence to describe both staging and kernel targets. Explained chunk offsets, retry read-back, padding, completion CRC and pending-trial publication; named sector units and CRC polynomial.
+- Managed kernel build passes with unchanged behavior. No physical upload or SD write was performed.
+- Status payload, authentication/diagnostics and other audit work remain open. Physical Pi validation is pending.
+
+### 2026-11-15 — Readability audit: SD transfer fields
+- Named request/reply fields, management operation numbers and persisted staging-header offsets; matched the wire format to the host uploader.
+- Clarified restored verification state. Managed kernel build passes with unchanged values/behavior; no physical transfer or SD write was performed.
+- Transfer state/status, authentication/diagnostics and other audit areas remain open. Physical checks await the disconnected Pi.
+
+### 2026-11-15 — Readability audit: installer partition boundaries
+- Named MBR fields and development-card fingerprint; documented third-entry-only publication, conditional active-copy protection and caller-owned staging bounds.
+- Managed kernel build passes with unchanged comparisons/control flow. No SD writes were performed.
+- Installer source review is recorded; transfer/management/diagnostics, memory assumptions and physical Pi verification remain open.
+
+### 2026-11-15 — Readability audit: installer FAT lookup
+- Named FAT32 boot/directory fields, attributes, chain masks and root-search limit. Explained existing allocation cap and incomplete geometry/cross-link validation, preserving values and behavior.
+- Managed kernel build passes; no package was applied or hardware written.
+- MBR identity, remaining installer bounds and other audit areas remain open. Physical Pi validation is pending.
+
+### 2026-11-15 — Readability audit: installer package and phases
+- Named package fields/record stride, fixed kernel extents and ordered install phases. Verified the package layout against the host writer; documented stable-input requirements and partial-write retry behavior.
+- Managed kernel build passes. No hardware installation or SD write was performed; values and control flow are preserved.
+- FAT/MBR parser review, remaining installer bounds, management/diagnostics and other audit work remain open. Physical validation is pending.
+
+### 2026-11-15 — Readability audit: resident loader startup
+- Named startup GPIO/UART fields and baud divisors. Linked the source-clock assumption to boot/config.txt and documented inherited CPU mode/MMU/cache/vector state.
+- Existing firmware-address test and SD-loader build pass. Values and instruction order are unchanged; physical re-entry was not tested.
+- Installer/management/diagnostics, memory assumptions and other audit work remain open. Pi validation is pending.
+
+### 2026-11-15 — Readability audit: SD boot selection
+- Named UART override/watchdog timings and SD transfer units. Clarified record persistence, image-failure fallback, UART recovery, streaming CRC and loader-return assumptions.
+- Existing UART-loader firmware-address test and SD-loader build pass. No device writes or physical boot tests were performed.
+- Loader startup assembly, installer/management and remaining memory review stay open; physical validation remains pending.
+
+### 2026-11-15 — Readability audit: trial handoff and confirmation
+- Shared the existing RAM handoff field names between loader writer and kernel reader. Named trial watchdog duration and running-image address; clarified consume-once validation and confirmation failure semantics.
+- SD loader and managed kernel builds pass. Three existing host boot-record tests pass; these do not establish physical handoff/persistence correctness.
+- Boot selection, installer/management/diagnostics and other audit areas remain open. No device writes were performed; Pi validation is pending.
+
+### 2026-11-15 — Readability audit: ARM boot UART and console
+- Named GPIO function selection, UART register offsets, FIFO/control fields, baud divisors and semihosting values. Explained console polling, caller-owned setup, discarded receive errors and unbounded transmit waits.
+- Existing QEMU userspace-write test and Pi hardware/UART-user builds pass; values and ordering are preserved.
+- Memory ownership/cache assumptions and remaining loader/management areas stay open. Actual pin routing and receive validation await the disconnected Pi.
+
+### 2026-11-15 — Readability audit: ARM exception frames
+- Named modes, saved-status offset, return-address adjustments and call alignment in boot.S. Explained SVC/IRQ restoration and non-returning abort frames, preserving values and instruction order.
+- Recorded existing aligned-stack/no-nested-SVC assumptions and absent VFP/NEON preservation. Existing QEMU isolation and task/preemption tests plus Pi hardware build pass.
+- Boot peripheral setup and memory ownership/cache review remain open; physical Pi execution remains pending.
+
+### 2026-11-15 — Readability audit: ARM scheduler lifecycle
+- Named the dispatcher sentinel and probe round count. Explained address-space/stack switch order, per-task IRQ restoration, static stack reuse and process-spawn preconditions.
+- Corrected the stack-lifetime comment and documented that finished call chains do not run destructors. Existing QEMU task/preemption and process-isolation checks pass after fixing a local constant-substitution typo.
+- Marked scheduler/process source review in the audit; exception assembly and memory/cache review remain open. Physical Pi verification is still pending.
+
+### 2026-11-15 — Readability audit: ARM syscall adapter
+- Named register indices, getpid/error/output constants and semihosting exit fields. Documented the saved-frame layout, process versus standalone exit behavior and write-pointer validation limits.
+- Existing QEMU userspace-write and isolation tests pass; Pi hardware build passes. Numeric values and behavior are unchanged.
+- Exception assembly, process scheduling/ownership, remaining memory review and other audit areas stay open. Physical Pi execution remains pending.
+
+### 2026-11-15 — Readability audit: ARM user entry
+- Named processor modes and the flat-image entry field; explained user stack setup, saved processor status and the final exception return instruction.
+- Documented bootstrap ELF-loader permission, entry validation, partial-failure and cache-synchronization limits without changing behavior.
+- Existing QEMU userspace-write test passes. Remaining ARM exception/process and memory ownership work stays open; physical Pi checks remain pending.
+
+### 2026-11-15 — Readability audit: ARM process probe
+- Named the shared Rust/assembly probe fields, access kinds, syscall numbers, stack offsets, timer threshold and fault-status bits. Explained stopped-process setup requirements; values and behavior are preserved.
+- Existing QEMU isolation test passes all five scenarios; Pi hardware build passes. No new tests or tracked run artifacts were added.
+- General ARM process/exception and memory ownership review remains open. Physical validation still awaits the disconnected Pi.
+
+### 2026-11-15 — Readability audit: ARM mapping controls
+- Named MMU/cache control bits, translation-table alignment, section mask and process section/stack constants. Explained table-register setup and the exact bounds checked by user-range helpers.
+- Existing QEMU ARM memory-mapping and process-isolation tests pass; values and instruction order are unchanged.
+- ARM memory ownership/cache assumptions, process/exception paths and remaining audit areas stay open. Physical Pi verification is pending while disconnected.
+
+### 2026-11-15 — Readability audit: TCP connection lifecycle
+- Named the passive sequence-generator constants and reused the send-segment size. Explained listener/connection ownership, accept admission, receive buffering and teardown in source comments.
+- Recorded existing protocol and lifetime limitations explicitly, including absent passive retransmission, unbounded receive queues, retained closed connections and unchecked FIN acknowledgments. Behavior is unchanged.
+- Existing QEMU TCP echo passes. TCP source-review coverage is checked off in the audit; remaining ARM/page-table areas and physical Pi checks stay open.
+
+### 2026-11-15 — Readability audit: TCP retransmission
+- Named RTT smoothing/variation weights, timeout/backoff factors and initial peer-window assumption. Explained sequence accounting, cumulative ACK removal, preparation-time timestamps and caller-owned transmission.
+- Existing QEMU TCP-loss test passes through retransmission and response. Arithmetic and behavior remain unchanged; formulas checked against RFC 6298.
+- TCP state/passive ownership and remaining ARM/page-table review stay open. Physical Pi checks remain pending.
+
+### 2026-11-15 — Readability audit: TCP packet layout
+- Named TCP header ranges, Data Offset units, fixed window/MSS values and IPv4 checksum pseudo-header fields. Verified layout against RFC 9293; serialized values are unchanged.
+- Clarified the parser's option-skipping contract. Existing QEMU TCP echo test passes through handshake and data transfer.
+- TCP state/retransmission and remaining ARM/page-table review remain open. Physical Pi verification stays pending while disconnected.
+
+### 2026-11-15 — Readability audit: UDP queues and runtime network state
+- Documented weak port bindings, shared socket ownership, unbounded datagram queues, single receive waiter, poll-waiter registration and lock release before wakeup.
+- Clarified ARP learning/cache limits and network configuration's stored lease metadata and destination filter. Comments follow the existing implementation; no behavior changed.
+- Cargo check passes. Behavioral tests were not repeated for comment-only changes. TCP, remaining ARM and page-table review plus physical Pi verification remain open.
+
+### 2026-11-15 — Readability audit: network service and ARP waits
+- Named ARP iteration limit, task sentinel, broadcast addresses and dump width. Clarified device locking, receive side effects, task enabling and ARP request/wait sequencing.
+- Corrected atomicity/timing claims against the actual driver and decoder paths. Documented discarded transmit results, invalid-frame drain termination and optional UDP checksums.
+- Existing QEMU UDP echo test passes. Behavior is unchanged; remaining network/ARM and page-table review plus physical Pi validation stay open.
+
+### 2026-11-15 — Readability audit: ext2 serialized fields
+- Named the remaining superblock, group-descriptor, inode and directory field offsets, block-pointer stride and permission mask. Parsing values and widths are unchanged.
+- Clarified validation limits and removed obsolete lesson-stage claims. Existing QEMU file-read test passes for the supported image.
+- ext2 source review is covered; broader networking/ARM and page-table contract review remain open, along with physical Pi validation.
+
+### 2026-11-15 — Readability audit: ext2 adapter units and limits
+- Named disk/metadata widths and direct/indirect pointer positions. Corrected directory type-code and descriptor-boundary explanations against the Linux ext2 definitions.
+- Documented fixed-block-size, group-0, direct-block and sparse-read limitations without changing behavior. Existing QEMU file-read test passes for the supported image.
+- Serialized ext2 field offsets and remaining network/ARM areas still need review; physical Pi validation stays pending.
+
+### 2026-11-15 — Readability audit: VFS cache and descriptors
+- Named internal directory-record widths and parser boundaries, reused ROOT_INO, and clarified file/socket handle ownership and cursor sharing.
+- Corrected stale claims about path lookup and cache hits. Documented cached-only writes, shared inode-number namespace and retained cache entries across mount replacement.
+- Existing QEMU file-read test passes. Serialized format and runtime behavior are unchanged. Remaining filesystem adapter/network/ARM review and physical Pi verification stay open.
+
+### 2026-11-15 — Readability audit: process table and task creation
+- Corrected stale ownership and fork comments: monotonic PID slots, shared open objects, low-half copy versus shared mappings, per-child stack placement and startup interrupt state now follow the source.
+- Documented existing name-truncation, kernel-task child-list and boot-mapper visibility limitations. This slice changes comments only; it does not repair those behaviors.
+- Existing fork-shared-file-cursor QEMU test passes. Page-table synchronization and remaining codebase review remain open; physical Pi checks are still pending.
+
+### 2026-11-15 — Readability audit: scheduler states and lifecycle
+- Factored the existing Ready/Running choice into is_runnable and reused the shared frame size for task stacks. Clarified block/yield/wake sequencing, descriptor callback locks and retained Dead-task allocations.
+- Documented interrupt-state contracts for exit, exec replacement and the current idle halt branch. Scheduling behavior and state selection are unchanged.
+- Existing wait-status and socket poll QEMU tests pass. Task creation/fork/process ownership review and physical Pi checks remain open.
+
+### 2026-11-15 — Readability audit: socket syscall ABI
+- Named socket-address fields and sizes, protocol selection, poll wait modes, configuration operations and active-open sequence parameters. Explained byte order, raw-memory requirements and receive/output ordering.
+- Documented the existing single-global-active-connection limitation and deterministic initial sequence calculation. Values and behavior remain unchanged.
+- Existing poll and passive TCP echo QEMU tests pass; active-open connection behavior is outside those checks. Scheduler/process lifecycle and other remaining areas still need review; Pi testing remains pending while disconnected.
+
+### 2026-11-15 — Readability audit: syscall memory and process contracts
+- Renamed the numeric address predicate to is_low_half_range throughout syscall handlers and documented its missing mapping/permission checks. Explained path scan bounds, cached file writes and shared file cursors.
+- Named standard output/error descriptors, time-conversion units, wait-any sentinel and exec flags. Documented the raw wait-status ABI, unchecked result pointer and global fork-snapshot concurrency limitation.
+- Existing wait-status and timer QEMU tests pass. Values and behavior are preserved. Socket handler internals and scheduler/process lifecycle review remain; physical Pi validation remains pending while disconnected.
+
+### 2026-11-15 — Readability audit: x86 executable loading
+- Named ELF64 header/program-entry offsets and used shared frame sizes in segment/stack mapping. Clarified file stride, zero-fill, page permissions and cloned address-space behavior against the parser and loader.
+- Corrected claims about validation and rw- stacks: current code trusts several file fields, maps pages executable, and retains old user mappings outside replacement ranges. Those limitations are unchanged and documented for separate correctness work.
+- Existing exec-replacement QEMU test passes, including initial executable loading. gABI header/program layouts checked; no redundant tests added. Broader process and ARM review remain open; Pi checks remain pending while disconnected.
+
+### 2026-11-15 — Readability audit: x86 interrupt entry
+- Named exception stack offsets/padding and reused PIC timer-vector and crate fault-bit definitions. Explained register saving, return through IRETQ and deferred network-task processing; removed stale ABI and NAPI claims.
+- Checked CPU frame layout against Intel SDM 3A section 6.14.2. Recorded existing defects: breakpoint caller-register clobber, page-fault call misalignment, an unconditional demo-memory read and missing SIMD preservation. Behavior remains unchanged; these require separate correctness work.
+- Existing timer and UDP echo QEMU checks pass. They do not validate exception recovery. Page-table ownership, process code and ARM review remain open; physical Pi validation remains pending while disconnected.
+
+### 2026-11-15 — Readability audit: x86 page-table dimensions and copying
+- Named page-table entry count and high-half boundary; frame strides, copying and clearing use the shared frame size. Loop bounds and copied bytes are unchanged.
+- Corrected stale fork/unmap explanations and clarified that address-space handles can refer to existing tables. Documented shared writable kernel state, shared huge pages, mapping errors and caller serialization requirements.
+- Existing fork-resumption and exec-replacement QEMU tests pass. Paging synchronization/ownership and remaining interrupt/process code still need review. Pi remains disconnected; hardware validation is pending.
+
+### 2026-11-15 — Readability audit: x86 syscall entry
+- Named saved syscall argument offsets and the seventh C argument's stack slot. STAR selector fields derive from the GDT. Frame arithmetic uses the shared size; comments correctly identify the existing stack as 64 KiB.
+- Replaced obsolete argument-preservation commentary with the actual distinction between ordinary return and the smaller fork snapshot; corrected the assembly step explanation before argument conversion. Push/pop order, offsets, stack size and selector values are preserved.
+- Existing fork-resumption and UDP echo tests pass, covering parent/child return and socket syscalls. Remaining interrupt wrappers, paging and process logic still need review; physical Pi checks remain pending.
+
+### 2026-11-15 — Readability audit: x86 boot and user entry
+- Named CR4 SSE-support bits, initial user flags, timer rate and queue size. User entry obtains selectors from the GDT instead of repeating their encoded values. Explained the IRETQ stack order.
+- Corrected stale GDT/TSS descriptions: scheduler updates RSP0, and SYSCALL uses a software stack switch. Fixed assembly annotations: OR changes flags; the push/IRETQ sequence touches the stack and transfers control permanently. Intended register values and transition order are preserved.
+- Existing user-mode boot and timer tests pass. Checked descriptor privilege selection in the installed x86_64 crate. Interrupt wrappers, paging and syscall entry remain to review; physical Pi validation remains pending.
+
+### 2026-11-15 — Readability audit: x86 saved task stacks
+- Shared named saved-register slots and stack sizes between context switching and scheduler stack construction. Fork assembly uses named operands derived from the same layout. Corrected the new-task diagram to identify its trampoline return address.
+- Existing fork test passes: both parent and child resume. Initial test launch failed before boot on its local forwarding port; rerun with port access passed. Register order, stack offsets, alignment and return instructions are preserved.
+- Scheduler lifecycle and interrupt/exception entry code still require review; physical Pi checks for earlier changes remain pending.
+
+### 2026-11-15 — Readability audit: x86 interrupt controllers
+- Named APIC base mask, global/software enable fields, spurious-vector value and acknowledgement. Separated MSI address encoding from the CPU's mapped APIC registers and documented the existing APIC-ID-0/xAPIC assumptions.
+- Named PIC masks and corrected its stale overview: initialization enables timer IRQ 0. Existing x86 QEMU timer test passes through boot, disk loading and advancing time. Controller values and ordering are unchanged.
+- Interrupt entry/exception assembly, paging, process/syscall code and remaining ARM areas still need review; physical Pi checks remain pending.
+
+### 2026-11-15 — Readability audit: x86 VirtIO network driver
+- Named RX/TX queue IDs, interrupt table entries/offsets, feature words and reset/enable values. Reused the shared frame size and described transmit metadata, interrupt-assisted waiting and receive-buffer reuse.
+- Documented existing 64-byte transmit padding policy and two retained frames per transmit without changing them. Existing x86 QEMU network-frame test passes.
+- PCI/VirtIO source review is complete across discovery, transport, queues and both devices. Broader architecture/protocol review and physical Pi checks remain open.
+
+### 2026-11-15 — Readability audit: x86 VirtIO block driver
+- Named queue/vector selection, MSI-X entry offsets, feature words, sector size and enable/reset values. Reused the shared frame size for DMA buffers.
+- Rewrote outdated initialization/read documentation: reads check the used ring and sleep between interrupts; initial zero status does not prove completion; each read retains three frames. Removed disabled prints and unsupported claims about device thread scheduling and register-read timing.
+- Existing x86 QEMU known-block test passes. Runtime ordering, allocations, status values and notifications are unchanged. Network initialization and other architecture areas remain open; physical Pi validation remains pending.
+
+### 2026-11-15 — Readability audit: x86 VirtIO queues
+- Named ring offsets, entry sizes and block-request lengths; reused the shared frame size. The write flag explicitly means the device writes. Removed disabled diagnostic print blocks while retaining the active debug-state API.
+- Corrected ring-size arithmetic in comments, alignment requirements, completion-length semantics and volatile/atomic ordering explanations. Documented serialized submission and separate notification. Operations and atomic orderings remain unchanged.
+- Existing x86 disk-read and network-frame QEMU tests pass. Block/network initialization and remaining architecture code are next; physical Pi validation remains pending for earlier changes.
+
+### 2026-11-15 — Readability audit: x86 VirtIO capability transport
+- Named VirtIO region offsets and MSI-X table/control fields. Explained table entry count and function masking; corrected the capability result's notification multiplier contract and the module overview.
+- Existing x86 QEMU disk-read and network-frame tests pass. Register reads/writes and unsupported/malformed-list handling are unchanged. The parser still assumes valid lengths and an acyclic list; these limits are explicit.
+- Queue mechanics and block/network initialization remain to review. Physical Pi validation for earlier changes remains pending.
+
+### 2026-11-15 — Readability audit: x86 PCI discovery
+- Named bus/function scan limits, configuration fields, BAR masks/types and endpoint BAR count. Corrected stale discovery documentation, the obsolete below-1-MiB BAR description, and the distinction between PCI configuration and VirtIO status registers.
+- Existing x86 QEMU known-block test passes through discovery, BAR setup and the disk driver. Scan order, values and diagnostics remain unchanged; existing address packing and class-code lookup tables were already explained and remain literal.
+- PCI transport callers, x86 VirtIO drivers and remaining architecture code still need review. Physical Pi checks remain pending for earlier hardware changes.
+
+### 2026-11-15 — Readability audit: ARM VirtIO networking
+- Named transmit storage consistently alongside receive storage, descriptor roles, modern feature-word selection, and packet/header sizes. Explained zeroed transmit metadata, buffer publication, completion polling and receive-buffer reuse.
+- Existing QEMU UDP echo test passes; its peer also completes DHCP and verifies reply addresses, payload and checksums. Driver behavior and memory-barrier placement remain unchanged. Transmit still waits without a timeout.
+- Continue with remaining ARM architecture/probe code and x86 drivers. Physical Pi validation for earlier hardware changes remains pending.
+
+### 2026-11-15 — Readability audit: ARM VirtIO block requests
+- Named feature-word selection, modern transport version, request queue, sector size and descriptor roles. Descriptor flags now state that the device writes the buffer. Explained publication ordering and the synchronous completion poll, including its existing lack of timeout.
+- Existing QEMU ARM block-read and ext2-file-read tests both pass. This driver belongs to QEMU virt; it is separate from the Pi SD driver. Numeric register values, request layout and polling behavior are preserved.
+- ARM VirtIO networking, remaining architecture code and physical Pi validation of earlier changes remain open.
+
+### 2026-11-15 — Readability audit: WPA2 helper contracts
+- Replaced the key-data parser's boolean argument with explicit required/optional RSN policy and its positional result with named group-key fields. Named digest/key/MIC sizes and explained deterministic ordering and truncation during pairwise key derivation.
+- Existing WPA2 handshake and corruption tests pass; managed Wi-Fi release build passes. Marked the shared WPA2 source review complete, with real Pi validation still pending. The overall codebase audit remains open.
+
+### 2026-11-15 — Readability audit: WPA2 key-data decoding
+- Named RSN key-data selectors, element lengths, PMKID/group-key ranges and key-ID masks. Explained RFC 3394 unwrap steps using named data units and an integrity value; preserved the failure-path clearing of recovered bytes.
+- Corrected the group-message flag name to TX/RX: hostap distinguishes its group meaning from the pairwise install bit. Numeric values and accepted packets are unchanged.
+- Existing handshake and RFC 3394 tests pass with unchanged fixtures; managed Wi-Fi release build passes. Physical validation remains pending while the Pi is disconnected. Continue the broader architecture/protocol audit.
+
+### 2026-11-15 — Readability audit: WPA2 handshake fields
+- Named EAPOL key-field ranges, accepted message words and the three derived key ranges. Reply construction explicitly selects the station nonce or a zero nonce.
+- Both existing WPA2 tests pass, including authenticated handshake/retransmission behavior and RFC 3394 unwrap/corruption checks. Managed Wi-Fi release build passes. Synthetic fixtures remain unchanged.
+- Key-data element parsing, cryptographic helper internals and the broader audit remain open. Pi disconnected; physical validation pending.
+
+### 2026-11-15 — Readability audit: CCMP frame handling
+- Named encrypted-frame lengths, packet-number/key-ID fields, QoS/fragment flags and replay-counter dimensions. Explained the adapter's crypto role and the point where a received packet number becomes accepted state.
+- Both existing Wi-Fi frame tests pass, including replay and rejected-aggregate checks. An ignored old/new transmit comparison passes 13,130 buffer/frame/state cases. Managed Wi-Fi release build passes.
+- WPA2 handshake fields and the broader architecture audit remain open. Physical encrypted traffic validation remains pending.
+
+### 2026-11-15 — Readability audit: Wi-Fi management frames
+- Named shared address ranges, information-element IDs, capability bits, rate arrays, authentication payloads and EAPOL encapsulation. Explained rate units, RSN suite contents and sequence/fragment packing. Station management handling uses the shared address names.
+- Both existing Wi-Fi frame tests pass. An ignored old/new builder comparison passes 6,288 cases covering buffer limits, SSID lengths, capabilities, sequences and EAPOL sizes; output bytes and results match. Managed Wi-Fi release build passes.
+- CCMP/WPA2 fields and the broader architecture audit remain open. Physical association validation still awaits the Pi.
+
+### 2026-11-15 — Readability audit: receiver preset registers
+- Named PLL, regulator, crystal and reset/enable registers and fields. Grouped the three USB-interference writes with the reference driver's explanation, leaving undocumented fields explicitly undecoded.
+- Managed Wi-Fi release build passes. Reused the ignored receiver trace comparison with the updated source; complete startup and unsupported-board rejection still match the pre-refactor baseline.
+- Shared Wi-Fi/security fields, station-frame offsets and the broader architecture audit remain open. Physical validation still awaits the Pi.
+
+### 2026-11-15 — Readability audit: receiver startup
+- Divided receiver startup into programming, RF interface, calibration and scan-filter stages. Named board selection, interface controls, calibration timing, receive filters and appended status fields; documented radio-table delay markers.
+- Managed Wi-Fi release build passes. An ignored host harness compared the actual old/new methods and programming tables: complete successful startup and unsupported-board traces match, including recorded helper calls.
+- Physical reception remains pending. Some analog presets retain reference literals with an explicit sequencing comment; their register naming and the shared protocol audit remain open.
+
+### 2026-11-15 — Readability audit: station transmit setup
+- Named factory power groups, retry/contention fields, address/filter registers and ACK observation settings. Kept timing presets explicit without inventing undocumented units.
+- Managed Wi-Fi release build passes. An ignored host harness compared the old/new station-setup methods for channels 0..14 and power indices 0/63/64; all 45 results and register traces match.
+- Physical association/traffic validation remains pending. Receiver bring-up and the broader shared/x86/ARM audit remain open.
+
+### 2026-11-15 — Readability audit: radio access and channels
+- Named indirect radio address/data fields, read-edge sequence, reply-register selection and settling delays. Explained coordinated 20 MHz channel settings across MAC/baseband/RF.
+- Managed Wi-Fi release build passes. An ignored host harness compared actual old/new radio-read/write and channel-selection methods across 813 synthetic cases; return values and register traces match.
+- Physical radio validation remains pending while the Pi is disconnected. Receiver bring-up and remaining shared protocol review are still open.
+
+### 2026-11-15 — Readability audit: Wi-Fi packet RAM
+- Named linked-list commands, page indices, queue reservations/mapping, FIFO byte boundaries and page-size fields. Explained the separate roles of the end-of-list marker and page index 255.
+- Managed Wi-Fi release build passes. An ignored host harness compared old/new setup traces for one/two/three OUT endpoints and clear/stuck-busy responses; all six results and traces match, including the full 256-page setup.
+- Physical packet RAM validation remains pending. Receiver/radio initialization and remaining shared protocol code still need review.
+
+### 2026-11-15 — Readability audit: Wi-Fi factory identity
+- Named eFuse register fields, physical/logical sizes, compressed block layout, identity signature and MAC location. Explained skipped words and the upper-half timeout diagnostic.
+- Managed Wi-Fi release build passes. An ignored host harness compared actual old/new identity methods on six synthetic cases: valid data, bad signature, multicast MAC, truncated record stream and both unsupported chip flags. Results and setup writes match.
+- Physical eFuse reads remain pending with the Pi disconnected. Remaining radio initialization and shared security review continue.
+
+### 2026-11-15 — Readability audit: Wi-Fi I/Q calibration
+- Named calibration registers, coefficient positions, validity/failure fields, sample limits and timing. Replaced the receive-correction boolean with explicit choices; documented the preserved second-trigger policy and reference tuning recipe.
+- Managed Wi-Fi release build passes. An ignored host harness compared the complete old/new calibration register traces for success, RX failure, TX failure and both failures; results and writes match in all four cases.
+- Reference programming tables remain in their original order with an explanatory contract. Physical calibration verification is pending; remaining radio initialization and shared frame/security review continue.
+
+### 2026-11-15 — Readability audit: Wi-Fi key table and rate registration
+- Named key-table commands, busy polling, entry layout and security enable flags. Explained invalidating an entry before writing it and setting validity last. Named firmware station IDs and rate-table fields.
+- Managed Wi-Fi release build passes. An ignored host harness compared old/new key-installation register writes and results for 90 synthetic cases, including rejected entry/key IDs; every trace matched.
+- Physical key installation and reassociation still await the disconnected Pi. Calibration and remaining shared frame/security code remain open.
+
+### 2026-11-15 — Readability audit: Wi-Fi packet descriptors
+- Named receive length/error/padding/decryption fields and transmit ownership, segment, queue, cipher, rate and checksum fields. Separated the data aggregation flag from queue selection; preserved every encoded value.
+- Managed Wi-Fi release build passes. An ignored host harness compared the actual old/new transmit-buffer snippets across 95,664 combinations of lengths, frame types, protection/multicast bits and sequence fields; every byte matched.
+- Physical radio validation remains pending while the Pi is disconnected. Calibration and remaining security/frame fields are still open.
+
+### 2026-11-15 — Readability audit: USB startup and DMA memory
+- Named root-port delays, controller clock choices, FIFO word regions and DMA address fields. Explained controller register roles and cache maintenance, including Cortex-A7's clean-and-invalidate behavior.
+- Existing Pi QEMU UDP echo passes and managed Wi-Fi release build passes. Hardware-specific cache/FIFO/clock behavior remains pending physical verification; no device operations were performed.
+- USB source review subitems are now covered. The broader codebase audit and physical validation remain open.
+
+### 2026-11-15 — Readability audit: USB enumeration and control stages
+- Named setup request types/actions, hub-port features, descriptor selectors, endpoint fields and buffer limits. Added comments identifying SETUP/DATA/STATUS stages and the current descriptor parser's selection limits.
+- Existing Pi QEMU UDP echo passes; managed Wi-Fi release build passes. QEMU uses a directly attached Ethernet device, so the hub path still needs physical validation when the Pi returns.
+- Initialization and DMA cache/address handling remain open within the USB audit. Behavior and protocol bytes are preserved.
+
+### 2026-11-15 — Readability audit: USB transfer API
+- Replaced internal direction/retry booleans with named enum choices. Named channel error flags, transfer attempt limit and remaining-byte field; explained DMA submission and the polling helper.
+- Existing Pi QEMU UDP echo regression passes, and the managed Wi-Fi release kernel builds. Transfer order and retry behavior are preserved. Physical checks await the disconnected Pi.
+- USB initialization, hub enumeration and cache/address handling remain open; the broader audit continues.
+
+### 2026-11-15 — Readability audit: SD capacity and clock divider
+- Named the card capacity fields and extracted their sector-count calculation into `sectors_from_csd`. Named the divider fields and explained where their bits go in the controller register; arithmetic and access order are unchanged.
+- Existing Pi QEMU partition-to-userspace regression passes. The Pi is disconnected; physical timing, write/read-back and reboot checks remain pending.
+- Marked this SD audit subitem reviewed. The broader readability goal and hardware validation remain open.
+
+### 2026-11-15 — Readability audit: SD command path
+- Named SD commands, controller setup fields, sector/word units and card-ready state. Explained application-command prefixes and polling of latched interrupt-status bits.
+- Existing Pi QEMU partition-to-userspace regression passes. Preserved operation order and values; physical writes remain untested after these edits.
+- Capacity extraction and clock-divider packing remain open within the SD audit, alongside the broader pending areas.
+
+### 2026-11-15 — Readability audit: Pi reset/watchdog
+- Named watchdog time units, protected-write key, reset bits and status address; documented countdown ordering and timeout field limits using the Linux reference driver.
+- Managed Pi release build passes. No live reset performed; physical verification and remaining audit areas stay pending.
+
+### 2026-11-15 — Readability audit: RNDIS and Ethernet selection
+- Named control/header fields, USB requests, packet filters and fixed adapter identities. Explained RNDIS's relative data offsets and unsupported link-status reporting.
+- Existing Pi QEMU UDP echo test passes through initialization and frame transfer. Preserved wire bytes and existing QEMU-specific assumptions; USB controller/hub review remains pending.
+
+### 2026-11-15 — Readability audit: LAN9512 USB Ethernet
+- Explained control-register versus bulk-frame transfers; named PHY packing, vendor request fields, RX length shift and supported device IDs.
+- Documented command words, FCS removal, reset/MAC initialization, packet-toggle accounting and polling units without changing operations.
+- Existing host framing tests pass (3); managed Pi release build passes. Real LAN9512 verification remains pending; QEMU RNDIS is not equivalent hardware coverage.
+
+### 2026-11-15 — Readability audit: SD boot record
+- Named record and copy-descriptor fields, checksum parameters, and MBR fields. Explained trial state and the callers' responsibility to persist selection/confirmation.
+- Existing boot-record tests pass (3), and the loader-only library compiles without kernel features. Preserved disk format and selection order; no physical SD operations performed.
+- Broader audit and physical validation remain pending.
+
+### 2026-11-15 — Readability audit: UART upload framing
+- Named header ranges and CRC parameters; documented partial-image storage, the final byte carried by Complete, and transport-owned timeout timing.
+- Verified against the existing Python sender. Existing decoder tests (5) and uploader tests (9) pass; protocol bytes and behavior are unchanged.
+- Physical checks remain pending while the Pi is disconnected; broader audit continues.
+
+### 2026-11-15 — Readability audit: frame and heap allocation
+- Clarified frame-number/address units, bitmap states and caller ownership; renamed private bitmap operations by availability.
+- Documented why ARM and x86 heap wrappers mask IRQs before taking the allocation lock. Retained the already-clear x86 boot-memory adapter after review.
+- Existing ARM virt QEMU heap allocation and frame-reuse checks both pass. Library allocator internals are unchanged; broader audit remains open.
+
+### 2026-11-15 — Readability audit: ARM task context
+- Connected task frame construction to the switch assembly through shared saved-word names; derive the user-register-bank offset from TaskContext's actual layout.
+- Explained stack-pointer replacement, first entry versus resumption, and IRQ masking. Preserved instructions and scheduling behavior.
+- Existing Pi QEMU process-isolation/fault-containment regression passes. Physical checks and remaining boot/exception/process/memory audit stay open.
+
+### 2026-11-15 — Readability audit: ARM virt timer
+- Named the GIC acknowledgement mask, enable/priority values and timer rate; explained frequency-to-deadline conversion and acknowledgement ordering before scheduling.
+- Existing ARM virt QEMU timer test passes. Preserved register operations and kept the remaining scheduler/interrupt assembly audit open.
+
+### 2026-11-15 — Readability changes grouped for review
+- Saved separate commits for the VirtIO return-type repair (`ad479cc`), network fields/DHCP (`0d48765`), disk/ELF parsing (`776e3fa`), timer/mailbox/random generator (`3866d46`), and Wi-Fi sequences (`ac9934f`).
+- Commit descriptions distinguish passed host/QEMU checks from pending physical verification. No new Pi deployment was attempted while the board is disconnected.
+- The audit remains active. Lesson artifacts remain separate working-tree changes; no generated logs, firmware, images, or credentials were staged.
+
+### 2026-11-15 — Readability audit: shared ext2 reader
+- Named disk-layout fields and explained inode/group indexing, padded directory records, direct block pointers, and sparse holes.
+- Documented existing twelve-block truncation and limited malformed-image checking; retained behavior and linked the Linux disk structures in the audit record.
+- Existing Pi QEMU partition/file/userspace regression passes. Broader audit and physical verification remain pending.
+
+### 2026-11-15 — Readability audit: ARM ELF loading
+- Named ELF32 header/segment offsets and documented the segment callback's memory responsibilities and partial effects. Named ARM image/stack bounds and explained zero initialization before copying file bytes.
+- Corrected the x86 ELF introduction's claim that program headers immediately follow the file header; their location is supplied by e_phoff.
+- Existing Pi QEMU userspace test passes through SD file loading and a userspace write syscall. Physical validation and the remaining codebase audit stay pending; behavior and roadmap milestones are unchanged.
+
+### 2026-11-15 — Readability audit: shared partition lookup
+- Named MBR signature/count/address-width fields and explained disk-relative versus partition-relative sectors.
+- Documented the existing lookup and adapter limits without expanding behavior: no extended-partition traversal, length/overlap validation, or adapter upper bound; overflow still yields zero-filled data.
+- Existing host partition-selection/translated-read test passes. The broader audit remains active; no physical disk writes or roadmap completion changes.
+
+### 2026-11-15 — Readability audit: firmware mailbox
+- Named request lengths, power flags, response offsets and bus-address fields in the Pi mailbox adapter; explained RAM ownership, cache operations, and shared-buffer serialization.
+- Preserved the eight-word message, cache instructions, reply checks and bounded polling. Verified field meanings against the Raspberry Pi firmware property-interface documentation.
+- Existing QEMU USB enumeration passes, including the power-on mailbox request. Physical verification remains pending while the Pi is disconnected; broader audit checkboxes remain open.
+
+### 2026-11-15 — Readability audit: firmware, DHCP, and Pi timing
+- Named firmware-loader fields, mailbox payload sizes, shutdown operations, Wi-Fi station retry policies, DHCP option tags, and lease deadlines. Preserved operation order, access widths, and timing values.
+- Clarified Pi timer clock/routing/acknowledgement and the hardware random generator's warm-up, FIFO count, and whole-nonce deadline using primary references recorded in `docs/code-readability.md`.
+- Existing Wi-Fi frame/WPA2 and ARM DHCP lifecycle checks pass; x86 DHCP integration passes. The managed Wi-Fi release build and Pi QEMU scheduler/preemption regression also pass after the timer/random-generator edits.
+- The attempted hardware update failed at its authentication challenge before kernel data was sent. The user confirmed the Pi is disconnected; new physical validation is pending. The earlier successful power-on-only physical run remains separate evidence.
+- The codebase-wide audit remains active, with pending areas recorded in the audit checklist. No roadmap completion checkbox changed.
+
+### 2026-11-15 — Didactic implementation audit started
+- Created an active codebase-wide readability goal and coverage checklist in `docs/code-readability.md`.
+- Wi-Fi `power_on` now uses named register addresses, masks, delays, explicit set/clear polling, and explanations for each ordered step. Vendor USB request arguments are named; undocumented reference writes are identified honestly.
+- Physical Pi validation passed: upload/read-back of the new image, SD reboot, Wi-Fi/DHCP return, persistent logs, and stale-request rejection. CRC32 `defc3948`.
+- Started the broader pass with x86 PIT control fields and shared packet-header layouts/checksum semantics. The PIT comment incorrectly described mode 2; the preserved `0x36` command selects mode 3. The x86 timer test passes.
+- Verification found an existing VirtIO `FrameDevice::transmit` return-type mismatch; the adapter now reports success after its existing completion wait. Existing x86 and ARM QEMU UDP echo checks both passed.
+- The broader goal remains active; unchecked audit entries are still pending. No feature-parity milestone is being claimed by this cleanup.
+
+
+### 2026-11-15 — Wi-Fi connection lesson
+- Added lesson 7.07: an isometric step-through of the installed Pi Wi-Fi startup, with explicit firmware/Rust responsibilities, DHCP timing, and a simulated failure activity.
+- Added a matching code tour and short reference, linked from the course map. The lesson distinguishes physical test results from remaining router-outage and group-rekey checks.
+- No kernel changes or roadmap checkbox changes. Learner understanding remains to be checked through the exercises.
+
+### 2026-11-15 — Wi-Fi register transport and adapter firmware
+- **Physical identity:** RTL8188C, SYS_CFG `04400735`, standard USB board; eFuse identity and power-on sequence verified through the existing UART recovery flow.
+- **USB defect found:** Reset FIFO settings reported RX=4096 words, non-periodic TX=256 words starting at 4096, periodic TX=512 words starting at 8192, while GHWCFG3 reports only 4080 words of FIFO RAM. The old layout consistently corrupted a register read at iteration 559. Three non-overlapping 1024-word regions passed all 4096 repeated reads on the Pi. Control-IN DMA also reserves complete endpoint packets in its backing buffer.
+- **Verified:** Firmware bytes written to adapter RAM and read back; firmware checksum and initialization-ready bits passed on the Pi. QEMU USB enumeration regression passed. Installed SD kernels remain unchanged; trials run in RAM and return to the UART loader.
+- **Further validation:** Passive reception found the target FRITZ!Box on channel 1 with WPA2-PSK/CCMP. Software power-off/reset handles retained adapter state; I/Q calibration supports the reference driver's TX-only fallback when RX measurements are unstable. Authentication and association both receive successful responses on the Pi. QEMU Ethernet UDP echo also passes with the USB changes.
+- **Authentication diagnosis:** The router's configured key differed from the supplied key. The actual Pi message-2 MIC was independently verified; radio ACK reception confirmed delivery. After updating the private PMK from the router, the Pi completed WPA2 and DHCP (`192.168.178.128`). Mac-to-Pi ICMP and exact UDP echo passed for 32, 512, and 1200 bytes. No password or handshake capture is committed.
+- **Connection lifetime:** A reusable polled Wi-Fi station advances scan, authentication, association, security, and online states. The real Pi completed a deliberate disconnect, a fresh handshake, and a second DHCP lease. Host vectors cover group-key replacement and duplicate-handshake protection.
+- **Permanent install verified:** Authenticated Wi-Fi upload stored and read back all 236,236 kernel bytes (CRC32 `98195a23`) in 18.51 seconds. Remote reboot selected SD copy B, confirmed its boot, rejoined WPA2/DHCP at `192.168.178.128`, preserved previous-boot logs, and rejected a replayed reboot request. Copy A retains the previous Ethernet kernel. Authentication rejection checks and the QEMU Ethernet UDP regression passed.
+- **Limits and follow-up:** Initial radio transmission uses 1 Mbps; WPA3/required PMF, roaming, and USB hotplug are unimplemented. Group rekey has independent host vectors; router-triggered rekey and a full access-point outage remain hardware follow-ups. Network credentials and handshake captures remain private and excluded from Git; routine captures stay under ignored `target/runs/`. Setup and supported scope are in `docs/pi2-wifi.md`.
+
+
+### 2026-11-15 — Physical USB Wi-Fi inventory
+- **Observed on Pi:** Root hub 0424:9514, Ethernet 0424:ec00 on hub port 1, and Wi-Fi candidate 0bda:8176 on hub port 4. The Linux [rtl8192cu device table](https://github.com/torvalds/linux/blob/master/drivers/net/wireless/realtek/rtlwifi/rtl8192cu/sw.c) identifies this ID as an 8188CU single-stream dongle. Exact chip revision still needs register identification.
+- **Built:** Extended `Dwc2::visit_hub_children` in targets/armv7/src/raspi2b/usb.rs to enumerate direct children with distinct addresses. The existing pi2_usb_enumeration_probe now reports every discovered child; normal Ethernet enumeration stops at its first child as before. This remains a boot-time diagnostic, not a hotplug manager or recursive hub walker.
+- **Physical test:** Uploaded the diagnostic into RAM over UART. It printed both device IDs and completed; its watchdog restarted the installed SD kernel. The diagnostic contains no SD writes. Raw evidence remains in ignored target/runs/20261115-wifi/. Managed build and existing Raspberry Pi USB QEMU regression passed.
+- **Next trials:** (1) Read USB endpoints, chip revision, and EEPROM/eFuse identity. (2) Implement power/firmware/radio initialization and receive beacons to list nearby network names without credentials. (3) Implement association and WPA2 authentication/key installation, keeping credentials outside Git. (4) Feed received network packets through the shared FrameDevice interface and verify DHCP, management, reboot, and reconnect after an access-point outage. Linux rtl8192cu and rtl8xxxu provide implementation references; their drivers require Linux infrastructure and cannot be loaded directly by Gabix. No radio initialization, network scan, or Wi-Fi association has been tested yet.
+
+### 2026-11-15 — Router readiness and persistent diagnostics
+- **Built:** Managed Pi profile with HMAC-SHA256 authentication for status, logs, sector access, uploads, installation, and reboot. Requests/replies use a persistent boot number and command counter; duplicate requests reuse the prior reply. The private key stays outside Git at ~/.config/gabix/pi2-management.key. New recovery images use owner-only read permissions.
+- **Storage:** Allocated a dedicated 16 MiB journal from the former spare area, starting at sector 5,015,552. Boot metadata remains 1 MiB; 47 MiB remains spare. A small RAM queue buffers routine lines; boot/update decisions request immediate flush. CRC-protected records retain boot/sequence/uptime and expose drop/write/corruption counters.
+- **Network:** Added lease renewal, rebinding, expiry, NAK/request-timeout recovery, link polling, and state/counter diagnostics. The client advertises gabix-pi2 and handles multiple DNS/router addresses. Ordinary reboot and update now work over Ethernet; the recovery loader still uses UART if both kernel copies fail.
+- **Physical evidence:** Managed boot acquired DHCP and exposed status/logs. Paused the Mac DHCP daemon for 150 seconds through a bounded administrator script; the Pi stayed up and obtained its address around boot+149 seconds without another reset. Its 300-second lease renewed at boot+299 seconds. Authenticated updates/reboots, previous-boot log retrieval, modified/unsigned rejection, duplicate caching, and cross-boot replay rejection passed. A host harness initially stopped on macOS's expected temporary 'No route to host' during reboot; it now retries that condition, and the repeated physical test passed.
+- **Checks:** Two focused DHCP lifecycle host tests, the existing ARM virt QEMU DHCP regression, 16 UART/image-registry tests, and managed/normal development builds passed. Final managed image is 117,204 bytes, CRC32 68bdf494; active A is confirmed, with the prior authenticated 116,172-byte copy B retained. Logs and test captures remain ignored.
+- **Next:** Stop the Mac's temporary en6 DHCP server, move the cable to a normal FRITZ!Box LAN port, and find gabix-pi2 / MAC 02:47:41:42:49:58 in the router. The real router connection is the remaining unchecked step. See docs/pi2-router-readiness.md for commands and limits.
+
+### 2026-11-15 — Permanent SD boot and recoverable Ethernet updates
+- **Installed:** Added the 128 MiB kernel partition after the existing partitions, two 32 MiB kernel areas, and the checked boot record. Replaced only the existing FAT loader allocation and its size field after RAM-loader tests. All installation sectors were read back; no card removal or manual power cycle was required.
+- **Behavior:** Ethernet uploads stream into the inactive copy, with chunk read-back and whole-image CRC. The loader records each attempt before execution. A watchdog reset skips an unconfirmed kernel; successful service startup confirms the chosen copy. Exhausting both copies enters the UART recovery loader.
+- **Physical validation:** Healthy SD boot, hung-candidate fallback, and both-invalid-checksum UART recovery passed with the RAM candidate and then the permanently installed loader. Restored normal SD boot afterward. Final copies are both 83,864 bytes; A is confirmed active with no pending attempt.
+- **Recovery:** Built a 2,634,022,912-byte burnable image from the protected original. Verified the loader and kernels, preserved all original bytes outside the MBR and approved loader sectors, and checked the original SHA256 remained unchanged. The live configuration was installed in place; a complete raw-image reflash and power-cut tests were not performed.
+- **Checks:** Three focused boot-record host tests, 16 existing UART/image-registry tests, and release builds passed. Physical checks live in tests/test_pi2_sd_boot.py; raw output stays under ignored target/runs/. Marked the two SD-update milestones complete; broader ARM parity remains in progress.
+- **Next:** Review this installation and its explicit limits in docs/pi2-sd-boot.md. Normal updates use the uploader's --kernel option and a UART-triggered reboot. Future work can address authenticated transfers, redundant metadata, and the executable RAM limit independently.
+
+### 2026-11-15 — Card capacity and SD-loader checkpoint
+- **Physical evidence:** Read CSD capacity and the final sector on the Pi: 15,523,840 sectors (7,948,206,080 bytes). Existing partitions end at sector 4,882,432. No partition-table or boot-file writes performed.
+- **Implemented:** Planned 128 MiB kernel partition with two 32 MiB extents, read-only layout checker, checked boot-record decoder, and optional SD-loader build. Decoder host tests and loader release build pass; SD-loader execution on hardware remains untested.
+- **Incomplete:** Automatic new/previous/UART fallback, recovery-image generation, and permanent installation. See docs/pi2-boot-status.md for the explicit inventory and next delivery milestone.
+
+### 2026-11-15 — Demand-paging follow-up
+- **Requested:** Record file-backed demand paging as future work for both architectures. Added an unchecked roadmap item; no paging implementation changed.
+
+### 2026-11-15 — Ethernet file transfer to SD
+- **Built:** Opt-in Pi transfer kernel, bounded staging-file receiver on UDP 5556, and a Mac uploader. Chunks are written and read back before acknowledgement; whole-file CRC and host byte-for-byte read-back verify completion. No boot selection changes.
+- **Storage:** Reserved sectors 8192–12287 of the known recovery image's empty pre-partition gap. First use checks the whole area is zero; later boots validate the file header. Requests cannot choose arbitrary card sectors. One staging file, one uploader, private direct link.
+- **Physical validation:** Transferred 65,549 bytes over Ethernet and compared all bytes read back. Rebooted through UART, reloaded the kernel, and read the saved file successfully without resending it. The end-to-end test also covers duplicate requests, out-of-order chunks, corrupt chunks, and a partial final sector.
+- **Next:** Decide the persistent kernel layout and teach the loader to validate/load a staged image. The current file header is not a boot pointer; kernel activation and rollback remain unimplemented. Roadmap checkboxes unchanged.
+
+### 2026-11-15 — SD card and clock microworld
+- **Teaching:** Added lesson 7.06 with an isometric CPU/RAM/controller/card scene, six write steps, chip inspection, and a clock-divider experiment. The main scenario distinguishes the CPU's source RAM pointer from the card's destination sector number. Optional detail ties PIO, polling, ARM register accesses, and both VirtIO implementations to source.
+- **Validation:** Browser checks exercised the stepper, chip keyboard interaction, quiz feedback, divider arithmetic, and source/SD cycle counters. Light, dark, and narrow layouts were rendered and inspected; no page overflow or script errors were found. Captures remain in ignored target/runs. Kernel unchanged.
+- **Next:** Review the lesson and ask the learner to explain which component reads RAM, generates CLK, and stores the sector. No learning mastery or roadmap completion is inferred from creating the lesson.
+
+### 2026-11-15 — Physical Pi SD sector writes
+- **Built:** Optional shared writable-block interface, Pi CMD24 sector writes, CMD13 completion checks, explicit errors and bounded waits. Corrected the clock configuration: query the firmware source rate and calculate dividers for 400 kHz initialization and 25 MHz transfers. The old divider requested 100 MHz from the physical 200 MHz source without negotiating a faster card mode.
+- **Verified:** Uploaded the test kernel over UART to the real Pi. Pattern write/read-back, original-sector restoration, unchanged neighbors, and automatic return to the UART loader passed. Scratch sector 8192 lies in the verified empty gap of the registered recovery image; the reusable test checks that image's layout before writing.
+- **Review hygiene:** One physical end-to-end test, opt-in writes, raw captures in ignored run output, instructions in docs/pi2-sd-writes.md. Roadmap checkboxes unchanged: the combined physical peripheral milestone remains broader than this test.
+- **Next:** Review sector-write support, then design inactive update slots and Ethernet streaming. At 25 MHz, 128 matching reads took 140 ms versus 811 ms with the temporary slow workaround. Higher-speed modes and power-loss fault injection remain unverified.
 
 ### 2026-11-15 — Keep generated output out of reviews
 - **Policy:** Added artifacts/README.md and agent guidance: build output stays in build directories; raw run output goes in ignored target/runs; commit tests and concise findings instead of captures.

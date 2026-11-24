@@ -1,20 +1,11 @@
 //! Task abstraction: data structures + constructor + context switch.
 //!
-//! - Slice 3.1: `Task`, `TaskState`, `TaskContext`, `Task::new`.
-//! - Slice 3.2: `switch()` (the actual register swap) and a minimal
-//!   cooperative scheduler (`spawn`, `yield_now`).
-//!
-//! Lesson 17 split the process-shaped fields (id/name/parent/children/
-//! exit_status/address_space/fd_table) off to `Process` in `src/process.rs`.
-//! What stays on `Task` is purely the scheduler side: how to resume a
-//! paused register frame on a known stack. A `Task` carries a `pid`
-//! back-reference so the scheduler can ask the process table "what
-//! address space / fd table / parent does this task belong to?"
-//!
-//! See `docs/context-switch.html` for the visual walkthrough of how
-//! the saved state and the switch work.
+//! Each Task holds its scheduling state and saved kernel-stack pointer.
+//! Its PID selects the Process containing memory, file and parent/child state.
+//! `yield_now` serves both voluntary yields and timer-driven preemption.
+//! See `docs/context-switch.html` for the saved-stack walkthrough.
 
-use crate::arch::x86_64::context::{fork_trampoline, switch, TaskContext};
+use crate::arch::x86_64::context::{fork_trampoline, saved_stack, switch, TaskContext};
 use crate::frame_allocator;
 use crate::irq_mutex::IrqMutex;
 use crate::memory;
@@ -23,6 +14,7 @@ use crate::process::{Pid, Process, PROCESS_TABLE};
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 use lazy_static::lazy_static;
+use gabix_kernel::memory::FRAME_SIZE;
 use x86_64::structures::paging::PageTableFlags;
 use x86_64::{PhysAddr, VirtAddr};
 
@@ -42,14 +34,21 @@ pub enum TaskState {
     Ready,
     /// Currently executing on the CPU.
     Running,
-    /// Waiting for something (sleep, I/O). Not yet used.
+    /// Waiting for a wakeup, such as socket data or a child exiting.
     Blocked,
-    /// Exited but not yet reaped by a parent via `wait`. The task struct
-    /// stays around so the parent can read its exit status. Reaped by
-    /// `wait` -> Dead.
+    /// Exited and awaiting wait/reap. The Process stores the exit status.
+    /// Reaping removes that Process and changes this task to Dead.
     Zombie,
-    /// Fully done — can be cleaned up.
+    /// Reaped and never scheduled. Task storage and stack frames remain allocated.
     Dead,
+}
+
+impl TaskState {
+    /// States that the round-robin scan can select. Blocked tasks need a
+    /// wakeup; Zombie and Dead tasks have finished executing.
+    fn is_runnable(self) -> bool {
+        matches!(self, Self::Ready | Self::Running)
+    }
 }
 
 /// A schedulable task — the scheduler-side view of a paused register
@@ -89,6 +88,10 @@ impl Task {
     ///   the same context-switch routine that resumes old tasks can also
     ///   start this brand-new one. See `docs/context-switch.html`.
     ///
+    /// This uses the boot-time global mapper. The executing address space
+    /// must also expose the resulting range before the stack is populated.
+    /// No guard page or stack reclamation is provided here.
+    ///
     /// Process-side state (parent, address space, fd table, name) is
     /// allocated separately via `Process::new` + `PROCESS_TABLE::allocate`
     /// — the caller passes the resulting `Pid` here.
@@ -105,7 +108,7 @@ impl Task {
         while virt < stack_top {
             let frame_number =
                 frame_allocator::allocate().expect("out of frames while allocating task stack");
-            let phys = PhysAddr::new(frame_number * 4096);
+            let phys = PhysAddr::new(frame_number * FRAME_SIZE);
             // SAFETY: virtual range is freshly picked (unmapped), frame is fresh.
             unsafe {
                 memory::map_to(
@@ -116,7 +119,7 @@ impl Task {
                 .expect("map_to failed while allocating task stack");
             }
             frames_allocated += 1;
-            virt += 4096;
+            virt += FRAME_SIZE;
         }
 
         // Pre-populate the stack with faked saved state. After this, the
@@ -124,7 +127,7 @@ impl Task {
         // switch() right before the `ret` instruction.
         //
         // Layout (from high address down):
-        //   stack_top - 16: entry_fn address   ← popped by `ret` into RIP
+        //   stack_top - 16: trampoline address   ← popped by `ret` into RIP
         //   stack_top - 24: 0 (saved RBX)      ← popped by `pop rbx`
         //   stack_top - 32: 0 (saved RBP)      ← popped by `pop rbp`
         //   stack_top - 40: 0 (saved R12)      ← popped by `pop r12`
@@ -137,19 +140,21 @@ impl Task {
         //
         // write_volatile so the compiler doesn't elide these writes (it
         // can't see that the context-switch routine will later read them).
-        let init_rsp = stack_top - 64;
+        let init_rsp = stack_top - saved_stack::SWITCH_BYTES - saved_stack::RUST_ENTRY_GAP_BYTES;
         let base_ptr = init_rsp as *mut u64;
         unsafe {
-            core::ptr::write_volatile(base_ptr.add(0), 0); // saved R15
-            core::ptr::write_volatile(base_ptr.add(1), 0); // saved R14
-            core::ptr::write_volatile(base_ptr.add(2), 0); // saved R13
-            core::ptr::write_volatile(base_ptr.add(3), 0); // saved R12
-            core::ptr::write_volatile(base_ptr.add(4), 0); // saved RBP
-            core::ptr::write_volatile(base_ptr.add(5), 0); // saved RBX
-                                                           // Note: switch's `ret` lands in `trampoline`, not the user's
-                                                           // entry_fn directly. The trampoline enables interrupts then
-                                                           // looks up entry_fn from this task's struct.
-            core::ptr::write_volatile(base_ptr.add(6), trampoline as *const () as u64);
+            core::ptr::write_volatile(base_ptr.add(saved_stack::R15), 0); // saved R15
+            core::ptr::write_volatile(base_ptr.add(saved_stack::R14), 0); // saved R14
+            core::ptr::write_volatile(base_ptr.add(saved_stack::R13), 0); // saved R13
+            core::ptr::write_volatile(base_ptr.add(saved_stack::R12), 0); // saved R12
+            core::ptr::write_volatile(base_ptr.add(saved_stack::RBP), 0); // saved RBP
+            core::ptr::write_volatile(base_ptr.add(saved_stack::RBX), 0); // saved RBX
+            // `ret` starts the trampoline, which enables interrupts and calls
+            // the entry_fn stored in this task.
+            core::ptr::write_volatile(
+                base_ptr.add(saved_stack::RETURN_ADDRESS),
+                trampoline as *const () as u64,
+            );
             // RIP -> trampoline
         }
 
@@ -181,22 +186,9 @@ impl Task {
 // Trampoline (slice 3.4)
 // ============================================================
 
-/// Trampoline function that every brand-new task enters via `switch`'s
-/// `ret` instruction.
-///
-/// Why this exists (the alternative was to put `sti` directly inside
-/// `switch` right before `ret`). The trampoline approach keeps `switch`
-/// minimal — pure register swap, no interrupt flag management. The
-/// trampoline is also the natural extension point later for things like
-/// enabling floating-point state or handling task exit.
-///
-/// What it does (in order):
-///   1. Look up this task's user-provided `entry_fn` from SCHEDULER.
-///      Done with interrupts still disabled (the state we entered with).
-///   2. Enable interrupts (`sti`). This is the boundary between
-///      "scheduler world" (IF=0) and "task world" (IF=1).
-///   3. Call the user's `entry_fn`. If it returns, panic (later we'll
-///      mark the task Dead instead).
+/// First entry for newly spawned kernel tasks. Read entry_fn while interrupts
+/// are disabled, release the scheduler lock, enable interrupts and call it.
+/// Returning from entry_fn currently panics. Fork children use fork_trampoline.
 unsafe extern "C" fn trampoline() {
     // Look up our entry function. We're definitely the current task
     // (switch just made us so), and interrupts are disabled so the
@@ -206,7 +198,7 @@ unsafe extern "C" fn trampoline() {
         sched.tasks[sched.current].entry_fn
     };
 
-    // Now flip interrupts on — we're entering task world.
+    // Allow timer preemption while the kernel task runs.
     x86_64::instructions::interrupts::enable();
 
     // Call the user's entry function. It typically loops forever.
@@ -221,8 +213,8 @@ unsafe extern "C" fn trampoline() {
 // Cooperative scheduler (slice 3.2 / 3.3)
 // ============================================================
 
-/// The scheduler state. Round-robin: each yield advances to the next task
-/// in the list, wrapping around.
+/// Round-robin scheduler storage. Selection scans for runnable tasks,
+/// wrapping around the list; blocked and completed tasks are skipped.
 pub(super) struct Scheduler {
     /// All tasks, including the main task at index 0. Boxed so the Task
     /// addresses are stable even if the Vec reallocates.
@@ -300,12 +292,9 @@ pub fn spawn(name: &str, entry_fn: unsafe extern "C" fn()) -> Pid {
         table.allocate(proc)
     });
 
-    // The push + print must run with interrupts disabled. A plain lock
-    // here lets the timer fire while SCHEDULER is held, and the timer's
-    // `yield_now` then spins on the same lock forever — a deadlock that
-    // stayed hidden while spawns only happened to land between ticks.
-    // Every other SCHEDULER accessor already follows this rule (see
-    // `current_pid`).
+    // Build the stack before publishing the Task to the runnable list.
+    // IrqMutex protects scheduler access; the outer interrupt-disabled block
+    // also keeps publication and its diagnostic together.
     let task = Box::new(Task::new(pid, entry_fn));
     x86_64::instructions::interrupts::without_interrupts(|| {
         let mut sched = SCHEDULER.lock();
@@ -344,11 +333,9 @@ pub fn spawn(name: &str, entry_fn: unsafe extern "C" fn()) -> Pid {
 /// FIRST, then create the AS + deep_clone (which inherits the new
 /// mappings), then build the Task struct using that AS.
 pub fn spawn_fork_child(parent_pid: Pid, saved_callee_saves: SavedCalleeSaves) -> Pid {
-    // Disable interrupts for the duration. While we hold SCHEDULER or
-    // PROCESS_TABLE, the timer must not fire — its handler would try to
-    // lock them and deadlock. (Caller is sys_fork, which runs with
-    // interrupts on because syscall_entry does `sti` before calling the
-    // handler.)
+    // Keep the child unpublished to the scheduler until its stacks, address
+    // space and parent link are ready. The syscall caller already disables
+    // interrupts; other callers must also keep the supplied snapshot valid.
     let was_enabled = x86_64::instructions::interrupts::are_enabled();
     if was_enabled {
         x86_64::instructions::interrupts::disable();
@@ -375,9 +362,8 @@ pub fn spawn_fork_child(parent_pid: Pid, saved_callee_saves: SavedCalleeSaves) -
         table.allocate(proc)
     };
 
-    // Stack placement uses pid.as_u64() — PIDs and scheduler indices stay
-    // in lockstep until Lesson 18 adds reaping, so this is byte-identical
-    // to the old `tasks.len() as u64` mapping.
+    // Derive a unique stack range from the monotonically allocated PID.
+    // Reaped process slots are never reused, so their ranges remain reserved.
     let id = pid.as_u64();
 
     // Compute stack region (same layout as Task::new).
@@ -387,22 +373,16 @@ pub fn spawn_fork_child(parent_pid: Pid, saved_callee_saves: SavedCalleeSaves) -
     // Allocate 16 frames and map them into the virtual range, in the
     // CURRENT (parent's) address space.
     //
-    // **Must use the per-AS mapper, not the global `memory::map_to`.** The
-    // global MAPPER captured the boot-time PML4 (frame 1, the bootloader's)
-    // at memory::init(). After `sys_exec` switched CR3 to the user AS
-    // (e.g., frame 3231 for /fork_smoke.elf), the global mapper still
-    // points at frame 1 — so `memory::map_to` would write to the boot PML4,
-    // not the live one. The write_volatile below would then page-fault
-    // because the CPU (using CR3=frame 3231) walks the user PML4 which
-    // lacks the new mapping. `AddressSpace::from_current()` wraps the
-    // current CR3, so its `map_to` targets the live PML4.
+    // AddressSpace::from_current maps into the PML4 selected by CR3. The
+    // global mapper still targets the boot-time table; after exec, these can
+    // differ. These stack writes require mappings in the currently active one.
     let current_as = memory::AddressSpace::from_current();
     let mut frames_allocated = 0;
     let mut virt = stack_bottom;
     while virt < stack_top {
         let frame_number =
             frame_allocator::allocate().expect("out of frames while allocating fork-child stack");
-        let phys = PhysAddr::new(frame_number * 4096);
+        let phys = PhysAddr::new(frame_number * FRAME_SIZE);
         // SAFETY: virtual range is freshly picked, frame is fresh.
         unsafe {
             current_as
@@ -414,7 +394,7 @@ pub fn spawn_fork_child(parent_pid: Pid, saved_callee_saves: SavedCalleeSaves) -
                 .expect("map_to failed while allocating fork-child stack");
         }
         frames_allocated += 1;
-        virt += 4096;
+        virt += FRAME_SIZE;
     }
 
     // Allocate a dedicated entry stack for the child. Shared entry stacks
@@ -423,8 +403,8 @@ pub fn spawn_fork_child(parent_pid: Pid, saved_callee_saves: SavedCalleeSaves) -
     // state on the shared stack.
     //
     // Stack placement: SYSCALL_STACK_BOTTOM + (id+1) * SYSCALL_STACK_SIZE.
-    // Task 0 (main) uses slot 0 (the dedicated stack allocated by
-    // syscall::init). Each fork child takes the next slot.
+    // Main uses slot 0. A child uses slot pid+1, leaving slot 1 unused by
+    // fork children. Kernel-task PIDs can also leave gaps in this range.
     let child_entry_stack_bottom = crate::arch::x86_64::syscall::SYSCALL_STACK_BOTTOM
         + (id + 1) * crate::arch::x86_64::syscall::SYSCALL_STACK_SIZE;
     let child_entry_stack_top =
@@ -434,7 +414,7 @@ pub fn spawn_fork_child(parent_pid: Pid, saved_callee_saves: SavedCalleeSaves) -
         while virt < child_entry_stack_top {
             let frame_number = frame_allocator::allocate()
                 .expect("out of frames while allocating child syscall stack");
-            let phys = PhysAddr::new(frame_number * 4096);
+            let phys = PhysAddr::new(frame_number * FRAME_SIZE);
             // SAFETY: virtual range is freshly picked, frame is fresh.
             // Uses `current_as` (live CR3) — see comment above the kernel-
             // stack loop for why the global `memory::map_to` is wrong here.
@@ -447,7 +427,7 @@ pub fn spawn_fork_child(parent_pid: Pid, saved_callee_saves: SavedCalleeSaves) -
                     )
                     .expect("map_to failed while allocating child syscall stack");
             }
-            virt += 4096;
+            virt += FRAME_SIZE;
         }
     }
 
@@ -472,36 +452,41 @@ pub fn spawn_fork_child(parent_pid: Pid, saved_callee_saves: SavedCalleeSaves) -
     //
     // After switch()'s ret, RSP = stack_top. fork_trampoline reads the
     // extra slots via [rsp - 64], [rsp - 72], [rsp - 80].
-    let init_rsp = stack_top - 56;
+    let init_rsp = stack_top - saved_stack::SWITCH_BYTES;
     let base_ptr = init_rsp as *mut u64;
     unsafe {
         // Callee-saved area (consumed by switch's pop instructions).
-        core::ptr::write_volatile(base_ptr.add(0), saved_callee_saves.r15);
-        core::ptr::write_volatile(base_ptr.add(1), saved_callee_saves.r14);
-        core::ptr::write_volatile(base_ptr.add(2), saved_callee_saves.r13);
-        core::ptr::write_volatile(base_ptr.add(3), saved_callee_saves.r12);
-        core::ptr::write_volatile(base_ptr.add(4), saved_callee_saves.rbp);
-        core::ptr::write_volatile(base_ptr.add(5), saved_callee_saves.rbx);
-        core::ptr::write_volatile(base_ptr.add(6), fork_trampoline as *const () as u64);
+        core::ptr::write_volatile(base_ptr.add(saved_stack::R15), saved_callee_saves.r15);
+        core::ptr::write_volatile(base_ptr.add(saved_stack::R14), saved_callee_saves.r14);
+        core::ptr::write_volatile(base_ptr.add(saved_stack::R13), saved_callee_saves.r13);
+        core::ptr::write_volatile(base_ptr.add(saved_stack::R12), saved_callee_saves.r12);
+        core::ptr::write_volatile(base_ptr.add(saved_stack::RBP), saved_callee_saves.rbp);
+        core::ptr::write_volatile(base_ptr.add(saved_stack::RBX), saved_callee_saves.rbx);
+        core::ptr::write_volatile(
+            base_ptr.add(saved_stack::RETURN_ADDRESS),
+            fork_trampoline as *const () as u64,
+        );
 
         // Extra user-state slots below init_rsp. NOT touched by switch();
         // read by fork_trampoline after ret via fixed offsets from RSP.
-        core::ptr::write_volatile(base_ptr.sub(1), saved_callee_saves.user_rip);
-        core::ptr::write_volatile(base_ptr.sub(2), saved_callee_saves.user_rflags);
-        core::ptr::write_volatile(base_ptr.sub(3), saved_callee_saves.user_rsp);
+        core::ptr::write_volatile(
+            base_ptr.sub(saved_stack::USER_RIP_BELOW_FRAME),
+            saved_callee_saves.user_rip,
+        );
+        core::ptr::write_volatile(
+            base_ptr.sub(saved_stack::USER_FLAGS_BELOW_FRAME),
+            saved_callee_saves.user_rflags,
+        );
+        core::ptr::write_volatile(
+            base_ptr.sub(saved_stack::USER_RSP_BELOW_FRAME),
+            saved_callee_saves.user_rsp,
+        );
     }
 
-    // Deep-clone the current (parent's) address space into a fresh AS
-    // for the child. This walks the parent's full page-table tree and
-    // allocates fresh PDPT/PD/PT frames for the child, so the child has
-    // independent intermediate page tables (modifications to child's
-    // PTs don't affect parent). At the PT level, user pages get
-    // private-copy-on-clone (fresh frame + memcpy); kernel pages share
-    // the frame.
-    //
-    // Both the kernel stack and syscall stack we just allocated are
-    // already mapped in the parent's AS, so they'll be in the child's
-    // too after the deep clone (as kernel-page shares).
+    // Clone after mapping both child stacks. The low-half walk allocates
+    // independent intermediate tables and copies 4 KiB user frames. Low-half
+    // kernel frames (including both new stacks), huge pages and high-half
+    // subtrees stay shared, as documented by deep_clone_from_current.
     let mut address_space = crate::memory::AddressSpace::new();
     address_space.deep_clone_from_current();
 
@@ -550,9 +535,7 @@ pub fn spawn_fork_child(parent_pid: Pid, saved_callee_saves: SavedCalleeSaves) -
     // timer handler would try to lock SCHEDULER → deadlock.
     drop(sched);
 
-    // Re-enable interrupts if they were on when we entered. (They almost
-    // always were, since syscall_entry does `sti` before calling handlers.
-    // But the check makes the function safe to call from any context.)
+    // Restore the caller's interrupt state after publishing the ready child.
     if was_enabled {
         x86_64::instructions::interrupts::enable();
     }
@@ -560,20 +543,14 @@ pub fn spawn_fork_child(parent_pid: Pid, saved_callee_saves: SavedCalleeSaves) -
     pid
 }
 
-/// Saved register values from the moment of a `syscall` instruction,
-/// captured by `syscall_entry` into global atomics (see src/syscall.rs),
-/// read by `sys_fork` ONCE at fork time, and passed here so the child
-/// task starts life seeing the same values the parent had.
-///
-/// **Why this is a snapshot, not a live read:** the globals in syscall.rs
-/// get OVERWRITTEN by every subsequent syscall. If the parent makes more
-/// syscalls between fork and the child's first run, the globals would
-/// have stale (wrong) values. By snapshotting at fork time and storing on
-/// the child's kernel stack, the child always sees the values from THE
-/// fork syscall, regardless of what the parent does later.
+/// Snapshot copied by sys_fork from arch::x86_64::syscall's global storage.
+/// It contains six callee-saved registers plus the user return location and
+/// flags. Copying it onto the child's stack isolates the child from later
+/// changes to those globals. Preemption before the snapshot is taken remains
+/// a separate concurrency concern; this struct does not resolve it.
 pub struct SavedCalleeSaves {
-    // The 6 callee-saved registers (preserved across syscalls per the
-    // System V AMD64 ABI — the child needs them to look like a true copy).
+    // The six callee-saved registers restored by the switch stack. Other
+    // general-purpose registers are absent from the child's initial snapshot.
     pub rbx: u64,
     pub rbp: u64,
     pub r12: u64,
@@ -589,9 +566,7 @@ pub struct SavedCalleeSaves {
 
 /// Return the currently-running task's ID.
 ///
-/// Used by syscalls that need to know "who called me?" — `getpid`,
-/// eventually `fork` (to know what to clone), `exit` (to know who to
-/// mark as exited).
+/// Used by getpid, fork, exit and other callers to select process state.
 ///
 /// **Interrupt safety:** wraps the SCHEDULER access in `without_interrupts`
 /// so the timer cannot fire mid-access and try to re-lock SCHEDULER from
@@ -606,6 +581,7 @@ pub fn current_pid() -> Pid {
     })
 }
 
+/// Mark the current task Blocked. Execution continues until the caller yields.
 pub fn block_current() {
     x86_64::instructions::interrupts::without_interrupts(|| {
         let mut sched = SCHEDULER.lock();
@@ -614,11 +590,10 @@ pub fn block_current() {
     });
 }
 
-/// Run `register` with the current PID and mark the task Blocked when it
-/// returns true, under one interrupt-disabled scheduler critical section.
-/// Wait paths use this to make "publish waiter + sleep" atomic without
-/// reacquiring the scheduler lock through `current_pid()` and
-/// `block_current()` separately.
+/// Publish a waiter and, when `register` returns true, mark the task Blocked
+/// in one interrupt-disabled critical section. The callback runs with SCHEDULER
+/// locked, so it must not yield or reacquire that lock. This function does not
+/// switch tasks; the caller decides when to yield and how to protect that gap.
 pub fn block_current_if(register: impl FnOnce(Pid) -> bool) -> bool {
     x86_64::instructions::interrupts::without_interrupts(|| {
         let mut sched = SCHEDULER.lock();
@@ -633,6 +608,8 @@ pub fn block_current_if(register: impl FnOnce(Pid) -> bool) -> bool {
     })
 }
 
+/// Change a matching Blocked task to Ready. It runs on a later scheduling
+/// decision. Missing PIDs and tasks in other states are left unchanged.
 pub fn wake(pid: Pid) {
     x86_64::instructions::interrupts::without_interrupts(|| {
         if let Some(task) = SCHEDULER
@@ -648,6 +625,8 @@ pub fn wake(pid: Pid) {
     });
 }
 
+/// Set the matching task to Blocked, regardless of its previous state.
+/// Callers must use this only for live tasks; it performs no state validation.
 pub fn block(pid: Pid) {
     x86_64::instructions::interrupts::without_interrupts(|| {
         if let Some(task) = SCHEDULER
@@ -661,20 +640,10 @@ pub fn block(pid: Pid) {
     });
 }
 
-/// Run `f` on the currently-running task's FD (File Descriptor) table.
-///
-/// Locks SCHEDULER for the duration of `f`, finds the running task, passes
-/// its `fd_table` to `f` as `&mut`. The lock is released when `f` returns.
-/// Use this from syscall handlers (`sys_open`, `sys_read`, `sys_close`, etc.)
-/// to reach the calling process's FD table.
-///
-/// The closure form (vs. returning `&mut FdTable`) sidesteps lifetime pain:
-/// the borrow would have to be tied to the SCHEDULER lock guard, which is
-/// awkward to thread through callers.
-///
-/// **Interrupt safety:** see `current_pid` — same `without_interrupts`
-/// wrap. Disabling interrupts before locking is the only correct pattern;
-/// without it, a timer tick during `f` would deadlock the kernel.
+/// Read the current PID under SCHEDULER, release that lock, then run `f`
+/// with its Process's descriptor table under PROCESS_TABLE. Interrupts stay
+/// disabled across both lookups and the closure. `f` must not yield or reenter
+/// PROCESS_TABLE; it may clone handles for use after this function returns.
 pub fn with_current_fd_table<F, R>(f: F) -> R
 where
     F: FnOnce(&mut crate::fs::FdTable) -> R,
@@ -713,15 +682,16 @@ pub fn current_pml4_frame() -> x86_64::structures::paging::PhysFrame {
     })
 }
 
-/// Yield the CPU to the next task. Round-robin: advances to
-/// `(current + 1) % tasks.len()`.
+/// Scan forward, wrapping around the task list, for the next runnable task.
+/// Keep the current task if it is the only runnable one.
 ///
 /// Used both for cooperative yields (a task calls this directly) and
 /// preemptive yields (the timer interrupt handler calls this on the
 /// current task's behalf). Same code path, same `switch`.
 ///
-/// **Re-entrancy safety:** we disable interrupts at the top and restore
-/// them at the end. Without this, if `yield_now` was running with
+/// **Re-entrancy safety:** we disable interrupts at the top. The ordinary
+/// return path restores their prior state; the no-runnable/blocked-task branch
+/// enables interrupts to halt and returns without that restoration. Without this, if `yield_now` was running with
 /// interrupts enabled and the timer fired again mid-switch, the handler
 /// would call `yield_now` again and try to lock SCHEDULER → deadlock.
 /// Disabling interrupts makes the whole pick-and-switch atomic with
@@ -742,7 +712,7 @@ pub fn yield_now() {
     // Pick the next task and grab raw pointers to both contexts.
     // Also grab the new task's AS frame so we can switch CR3 if needed.
     //
-    // Scan forward from the current task to find the next non-Zombie task.
+    // Scan forward from the current task to find the next runnable task.
     // This lets sys_exit mark the current task as Zombie and then yield,
     // knowing yield_now will pick somebody else (or halt if nobody can).
     let switch_result: Option<(*mut TaskContext, *const TaskContext, Pid, u64)> = {
@@ -755,16 +725,12 @@ pub fn yield_now() {
         } else {
             let old_index = sched.current;
             // Find next runnable task. Skip Zombie (exited, awaiting reap),
-            // Blocked (sleeping, e.g. waiting on wait()), and Dead (already
-            // reaped, awaiting cleanup).
+            // Blocked (waiting for an event), and Dead (already reaped).
             let mut new_index_opt = None;
             for offset in 1..sched.tasks.len() {
                 let candidate = (old_index + offset) % sched.tasks.len();
                 let state = sched.tasks[candidate].state;
-                if state != TaskState::Zombie
-                    && state != TaskState::Blocked
-                    && state != TaskState::Dead
-                {
+                if state.is_runnable() {
                     new_index_opt = Some(candidate);
                     break;
                 }
@@ -773,10 +739,7 @@ pub fn yield_now() {
                 None => {
                     // No other runnable task.
                     let current_state = sched.tasks[old_index].state;
-                    if current_state == TaskState::Zombie
-                        || current_state == TaskState::Blocked
-                        || current_state == TaskState::Dead
-                    {
+                    if !current_state.is_runnable() {
                         let any_blocked = sched
                             .tasks
                             .iter()
@@ -786,8 +749,10 @@ pub fn yield_now() {
                             // interrupt can deliver (a socket datagram, a
                             // disk completion). Sleep the CPU until the
                             // next interrupt, then let the caller rescan.
-                            // STI;HLT is atomic: a pending interrupt is
-                            // taken before the halt, so no wakeup is lost.
+                            // enable_and_hlt uses STI;HLT to avoid a gap
+                            // between enabling interrupts and halting.
+                            // This branch returns with interrupts enabled and
+                            // does not recheck the current task's state here.
                             drop(sched);
                             x86_64::instructions::interrupts::enable_and_hlt();
                             return;
@@ -824,10 +789,7 @@ pub fn yield_now() {
                     // (Zombie, Blocked, Dead) — those states must persist
                     // across yield so future yields still skip them.
                     let old_state = sched.tasks[old_index].state;
-                    if old_state != TaskState::Zombie
-                        && old_state != TaskState::Blocked
-                        && old_state != TaskState::Dead
-                    {
+                    if old_state.is_runnable() {
                         sched.tasks[old_index].state = TaskState::Ready;
                     }
                     sched.tasks[new_index].state = TaskState::Running;

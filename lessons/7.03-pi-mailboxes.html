@@ -52,45 +52,23 @@
 <p>gabix's real call requests that the GPU power on the USB controller:</p>
 
 <div class="snip">
-<div class="snip-meta"><span>targets/armv7/src/raspi2b/mailbox.rs</span> · <span class="what">power_on_usb, trimmed</span></div>
+<div class="snip-meta"><span>targets/armv7/src/raspi2b/mailbox.rs</span> · <span class="what">power_on_usb · mailbox.rs:43–50</span></div>
 <pre><code>pub unsafe fn power_on_usb() -&gt; Option&lt;()&gt; {
-    let message = &amp;mut *core::ptr::addr_of_mut!(MESSAGE);
-    message.0 = [
-        32,              <span class="c">// total size of this message, in bytes</span>
-        0,               <span class="c">// 0 = this is a request (GPU sets the top bit on success)</span>
-        SET_POWER_STATE, <span class="c">// the tag: "set a device's power state"</span>
-        8,               <span class="c">// size of the tag's payload below, in bytes</span>
-        8,               <span class="c">// the tag's request/response code (GPU sets top bit on success)</span>
-        USB_HCD_DEVICE,  <span class="c">// device 3 = the USB host controller</span>
-        POWER_ON_WAIT,   <span class="c">// turn it on, and wait for it to be stable</span>
-        0,               <span class="c">// end-of-message marker</span>
-    ];
-
-    <span class="c">// The GPU finds the message by its BUS address, with the channel (8 = property)</span>
-    <span class="c">// packed into the low bits. The message is 16-byte aligned, so those bits are free.</span>
-    let request = bus_address(core::ptr::addr_of!(MESSAGE) as u32) | PROPERTY_CHANNEL;
-
-    wait_until(|| read32(STATUS) &amp; STATUS_FULL == 0)?;   <span class="c">// wait for the mailbox to have room</span>
-    write32(WRITE, request);                              <span class="c">// ring the doorbell</span>
-
-    <span class="c">// The GPU writes its answer back into the SAME buffer, then returns the value</span>
-    <span class="c">// on READ. Poll until our own request comes back.</span>
-    loop {
-        if read32(STATUS) &amp; STATUS_EMPTY == 0 &amp;&amp; read32(READ) == request {
-            return (message.0[1] == RESPONSE_SUCCESS      <span class="c">// overall success</span>
-                &amp;&amp; message.0[4] &amp; RESPONSE_SUCCESS != 0  <span class="c">// this tag succeeded</span>
-                &amp;&amp; message.0[6] &amp; 1 != 0)              <span class="c">// the device is now powered on</span>
-                .then_some(());
-        }
-    }
+    let returned_state = exchange_id_value(
+        SET_POWER_STATE,
+        USB_HCD_DEVICE,
+        POWER_ON | WAIT_FOR_STABLE_POWER,
+    )?;
+    (returned_state &amp; POWER_ON != 0).then_some(())
 }</code></pre>
 </div>
 
-<p>Two details in this code matter. First, the message is just a flat array of words with a fixed layout: a size, a request code, then one or more <em>tags</em> (each tag names an operation — here, SET_POWER_STATE — and carries its own small payload), then a zero end-marker. The GPU parses it field by field. Second, the address trick: the ARM writes the message's <em>bus</em> address (a physical address the GPU can reach) into the WRITE register, not the ARM's own virtual address. And because messages are aligned to 16 bytes, the lowest four bits of that address are always zero — so the ARM reuses them to carry the channel number (8). One register write carries both "where the message is" and "which channel."</p>
+<p><code>POWER_ON</code> requests power; <code>WAIT_FOR_STABLE_POWER</code> asks firmware to wait for the change. The helper returns the firmware's state value, and the final expression checks its power bit. Source: <code>mailbox.rs:17–20, 43–50</code>.</p>
+<p><code>exchange_id_value</code> builds the aligned message array, converts its address to a bus address and combines it with property channel 8. It handles cache visibility, bounded polling and response checks before returning the value. Both USB power and SD clock queries share this buffer, so callers must serialize them. Source: <code>mailbox.rs:64–117</code>.</p>
 
 <h2>5. Why it polls, again</h2>
 
-<p>The GPU's reply does not interrupt the ARM. gabix polls the READ register in a loop until the reply appears. This is the same poll-everything pattern as the SD card, the USB channel, and the Pi's timer — every device gabix drives on the Pi today is polled. The property mailbox can raise an interrupt when the reply arrives; gabix has not wired that interrupt (the unfinished piece carried over from lessons 7.01 and 7.02).</p>
+<p>This driver polls mailbox status synchronously, with a bounded wait in <code>mailbox.rs::wait_until</code> (line 119). It installs no mailbox reply handler. The Pi timer uses interrupts for scheduling through <code>raspi2b/timer.rs::handle_interrupt</code>; its mechanism is separate from this mailbox polling loop.</p>
 
 <h2>6. The inter-core mailbox (the one gabix ignores)</h2>
 

@@ -17,6 +17,8 @@ const UART_BASE: usize = 0x3f20_1000;
 const UART_FLAGS: usize = UART_BASE + 0x18;
 const UART_TX_FULL: u32 = 1 << 5;
 
+// S/M/I/A report SMP-bit readback, identity-map probe, allocator initialization and one
+// Box value. The infinite loop retains the Box; deallocation is not tested.
 #[no_mangle]
 extern "C" fn pi2_allocator_probe_main() -> ! {
     let smp_enabled = unsafe { memory::enable_smp() };

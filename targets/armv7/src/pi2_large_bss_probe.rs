@@ -9,13 +9,16 @@ const UART_BASE: usize = 0x3f20_1000;
 const UART_FLAGS: usize = UART_BASE + 0x18;
 const UART_TX_FULL: u32 = 1 << 5;
 
-#[no_mangle]
-static mut LARGE_BSS_PROBE: [u32; 256 * 1024] = [0; 256 * 1024];
+const PROBE_WORDS: usize = 256 * 1024; // 1 MiB of u32 values.
 
+#[no_mangle]
+static mut LARGE_BSS_PROBE: [u32; PROBE_WORDS] = [0; PROBE_WORDS];
+
+// H reports six zero samples from a 1 MiB BSS array; intervening words are not checked.
 #[no_mangle]
 extern "C" fn pi2_large_bss_probe_main() -> ! {
     let start = core::ptr::addr_of!(LARGE_BSS_PROBE).cast::<u32>();
-    let sample_indexes = [0, 1, 1024, 64 * 1024, 128 * 1024, 256 * 1024 - 1];
+    let sample_indexes = [0, 1, 1024, 64 * 1024, 128 * 1024, PROBE_WORDS - 1];
     let mut all_zero = true;
     for index in sample_indexes {
         all_zero &= unsafe { core::ptr::read_volatile(start.add(index)) } == 0;

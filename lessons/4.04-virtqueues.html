@@ -419,7 +419,7 @@ addr = 0x40_0040, len = 0x200 (=512)</div>
             needs multiple buffers.
           </p>
           <p>
-            <code>VIRTQ_DESC_F_WRITE = 0x02</code> &mdash; the device
+            <code>VIRTQ_DESC_F_DEVICE_WRITES = 0x02</code> &mdash; the device
             writes <em>to</em> this buffer (read direction). If unset,
             the device reads <em>from</em> this buffer (write
             direction). The direction is from the <em>device's</em>

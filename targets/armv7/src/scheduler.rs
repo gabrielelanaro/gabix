@@ -1,12 +1,14 @@
 //! Single-core kernel tasks with explicit yields and timer preemption.
 //! Scheduler mutations and context switches run with IRQs masked.
-use crate::context::{switch, TaskContext};
+use crate::context::{switch, TaskContext, SAVED_REGISTER_WORDS, SAVED_RETURN_ADDRESS_WORD};
 use core::arch::asm;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 const MAX_TASKS: usize = 4;
+// Slot indices are 0..MAX_TASKS; this value identifies the dispatcher.
+const NO_CURRENT_TASK: usize = MAX_TASKS;
 const STACK_SIZE: usize = 16 * 1024;
-const SAVED_WORDS: usize = 9; // r4..r11 followed by lr, matching context::switch.
+const CPSR_IRQ_MASK: u32 = 1 << 7; // I bit: one disables IRQ exceptions.
 
 #[derive(Clone, Copy, PartialEq)]
 enum TaskState {
@@ -33,22 +35,25 @@ impl Task {
 }
 #[repr(C, align(8))]
 struct TaskStack([u8; STACK_SIZE]);
+// Fixed storage lives for the entire kernel run; reset only frees task slots.
 static mut STACKS: [TaskStack; MAX_TASKS] = [const { TaskStack([0; STACK_SIZE]) }; MAX_TASKS];
 static mut TASKS: [Task; MAX_TASKS] = [Task::EMPTY; MAX_TASKS];
 static mut DISPATCHER: TaskContext = TaskContext::empty();
-static mut CURRENT_TASK: usize = MAX_TASKS;
+static mut CURRENT_TASK: usize = NO_CURRENT_TASK;
 
 // A switched-out task resumes with IRQs masked, then restores its own prior
 // IRQ setting. The dispatcher always runs masked; new tasks inherit this setting.
 static mut TASK_IRQS_ENABLED: bool = false;
 static PREEMPTIONS: AtomicUsize = AtomicUsize::new(0);
 
+/// Disable IRQ delivery and return whether it was enabled before this call.
 unsafe fn mask_irqs() -> bool {
     let status: u32;
     asm!("mrs {status}, cpsr", "cpsid i", status = out(reg) status);
-    status & (1 << 7) == 0
+    status & CPSR_IRQ_MASK == 0
 }
 
+// Caller must still have IRQs masked. A false argument leaves that state alone.
 unsafe fn restore_irqs(were_enabled: bool) {
     if were_enabled {
         asm!("cpsie i", "isb");
@@ -72,7 +77,7 @@ pub unsafe fn preempt_on_timer() {
 /// Safety: single core, outside a running scheduler. IRQs are masked here.
 pub unsafe fn spawn(entry: fn()) -> Option<usize> {
     let were_enabled = mask_irqs();
-    if CURRENT_TASK != MAX_TASKS {
+    if CURRENT_TASK != NO_CURRENT_TASK {
         restore_irqs(were_enabled);
         return None;
     }
@@ -83,12 +88,16 @@ pub unsafe fn spawn(entry: fn()) -> Option<usize> {
         }
         let stack = core::ptr::addr_of_mut!(STACKS).cast::<TaskStack>().add(id);
         let top = stack.cast::<u8>().add(STACK_SIZE).cast::<u32>();
-        let saved = top.sub(SAVED_WORDS);
-        for word in 0..SAVED_WORDS {
+        let saved = top.sub(SAVED_REGISTER_WORDS);
+        for word in 0..SAVED_REGISTER_WORDS {
             saved.add(word).write(0);
         }
-        // Restoring these nine words leaves SP 8-byte aligned at Rust entry.
-        saved.add(8).write(task_entry as *const () as u32);
+        // Build the frame that context::switch will pop. Its saved lr starts
+        // a fresh task at task_entry; later switches resume a suspended call.
+        // Popping all nine words restores the eight-byte-aligned stack top.
+        saved
+            .add(SAVED_RETURN_ADDRESS_WORD)
+            .write(task_entry as *const () as u32);
         (*task).context.sp = saved as u32;
         (*task).entry = Some(entry);
         (*task).state = TaskState::Ready;
@@ -99,11 +108,14 @@ pub unsafe fn spawn(entry: fn()) -> Option<usize> {
     None
 }
 
-/// Run ready tasks in slot order until all have returned. If IRQs are enabled
-/// by the caller, timer interrupts can also return tasks to this dispatcher.
+/// Run ready tasks in slot order until a full scan finds none.
+/// A yielding task becomes Ready and is selected on a later scan; there is no
+/// blocked/sleeping state. If one task never yields and IRQs are disabled, this
+/// call cannot regain control. New tasks inherit the caller's IRQ setting.
+/// Safety: single core, initialized mapping tables, no nested scheduler run.
 pub unsafe fn run_until_finished() {
     let were_enabled = mask_irqs();
-    assert!(CURRENT_TASK == MAX_TASKS);
+    assert!(CURRENT_TASK == NO_CURRENT_TASK);
     TASK_IRQS_ENABLED = were_enabled;
     loop {
         let mut ran_task = false;
@@ -115,13 +127,17 @@ pub unsafe fn run_until_finished() {
             ran_task = true;
             CURRENT_TASK = id;
             (*task).state = TaskState::Running;
+            // Switch address spaces before stacks. Kernel code and every kernel
+            // stack have identical mappings in each process table.
             crate::memory::activate_process((*task).process);
             // Keep raw pointers, not live mutable Rust references, across a switch.
             switch(
                 core::ptr::addr_of_mut!(DISPATCHER),
                 core::ptr::addr_of!((*task).context),
             );
-            CURRENT_TASK = MAX_TASKS;
+            // The task yielded or finished. We are back on the dispatcher stack
+            // with IRQs masked, but still using that task's address space.
+            CURRENT_TASK = NO_CURRENT_TASK;
             crate::memory::activate_process(None);
         }
         if !ran_task {
@@ -131,7 +147,9 @@ pub unsafe fn run_until_finished() {
     }
 }
 
-/// Save this task's call stack and let the dispatcher choose another task.
+/// Save this task's call stack and mark it ready for another turn.
+/// The suspended call keeps its own previous IRQ setting on its kernel stack.
+/// Timer callers resume inside the IRQ handler; its epilogue restores user state.
 pub fn yield_now() {
     unsafe {
         let were_enabled = mask_irqs();
@@ -197,7 +215,7 @@ fn second_task() {
 /// task return, and a second scheduler run after every task has finished.
 pub unsafe fn task_resumes() -> bool {
     TASKS = [Task::EMPTY; MAX_TASKS];
-    CURRENT_TASK = MAX_TASKS;
+    CURRENT_TASK = NO_CURRENT_TASK;
     TRACE_LEN = 0;
     if spawn(first_task) != Some(0) || spawn(second_task) != Some(1) {
         return false;
@@ -212,9 +230,10 @@ pub unsafe fn task_resumes() -> bool {
 
 // Each task waits for progress from the other task. Neither task yields.
 // With preemption broken, the first task waits forever and the test times out.
+const PREEMPTION_PROBE_ROUNDS: usize = 8;
 static PROGRESS: [AtomicUsize; 2] = [const { AtomicUsize::new(0) }; 2];
 fn wait_for_other_task(id: usize) {
-    for round in 1..=8 {
+    for round in 1..=PREEMPTION_PROBE_ROUNDS {
         PROGRESS[id].store(round, Ordering::SeqCst);
         while PROGRESS[1 - id].load(Ordering::SeqCst) < round {
             core::hint::spin_loop();
@@ -239,9 +258,9 @@ pub unsafe fn timer_preempts_tasks() -> bool {
         return false;
     }
     run_until_finished();
-    PROGRESS[0].load(Ordering::SeqCst) == 8
-        && PROGRESS[1].load(Ordering::SeqCst) == 8
-        && PREEMPTIONS.load(Ordering::SeqCst) >= 8
+    PROGRESS[0].load(Ordering::SeqCst) == PREEMPTION_PROBE_ROUNDS
+        && PROGRESS[1].load(Ordering::SeqCst) == PREEMPTION_PROBE_ROUNDS
+        && PREEMPTIONS.load(Ordering::SeqCst) >= PREEMPTION_PROBE_ROUNDS
         && TASKS[0].state == TaskState::Finished
         && TASKS[1].state == TaskState::Finished
 }
@@ -255,10 +274,12 @@ pub unsafe fn current_process() -> Option<usize> {
     }
 }
 
-/// Discard only finished tasks, before starting another boot-check batch.
+/// Reuse task slots only after every task is Empty or Finished.
+/// Stack bytes remain in static storage; future spawn() writes a fresh frame.
+/// Safety: single core, outside the dispatcher and all task execution.
 pub unsafe fn reset_finished_tasks() {
     let enabled = mask_irqs();
-    assert!(CURRENT_TASK == MAX_TASKS);
+    assert!(CURRENT_TASK == NO_CURRENT_TASK);
     let tasks = TASKS;
     assert!(tasks
         .iter()
@@ -267,6 +288,9 @@ pub unsafe fn reset_finished_tasks() {
     restore_irqs(enabled);
 }
 
+/// Attach a prepared process identity to a new kernel task while IRQs are masked.
+/// Safety: id must identify a prepared process table, and the same process must
+/// not already have another task. Neither requirement is checked here.
 pub unsafe fn spawn_process(id: usize) -> Option<usize> {
     let enabled = mask_irqs();
     let result = spawn(crate::process::enter_current_process);
@@ -277,8 +301,10 @@ pub unsafe fn spawn_process(id: usize) -> Option<usize> {
     result
 }
 
-/// Exit/fault discards the current kernel call chain. Its stack stays allocated
-/// until all tasks stop and reset_finished_tasks is called.
+/// Exit/fault abandons the current kernel call chain by returning to DISPATCHER.
+/// Finished tasks are skipped. Their static stacks can be reused after reset;
+/// this does not run destructors for locals on the abandoned call chain.
+/// Safety: called from the current process on its SVC stack, on the single core.
 pub unsafe fn finish_current_process() -> ! {
     mask_irqs();
     assert!(current_process().is_some());

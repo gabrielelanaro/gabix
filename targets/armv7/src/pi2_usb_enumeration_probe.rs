@@ -10,6 +10,8 @@ use core::panic::PanicInfo;
 
 core::arch::global_asm!(include_str!("pi2_usb_enumeration_probe.S"));
 
+const USB_HUB_DEVICE_CLASS: u8 = 9;
+
 const UART_BASE: usize = 0x3f20_1000;
 const UART_FLAGS: usize = UART_BASE + 0x18;
 const UART_TX_FULL: u32 = 1 << 5;
@@ -30,23 +32,24 @@ extern "C" fn pi2_usb_enumeration_probe_main() -> ! {
     };
     write_device(b"NET8 ROOT ", root);
 
-    let network_device = if root.device_class == 9 {
-        write_line(b"NET8 ROOT HUB");
-        let Some(child) = (unsafe { usb.enumerate_hub_child(root) }) else {
-            write_line(b"NET8 CHILD FAILED");
-            wait_for_reset();
+    if root.device_class == USB_HUB_DEVICE_CLASS {
+        let result = unsafe {
+            usb.visit_hub_children(root, |port, child| {
+                write_bytes(b"NET8 PORT ");
+                write_hex_u8(port);
+                write_byte(b' ');
+                write_device(b"DEVICE ", child);
+                true
+            })
         };
-        write_device(b"NET8 CHILD ", child);
-        child
-    } else {
-        root
-    };
-
-    if is_lan9512(network_device.vendor_id, network_device.product_id) {
-        write_line(b"NET8 LAN9512 FOUND");
-    } else {
-        write_line(b"NET8 LAN9512 MISSING");
+        if let Err(error) = result {
+            write_bytes(b"NET8 HUB ERROR ");
+            write_hex_u8(error as u8);
+            write_byte(b'\n');
+        }
     }
+    // Completion also follows a reported hub error; the inventory can be partial.
+    write_line(b"NET8 INVENTORY COMPLETE");
     wait_for_reset();
 }
 
@@ -58,10 +61,6 @@ fn write_device(prefix: &[u8], device: usb::UsbDevice) {
     write_byte(b' ');
     write_hex_u8(device.device_class);
     write_byte(b'\n');
-}
-
-const fn is_lan9512(vendor_id: u16, product_id: u16) -> bool {
-    vendor_id == 0x0424 && matches!(product_id, 0xec00 | 0x9904 | 0x9909)
 }
 
 fn write_line(bytes: &[u8]) {
