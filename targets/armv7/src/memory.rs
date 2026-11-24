@@ -288,3 +288,18 @@ pub fn process_range_is_valid(address: u32, length: u32) -> bool {
 pub unsafe fn synchronize_process_code() {
     asm!("dsb sy", "mcr p15, 0, {zero}, c7, c5, 0", "dsb sy", "isb", zero = in(reg) 0u32);
 }
+
+
+// The Wi-Fi ELF uses BOOT_TABLE while in user mode. Check each touched
+// section before dereferencing a user buffer, including a buffer on its stack.
+#[cfg(all(feature = "pi-wifi", feature = "pi-managed"))]
+pub fn bootstrap_user_range(address: u32, length: u32) -> bool {
+    let Some(last) = length.checked_sub(1).and_then(|n| address.checked_add(n)) else {
+        return false;
+    };
+    if address < PROCESS_BASE || last >= crate::user::USER_STACK_TOP { return false; }
+    (address / SECTION_SIZE..=last / SECTION_SIZE).all(|section| unsafe {
+        let descriptor = (*core::ptr::addr_of!(BOOT_TABLE)).0[section as usize];
+        descriptor & USER_READ_WRITE == USER_READ_WRITE
+    })
+}

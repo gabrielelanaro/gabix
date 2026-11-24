@@ -273,6 +273,17 @@ impl Receiver {
         let session = word(packet, wire_field::SESSION);
         let argument = word(packet, wire_field::ARGUMENT);
         let value = word(packet, wire_field::VALUE_OR_STATUS);
+        // A blocked socket syscall pumps this same receiver. Keep the running
+        // executable and its devices owned until it exits.
+        #[cfg(all(feature = "pi-wifi", feature = "pi-managed"))]
+        if crate::user_upload::wifi::running()
+            && !matches!(operation, STATUS | READ_LOG | REBOOT | crate::user_upload::wifi::RESULT)
+        {
+            reply[..HEADER_LEN].copy_from_slice(&packet[..HEADER_LEN]);
+            reply[4..8].copy_from_slice(&(operation | REPLY_OPERATION_BIT).to_le_bytes());
+            reply[16..20].copy_from_slice(&ORDER.to_le_bytes());
+            return Some(HEADER_LEN);
+        }
         let data = &packet[HEADER_LEN..];
         let mut status = INVALID;
         let mut reply_data_len = 0;

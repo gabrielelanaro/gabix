@@ -1,4 +1,6 @@
 #[cfg(all(feature = "pi-wifi", feature = "pi-managed"))]
+pub mod tcp;
+#[cfg(all(feature = "pi-wifi", feature = "pi-managed"))]
 pub mod wifi;
 
 use crate::console::{write_line, Pl011};

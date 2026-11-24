@@ -52,13 +52,13 @@ process_probe_start:
     b .Lfailed                      @ Reaching here means isolation failed.
 .Lsuccess:
     mov r0, #0
-    b .Lexit
+    b .Lprocess_probe_exit
 .Lfailed:
     mov r0, #1
-.Lexit:
+.Lprocess_probe_exit:
     mov r7, #SYS_EXIT
     svc #0
-    b .Lexit
+    b .Lprocess_probe_exit
 .Lbusy:
     movw r6, #0x2d00                @ 20,000,000 iterations, no yield syscall.
     movt r6, #0x0131

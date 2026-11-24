@@ -44,6 +44,7 @@ through UART reboot/upload. Preserve the working server as the recovery image.
 - [ ] Verify the managed Pi on the actual FRITZ!Box LAN after moving the cable
 - [x] USB Wi-Fi: RTL8188CU initialization, WPA2-Personal, DHCP, authenticated management, reconnect, and permanent SD boot verified on the Pi
 - [x] Upload two distinct ARM user executables over authenticated Wi-Fi and read their exit statuses on the same physical Pi boot. [User loader](docs/pi2-wifi-user.md)
+- [x] Keep Wi-Fi responsive during blocking TCP calls from an uploaded ARM user program. [Physical echo check](tests/test_pi2_wifi_tcp_echo.py)
 
 ### TCP arc — the connection-oriented transport
 - [x] Lesson 31 TCP segment, three-way handshake, and first byte exchanged
@@ -563,6 +564,11 @@ A milestone is a "demo-able" checkpoint. Worth a commit + tag + log entry.
 ---
 
 ## Progress Log
+
+### 2026-11-24 — Keep Wi-Fi responsive during ARM userspace TCP waits
+
+- A RAM-uploaded echo server exchanged 27 bytes and 290 bytes on a single TCP connection on physical Pi boot 36 (kernel CRC32 `1f560926`). The Mac checked authenticated status during a 12-second idle interval, then half-closed its socket. The ELF exited with status 0. The same port served a second run on that boot.
+- Added one passive IPv4 listener for the foreground ELF. The kernel polls Wi-Fi while a socket syscall waits. Next, verify 16 KiB framebuffer transfers with a slow reader and a dropped segment.
 
 ### 2026-11-24 — Run different ARM user programs over Wi-Fi on one Pi boot
 

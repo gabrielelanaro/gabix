@@ -535,10 +535,14 @@ pub fn poll_ethernet_and_reply(console: &mut Pl011, _next_dhcp_discover_tick: &m
                 session.send_discover(network);
                 *_next_dhcp_discover_tick = current_tick + DHCP_DISCOVER_INTERVAL_TICKS;
             }
+            #[cfg(all(feature = "pi-wifi", feature = "pi-managed"))]
+            user_upload::tcp::flush(network, session.address());
             // Give the update/management protocol first access to this frame.
             // A handled request returns immediately, postponing Wi-Fi event logging
             // until a later call. Other frames go through DHCP/ARP/echo handling.
             if let Some(frame) = network.receive() {
+                #[cfg(all(feature = "pi-wifi", feature = "pi-managed"))]
+                user_upload::tcp::receive(session.address(), network.mac_address(), frame.bytes());
                 #[cfg(feature = "pi-sd-transfer")]
                 if let Some(receiver) = (&mut *core::ptr::addr_of_mut!(PI_SD_TRANSFER)).as_mut() {
                     if session.handle_sd_transfer(network, frame.bytes(), receiver) {
