@@ -1,3 +1,6 @@
+#[cfg(all(feature = "pi-wifi", feature = "pi-managed"))]
+pub mod wifi;
+
 use crate::console::{write_line, Pl011};
 use crate::{memory, user};
 use gabix_kernel::loader_protocol::{UploadEvent, UploadFailure, UploadReceiver};
@@ -37,6 +40,8 @@ pub fn serve_uart_uploads_and_ethernet(uart_console: &mut Pl011) -> ! {
     crate::flush_diagnostics(true);
 
     loop {
+        #[cfg(all(feature = "pi-wifi", feature = "pi-managed"))]
+        wifi::run_pending();
         #[cfg(feature = "pi-managed")]
         if crate::raspi2b::timer::ticks() >= next_watchdog_tick {
             // Refresh from foreground work, so a stuck device driver triggers

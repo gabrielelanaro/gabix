@@ -43,6 +43,7 @@ through UART reboot/upload. Preserve the working server as the recovery image.
 - [x] Router preparation: authenticated Ethernet management/reboot, persistent buffered logs, DHCP retry/renewal diagnostics; physical outage and reboot checks
 - [ ] Verify the managed Pi on the actual FRITZ!Box LAN after moving the cable
 - [x] USB Wi-Fi: RTL8188CU initialization, WPA2-Personal, DHCP, authenticated management, reconnect, and permanent SD boot verified on the Pi
+- [x] Upload two distinct ARM user executables over authenticated Wi-Fi and read their exit statuses on the same physical Pi boot. [User loader](docs/pi2-wifi-user.md)
 
 ### TCP arc — the connection-oriented transport
 - [x] Lesson 31 TCP segment, three-way handshake, and first byte exchanged
@@ -562,6 +563,11 @@ A milestone is a "demo-able" checkpoint. Worth a commit + tag + log entry.
 ---
 
 ## Progress Log
+
+### 2026-11-24 — Run different ARM user programs over Wi-Fi on one Pi boot
+
+- Built and installed the Wi-Fi ELF loader once. On physical Pi 2B boot 34 (kernel CRC32 `bf587896`), uploaded two executables into RAM. The UART-write fixture exited with 0. The mode-reporting fixture read CPSR and exited with 16 (ARM user mode). No reboot or kernel upload occurred between programs.
+- Added a [Mac uploader and hardware test procedure](docs/pi2-wifi-user.md). The next GUI prerequisite is ARM TCP socket support with network service during user execution. No existing roadmap checkbox changed.
 
 ### 2026-11-16 — Publish the Wi-Fi connection lesson
 - Added the isometric startup walkthrough, interactive connection checks, quick reference, and source-linked code tour. Source snapshots preserve the implementation used when the lesson was written; the quick reference includes the subsequently implemented mDNS hostname.
