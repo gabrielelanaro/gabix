@@ -12,3 +12,5 @@ pub mod random;
 pub mod rtl8188cu;
 #[cfg(feature = "pi-wifi")]
 pub mod wifi_ethernet;
+#[cfg(all(feature = "pi-wifi", feature = "pi-managed"))]
+pub mod v3d;
