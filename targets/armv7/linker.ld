@@ -19,5 +19,8 @@ SECTIONS
         __bss_end = .;
     }
 
+    /* Only the Wi-Fi development build contributes this RAM-only section. */
+    .probe_ram 0x00e00000 (NOLOAD) : { *(.probe_ram) }
+
     /DISCARD/ : { *(.ARM.exidx*) *(.ARM.extab*) *(.comment*) }
 }

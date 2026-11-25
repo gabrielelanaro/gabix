@@ -7,10 +7,10 @@ if [ "$#" -ne 1 ] ||
         [ "$1" != "raspi2b-hardware" ] && [ "$1" != "raspi2b-lifecycle" ] &&
         [ "$1" != "raspi2b-uart-user" ] && [ "$1" != "pi2-loader" ] &&
         [ "$1" != "pi2-dev" ] && [ "$1" != "pi2-network-dev" ] &&
-        [ "$1" != "pi2-managed" ] && [ "$1" != "pi2-wifi-managed" ] && [ "$1" != "pi2-loader-trial" ] && [ "$1" != "pi2-sd-loader" ] && [ "$1" != "pi2-sd-check" ] && [ "$1" != "pi2-sd-transfer" ] &&
+        [ "$1" != "pi2-managed" ] && [ "$1" != "pi2-wifi-managed" ] && [ "$1" != "pi2-wifi-dev" ] && [ "$1" != "pi2-loader-trial" ] && [ "$1" != "pi2-sd-loader" ] && [ "$1" != "pi2-sd-check" ] && [ "$1" != "pi2-sd-transfer" ] &&
         [ "$1" != "pi2-network-pre-timer-probe" ] &&
         [ "$1" != "pi2-network-no-irq-dev" ]; }; then
-    echo "usage: $0 <pi2-wifi-managed|pi2-managed|pi2-loader-trial|pi2-sd-loader|pi2-sd-transfer|pi2-sd-check|virt|raspi2b|raspi2b-hardware|raspi2b-lifecycle|raspi2b-uart-user|pi2-loader|pi2-dev|pi2-network-dev|pi2-network-pre-timer-probe|pi2-network-no-irq-dev>" >&2
+    echo "usage: $0 <pi2-wifi-dev|pi2-wifi-managed|pi2-managed|pi2-loader-trial|pi2-sd-loader|pi2-sd-transfer|pi2-sd-check|virt|raspi2b|raspi2b-hardware|raspi2b-lifecycle|raspi2b-uart-user|pi2-loader|pi2-dev|pi2-network-dev|pi2-network-pre-timer-probe|pi2-network-no-irq-dev>" >&2
     exit 2
 fi
 
@@ -71,14 +71,18 @@ case "$platform" in
         binary=pi2-loader
         image_name=kernel-pi2-sd-loader.img
         ;;
-    pi2-managed|pi2-wifi-managed)
+    pi2-managed|pi2-wifi-managed|pi2-wifi-dev)
         kernel_base=0x00100000
         feature=pi-managed
         image_name=kernel-pi2-managed.img
-        if [ "$platform" = pi2-wifi-managed ]; then
+        if [ "$platform" != pi2-managed ]; then
             . "$script_dir/prepare-pi2-wifi-env.sh"
             feature=pi-managed,pi-wifi
             image_name=kernel-pi2-wifi-managed.img
+            if [ "$platform" = pi2-wifi-dev ]; then
+                feature=pi-ram-probes,pi-wifi
+                image_name=kernel-pi2-wifi-dev.img
+            fi
         fi
         if [ "${GABIX_PI_FRAME_LOSS_TEST:-0}" = 1 ] && [ "$platform" != pi2-managed ]; then
             feature=$feature,pi-frame-loss-test

@@ -46,9 +46,18 @@ through UART reboot/upload. Preserve the working server as the recovery image.
 - [x] Upload two distinct ARM user executables over authenticated Wi-Fi and read their exit statuses on the same physical Pi boot. [User loader](docs/pi2-wifi-user.md)
 - [x] Keep Wi-Fi responsive during blocking TCP calls from an uploaded ARM user program. [Physical echo check](tests/test_pi2_wifi_tcp_echo.py)
 - [x] Transfer two V3D frames over one ARM TCP connection and verify every byte during slow reads and retransmission. [Physical frame test](tests/test_pi2_v3d_frames.py)
+
+### Remote GUI on the Pi 2B
+
+- [x] Run returning ARMv7 hardware experiments from RAM over authenticated Wi-Fi. Reuse the timer with two inputs, then replace it with the V3D probe in the same boot. [Runner commands and calling convention](docs/pi2-ram-probes.md)
+- [x] Power up V3D on the physical Pi and read back `V3D_IDENT0 = 0x02443356` over Wi-Fi with the existing `gpu_mem=16` configuration.
+- [x] Submit two V3D clears and read back every pixel of each 64 × 64 frame.
+- [x] Bin and render a triangle on V3D. Verify all foreground and background pixels, then change the fragment shader color and draw again.
 - [x] Display the V3D triangle with a hover dot in TigerVNC on the Mac over Wi-Fi. [Physical VNC test](tests/test_pi2_vnc.py)
 - [x] Drag the triangle from TigerVNC. V3D redraws its translated vertices on each move.
 - [x] Submit three vertices from an uploaded user program and verify two distinct triangle shapes on one Pi boot.
+
+The uploaded user program requests a draw and streams the completed pixels over TCP. TigerVNC displays the enlarged image and positions the hover dot. The x86 accepted-socket sender currently advances its sequence number without tracking the peer's window or retaining segments for retry (`src/net/tcp.rs:371`).
 
 ### TCP arc — the connection-oriented transport
 - [x] Lesson 31 TCP segment, three-way handshake, and first byte exchanged
@@ -569,6 +578,11 @@ A milestone is a "demo-able" checkpoint. Worth a commit + tag + log entry.
 
 ## Progress Log
 
+### 2026-11-24 — Profile VNC drag latency and V3D events on boot 39
+
+- Measured 69 rendered frames on the physical Pi with the VC4 counters. Each frame produced 312 color-writing quads and 3,024 aggregate fragment-shading cycles. Calibrated the ARM virtual counter at approximately 1 MHz against the BCM system timer.
+- Full-drag medians were 0.286 ms in the draw syscall, 16.39 ms encoding and buffering, and 23.51 ms in socket writes. The uninstrumented Mac round trip was 70.65 ms. A 300-byte region took one write and reached the Mac in 41.00 ms. Restored the counter configuration and default GUI. No roadmap checkbox changed. The next experiment is to fit the full triangle response in one TCP payload.
+
 ### 2026-11-24 — Submit user-space vertices to V3D
 
 - On Pi boot 39 (kernel `5ca30ba4`), the uploaded shape test checked all 4,096 pixels of an isosceles triangle and a right triangle with identical colors. The VNC drag, clip, release and re-grab checks passed on the same boot. Both user programs use the same three-vertex draw syscall.
@@ -598,6 +612,49 @@ A milestone is a "demo-able" checkpoint. Worth a commit + tag + log entry.
 
 - Built and installed the Wi-Fi ELF loader once. On physical Pi 2B boot 34 (kernel CRC32 `bf587896`), uploaded two executables into RAM. The UART-write fixture exited with 0. The mode-reporting fixture read CPSR and exited with 16 (ARM user mode). No reboot or kernel upload occurred between programs.
 - Added a [Mac uploader and hardware test procedure](docs/pi2-wifi-user.md). The next GUI prerequisite is ARM TCP socket support with network service during user execution. No existing roadmap checkbox changed.
+
+### 2026-11-24 — Start shared TCP support for the GUI
+
+- Moved the existing TCP segment reader and writer into kernel-core for reuse on the Pi. The x86 socket implementation now uses the shared packet format. Next, connect a passive TCP endpoint to ARM network polling. No roadmap checkboxes changed.
+
+### 2026-11-24 — Run ARM programs from RAM over Wi-Fi and draw the first V3D triangle
+
+- Completed the first four Pi GUI roadmap items. Installed the authenticated development kernel in SD copy A over Wi-Fi. The 243,312-byte image passed readback with CRC32 `8786d8b8`. Copy B retained the previous kernel. Compared copy A with the final local rebuild (`94ace136`). The only three differing bytes encode source line numbers in diagnostic records.
+- Uploaded the timer and V3D probes into RAM during the same boot. The timer measured 1,000 and 2,000 µs on request. Firmware powered V3D through domain 11 with the existing memory split. The Mac read `V3D_IDENT0 = 0x02443356`. An early stalled probe triggered the board watchdog and the Pi rejoined Wi-Fi.
+- Verified two clears and two triangle draws on boots 31 and 32. Each 64 × 64 triangle had 1,152 foreground pixels, and the Mac checked all 4,096 pixels against the three vertices. The second draw changed both colors. Publishing instructions through the VideoCore-coherent alias using DMA fixed stale fragment colors after shader edits.
+- Rebooted between test runs. Boot 32 rejected the previous RAM session and loaded the verified SD kernel again. Draw plus 16 KiB readback took 0.609 and 0.698 seconds on boot 32. Next GUI milestone is an RFB framebuffer update for TigerVNC Viewer. [Runbook](docs/pi2-ram-probes.md) · [Physical hardware test](tests/test_v3d_renders_triangle.py)
+
+### 2026-11-24 — Generalize the Wi-Fi experiment runner
+
+- Proposed a common calling convention for returning hardware experiments. The uploaded program defines the meaning of the inputs and results. The same image can run with different inputs, and new experiments can be uploaded during the session. Timer and V3D reads would exercise two peripherals through the same runner. Planning only.
+
+### 2026-11-24 — Session-only Wi-Fi uploads
+
+- Consider a development kernel that receives authenticated probe images into reserved RAM, checks the complete image, calls a probe and sends its result back over Wi-Fi. First acceptance check: run two different probes during one boot, then reset and verify the original saved kernel boots. The upload must leave the SD kernel slots and their selection intact. Full-kernel replacement in RAM is a separate design because the running Wi-Fi kernel occupies the ordinary kernel load address. Planning only.
+
+### 2026-11-24 — Use Wi-Fi for V3D experiments
+
+- Plan the first ID read through a managed trial kernel and existing remote logs. A later diagnostic command could repeat a compiled draw with new colors or vertices during one boot. Driver code changes still use the kernel updater. Planning only.
+
+### 2026-11-24 — Plan the V3D hardware iteration loop
+
+- For repeated register and render experiments, use a small privileged probe uploaded into RAM over UART. The resident loader accepts another upload when a probe returns with the loader environment intact (`targets/armv7/src/pi2_loader.rs:109`). Proposed first tooling step: time build, upload, and result separately on the identification probe, then repeat it without rebooting. Use managed Wi-Fi uploads for integrated kernel checks. Planning only. The Mac did not list the expected USB serial adapter during this review, so physical cycle time is still unmeasured.
+
+### 2026-11-24 — Audit prerequisites for the first V3D draw
+
+- Checked Pi memory mappings, firmware mailbox requests, USB DMA cache handling, ARM syscall dispatch and the network polling loop. Split the GPU milestone into identification, two GPU clears with readback, and a triangle. Recorded the userspace and TCP dependencies beside the viewer milestone. All checks remain open. This audit used source and hardware documentation. The next hardware experiment is the identification probe on the existing boot profile.
+
+### 2026-11-24 — Start the GUI project with V3D
+
+- Revised the GUI roadmap around the hardware rendering learning goal. The first experiment is to identify V3D on the physical Pi and have it clear an offscreen buffer to a known color. The first triangle follows in that buffer. Network display and pointer input follow the GPU readback check.
+- Planning only. All three GUI milestones are open.
+
+### 2026-11-24 — Planning a remote graphical session
+
+- Proposed first milestone: open a VNC viewer on the laptop and drag one triangle rendered by Gabix. The viewer sends pointer coordinates and button state. A Gabix userspace program owns the triangle and sends pixel rectangles from an offscreen buffer. [RFB protocol, sections 7.5–7.7](https://www.rfc-editor.org/rfc/rfc6143.html#section-7.5)
+- Proposed sequence: draw a solid triangle with the CPU, serve the first image from x86 QEMU, then implement press, drag and release. Bring the same program to the Pi over Wi-Fi through the planned ARM socket interface. For hardware rendering, submit a fixed triangle to the Pi 2's V3D engine and check a foreground pixel and a background pixel in RAM before connecting the result to the viewer. [Linux VC4 command submission](https://docs.kernel.org/gpu/vc4.html#memory-management-and-3d-command-submission)
+- Planning only. Existing milestones retain their status. The ARM syscall dispatcher still needs socket operations (`targets/armv7/src/syscall.rs:30`). On x86 the accepted TCP socket needs flow control and retransmission for reliable transfers (`src/net/tcp.rs:371`).
+- Suggested first experiment: transfer a small image through the x86 TCP listener in bounded writes and compare the received bytes with the expected image. Then display the same pixels in a standard viewer.
 
 ### 2026-11-16 — Publish the Wi-Fi connection lesson
 - Added the isometric startup walkthrough, interactive connection checks, quick reference, and source-linked code tour. Source snapshots preserve the implementation used when the lesson was written; the quick reference includes the subsequently implemented mDNS hostname.

@@ -93,6 +93,8 @@ mod status_field {
 }
 
 pub struct Receiver {
+    #[cfg(feature = "pi-ram-probes")]
+    probe: crate::ram_probe::Runner,
     card: SdCard,
     pub journal: crate::diagnostics::Journal,
     #[cfg(feature = "pi-managed")]
@@ -192,6 +194,8 @@ impl Receiver {
             journal,
             #[cfg(feature = "pi-managed")]
             authentication,
+            #[cfg(feature = "pi-ram-probes")]
+            probe: crate::ram_probe::Runner::new(),
             status: [0; status_field::BYTES],
             requests: 0,
             tx_failures: 0,
@@ -287,7 +291,21 @@ impl Receiver {
         let data = &packet[HEADER_LEN..];
         let mut status = INVALID;
         let mut reply_data_len = 0;
-        if operation == STATUS && data.is_empty() {
+        #[cfg(feature = "pi-ram-probes")]
+        let probe_reply = self.probe.command(
+            operation, session, argument, value, data, &mut reply[HEADER_LEN..],
+        );
+        #[cfg(not(feature = "pi-ram-probes"))]
+        let probe_reply: Option<Result<usize, u32>> = None;
+        if let Some(result) = probe_reply {
+            match result {
+                Ok(length) => {
+                    reply_data_len = length;
+                    status = OK;
+                }
+                Err(error) => status = error,
+            }
+        } else if operation == STATUS && data.is_empty() {
             self.fill_storage_status();
             reply[HEADER_LEN..HEADER_LEN + status_field::BYTES].copy_from_slice(&self.status);
             reply_data_len = status_field::BYTES;

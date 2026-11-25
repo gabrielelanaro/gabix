@@ -9,6 +9,8 @@ mod console;
 mod context;
 mod memory;
 mod network;
+#[cfg(feature = "pi-ram-probes")]
+mod ram_probe;
 mod platform;
 #[cfg(feature = "raspi2b")]
 mod raspi2b;
