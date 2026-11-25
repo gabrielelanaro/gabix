@@ -43,7 +43,7 @@
       title: 'Check that the write finished', label: 'Completion', state: 'Card ready → return success',
       body: '<p>The CPU polls the controller’s completion flags. Then the driver sends <strong>CMD13</strong> to ask for the card’s status.</p><p>Success requires no reported card errors, <strong>ready for data</strong>, and the card back in <strong>transfer state</strong>. The function can then return.</p>',
       role: '<strong>Our test then:</strong> reads back all 512 bytes, restores the original sector, and checks both neighbors. Success here does not establish power-loss atomicity.',
-      source: `<a href="${sdSource}#L172-L197">sdhci.rs:172–197</a> · <a href="../docs/pi2-sd-writes.md">physical verification</a>`,
+      source: `<a href="${sdSource}#L172-L197">sdhci.rs:172–197</a> · <a href="https://github.com/gabrielelanaro/gabix/blob/f6816a34606a1a0b032658fa44fb5bc000d6cad7/docs/pi2-sd-writes.md">physical verification</a>`,
       nodes: ['cpu', 'controller', 'card'], flows: ['command', 'register'],
     },
   ];

@@ -53,7 +53,7 @@ write(V3D + 0x20, 5); <span class="c">// Enable and clear GPU L2</span>
 write(V3D + 0x24, 0xffffffff); <span class="c">// Invalidate instruction, uniform and texture slice caches</span>
 if mode == 2 &amp;&amp; !submit(BINNING, addr_of!(bin_list), addr_of!(bin_end)) {</code></pre></figure>
 <h2>Check against the board</h2>
-<p>The bring-up log records the old-color symptom. The final test changed foreground and background colors on consecutive draws. The working DMA copy is specific to this Pi probe. <a href="../docs/pi2-ram-probes.md#L59">Board finding</a></p>
+<p>The bring-up log records the old-color symptom. The final test changed foreground and background colors on consecutive draws. The working DMA copy is specific to this Pi probe. <a href="https://github.com/gabrielelanaro/gabix/blob/f6816a34606a1a0b032658fa44fb5bc000d6cad7/docs/pi2-ram-probes.md#L59">Board finding</a></p>
 <p class="readings"><a href="https://pip-assets.raspberrypi.com/categories/579-raspberry-pi-zero/documents/RP-008249-DS-1-bcm2835-peripherals.pdf">Broadcom · DMA control blocks and bus addresses</a></p>
 <p class="readings"><a href="../reference/pi2-v3d-registers.html#dma">Pi 2B hardware reference</a></p><nav class="pager"><a href="../lessons/8.05-v3d-shared-memory.html">← Back to the lesson</a><a href="../lessons/8.06-v3d-readback.html">Next lesson →</a></nav>
 </main></body></html>

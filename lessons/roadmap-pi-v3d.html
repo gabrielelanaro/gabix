@@ -93,7 +93,7 @@
       <p>Inspect a real symptom from bring-up. The ARM changed the shader color, yet the returned triangle kept its previous color. Predict what each processor would read, then replay the working copy.</p>
       <details><summary>Three figures and the hardware detail</summary>
         <p>Where do the vertices, shader and finished pixels live? Give each region a stable place on a RAM map. Which address goes into a GPU command? Trace a buffer’s ARM address and VideoCore bus address to the intended storage. How does the new shader reach the QPU? Follow DMA channel 5 copying the instruction bytes from the source to the executable copy through the VideoCore-coherent alias. Mark the two copies and their addresses separately.</p>
-        <p class="source"><a href="../targets/armv7/probes/v3d_lists.S#L79">RAM layout</a> · <a href="../targets/armv7/probes/v3d_lists.S#L49">Shader record</a> · <a href="../targets/armv7/probes/v3d.rs#L154">DMA source and destination</a> · <a href="../docs/pi2-ram-probes.md">Board observation</a></p>
+        <p class="source"><a href="../targets/armv7/probes/v3d_lists.S#L79">RAM layout</a> · <a href="../targets/armv7/probes/v3d_lists.S#L49">Shader record</a> · <a href="../targets/armv7/probes/v3d.rs#L154">DMA source and destination</a> · <a href="https://github.com/gabrielelanaro/gabix/blob/f6816a34606a1a0b032658fa44fb5bc000d6cad7/docs/pi2-ram-probes.md">Board observation</a></p>
       </details></li>
     <li><h3><a href="8.06-v3d-readback.html">When is it safe to send the finished pixels to my Mac?</a></h3>
       <p>Predict the first step where the ARM can read the new gold pixel. Then find its four bytes in the Mac’s file. At row 32, column 20 the byte offset is <code>4 × (32 × 64 + 20) = 8272</code>.</p>
@@ -102,7 +102,7 @@
         <p class="source"><a href="../targets/armv7/probes/v3d_lists.S#L43">Tile store</a> · <a href="../targets/armv7/probes/v3d.rs#L191">Counter check</a> · <a href="../targets/armv7/probes/v3d.rs#L273">Cache and copy</a> · <a href="../scripts/pi2-ram-probe.py#L36">Reading result chunks</a></p>
       </details></li>
   </ol>
-  <p class="source">To repeat the experiment on the board, use the <a href="../docs/pi2-ram-probes.md">Pi probe runbook</a>.</p>
+  <p class="source">To repeat the experiment on the board, use the <a href="../scripts/pi2-ram-probe.py">Pi probe runner</a>.</p>
 </main>
 </body>
 </html>

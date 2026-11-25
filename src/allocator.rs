@@ -7,8 +7,6 @@
 //! `GlobalAlloc` plumbing — one pointer, no freeing. That proved `Box`,
 //! `Vec`, and `String` worked end-to-end. Slice 2.3b swaps in this crate
 //! so the heap doesn't fill up under repeated allocation.
-//!
-//! See docs/heap.html for the design of bump vs. linked-list allocators.
 
 use core::alloc::{GlobalAlloc, Layout};
 use linked_list_allocator::LockedHeap;

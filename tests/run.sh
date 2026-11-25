@@ -27,6 +27,7 @@ if [ "${1:-}" = "-v" ]; then
 fi
 
 cd "$REPO_ROOT"
+sh scripts/lint.sh || exit $?
 
 # Discover test scripts.
 tests=$(ls "$TESTS_DIR"/test_*.sh 2>/dev/null | sort)

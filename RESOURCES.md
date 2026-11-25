@@ -163,7 +163,7 @@
 ## Pi USB Wi-Fi
 
 - [OpenBSD urtwn manual](https://man.openbsd.org/urtwn.4): adapter family, operation modes, and firmware requirement.
-- [Gabix primary-source research](docs/pi2-wifi-references.md): OpenBSD register sequences and WPA2 implementation references used for the port.
+- [Archived Gabix Wi-Fi research](https://github.com/gabrielelanaro/gabix/blob/f6816a34606a1a0b032658fa44fb5bc000d6cad7/docs/pi2-wifi-references.md): OpenBSD register sequences and WPA2 implementation references used for the port.
 
 ## Terminals and TTYs
 

@@ -10,8 +10,6 @@ Approach: follow the "Writing an OS in Rust" tutorial (phil-opp.com) as the spin
 - [x] Audit hardware and protocol operations across shared, x86, and ARM code; give constants, helper calls, and sequencing explanations meaningful names
 - [x] Verify each changed area with existing relevant checks and physical Pi runs for hardware paths
 
-Coverage and evidence: [code readability audit](docs/code-readability.md).
-
 ### x86 / ARM feature parity (current objective)
 - [x] Cooperative ARM kernel tasks: private stacks, round-robin yield, completion; verify QEMU and physical Pi
 - [x] Timer-driven ARM preemption and interrupt-safe scheduler state (single-core kernel tasks)
@@ -43,7 +41,7 @@ through UART reboot/upload. Preserve the working server as the recovery image.
 - [x] Router preparation: authenticated Ethernet management/reboot, persistent buffered logs, DHCP retry/renewal diagnostics; physical outage and reboot checks
 - [ ] Verify the managed Pi on the actual FRITZ!Box LAN after moving the cable
 - [x] USB Wi-Fi: RTL8188CU initialization, WPA2-Personal, DHCP, authenticated management, reconnect, and permanent SD boot verified on the Pi
-- [x] Upload two distinct ARM user executables over authenticated Wi-Fi and read their exit statuses on the same physical Pi boot. [User loader](docs/pi2-wifi-user.md)
+- [x] Upload two distinct ARM user executables over authenticated Wi-Fi and read their exit statuses on the same physical Pi boot. [Uploader](scripts/pi2-wifi-user.py)
 - [x] Keep Wi-Fi responsive during blocking TCP calls from an uploaded ARM user program. [Physical echo check](tests/test_pi2_wifi_tcp_echo.py)
 - [x] Transfer two V3D frames over one ARM TCP connection and verify every byte during slow reads and retransmission. [Physical frame test](tests/test_pi2_v3d_frames.py)
 
@@ -51,7 +49,7 @@ through UART reboot/upload. Preserve the working server as the recovery image.
 
 Start with the [seven VideoCore IV architecture lessons](lessons/videocore/index.html). Use the [six triangle labs](lessons/roadmap-pi-v3d.html) to inspect one draw on the Pi.
 
-- [x] Run returning ARMv7 hardware experiments from RAM over authenticated Wi-Fi. Reuse the timer with two inputs, then replace it with the V3D probe in the same boot. [Runner commands and calling convention](docs/pi2-ram-probes.md)
+- [x] Run returning ARMv7 hardware experiments from RAM over authenticated Wi-Fi. Reuse the timer with two inputs, then replace it with the V3D probe in the same boot. [Probe runner](scripts/pi2-ram-probe.py)
 - [x] Power up V3D on the physical Pi and read back `V3D_IDENT0 = 0x02443356` over Wi-Fi with the existing `gpu_mem=16` configuration.
 - [x] Submit two V3D clears and read back every pixel of each 64 × 64 frame.
 - [x] Bin and render a triangle on V3D. Verify all foreground and background pixels, then change the fragment shader color and draw again.
@@ -580,6 +578,10 @@ A milestone is a "demo-able" checkpoint. Worth a commit + tag + log entry.
 
 ## Progress Log
 
+### 2026-11-25 — Remove the docs directory
+
+- Removed the root `docs/` directory and added a path check to the test runner. Updated live references and kept historical hardware evidence accessible at the previous commit. No roadmap checkbox changed. Next, review the ARM boot assembly move.
+
 ### 2026-11-25 — Organize the Pi probes, course material and layout tools
 
 - Grouped the probe sources, VideoCore course, terminal lesson and repository audit for separate review. The hardware overview uses a Gabix drawing. The architecture map generator reads its template from `scripts/templates/`. No roadmap checkbox changed in this cleanup. The next GUI experiment is to reduce the number of bytes sent during a drag.
@@ -607,7 +609,7 @@ A milestone is a "demo-able" checkpoint. Worth a commit + tag + log entry.
 ### 2026-11-24 — Audit the repository layout
 
 - Added an executable inventory and placement rules for both kernel packages, shared code, standalone probes, host tools, tests, and documentation. The directory map reports rule evidence and proposed destinations. Fixture tests exercise coverage, recursive totals, and findings that clear after relocation.
-- Documented the proposed sibling x86 and ARM package layout in [the architecture plan](docs/repository-layout.md). The first migration is the x86 package move with the existing boot entry points verified. This review adds tooling and leaves the implementation milestones open.
+- Documented the proposed sibling x86 and ARM package layout in [the architecture plan](https://github.com/gabrielelanaro/gabix/blob/f6816a34606a1a0b032658fa44fb5bc000d6cad7/docs/repository-layout.md). The first migration is the x86 package move with the existing boot entry points verified. This review adds tooling and leaves the implementation milestones open.
 
 ### 2026-11-24 — Map code size and reviewed architecture findings
 
@@ -626,7 +628,7 @@ A milestone is a "demo-able" checkpoint. Worth a commit + tag + log entry.
 ### 2026-11-24 — Run different ARM user programs over Wi-Fi on one Pi boot
 
 - Built and installed the Wi-Fi ELF loader once. On physical Pi 2B boot 34 (kernel CRC32 `bf587896`), uploaded two executables into RAM. The UART-write fixture exited with 0. The mode-reporting fixture read CPSR and exited with 16 (ARM user mode). No reboot or kernel upload occurred between programs.
-- Added a [Mac uploader and hardware test procedure](docs/pi2-wifi-user.md). The next GUI prerequisite is ARM TCP socket support with network service during user execution. No existing roadmap checkbox changed.
+- Added a [Mac uploader and hardware test procedure](https://github.com/gabrielelanaro/gabix/blob/f6816a34606a1a0b032658fa44fb5bc000d6cad7/docs/pi2-wifi-user.md). The next GUI prerequisite is ARM TCP socket support with network service during user execution. No existing roadmap checkbox changed.
 
 ### 2026-11-24 — Start shared TCP support for the GUI
 
@@ -697,7 +699,7 @@ A milestone is a "demo-able" checkpoint. Worth a commit + tag + log entry.
 - Completed the first four Pi GUI roadmap items. Installed the authenticated development kernel in SD copy A over Wi-Fi. The 243,312-byte image passed readback with CRC32 `8786d8b8`. Copy B retained the previous kernel. Compared copy A with the final local rebuild (`94ace136`). The only three differing bytes encode source line numbers in diagnostic records.
 - Uploaded the timer and V3D probes into RAM during the same boot. The timer measured 1,000 and 2,000 µs on request. Firmware powered V3D through domain 11 with the existing memory split. The Mac read `V3D_IDENT0 = 0x02443356`. An early stalled probe triggered the board watchdog and the Pi rejoined Wi-Fi.
 - Verified two clears and two triangle draws on boots 31 and 32. Each 64 × 64 triangle had 1,152 foreground pixels, and the Mac checked all 4,096 pixels against the three vertices. The second draw changed both colors. Publishing instructions through the VideoCore-coherent alias using DMA fixed stale fragment colors after shader edits.
-- Rebooted between test runs. Boot 32 rejected the previous RAM session and loaded the verified SD kernel again. Draw plus 16 KiB readback took 0.609 and 0.698 seconds on boot 32. Next GUI milestone is an RFB framebuffer update for TigerVNC Viewer. [Runbook](docs/pi2-ram-probes.md) · [Physical hardware test](tests/test_v3d_renders_triangle.py)
+- Rebooted between test runs. Boot 32 rejected the previous RAM session and loaded the verified SD kernel again. Draw plus 16 KiB readback took 0.609 and 0.698 seconds on boot 32. Next GUI milestone is an RFB framebuffer update for TigerVNC Viewer. [Runbook](https://github.com/gabrielelanaro/gabix/blob/f6816a34606a1a0b032658fa44fb5bc000d6cad7/docs/pi2-ram-probes.md) · [Physical hardware test](tests/test_v3d_renders_triangle.py)
 
 ### 2026-11-24 — Generalize the Wi-Fi experiment runner
 

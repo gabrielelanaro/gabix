@@ -46,7 +46,7 @@
 <label>Row <input type="number" name="pixel-y" min="0" max="63" value="32"></label>
 <label>Inspect a Pi frame (optional) <input type="file" accept=".bin,application/octet-stream"></label><output aria-live="polite"></output></div></figure>
 <h2>Run the same check on the board</h2>
-<p>The physical test saves the blue clear, the gold triangle and a second draw with changed colors. Open its <code>triangle.bin</code> in the inspector. Try column 19 and then 20 on row 32. <a href="../docs/pi2-ram-probes.md">Runner setup</a> · <a href="../tests/test_v3d_renders_triangle.py#L71">Save the returned frame</a></p>
+<p>The physical test saves the blue clear, the gold triangle and a second draw with changed colors. Open its <code>triangle.bin</code> in the inspector. Try column 19 and then 20 on row 32. <a href="../scripts/pi2-ram-probe.py">Probe runner</a> · <a href="../tests/test_v3d_renders_triangle.py#L71">Save the returned frame</a></p>
 <pre><code>python3 tests/test_v3d_renders_triangle.py \
   --out-dir "target/runs/$(date +%Y%m%d)-v3d"</code></pre>
 <section class="hardware"><h2>Read completion before copying</h2><figure class="tour-snippet"><figcaption><a href="../targets/armv7/probes/v3d.rs#L186">targets/armv7/probes/v3d.rs · line 186</a> · Instructions used in this draw</figcaption><pre><code>unsafe fn submit(thread: usize, start: *const u8, end: *const u8) -&gt; bool {

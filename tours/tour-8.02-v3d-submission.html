@@ -12,7 +12,7 @@
 <h1>Starting V3D in Gabix</h1>
 <p>Follow one byte from the Mac’s command line to the ARM function that reads V3D. Then follow the same function when you ask it to render the triangle’s blue background.</p>
 <h2 id="client">On the Mac, build and call the probe</h2>
-<p>These are the two commands for the ID experiment. Run them from the Gabix checkout with the Pi booted into the Wi-Fi development kernel. The first compiles <code>v3d.rs</code> into ARM instructions. The second uploads that image into Pi RAM, sends a run request and prints the result. <a href="../scripts/build-pi2-ram-probe.sh#L11">ARM build</a> · <a href="../scripts/pi2-ram-probe.py#L56">Client entry point</a> · <a href="../docs/pi2-ram-probes.md">Development setup</a></p>
+<p>These are the two commands for the ID experiment. Run them from the Gabix checkout with the Pi booted into the Wi-Fi development kernel. The first compiles <code>v3d.rs</code> into ARM instructions. The second uploads that image into Pi RAM, sends a run request and prints the result. <a href="../scripts/build-pi2-ram-probe.sh#L11">ARM build</a> · <a href="../scripts/pi2-ram-probe.py#L56">Client entry point</a></p>
 <pre><code>sh scripts/build-pi2-ram-probe.sh \
   targets/armv7/probes/v3d.rs target/probes/v3d.img
 python3 scripts/pi2-ram-probe.py \

@@ -72,8 +72,8 @@ class LayoutAuditTests(unittest.TestCase):
 
     def test_scan_preserves_directory_totals(self):
         self.write("README.md", "Gabix\n")
-        self.write("docs/adr/0001-first.md", "First\n")
-        self.write("docs/adr/0001-second.md", "Second\n")
+        self.write("learning-records/0001-first.md", "First\n")
+        self.write("learning-records/0002-second.md", "Second\n")
         self.write("tests/fixtures/hello.rs", "fn main() {}\n")
         report = self.audit()
         files = report["files"]
@@ -105,23 +105,6 @@ class LayoutAuditTests(unittest.TestCase):
         self.assertEqual(misplaced(), [source.name])
         source.rename(target)
         self.assertEqual(misplaced(), [])
-
-    def test_rename_assigns_a_unique_decision_id(self):
-        self.write("docs/adr/0006-boot.md", "Boot\n")
-        duplicate = self.write("docs/adr/0006-uart.md", "UART\n")
-
-        def collisions():
-            report = self.audit()
-            return [
-                issue for record in report["files"] for issue in record["findings"]
-                if issue["rule"] == "adr-id-collision"
-            ]
-
-        first, = collisions()
-        self.assertIn("0006-boot.md", first["evidence"])
-        self.assertIn("0006-uart.md", first["evidence"])
-        duplicate.rename(duplicate.with_name("0007-uart.md"))
-        self.assertEqual(collisions(), [])
 
     def test_scan_locates_duplicate_probe_source(self):
         body = ".global draw\ndraw:\n  bx lr\n"

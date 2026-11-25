@@ -4,8 +4,7 @@ Gabix is a small Linux-like operating system written in Rust. The repository
 contains the x86-64 kernel, shared kernel services, ARMv7 adapters, QEMU
 behavioral tests, and the Raspberry Pi 2B SD-card image builder.
 
-[Repository layout and proposed package boundaries](docs/repository-layout.md) describes
-where each target lives. Run `python3 scripts/build-architecture-map.py` to explore
+Run `python3 scripts/build-architecture-map.py` to explore
 the current directory tree and its placement findings in `target/architecture-map.html`.
 
 ## Build on macOS
@@ -43,6 +42,9 @@ The builder needs `mkfs.ext2` and `debugfs`. Homebrew installs them under the
 
 ## Run the behavioral tests
 
+Run `sh scripts/lint.sh` to check repository paths without building a kernel.
+The test runner starts with the same check.
+
 QEMU provides the x86-64 and ARM emulators. Homebrew installs
 `qemu-system-arm` on the `PATH`; set `QEMU_SYSTEM_ARM` explicitly if another
 ARM QEMU binary should run the tests:
@@ -61,9 +63,10 @@ DHCP, and UDP echo.
 ## Put the image on the Pi
 
 Use Raspberry Pi Imager to write `target/gabix-pi2.img` to an SD card. Then
-connect the Pi 2B Ethernet port to the router and follow
-[`docs/raspberry-pi-2.md`](docs/raspberry-pi-2.md) for the DHCP, ping, UDP, and
-optional serial checks.
+connect the Pi 2B Ethernet port to the router. Check the router for the Pi’s
+DHCP lease, ping the assigned address, and use
+[`scripts/pi2-echo.py`](scripts/pi2-echo.py) to check UDP echo. Use
+[`scripts/monitor-pi2-uart.sh`](scripts/monitor-pi2-uart.sh) for the serial log.
 
 The physical Pi verification remains separate from QEMU. QEMU verifies the
 ARM and emulated USB/RNDIS paths; the board verifies the DWC2 timing, LAN9512

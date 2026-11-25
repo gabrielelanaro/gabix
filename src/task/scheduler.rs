@@ -3,7 +3,6 @@
 //! Each Task holds its scheduling state and saved kernel-stack pointer.
 //! Its PID selects the Process containing memory, file and parent/child state.
 //! `yield_now` serves both voluntary yields and timer-driven preemption.
-//! See `docs/context-switch.html` for the saved-stack walkthrough.
 
 use crate::arch::x86_64::context::{fork_trampoline, saved_stack, switch, TaskContext};
 use crate::frame_allocator;
@@ -86,7 +85,7 @@ impl Task {
     /// - Maps them into a fresh virtual range.
     /// - Pre-populates the top of the stack with faked "saved state" so
     ///   the same context-switch routine that resumes old tasks can also
-    ///   start this brand-new one. See `docs/context-switch.html`.
+    ///   start this brand-new one.
     ///
     /// This uses the boot-time global mapper. The executing address space
     /// must also expose the resulting range before the stack is populated.

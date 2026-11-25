@@ -25,8 +25,8 @@ kernel scheduling, then preemption. Each step includes a didactic lesson and
 behavioral tests on the physical Pi using UART reboot and upload.
 
 ## Success looks like
-- Boot gabix on a physical Raspberry Pi 2B and see the full serial sequence in
-  `docs/raspberry-pi-2.md` through `userspace exited`.
+- Boot gabix on a physical Raspberry Pi 2B and see `userspace exited` in the
+  serial log.
 - Explain, from the gabix source, how the same kernel runs on x86_64 and ARMv7:
   privilege and exception entry, address translation, device discovery, and the
   syscall mechanism on each.

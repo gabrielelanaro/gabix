@@ -106,7 +106,7 @@ Origin: the user called a module-index paragraph *"jargon soup … your internal
 - Short Socratic chunks: one paragraph max, then a probing question
 - Explain terminology with intuition, not just definitions — push back hard on jargon dumps
 - Prefers to write code himself when fresh; flexible when tired
-- Loves visual HTML explainers for major concepts (we have 14+ in docs/)
+- Loves visual HTML explainers for major concepts
 - Follows the "Linux to read alongside" pattern from LEARNING.md
 
 ## User's workflow preferences (recorded during Lesson 2)

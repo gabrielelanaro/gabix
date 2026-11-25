@@ -49,7 +49,7 @@
       "status": "hardware-passed",
       "protected": true,
       "source": "Protected pi2-uart-loader-full-2026-08-15 baseline with SD boot loader, 128 MiB kernel partition and two development kernel copies",
-      "evidence": "Physical Pi booted the permanently installed SD loader, confirmed an Ethernet-uploaded kernel, recovered from a hung candidate through watchdog fallback, and accepted UART recovery after both CRCs were rejected. Final live MBR, boot record, both kernels and logical loader file match this image byte-for-byte. FAT allocation is preserved independently in the baseline image and live card. Installed in place over Ethernet/UART; this complete raw image has not been reflashed as a whole. Original protected image SHA256 unchanged. See docs/pi2-boot-status.md."
+      "evidence": "Physical Pi booted the permanently installed SD loader, confirmed an Ethernet-uploaded kernel, recovered from a hung candidate through watchdog fallback, and accepted UART recovery after both CRCs were rejected. Final live MBR, boot record, both kernels and logical loader file match this image byte-for-byte. FAT allocation is preserved independently in the baseline image and live card. Installed in place over Ethernet/UART; this complete raw image has not been reflashed as a whole. Original protected image SHA256 unchanged. Historical evidence at https://github.com/gabrielelanaro/gabix/blob/f6816a34606a1a0b032658fa44fb5bc000d6cad7/docs/pi2-boot-status.md"
     },
     {
       "id": "pi2-router-ready-2026-11-15",
@@ -60,7 +60,7 @@
       "protected": true,
       "contains_management_key": true,
       "source": "Protected pi2-sd-boot-2026-11-15 baseline with two copies of the managed kernel, CRC32 68bdf494; existing SD loader preserved",
-      "evidence": "Managed kernel physically booted and confirmed on Pi. DHCP outage recovery and renewal, authenticated update/reboot, persistent logs and replay rejection passed. Image loader and both kernels verified locally; the complete raw image has not been reflashed. Private image embeds this device management key. See docs/pi2-router-readiness.md."
+      "evidence": "Managed kernel physically booted and confirmed on Pi. DHCP outage recovery and renewal, authenticated update/reboot, persistent logs and replay rejection passed. Image loader and both kernels verified locally; the complete raw image has not been reflashed. Private image embeds this device management key. Historical evidence at https://github.com/gabrielelanaro/gabix/blob/f6816a34606a1a0b032658fa44fb5bc000d6cad7/docs/pi2-router-readiness.md"
     }
   ]
 }

@@ -73,8 +73,6 @@ def nonkernel(path, source):
             return placement("Host build and development tools", path)
     if top == "artifacts" and (ext == ".md" or path == "artifacts/pi2-images.json"):
         return placement("Hardware evidence and image registry", path)
-    if top == "docs" and ext in {".html", ".md"}:
-        return placement("Architecture decisions" if p.parts[1:2] == ("adr",) else "Engineering documentation", path)
     if top == "learning-records" and ext == ".md":
         return placement("Learning records", path)
     if top in {"lessons", "reference", "tours"} and ext in {".html", ".md", ".png", ".svg", ".css", ".js"}:
