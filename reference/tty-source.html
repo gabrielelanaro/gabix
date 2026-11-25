@@ -1,0 +1,321 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>TTY lesson · source excerpts</title><link rel="stylesheet" href="../assets/lesson.css"><article class="lesson"><h1>TTY source excerpts</h1><p>Verified against local commit 77f5aca7557ebd73ce15fffd2d4602abfafd6687 on 23 November 2026. Line anchors preserve the code used in the lesson.</p><p><a href="../lessons/4.11-tty-stack-overview.html">Return to lesson 4.11</a></p><h2>src/serial.rs</h2><pre><code><span id="src-serial-rs-13"><span class="c">  13 </span><span class="c">/// I/O port base for COM1 (the first serial port, historically the</span></span>
+<span id="src-serial-rs-14"><span class="c">  14 </span><span class="c">/// &quot;modem port&quot;). This driver assumes the conventional 0x3F8 mapping.</span></span>
+<span id="src-serial-rs-15"><span class="c">  15 </span>const COM1_BASE: u16 = 0x3F8;</span>
+<span id="src-serial-rs-16"><span class="c">  16 </span></span>
+<span id="src-serial-rs-17"><span class="c">  17 </span>pub struct SerialPort {</span>
+<span id="src-serial-rs-18"><span class="c">  18 </span>    data: Port&lt;u8&gt;,</span>
+<span id="src-serial-rs-19"><span class="c">  19 </span>}</span>
+<span id="src-serial-rs-20"><span class="c">  20 </span></span>
+<span id="src-serial-rs-21"><span class="c">  21 </span>impl SerialPort {</span>
+<span id="src-serial-rs-22"><span class="c">  22 </span><span class="c">    /// Construct a port handle; baud rate, line format and UART control are unchanged.</span></span>
+<span id="src-serial-rs-23"><span class="c">  23 </span>    pub const fn new() -&gt; Self {</span>
+<span id="src-serial-rs-24"><span class="c">  24 </span>        SerialPort {</span>
+<span id="src-serial-rs-25"><span class="c">  25 </span>            data: Port::new(COM1_BASE),</span>
+<span id="src-serial-rs-26"><span class="c">  26 </span>        }</span>
+<span id="src-serial-rs-27"><span class="c">  27 </span>    }</span>
+<span id="src-serial-rs-28"><span class="c">  28 </span></span>
+<span id="src-serial-rs-29"><span class="c">  29 </span>    pub fn write_byte(&amp;mut self, byte: u8) {</span>
+<span id="src-serial-rs-30"><span class="c">  30 </span><span class="c">        // Submit directly to the data register without polling transmitter status.</span></span>
+<span id="src-serial-rs-31"><span class="c">  31 </span><span class="c">        // This driver relies on the UART setup inherited from boot and does not</span></span>
+<span id="src-serial-rs-32"><span class="c">  32 </span><span class="c">        // guarantee delivery when the transmitter/backend cannot accept a byte.</span></span>
+<span id="src-serial-rs-33"><span class="c">  33 </span>        unsafe { self.data.write(byte) };</span>
+<span id="src-serial-rs-34"><span class="c">  34 </span>    }</span></code></pre><h2>src/syscall/file.rs</h2><pre><code><span id="src-syscall-file-rs-19"><span class="c">  19 </span>pub(super) fn read(fd: u64, buffer_ptr: u64, length: u64) -&gt; u64 {</span>
+<span id="src-syscall-file-rs-20"><span class="c">  20 </span>    if !is_low_half_range(buffer_ptr, length) {</span>
+<span id="src-syscall-file-rs-21"><span class="c">  21 </span>        println!(</span>
+<span id="src-syscall-file-rs-22"><span class="c">  22 </span>            &quot;[syscall] sys_read: bad user pointer buf=0x{:x} len={}&quot;,</span>
+<span id="src-syscall-file-rs-23"><span class="c">  23 </span>            buffer_ptr, length</span>
+<span id="src-syscall-file-rs-24"><span class="c">  24 </span>        );</span>
+<span id="src-syscall-file-rs-25"><span class="c">  25 </span>        return u64::MAX;</span>
+<span id="src-syscall-file-rs-26"><span class="c">  26 </span>    }</span>
+<span id="src-syscall-file-rs-27"><span class="c">  27 </span></span>
+<span id="src-syscall-file-rs-28"><span class="c">  28 </span>    let output = unsafe { core::slice::from_raw_parts_mut(buffer_ptr as *mut u8, length as usize) };</span>
+<span id="src-syscall-file-rs-29"><span class="c">  29 </span>    if ACTIVE_TCP_FD.load(Ordering::Acquire) == fd {</span>
+<span id="src-syscall-file-rs-30"><span class="c">  30 </span>        return active_tcp_recv(output) as u64;</span>
+<span id="src-syscall-file-rs-31"><span class="c">  31 </span>    }</span>
+<span id="src-syscall-file-rs-32"><span class="c">  32 </span>    if let Some(socket) = crate::task::with_current_fd_table(|table| table.get_tcp_socket(fd)) {</span>
+<span id="src-syscall-file-rs-33"><span class="c">  33 </span>        loop {</span>
+<span id="src-syscall-file-rs-34"><span class="c">  34 </span>            if let Some(count) = socket.read(output) {</span>
+<span id="src-syscall-file-rs-35"><span class="c">  35 </span>                return count as u64;</span>
+<span id="src-syscall-file-rs-36"><span class="c">  36 </span>            }</span>
+<span id="src-syscall-file-rs-37"><span class="c">  37 </span>            crate::task::block_current_if(|pid| socket.register_recv_waiter(pid));</span>
+<span id="src-syscall-file-rs-38"><span class="c">  38 </span>            crate::task::yield_now();</span>
+<span id="src-syscall-file-rs-39"><span class="c">  39 </span>        }</span>
+<span id="src-syscall-file-rs-40"><span class="c">  40 </span>    }</span>
+<span id="src-syscall-file-rs-41"><span class="c">  41 </span></span>
+<span id="src-syscall-file-rs-42"><span class="c">  42 </span>    let file = match crate::task::with_current_fd_table(|table| table.get(fd)) {</span>
+<span id="src-syscall-file-rs-43"><span class="c">  43 </span>        Some(file) =&gt; file,</span>
+<span id="src-syscall-file-rs-44"><span class="c">  44 </span>        None =&gt; return u64::MAX,</span>
+<span id="src-syscall-file-rs-45"><span class="c">  45 </span>    };</span>
+<span id="src-syscall-file-rs-46"><span class="c">  46 </span>    let data = file.inode.data.lock();</span>
+<span id="src-syscall-file-rs-47"><span class="c">  47 </span>    let mut cursor = file.cursor.lock();</span>
+<span id="src-syscall-file-rs-48"><span class="c">  48 </span>    let start = *cursor as usize;</span>
+<span id="src-syscall-file-rs-49"><span class="c">  49 </span>    let count = (length as usize).min(data.len().saturating_sub(start));</span>
+<span id="src-syscall-file-rs-50"><span class="c">  50 </span>    if count &gt; 0 {</span>
+<span id="src-syscall-file-rs-51"><span class="c">  51 </span>        unsafe {</span>
+<span id="src-syscall-file-rs-52"><span class="c">  52 </span>            core::ptr::copy_nonoverlapping(data.as_ptr().add(start), buffer_ptr as *mut u8, count);</span>
+<span id="src-syscall-file-rs-53"><span class="c">  53 </span>        }</span>
+<span id="src-syscall-file-rs-54"><span class="c">  54 </span>    }</span>
+<span id="src-syscall-file-rs-55"><span class="c">  55 </span>    *cursor += count as u64;</span>
+<span id="src-syscall-file-rs-56"><span class="c">  56 </span>    count as u64</span>
+<span id="src-syscall-file-rs-57"><span class="c">  57 </span>}</span>
+<span id="src-syscall-file-rs-58"><span class="c">  58 </span></span>
+<span id="src-syscall-file-rs-59"><span class="c">  59 </span>pub(super) fn write(fd: u64, buffer_ptr: u64, length: u64) -&gt; u64 {</span>
+<span id="src-syscall-file-rs-60"><span class="c">  60 </span>    if !is_low_half_range(buffer_ptr, length) {</span>
+<span id="src-syscall-file-rs-61"><span class="c">  61 </span>        return u64::MAX;</span>
+<span id="src-syscall-file-rs-62"><span class="c">  62 </span>    }</span>
+<span id="src-syscall-file-rs-63"><span class="c">  63 </span>    let input = unsafe { core::slice::from_raw_parts(buffer_ptr as *const u8, length as usize) };</span>
+<span id="src-syscall-file-rs-64"><span class="c">  64 </span></span>
+<span id="src-syscall-file-rs-65"><span class="c">  65 </span>    if fd == STANDARD_OUTPUT_FD || fd == STANDARD_ERROR_FD {</span>
+<span id="src-syscall-file-rs-66"><span class="c">  66 </span>        let mut serial = serial::SERIAL1.lock();</span>
+<span id="src-syscall-file-rs-67"><span class="c">  67 </span>        for &amp;byte in input {</span>
+<span id="src-syscall-file-rs-68"><span class="c">  68 </span>            serial.write_byte(byte);</span>
+<span id="src-syscall-file-rs-69"><span class="c">  69 </span>        }</span>
+<span id="src-syscall-file-rs-70"><span class="c">  70 </span>        return length;</span>
+<span id="src-syscall-file-rs-71"><span class="c">  71 </span>    }</span></code></pre><h2>src/task/scheduler.rs</h2><pre><code><span id="src-task-scheduler-rs-584"><span class="c"> 584 </span><span class="c">/// Mark the current task Blocked. Execution continues until the caller yields.</span></span>
+<span id="src-task-scheduler-rs-585"><span class="c"> 585 </span>pub fn block_current() {</span>
+<span id="src-task-scheduler-rs-586"><span class="c"> 586 </span>    x86_64::instructions::interrupts::without_interrupts(|| {</span>
+<span id="src-task-scheduler-rs-587"><span class="c"> 587 </span>        let mut sched = SCHEDULER.lock();</span>
+<span id="src-task-scheduler-rs-588"><span class="c"> 588 </span>        let current = sched.current;</span>
+<span id="src-task-scheduler-rs-589"><span class="c"> 589 </span>        sched.tasks[current].state = TaskState::Blocked;</span>
+<span id="src-task-scheduler-rs-590"><span class="c"> 590 </span>    });</span>
+<span id="src-task-scheduler-rs-591"><span class="c"> 591 </span>}</span>
+<span id="src-task-scheduler-rs-592"><span class="c"> 592 </span></span>
+<span id="src-task-scheduler-rs-593"><span class="c"> 593 </span><span class="c">/// Publish a waiter and, when `register` returns true, mark the task Blocked</span></span>
+<span id="src-task-scheduler-rs-594"><span class="c"> 594 </span><span class="c">/// in one interrupt-disabled critical section. The callback runs with SCHEDULER</span></span>
+<span id="src-task-scheduler-rs-595"><span class="c"> 595 </span><span class="c">/// locked, so it must not yield or reacquire that lock. This function does not</span></span>
+<span id="src-task-scheduler-rs-596"><span class="c"> 596 </span><span class="c">/// switch tasks; the caller decides when to yield and how to protect that gap.</span></span>
+<span id="src-task-scheduler-rs-597"><span class="c"> 597 </span>pub fn block_current_if(register: impl FnOnce(Pid) -&gt; bool) -&gt; bool {</span>
+<span id="src-task-scheduler-rs-598"><span class="c"> 598 </span>    x86_64::instructions::interrupts::without_interrupts(|| {</span>
+<span id="src-task-scheduler-rs-599"><span class="c"> 599 </span>        let mut sched = SCHEDULER.lock();</span>
+<span id="src-task-scheduler-rs-600"><span class="c"> 600 </span>        let current = sched.current;</span>
+<span id="src-task-scheduler-rs-601"><span class="c"> 601 </span>        let pid = sched.tasks[current].pid;</span>
+<span id="src-task-scheduler-rs-602"><span class="c"> 602 </span>        if register(pid) {</span>
+<span id="src-task-scheduler-rs-603"><span class="c"> 603 </span>            sched.tasks[current].state = TaskState::Blocked;</span>
+<span id="src-task-scheduler-rs-604"><span class="c"> 604 </span>            true</span>
+<span id="src-task-scheduler-rs-605"><span class="c"> 605 </span>        } else {</span>
+<span id="src-task-scheduler-rs-606"><span class="c"> 606 </span>            false</span>
+<span id="src-task-scheduler-rs-607"><span class="c"> 607 </span>        }</span>
+<span id="src-task-scheduler-rs-608"><span class="c"> 608 </span>    })</span>
+<span id="src-task-scheduler-rs-609"><span class="c"> 609 </span>}</span>
+<span id="src-task-scheduler-rs-610"><span class="c"> 610 </span></span>
+<span id="src-task-scheduler-rs-611"><span class="c"> 611 </span><span class="c">/// Change a matching Blocked task to Ready. It runs on a later scheduling</span></span>
+<span id="src-task-scheduler-rs-612"><span class="c"> 612 </span><span class="c">/// decision. Missing PIDs and tasks in other states are left unchanged.</span></span>
+<span id="src-task-scheduler-rs-613"><span class="c"> 613 </span>pub fn wake(pid: Pid) {</span>
+<span id="src-task-scheduler-rs-614"><span class="c"> 614 </span>    x86_64::instructions::interrupts::without_interrupts(|| {</span>
+<span id="src-task-scheduler-rs-615"><span class="c"> 615 </span>        if let Some(task) = SCHEDULER</span>
+<span id="src-task-scheduler-rs-616"><span class="c"> 616 </span>            .lock()</span>
+<span id="src-task-scheduler-rs-617"><span class="c"> 617 </span>            .tasks</span>
+<span id="src-task-scheduler-rs-618"><span class="c"> 618 </span>            .iter_mut()</span>
+<span id="src-task-scheduler-rs-619"><span class="c"> 619 </span>            .find(|task| task.pid == pid)</span>
+<span id="src-task-scheduler-rs-620"><span class="c"> 620 </span>        {</span>
+<span id="src-task-scheduler-rs-621"><span class="c"> 621 </span>            if task.state == TaskState::Blocked {</span>
+<span id="src-task-scheduler-rs-622"><span class="c"> 622 </span>                task.state = TaskState::Ready;</span>
+<span id="src-task-scheduler-rs-623"><span class="c"> 623 </span>            }</span>
+<span id="src-task-scheduler-rs-624"><span class="c"> 624 </span>        }</span>
+<span id="src-task-scheduler-rs-625"><span class="c"> 625 </span>    });</span>
+<span id="src-task-scheduler-rs-626"><span class="c"> 626 </span>}</span>
+<span id="src-task-scheduler-rs-627"><span class="c"> 627 </span></span></code></pre><h2>src/net/tcp.rs</h2><pre><code><span id="src-net-tcp-rs-339"><span class="c"> 339 </span>    }</span>
+<span id="src-net-tcp-rs-340"><span class="c"> 340 </span></span>
+<span id="src-net-tcp-rs-341"><span class="c"> 341 </span><span class="c">    /// Consume queued bytes first. An empty queue returns Some(0) after FIN,</span></span>
+<span id="src-net-tcp-rs-342"><span class="c"> 342 </span><span class="c">    /// or None while waiting for data (also None for a non-connection socket).</span></span>
+<span id="src-net-tcp-rs-343"><span class="c"> 343 </span>    pub fn read(&amp;self, out: &amp;mut [u8]) -&gt; Option&lt;usize&gt; {</span>
+<span id="src-net-tcp-rs-344"><span class="c"> 344 </span>        let mut state = self.inner.lock();</span>
+<span id="src-net-tcp-rs-345"><span class="c"> 345 </span>        let SocketState::Connection(connection) = &amp;mut *state else {</span>
+<span id="src-net-tcp-rs-346"><span class="c"> 346 </span>            return None;</span>
+<span id="src-net-tcp-rs-347"><span class="c"> 347 </span>        };</span>
+<span id="src-net-tcp-rs-348"><span class="c"> 348 </span>        if connection.receive.is_empty() {</span>
+<span id="src-net-tcp-rs-349"><span class="c"> 349 </span>            return if connection.eof { Some(0) } else { None };</span>
+<span id="src-net-tcp-rs-350"><span class="c"> 350 </span>        }</span>
+<span id="src-net-tcp-rs-351"><span class="c"> 351 </span>        let count = out.len().min(connection.receive.len());</span>
+<span id="src-net-tcp-rs-352"><span class="c"> 352 </span>        for byte in &amp;mut out[..count] {</span>
+<span id="src-net-tcp-rs-353"><span class="c"> 353 </span>            *byte = connection.receive.pop_front().unwrap();</span>
+<span id="src-net-tcp-rs-354"><span class="c"> 354 </span>        }</span>
+<span id="src-net-tcp-rs-355"><span class="c"> 355 </span>        Some(count)</span>
+<span id="src-net-tcp-rs-356"><span class="c"> 356 </span>    }</span>
+<span id="src-net-tcp-rs-357"><span class="c"> 357 </span></span>
+<span id="src-net-tcp-rs-358"><span class="c"> 358 </span>    pub fn register_recv_waiter(&amp;self, pid: Pid) -&gt; bool {</span>
+<span id="src-net-tcp-rs-359"><span class="c"> 359 </span>        let mut state = self.inner.lock();</span>
+<span id="src-net-tcp-rs-360"><span class="c"> 360 </span>        match &amp;mut *state {</span>
+<span id="src-net-tcp-rs-361"><span class="c"> 361 </span>            SocketState::Connection(connection)</span>
+<span id="src-net-tcp-rs-362"><span class="c"> 362 </span>                if connection.receive.is_empty() &amp;&amp; !connection.eof =&gt;</span>
+<span id="src-net-tcp-rs-363"><span class="c"> 363 </span>            {</span>
+<span id="src-net-tcp-rs-364"><span class="c"> 364 </span>                connection.recv_waiter = Some(pid);</span>
+<span id="src-net-tcp-rs-365"><span class="c"> 365 </span>                true</span>
+<span id="src-net-tcp-rs-366"><span class="c"> 366 </span>            }</span>
+<span id="src-net-tcp-rs-367"><span class="c"> 367 </span>            _ =&gt; false,</span>
+<span id="src-net-tcp-rs-368"><span class="c"> 368 </span>        }</span>
+<span id="src-net-tcp-rs-369"><span class="c"> 369 </span>    }</span></code></pre><pre><code><span id="src-net-tcp-rs-827"><span class="c"> 827 </span>        if !segment.payload.is_empty() {</span>
+<span id="src-net-tcp-rs-828"><span class="c"> 828 </span>            connection.receive.extend(segment.payload.iter().copied());</span>
+<span id="src-net-tcp-rs-829"><span class="c"> 829 </span>            connection.recv_next = connection</span>
+<span id="src-net-tcp-rs-830"><span class="c"> 830 </span>                .recv_next</span>
+<span id="src-net-tcp-rs-831"><span class="c"> 831 </span>                .wrapping_add(segment.payload.len() as u32);</span>
+<span id="src-net-tcp-rs-832"><span class="c"> 832 </span>            println!(</span>
+<span id="src-net-tcp-rs-833"><span class="c"> 833 </span>                &quot;[tcp] server data rx len={} next_ack={}&quot;,</span>
+<span id="src-net-tcp-rs-834"><span class="c"> 834 </span>                segment.payload.len(),</span>
+<span id="src-net-tcp-rs-835"><span class="c"> 835 </span>                connection.recv_next</span>
+<span id="src-net-tcp-rs-836"><span class="c"> 836 </span>            );</span>
+<span id="src-net-tcp-rs-837"><span class="c"> 837 </span>        }</span>
+<span id="src-net-tcp-rs-838"><span class="c"> 838 </span>        if segment.header.flags &amp; FLAG_FIN != 0 {</span>
+<span id="src-net-tcp-rs-839"><span class="c"> 839 </span>            connection.recv_next = connection.recv_next.wrapping_add(1);</span>
+<span id="src-net-tcp-rs-840"><span class="c"> 840 </span>            connection.eof = true;</span>
+<span id="src-net-tcp-rs-841"><span class="c"> 841 </span>            let old = connection.state;</span>
+<span id="src-net-tcp-rs-842"><span class="c"> 842 </span>            connection.state = match old {</span>
+<span id="src-net-tcp-rs-843"><span class="c"> 843 </span>                TcpState::Established =&gt; TcpState::CloseWait,</span>
+<span id="src-net-tcp-rs-844"><span class="c"> 844 </span>                TcpState::FinWait1 =&gt; TcpState::Closing,</span>
+<span id="src-net-tcp-rs-845"><span class="c"> 845 </span>                TcpState::FinWait2 =&gt; TcpState::TimeWait,</span>
+<span id="src-net-tcp-rs-846"><span class="c"> 846 </span>                other =&gt; other,</span>
+<span id="src-net-tcp-rs-847"><span class="c"> 847 </span>            };</span>
+<span id="src-net-tcp-rs-848"><span class="c"> 848 </span>            println!(</span>
+<span id="src-net-tcp-rs-849"><span class="c"> 849 </span>                &quot;[tcp] FIN received; state {:?} -&gt; {:?}; ACK={}&quot;,</span>
+<span id="src-net-tcp-rs-850"><span class="c"> 850 </span>                old, connection.state, connection.recv_next</span>
+<span id="src-net-tcp-rs-851"><span class="c"> 851 </span>            );</span>
+<span id="src-net-tcp-rs-852"><span class="c"> 852 </span>        }</span>
+<span id="src-net-tcp-rs-853"><span class="c"> 853 </span>        if let Some(pid) = connection.recv_waiter.take() {</span>
+<span id="src-net-tcp-rs-854"><span class="c"> 854 </span>            crate::task::wake(pid);</span>
+<span id="src-net-tcp-rs-855"><span class="c"> 855 </span>        }</span></code></pre><h2>targets/armv7/src/console.rs</h2><pre><code><span id="targets-armv7-src-console-rs-3"><span class="c">   3 </span><span class="c">// Register offsets below are word indices because base points to u32.</span></span>
+<span id="targets-armv7-src-console-rs-4"><span class="c">   4 </span>const UART_FLAGS_WORD: usize = 0x18 / core::mem::size_of::&lt;u32&gt;();</span>
+<span id="targets-armv7-src-console-rs-5"><span class="c">   5 </span>const TX_FIFO_FULL: u32 = 1 &lt;&lt; 5;</span>
+<span id="targets-armv7-src-console-rs-6"><span class="c">   6 </span>#[cfg(feature = &quot;pi-uart-user&quot;)]</span>
+<span id="targets-armv7-src-console-rs-7"><span class="c">   7 </span>const RX_FIFO_EMPTY: u32 = 1 &lt;&lt; 4;</span>
+<span id="targets-armv7-src-console-rs-8"><span class="c">   8 </span></span>
+<span id="targets-armv7-src-console-rs-9"><span class="c">   9 </span><span class="c">/// Polling access to a PL011 already configured by the boot code.</span></span>
+<span id="targets-armv7-src-console-rs-10"><span class="c">  10 </span><span class="c">/// Multiple handles do not serialize access; callers own that coordination.</span></span>
+<span id="targets-armv7-src-console-rs-11"><span class="c">  11 </span>pub struct Pl011 {</span>
+<span id="targets-armv7-src-console-rs-12"><span class="c">  12 </span>    base: *mut u32,</span>
+<span id="targets-armv7-src-console-rs-13"><span class="c">  13 </span>}</span>
+<span id="targets-armv7-src-console-rs-14"><span class="c">  14 </span></span>
+<span id="targets-armv7-src-console-rs-15"><span class="c">  15 </span>impl Pl011 {</span>
+<span id="targets-armv7-src-console-rs-16"><span class="c">  16 </span><span class="c">    /// Caller must supply an accessible, aligned PL011 register base.</span></span>
+<span id="targets-armv7-src-console-rs-17"><span class="c">  17 </span><span class="c">    /// Construction performs no device discovery or register initialization.</span></span>
+<span id="targets-armv7-src-console-rs-18"><span class="c">  18 </span>    pub const fn new(base: usize) -&gt; Self {</span>
+<span id="targets-armv7-src-console-rs-19"><span class="c">  19 </span>        Self {</span>
+<span id="targets-armv7-src-console-rs-20"><span class="c">  20 </span>            base: base as *mut u32,</span>
+<span id="targets-armv7-src-console-rs-21"><span class="c">  21 </span>        }</span>
+<span id="targets-armv7-src-console-rs-22"><span class="c">  22 </span>    }</span>
+<span id="targets-armv7-src-console-rs-23"><span class="c">  23 </span></span>
+<span id="targets-armv7-src-console-rs-24"><span class="c">  24 </span>    #[cfg(feature = &quot;pi-uart-user&quot;)]</span>
+<span id="targets-armv7-src-console-rs-25"><span class="c">  25 </span><span class="c">    /// Read at most one queued byte. Receive error bits are discarded.</span></span>
+<span id="targets-armv7-src-console-rs-26"><span class="c">  26 </span>    pub fn try_read_byte(&amp;mut self) -&gt; Option&lt;u8&gt; {</span>
+<span id="targets-armv7-src-console-rs-27"><span class="c">  27 </span>        unsafe {</span>
+<span id="targets-armv7-src-console-rs-28"><span class="c">  28 </span>            if core::ptr::read_volatile(self.base.add(UART_FLAGS_WORD)) &amp; RX_FIFO_EMPTY != 0 {</span>
+<span id="targets-armv7-src-console-rs-29"><span class="c">  29 </span>                None</span>
+<span id="targets-armv7-src-console-rs-30"><span class="c">  30 </span>            } else {</span>
+<span id="targets-armv7-src-console-rs-31"><span class="c">  31 </span>                Some(core::ptr::read_volatile(self.base) as u8)</span>
+<span id="targets-armv7-src-console-rs-32"><span class="c">  32 </span>            }</span>
+<span id="targets-armv7-src-console-rs-33"><span class="c">  33 </span>        }</span>
+<span id="targets-armv7-src-console-rs-34"><span class="c">  34 </span>    }</span>
+<span id="targets-armv7-src-console-rs-35"><span class="c">  35 </span>}</span>
+<span id="targets-armv7-src-console-rs-36"><span class="c">  36 </span></span>
+<span id="targets-armv7-src-console-rs-37"><span class="c">  37 </span>impl BootConsole for Pl011 {</span>
+<span id="targets-armv7-src-console-rs-38"><span class="c">  38 </span><span class="c">    // Wait without a timeout for FIFO room, then enqueue the byte. This does</span></span>
+<span id="targets-armv7-src-console-rs-39"><span class="c">  39 </span><span class="c">    // not wait for the final serial bit to leave the UART.</span></span>
+<span id="targets-armv7-src-console-rs-40"><span class="c">  40 </span>    fn write_byte(&amp;mut self, byte: u8) {</span>
+<span id="targets-armv7-src-console-rs-41"><span class="c">  41 </span>        unsafe {</span>
+<span id="targets-armv7-src-console-rs-42"><span class="c">  42 </span>            while core::ptr::read_volatile(self.base.add(UART_FLAGS_WORD)) &amp; TX_FIFO_FULL != 0 {}</span>
+<span id="targets-armv7-src-console-rs-43"><span class="c">  43 </span>            core::ptr::write_volatile(self.base, byte as u32);</span>
+<span id="targets-armv7-src-console-rs-44"><span class="c">  44 </span>        }</span>
+<span id="targets-armv7-src-console-rs-45"><span class="c">  45 </span>    }</span></code></pre><h2>targets/armv7/src/syscall.rs</h2><pre><code><span id="targets-armv7-src-syscall-rs-17"><span class="c">  17 </span><span class="c">/// Matches boot.S .Lsvc: r0 through r12, followed by LR_svc.</span></span>
+<span id="targets-armv7-src-syscall-rs-18"><span class="c">  18 </span><span class="c">/// r7 selects the call; r0-r2 carry arguments; the saved r0 becomes the result.</span></span>
+<span id="targets-armv7-src-syscall-rs-19"><span class="c">  19 </span><span class="c">/// The saved processor status remains in SPSR_svc, outside this frame.</span></span>
+<span id="targets-armv7-src-syscall-rs-20"><span class="c">  20 </span>#[repr(C)]</span>
+<span id="targets-armv7-src-syscall-rs-21"><span class="c">  21 </span>pub struct UserFrame {</span>
+<span id="targets-armv7-src-syscall-rs-22"><span class="c">  22 </span>    registers: [u32; SAVED_GENERAL_REGISTERS],</span>
+<span id="targets-armv7-src-syscall-rs-23"><span class="c">  23 </span>    return_address: u32,</span>
+<span id="targets-armv7-src-syscall-rs-24"><span class="c">  24 </span>}</span>
+<span id="targets-armv7-src-syscall-rs-25"><span class="c">  25 </span></span>
+<span id="targets-armv7-src-syscall-rs-26"><span class="c">  26 </span><span class="c">/// Dispatch Gabix&#x27;s small ARM ABI (its numbers are defined above).</span></span>
+<span id="targets-armv7-src-syscall-rs-27"><span class="c">  27 </span><span class="c">/// Fixed scheduled processes can exit/getpid but cannot reboot the machine.</span></span>
+<span id="targets-armv7-src-syscall-rs-28"><span class="c">  28 </span><span class="c">/// Bootstrap user programs use the platform-specific exit/reboot path.</span></span>
+<span id="targets-armv7-src-syscall-rs-29"><span class="c">  29 </span><span class="c">/// Safety: frame must be the live SVC frame, with valid current-process state.</span></span>
+<span id="targets-armv7-src-syscall-rs-30"><span class="c">  30 </span>pub unsafe fn dispatch(frame: &amp;mut UserFrame) {</span>
+<span id="targets-armv7-src-syscall-rs-31"><span class="c">  31 </span>    if let Some(id) = crate::scheduler::current_process() {</span>
+<span id="targets-armv7-src-syscall-rs-32"><span class="c">  32 </span>        match frame.registers[SYSCALL_NUMBER_REGISTER] {</span>
+<span id="targets-armv7-src-syscall-rs-33"><span class="c">  33 </span>            SYS_EXIT =&gt; crate::process::exit_current(frame.registers[0]),</span>
+<span id="targets-armv7-src-syscall-rs-34"><span class="c">  34 </span>            SYS_GETPID =&gt; {</span>
+<span id="targets-armv7-src-syscall-rs-35"><span class="c">  35 </span>                frame.registers[RESULT_REGISTER] = id as u32 + 1;</span>
+<span id="targets-armv7-src-syscall-rs-36"><span class="c">  36 </span>                return;</span>
+<span id="targets-armv7-src-syscall-rs-37"><span class="c">  37 </span>            }</span>
+<span id="targets-armv7-src-syscall-rs-38"><span class="c">  38 </span>            SYS_REBOOT =&gt; {</span>
+<span id="targets-armv7-src-syscall-rs-39"><span class="c">  39 </span>                frame.registers[RESULT_REGISTER] = SYSCALL_ERROR;</span>
+<span id="targets-armv7-src-syscall-rs-40"><span class="c">  40 </span>                return;</span>
+<span id="targets-armv7-src-syscall-rs-41"><span class="c">  41 </span>            }</span>
+<span id="targets-armv7-src-syscall-rs-42"><span class="c">  42 </span>            _ =&gt; {}</span>
+<span id="targets-armv7-src-syscall-rs-43"><span class="c">  43 </span>        }</span>
+<span id="targets-armv7-src-syscall-rs-44"><span class="c">  44 </span>    }</span>
+<span id="targets-armv7-src-syscall-rs-45"><span class="c">  45 </span>    let result = match frame.registers[SYSCALL_NUMBER_REGISTER] {</span>
+<span id="targets-armv7-src-syscall-rs-46"><span class="c">  46 </span>        SYS_WRITE =&gt; write(frame.registers[0], frame.registers[1], frame.registers[2]),</span>
+<span id="targets-armv7-src-syscall-rs-47"><span class="c">  47 </span>        SYS_EXIT =&gt; exit(frame),</span>
+<span id="targets-armv7-src-syscall-rs-48"><span class="c">  48 </span>        SYS_REBOOT =&gt; crate::platform::reset(),</span>
+<span id="targets-armv7-src-syscall-rs-49"><span class="c">  49 </span>        _ =&gt; SYSCALL_ERROR,</span>
+<span id="targets-armv7-src-syscall-rs-50"><span class="c">  50 </span>    };</span>
+<span id="targets-armv7-src-syscall-rs-51"><span class="c">  51 </span>    frame.registers[RESULT_REGISTER] = result;</span>
+<span id="targets-armv7-src-syscall-rs-52"><span class="c">  52 </span>}</span></code></pre><pre><code><span id="targets-armv7-src-syscall-rs-84"><span class="c">  84 </span><span class="c">// Synchronous UART output. Arithmetic checks constrain the address interval;</span></span>
+<span id="targets-armv7-src-syscall-rs-85"><span class="c">  85 </span><span class="c">// they do not inspect page-table permissions or catch a fault during the read.</span></span>
+<span id="targets-armv7-src-syscall-rs-86"><span class="c">  86 </span>unsafe fn write(fd: u32, address: u32, len: u32) -&gt; u32 {</span>
+<span id="targets-armv7-src-syscall-rs-87"><span class="c">  87 </span>    if crate::scheduler::current_process().is_some()</span>
+<span id="targets-armv7-src-syscall-rs-88"><span class="c">  88 </span>        &amp;&amp; !crate::memory::process_range_is_valid(address, len)</span>
+<span id="targets-armv7-src-syscall-rs-89"><span class="c">  89 </span>    {</span>
+<span id="targets-armv7-src-syscall-rs-90"><span class="c">  90 </span>        return SYSCALL_ERROR;</span>
+<span id="targets-armv7-src-syscall-rs-91"><span class="c">  91 </span>    }</span>
+<span id="targets-armv7-src-syscall-rs-92"><span class="c">  92 </span>    let end = address.saturating_add(len);</span>
+<span id="targets-armv7-src-syscall-rs-93"><span class="c">  93 </span>    if fd != STDOUT_FD</span>
+<span id="targets-armv7-src-syscall-rs-94"><span class="c">  94 </span>        || len &gt; MAX_WRITE_BYTES</span>
+<span id="targets-armv7-src-syscall-rs-95"><span class="c">  95 </span>        || address &lt; crate::memory::PROCESS_BASE</span>
+<span id="targets-armv7-src-syscall-rs-96"><span class="c">  96 </span>        || end &gt; crate::memory::PROCESS_END</span>
+<span id="targets-armv7-src-syscall-rs-97"><span class="c">  97 </span>    {</span>
+<span id="targets-armv7-src-syscall-rs-98"><span class="c">  98 </span>        return SYSCALL_ERROR;</span>
+<span id="targets-armv7-src-syscall-rs-99"><span class="c">  99 </span>    }</span>
+<span id="targets-armv7-src-syscall-rs-100"><span class="c"> 100 </span></span>
+<span id="targets-armv7-src-syscall-rs-101"><span class="c"> 101 </span>    let mut console = Pl011::new(crate::platform::UART_BASE);</span>
+<span id="targets-armv7-src-syscall-rs-102"><span class="c"> 102 </span>    for offset in 0..len {</span>
+<span id="targets-armv7-src-syscall-rs-103"><span class="c"> 103 </span>        let byte = core::ptr::read_volatile((address + offset) as *const u8);</span>
+<span id="targets-armv7-src-syscall-rs-104"><span class="c"> 104 </span>        console.write_byte(byte);</span>
+<span id="targets-armv7-src-syscall-rs-105"><span class="c"> 105 </span>    }</span>
+<span id="targets-armv7-src-syscall-rs-106"><span class="c"> 106 </span>    len</span>
+<span id="targets-armv7-src-syscall-rs-107"><span class="c"> 107 </span>}</span></code></pre><h2>targets/armv7/src/user_upload.rs</h2><pre><code><span id="targets-armv7-src-user_upload-rs-49"><span class="c">  49 </span><span class="c">        // 1. Read one UART byte, or detect an interrupted upload. Any received</span></span>
+<span id="targets-armv7-src-user_upload-rs-50"><span class="c">  50 </span><span class="c">        // byte refreshes the idle timer; the timeout is checked only when RX is empty.</span></span>
+<span id="targets-armv7-src-user_upload-rs-51"><span class="c">  51 </span>        let uart_upload_event = if let Some(byte) = uart_console.try_read_byte() {</span>
+<span id="targets-armv7-src-user_upload-rs-52"><span class="c">  52 </span>            last_uart_byte_tick = crate::raspi2b::timer::ticks();</span>
+<span id="targets-armv7-src-user_upload-rs-53"><span class="c">  53 </span>            Some(uart_upload_receiver.push(byte))</span>
+<span id="targets-armv7-src-user_upload-rs-54"><span class="c">  54 </span>        } else if uart_upload_receiver.is_upload_active()</span>
+<span id="targets-armv7-src-user_upload-rs-55"><span class="c">  55 </span>            &amp;&amp; crate::raspi2b::timer::ticks().wrapping_sub(last_uart_byte_tick)</span>
+<span id="targets-armv7-src-user_upload-rs-56"><span class="c">  56 </span>                &gt;= UPLOAD_IDLE_TIMEOUT_TICKS</span>
+<span id="targets-armv7-src-user_upload-rs-57"><span class="c">  57 </span>        {</span>
+<span id="targets-armv7-src-user_upload-rs-58"><span class="c">  58 </span>            Some(uart_upload_receiver.timeout())</span>
+<span id="targets-armv7-src-user_upload-rs-59"><span class="c">  59 </span>        } else {</span>
+<span id="targets-armv7-src-user_upload-rs-60"><span class="c">  60 </span>            None</span>
+<span id="targets-armv7-src-user_upload-rs-61"><span class="c">  61 </span>        };</span></code></pre><h2>targets/armv7/src/scheduler.rs</h2><pre><code><span id="targets-armv7-src-scheduler-rs-13"><span class="c">  13 </span>#[derive(Clone, Copy, PartialEq)]</span>
+<span id="targets-armv7-src-scheduler-rs-14"><span class="c">  14 </span>enum TaskState {</span>
+<span id="targets-armv7-src-scheduler-rs-15"><span class="c">  15 </span>    Empty,</span>
+<span id="targets-armv7-src-scheduler-rs-16"><span class="c">  16 </span>    Ready,</span>
+<span id="targets-armv7-src-scheduler-rs-17"><span class="c">  17 </span>    Running,</span>
+<span id="targets-armv7-src-scheduler-rs-18"><span class="c">  18 </span>    Finished,</span>
+<span id="targets-armv7-src-scheduler-rs-19"><span class="c">  19 </span>}</span></code></pre><h2>src/syscall.rs</h2><pre><code><span id="src-syscall-rs-30"><span class="c">  30 </span><span class="c">/// Route the register arguments prepared by arch/x86_64/syscall.rs. Each handler</span></span>
+<span id="src-syscall-rs-31"><span class="c">  31 </span><span class="c">/// validates its own user pointers and supported arguments; this dispatcher only</span></span>
+<span id="src-syscall-rs-32"><span class="c">  32 </span><span class="c">/// selects the operation. Open/exec/accept/wait implement the argument subsets</span></span>
+<span id="src-syscall-rs-33"><span class="c">  33 </span><span class="c">/// visible below. Reboot currently ignores arguments and performs no privilege</span></span>
+<span id="src-syscall-rs-34"><span class="c">  34 </span><span class="c">/// check here. Unknown numbers return the project&#x27;s generic u64::MAX error.</span></span>
+<span id="src-syscall-rs-35"><span class="c">  35 </span>pub(crate) extern &quot;C&quot; fn dispatch(</span>
+<span id="src-syscall-rs-36"><span class="c">  36 </span>    num: u64,</span>
+<span id="src-syscall-rs-37"><span class="c">  37 </span>    arg1: u64,</span>
+<span id="src-syscall-rs-38"><span class="c">  38 </span>    arg2: u64,</span>
+<span id="src-syscall-rs-39"><span class="c">  39 </span>    arg3: u64,</span>
+<span id="src-syscall-rs-40"><span class="c">  40 </span>    arg4: u64,</span>
+<span id="src-syscall-rs-41"><span class="c">  41 </span>    arg5: u64,</span>
+<span id="src-syscall-rs-42"><span class="c">  42 </span>    arg6: u64,</span>
+<span id="src-syscall-rs-43"><span class="c">  43 </span>) -&gt; u64 {</span>
+<span id="src-syscall-rs-44"><span class="c">  44 </span>    match num {</span>
+<span id="src-syscall-rs-45"><span class="c">  45 </span>        SYS_READ =&gt; file::read(arg1, arg2, arg3),</span>
+<span id="src-syscall-rs-46"><span class="c">  46 </span>        SYS_WRITE =&gt; file::write(arg1, arg2, arg3),</span>
+<span id="src-syscall-rs-47"><span class="c">  47 </span>        SYS_OPEN =&gt; file::open(arg1),</span>
+<span id="src-syscall-rs-48"><span class="c">  48 </span>        SYS_CLOSE =&gt; file::close(arg1),</span></code></pre><h2>targets/armv7/src/boot.S</h2><pre><code><span id="targets-armv7-src-boot-S-204"><span class="c"> 204 </span>.Lsvc:</span>
+<span id="targets-armv7-src-boot-S-205"><span class="c"> 205 </span><span class="c">    @ The 14-word layout is syscall::UserFrame. Its saved r0 is the return value.</span></span>
+<span id="targets-armv7-src-boot-S-206"><span class="c"> 206 </span><span class="c">    @ SPSR_svc remains banked; this wrapper assumes an aligned SVC stack and</span></span>
+<span id="targets-armv7-src-boot-S-207"><span class="c"> 207 </span><span class="c">    @ no nested SVC. IRQ entry below preserves SPSR_svc across preemption.</span></span>
+<span id="targets-armv7-src-boot-S-208"><span class="c"> 208 </span>    stmdb sp!, {{r0-r12, lr}}</span>
+<span id="targets-armv7-src-boot-S-209"><span class="c"> 209 </span>    mov r0, sp</span>
+<span id="targets-armv7-src-boot-S-210"><span class="c"> 210 </span>    bl {svc_entry}</span>
+<span id="targets-armv7-src-boot-S-211"><span class="c"> 211 </span>    ldmia sp!, {{r0-r12, lr}}</span>
+<span id="targets-armv7-src-boot-S-212"><span class="c"> 212 </span><span class="c">    @ Restore PC from LR and processor status from SPSR_svc together.</span></span>
+<span id="targets-armv7-src-boot-S-213"><span class="c"> 213 </span>    movs pc, lr</span>
+<span id="targets-armv7-src-boot-S-214"><span class="c"> 214 </span></span></code></pre></article></html>

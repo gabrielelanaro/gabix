@@ -164,3 +164,10 @@
 
 - [OpenBSD urtwn manual](https://man.openbsd.org/urtwn.4): adapter family, operation modes, and firmware requirement.
 - [Gabix primary-source research](docs/pi2-wifi-references.md): OpenBSD register sequences and WPA2 implementation references used for the port.
+
+## Terminals and TTYs
+
+- [Linux termios(3)](https://man7.org/linux/man-pages/man3/termios.3.html): canonical/noncanonical processing and terminal settings.
+- [Linux pty(7)](https://man7.org/linux/man-pages/man7/pty.7.html): master/slave byte flow.
+- [Linux N_TTY](https://kernel.org/doc/html/latest/driver-api/tty/n_tty.html): receive processing and sleeping reads.
+- [Linux credentials(7)](https://man7.org/linux/man-pages/man7/credentials.7.html): sessions, controlling terminals and foreground jobs.

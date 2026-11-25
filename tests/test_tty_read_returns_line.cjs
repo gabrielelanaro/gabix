@@ -1,0 +1,23 @@
+const assert=require('node:assert/strict');
+const {initial,step}=require('../assets/tty-lab.js');
+let s=initial(); for(const a of ['read','h'])s=step(s,a);
+assert.equal(s.task,'Blocked');assert.equal(s.user,'');assert.equal(s.edit,'h');
+s=step(s,'enter');assert.equal(s.task,'Ready');assert.equal(s.user,'');assert.equal(s.ready,'h\n');
+s=step(s,'run');assert.equal(s.result,2);assert.equal(s.user,'h\n');assert.equal(s.ready,'');
+s=initial();for(const a of ['h','erase','i','enter','read'])s=step(s,a);assert.equal(s.user,'i\n');
+s=initial();for(const a of ['enter','read'])s=step(s,a);assert.equal(s.result,1);
+s=initial('editor');for(const a of ['read','h'])s=step(s,a);assert.equal(s.task,'Ready');assert.equal(s.display,'');s=step(s,'run');assert.equal(s.editor,'h');assert.equal(s.display,'h');
+for(const a of ['read','enter','run'])s=step(s,a);assert.equal(s.editor,'');assert.match(s.note,/submits "h"/);
+console.log('PASS: canonical blocking, wake before copy, buffered input, erase, empty line, editor ownership');
+// Exercise control wiring with a minimal DOM, without claiming browser rendering QA.
+const fs=require('node:fs');const vm=require('node:vm');
+const elements={};for(const id of ['state','back','next','reset','mode','transport','transport-label','answer'])elements[id]={value:id==='mode'?'canonical':'serial',textContent:'',innerHTML:''};
+const actions=['read','h','i','erase','enter','run'].map(action=>({dataset:{action}}));
+const answers=['right','wrong'].map(answer=>({dataset:{answer}}));
+const doc={getElementById:id=>elements[id],querySelectorAll:selector=>selector==='[data-action]'?actions:selector==='[data-answer]'?answers:[]};
+vm.runInNewContext(fs.readFileSync(require.resolve('../assets/tty-lab.js'),'utf8'),{document:doc});
+for(let i=0;i<6;i++)elements.next.onclick();
+assert.match(elements.state.innerHTML,/Ready/);assert.match(elements.state.innerHTML,/No return yet/);
+elements.next.onclick();assert.match(elements.state.innerHTML,/3 bytes/);
+const final=elements.state.innerHTML;elements.back.onclick();assert.match(elements.state.innerHTML,/No return yet/);elements.next.onclick();assert.equal(elements.state.innerHTML,final);
+console.log('PASS: guided steps, backward/forward restoration');

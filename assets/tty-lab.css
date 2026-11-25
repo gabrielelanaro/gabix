@@ -1,0 +1,31 @@
+.tty-lesson{max-width:1120px;margin:auto;padding:40px 24px}.tty-lesson h1{font-size:clamp(1.9rem,4vw,2.7rem);line-height:1.18}.tty-lesson p{max-width:76ch}.tty-lesson section{margin:3rem 0}.tty-lesson .source{font:.76rem/1.7 var(--font-sans);overflow-wrap:anywhere}.tty-lab{border:1px solid var(--border-bright);border-radius:16px;background:var(--surface);overflow:hidden}.toolbar{display:flex;gap:10px;flex-wrap:wrap;padding:18px}.toolbar label{font:.8rem var(--font-sans);display:flex;align-items:center;gap:8px}.tty-lesson button,.tty-lesson select{font:.85rem var(--font-sans);background:var(--surface-soft);color:var(--text);padding:10px;border:1px solid var(--border-bright);border-radius:6px;cursor:pointer}.tty-lesson button:disabled{opacity:.4;cursor:default}.tty-lesson :focus-visible{outline:3px solid var(--accent);outline-offset:3px}.tty-lab figure{margin:0;overflow-x:auto}.tty-lab svg{display:block;width:100%;min-width:680px;color:var(--text)}.tty-lab .top{fill:var(--surface-soft);stroke:var(--border-bright);stroke-width:2}.tty-lab .side{fill:var(--border);stroke:var(--border-bright)}.tty-lab .chip{fill:var(--surface);stroke:var(--text-dim)}.tty-lab .active .top{stroke:var(--accent);stroke-width:4}.tty-lab text{font:20px var(--font-sans);fill:var(--text)}.tty-lab .sub{font-size:14px;fill:var(--text-dim)}.tty-lab .wire{stroke:var(--text-dim);stroke-width:2;fill:none;marker-end:url(#tty-arrow)}.tty-lab .echo{stroke-dasharray:4 4}.tty-lab figcaption{font:.76rem/1.6 var(--font-sans);padding:0 20px}.tty-lab #state{padding:0 20px 15px}.tty-lab .event{min-height:3.2em;font-size:1.1rem}.tty-lab dl{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}.tty-lab dl div{padding:12px;background:var(--surface-soft);border-radius:6px}.tty-lab dt{font:.75rem var(--font-sans);color:var(--text-dim)}.tty-lab dd{margin:8px 0 0;font:.9rem var(--font-mono);overflow-wrap:anywhere}.tty-lab .source{padding:0 20px}.tty-lesson table{width:100%;border-collapse:collapse;font:.85rem/1.6 var(--font-sans)}.tty-lesson th,.tty-lesson td{text-align:left;vertical-align:top;border-bottom:1px solid var(--border);padding:12px;overflow-wrap:anywhere}.tty-lesson li{margin:.8rem 0}.tty-lesson pre{overflow:auto}@media(max-width:700px){.tty-lesson{padding:24px 16px}.tty-lab dl{grid-template-columns:1fr 1fr}.tty-lesson td,.tty-lesson th{padding:7px;font-size:.75rem}}@media print{.toolbar{display:none}.tty-lab svg{min-width:0}.tty-lesson{max-width:none}.tty-lab{break-inside:avoid}}
+
+.teletype { max-width: 680px; margin: 1.5rem 0; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); overflow: hidden; }
+.teletype svg { display: block; width: 100%; height: auto; }
+.teletype svg text { fill: var(--text); font: 15px var(--font-sans); }
+.teletype figcaption { padding: 0 20px; }
+.teletype .tt-note { min-height: 3em; margin: .4rem 0; }
+.tt-ink, .tt-pulse { opacity: 0; }
+.tt-head, .tt-sheet { transition: transform .65s ease; }
+.teletype[data-step="1"] .tt-key { fill: var(--accent); }
+.teletype:is([data-step="3"],[data-step="4"],[data-step="5"]) .tt-ink { opacity: 1; }
+.teletype[data-step="3"] .tt-head { transform: translateX(12px); }
+.teletype[data-step="5"] .tt-sheet { transform: translateY(-13px); }
+.tt-pulse { offset-path: path("M220 154 Q275 195 303 140 T388 137"); }
+.teletype[data-step="1"] .tt-pulse { opacity: 1; animation: tt-send 1s ease both; }
+.teletype[data-step="2"] .tt-pulse { opacity: 1; animation: tt-return 1s ease both; }
+@keyframes tt-send { from { offset-distance: 0%; } to { offset-distance: 100%; } }
+@keyframes tt-return { from { offset-distance: 100%; } to { offset-distance: 0%; } }
+@media (prefers-reduced-motion: reduce) { .teletype * { transition-duration: 0s; animation-duration: .01s !important; } }
+.tty-sequence { max-width: 680px; margin: 1.5rem 0; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); }
+.tty-sequence svg { display: block; width: 100%; }
+.tty-sequence svg text { fill: var(--text); font: 15px var(--font-sans); }
+.tty-sequence .track { stroke: var(--border-bright); stroke-width: 2; }
+.tty-sequence .top { fill: var(--surface-soft); stroke: var(--border-bright); }
+.tty-sequence .side { fill: var(--border); stroke: var(--border-bright); }
+.tty-sequence .chip { fill: var(--surface); stroke: var(--text-dim); }
+.tty-sequence .active .top { stroke: var(--accent); stroke-width: 2; }
+.tty-sequence .location { fill: var(--accent); transition: transform .55s ease; }
+.tty-sequence figcaption { padding: 0 20px 20px; min-height: 4em; }
+.tty-lab .actor .top { transition: stroke .25s; }
+@media (prefers-reduced-motion: reduce) { .tty-sequence .location, .tty-lab .actor .top { transition: none; } }

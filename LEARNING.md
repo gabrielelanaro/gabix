@@ -718,6 +718,27 @@ A milestone is a "demo-able" checkpoint. Worth a commit + tag + log entry.
 - Planning only. Existing milestones retain their status. The ARM syscall dispatcher still needs socket operations (`targets/armv7/src/syscall.rs:30`). On x86 the accepted TCP socket needs flow control and retransmission for reliable transfers (`src/net/tcp.rs:371`).
 - Suggested first experiment: transfer a small image through the x86 TCP listener in bounded writes and compare the received bytes with the expected image. Then display the same pixels in a standard viewer.
 
+### 2026-11-23 — One-read terminal experiment
+- Rebuilt lesson 4.11 around an executable observation and replay. Verified on a host PTY that the corrected input waits before Enter and returns three bytes after Enter. Navigation checks passed. Roadmap unchanged. Next: learner walkthrough.
+
+### 2026-11-23 — Student review of lesson 4.11
+- Followed ls through the pending read, labelled editor-owned buffers, and reduced job-control, register and test-planning detail. Reader-model and navigation checks passed. Roadmap checkboxes unchanged. Next: learner review in the browser.
+
+### 2026-11-23 — Terminal transport and editing figures
+- Added reversible serial/PTY and kernel/shell editing diagrams alongside the read simulator. Removed the repeated buffer table. Navigation checks passed for all four diagram variants. Roadmap checkboxes unchanged. Next: visual review at the learner’s viewport.
+
+### 2026-11-23 — Illustrated teletype operation
+- Added a stepped isometric figure to lesson 4.11 showing keyboard transmission, host echo, printing, carriage return and paper feed. Roadmap checkboxes unchanged. Next: inspect the animation in the lesson.
+
+### 2026-11-23 — Revised terminal lesson introduction
+- Introduced the terminal, shell and read interface before the worked example. Used the I/O Devices chapter of Operating Systems: Three Easy Pieces as a structural reference. Roadmap checkboxes unchanged. Next reading exercise: follow the kernel queue across wakeup.
+
+### 2026-11-23 — Terminal buffers and blocked reads lesson
+- Rebuilt lesson 4.11 around the learner’s model of typing a line and pressing Enter. Added an isometric, reversible walkthrough with serial/PTY and canonical/editor modes, explicit buffer ownership, and separate wake/schedule actions.
+- Verified x86 COM1/file/socket paths and ARM PL011/uploader/SVC/scheduler paths against local source; linked stable line-numbered excerpts. Added a quick reference and a proposed dual-architecture RX-to-read experiment. Kernel code and roadmap checkboxes unchanged.
+- Validation: Node syntax and model behavior checks passed (`node tests/test_tty_read_returns_line.cjs`); local HTML links/anchors and `git diff --check` passed. Browser visual QA remains unverified: sandbox denied the local HTTP server and browser policy rejected file URLs.
+- Next: review the lesson interactively; implement the proposed TTY experiment only as a separate task. ARM blocking I/O remains a prerequisite.
+
 ### 2026-11-16 — Publish the Wi-Fi connection lesson
 - Added the isometric startup walkthrough, interactive connection checks, quick reference, and source-linked code tour. Source snapshots preserve the implementation used when the lesson was written; the quick reference includes the subsequently implemented mDNS hostname.
 - Verified JavaScript syntax, local lesson links, and whitespace. Roadmap checkboxes unchanged. Generated hardware output remains ignored.
