@@ -32,10 +32,10 @@
 
 <p>ARM uses the word <em>modes</em> instead of rings, and there are more of them, but the idea is identical. One mode — <strong>User mode</strong> — is the only unprivileged one; the program runs there. The rest are privileged and owned by the kernel: <strong>Supervisor mode</strong> for ordinary kernel code, <strong>IRQ mode</strong> for interrupt handlers, and a few others for handling errors. The mode the CPU is in right now is a five-bit field at the bottom of a register called the Current Program Status Register, or <strong>CPSR</strong>.</p>
 
-<p>One ARM detail has no direct x86 parallel and matters when you read the code. Each privileged mode comes with its own private copy of two registers: the stack pointer (<code>sp</code>) and the link register (<code>lr</code>, which holds return addresses). When the CPU enters IRQ mode, it switches to IRQ mode's <code>sp</code> and <code>lr</code> automatically — the interrupt handler gets a fresh stack without having to save the old one. That is why gabix's first code, in <code>targets/armv7/src/boot.S</code>, deliberately switches into IRQ mode just to give it a stack, then switches back:</p>
+<p>One ARM detail has no direct x86 parallel and matters when you read the code. Each privileged mode comes with its own private copy of two registers: the stack pointer (<code>sp</code>) and the link register (<code>lr</code>, which holds return addresses). When the CPU enters IRQ mode, it switches to IRQ mode's <code>sp</code> and <code>lr</code> automatically — the interrupt handler gets a fresh stack without having to save the old one. That is why gabix's first code, in <code>src/arch/armv7/boot.S</code>, deliberately switches into IRQ mode just to give it a stack, then switches back:</p>
 
 <div class="snip">
-<div class="snip-meta"><span>targets/armv7/src/boot.S</span> · <span class="what">giving each mode its own stack</span></div>
+<div class="snip-meta"><span>src/arch/armv7/boot.S</span> · <span class="what">giving each mode its own stack</span></div>
 <pre><code>    cps   #0x12                <span class="c">@ change to IRQ mode</span>
     ldr   sp, =IRQ_STACK_TOP   <span class="c">@ give IRQ mode its own stack</span>
     cps   #0x13                <span class="c">@ change to Supervisor mode</span>
@@ -55,7 +55,7 @@
 <p>Here is gabix's handler for that jump, with each line explained:</p>
 
 <div class="snip">
-<div class="snip-meta"><span>targets/armv7/src/boot.S</span> · <span class="what">the SVC (syscall) entry</span></div>
+<div class="snip-meta"><span>src/arch/armv7/boot.S</span> · <span class="what">the SVC (syscall) entry</span></div>
 <pre><code>.Lsvc:
     stmdb sp!, {r0-r12, lr}    <span class="c">@ push the program's registers onto the SVC stack</span>
     mov   r0,  sp              <span class="c">@ pass the Rust handler a pointer to those saved registers</span>

@@ -52,7 +52,7 @@ isb</code></pre>
 const USER_READ_WRITE: u32       = 0b11 &lt;&lt; 10;</code></pre>
 <p>In our configured permission mode, with AP[2] clear, the first setting permits kernel read/write access and denies user access. The second permits both. The kernel initially creates privileged mappings, then replaces only the process’s two user-section entries. Domain 0 is configured as a <em>client</em>, which makes the MMU enforce these descriptor permissions.</p>
 <p>Stack descriptors also set <strong>XN</strong>, execute-never, at bit 4. Reading and writing the stack is allowed; fetching an instruction from it generates a fault.</p>
-<p>For a forbidden load or store, ARM enters a <strong>Data Abort</strong> exception. The handler in <a href="../targets/armv7/src/boot.S">boot.S</a> reads two system registers:</p>
+<p>For a forbidden load or store, ARM enters a <strong>Data Abort</strong> exception. The handler in <a href="../src/arch/armv7/boot.S">boot.S</a> reads two system registers:</p>
 <pre><code>mrc p15, 0, r0, c6, c0, 0   <span class="c">// DFAR: faulting data address</span>
 mrc p15, 0, r1, c5, c0, 0   <span class="c">// DFSR: reason for the fault</span></code></pre>
 <p><code>mrc</code> reads system state into a general-purpose register. Here DFAR means Data Fault Address Register; DFSR means Data Fault Status Register. The boot check expects a section-permission fault, status code <code>0xD</code>. DFSR bit 11 additionally identifies a write.</p>

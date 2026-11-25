@@ -582,6 +582,10 @@ A milestone is a "demo-able" checkpoint. Worth a commit + tag + log entry.
 
 - Removed the root `docs/` directory and added a path check to the test runner. Updated live references and kept historical hardware evidence accessible at the previous commit. No roadmap checkbox changed. Next, review the ARM boot assembly move.
 
+### 2026-11-25 — Move ARM startup assembly under src/arch
+
+- Moved the shared entry and exception assembly to `src/arch/armv7/boot.S` and updated kernel, SD-check and course references. Both ARM virt and Raspberry Pi 2B boot tests passed in QEMU. Board parameters still come from the ARM crate. Next, isolate the Pi-specific GPIO setup. No roadmap checkbox changed.
+
 ### 2026-11-25 — Organize the Pi probes, course material and layout tools
 
 - Grouped the probe sources, VideoCore course, terminal lesson and repository audit for separate review. The hardware overview uses a Gabix drawing. The architecture map generator reads its template from `scripts/templates/`. No roadmap checkbox changed in this cleanup. The next GUI experiment is to reduce the number of bytes sent during a drag.

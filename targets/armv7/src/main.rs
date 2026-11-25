@@ -100,7 +100,7 @@ compile_error!("select an ARM platform");
 
 #[cfg(feature = "virt")]
 global_asm!(
-    include_str!("boot.S"),
+    include_str!("../../../src/arch/armv7/boot.S"),
     uart_base = const 0x0900_0000,
     gpio_base = const 0,
     configure_gpio = const 0,
@@ -115,7 +115,7 @@ global_asm!(
 
 #[cfg(feature = "raspi2b")]
 global_asm!(
-    include_str!("boot.S"),
+    include_str!("../../../src/arch/armv7/boot.S"),
     uart_base = const 0x3f20_1000,
     gpio_base = const 0x3f20_0000,
     configure_gpio = const 1,

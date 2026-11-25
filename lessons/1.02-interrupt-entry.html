@@ -40,7 +40,7 @@
 <p>Here is the table, from gabix's boot code:</p>
 
 <div class="snip">
-<div class="snip-meta"><span>targets/armv7/src/boot.S</span> · <span class="what">the eight-entry exception table (effective assembly)</span></div>
+<div class="snip-meta"><span>src/arch/armv7/boot.S</span> · <span class="what">the eight-entry exception table (effective assembly)</span></div>
 <pre><code>.Lvectors:                        <span class="c">@ the table sits at the address in VBAR</span>
     b   .Lpark                    <span class="c">@ 0  reset</span>
     b   .Lpark                    <span class="c">@ 1  undefined instruction</span>
@@ -67,7 +67,7 @@
 <p>Here is the handler that slot points at:</p>
 
 <div class="snip">
-<div class="snip-meta"><span>targets/armv7/src/boot.S</span> · <span class="what">the IRQ entry (effective assembly)</span></div>
+<div class="snip-meta"><span>src/arch/armv7/boot.S</span> · <span class="what">the IRQ entry (effective assembly)</span></div>
 <pre><code>.Lirq:
     sub   lr,  lr, #4            <span class="c">@ lr points one instruction too far; step back to the interrupted one</span>
     stmdb sp!, {r0-r12, lr}      <span class="c">@ push the program's registers onto the IRQ stack</span>

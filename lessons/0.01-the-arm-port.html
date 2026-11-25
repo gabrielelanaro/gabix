@@ -44,7 +44,7 @@
 <h3>1. Starting up</h3>
 <p>When you apply power, the CPU starts running instructions at some fixed address, fully privileged, with no setup at all. The kernel's first few instructions have to build enough of a world — a stack, a way to print to the console, eventually memory — to hand control to ordinary Rust code.</p>
 <p>On x86, a separate program called a bootloader does a lot of this for you: it loads the kernel into memory and jumps in with the CPU in a known state. On ARM there is usually no such helper. The board's firmware loads the kernel image (on the Pi, a file named <code>kernel7.img</code>) into memory and jumps to its first instruction; the kernel does the rest itself.</p>
-<p>One wrinkle is pure Raspberry Pi. The Pi 2B has four CPU cores, and the firmware starts all four at the same first instruction at the same instant. Gabix is not ready to use four cores, so its first instruction asks the CPU "which core am I?" and everything but core 0 immediately parks itself in a low-power wait. You can read this in the first lines of <code>targets/armv7/src/boot.S</code>.</p>
+<p>One wrinkle is pure Raspberry Pi. The Pi 2B has four CPU cores, and the firmware starts all four at the same first instruction at the same instant. Gabix is not ready to use four cores, so its first instruction asks the CPU "which core am I?" and everything but core 0 immediately parks itself in a low-power wait. You can read this in the first lines of <code>src/arch/armv7/boot.S</code>.</p>
 <p class="godeeper">Go deeper: <a href="../reference/modules.html#m1">Module 1</a>, and <a href="../reference/modules.html#m7">Module 7</a> for the Pi specifics.</p>
 </section>
 

@@ -308,7 +308,7 @@
 <span id="src-syscall-rs-45"><span class="c">  45 </span>        SYS_READ =&gt; file::read(arg1, arg2, arg3),</span>
 <span id="src-syscall-rs-46"><span class="c">  46 </span>        SYS_WRITE =&gt; file::write(arg1, arg2, arg3),</span>
 <span id="src-syscall-rs-47"><span class="c">  47 </span>        SYS_OPEN =&gt; file::open(arg1),</span>
-<span id="src-syscall-rs-48"><span class="c">  48 </span>        SYS_CLOSE =&gt; file::close(arg1),</span></code></pre><h2>targets/armv7/src/boot.S</h2><pre><code><span id="targets-armv7-src-boot-S-204"><span class="c"> 204 </span>.Lsvc:</span>
+<span id="src-syscall-rs-48"><span class="c">  48 </span>        SYS_CLOSE =&gt; file::close(arg1),</span></code></pre><h2>src/arch/armv7/boot.S</h2><pre><code><span id="targets-armv7-src-boot-S-204"><span class="c"> 204 </span>.Lsvc:</span>
 <span id="targets-armv7-src-boot-S-205"><span class="c"> 205 </span><span class="c">    @ The 14-word layout is syscall::UserFrame. Its saved r0 is the return value.</span></span>
 <span id="targets-armv7-src-boot-S-206"><span class="c"> 206 </span><span class="c">    @ SPSR_svc remains banked; this wrapper assumes an aligned SVC stack and</span></span>
 <span id="targets-armv7-src-boot-S-207"><span class="c"> 207 </span><span class="c">    @ no nested SVC. IRQ entry below preserves SPSR_svc across preemption.</span></span>

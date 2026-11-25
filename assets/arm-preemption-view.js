@@ -56,7 +56,7 @@
     const source = get('source');
     const paths = {'boot.S':'boot.S','scheduler.rs':'scheduler.rs','context.rs':'context.rs','main.rs':'main.rs'};
     source.hidden = !paths[state.source];
-    if (paths[state.source]) { source.href = `../targets/armv7/src/${paths[state.source]}`; source.textContent = `Read ${state.source}`; }
+    if (paths[state.source]) { source.href = state.source === 'boot.S' ? '../src/arch/armv7/boot.S' : `../targets/armv7/src/${paths[state.source]}`; source.textContent = `Read ${state.source}`; }
     const quiz = get('quiz'); quiz.replaceChildren(); quiz.hidden = !state.quiz;
     if (state.quiz) {
       quiz.append(node('h3', 'Predict before the next step'), node('p', state.quiz.question));

@@ -14,7 +14,7 @@
 <h2>3. Each paused task keeps its interrupt state on its own stack</h2>
 <p>ARM enters IRQ mode when the interrupt arrives. IRQ mode has its own stack pointer and link register. Our old handler used one shared IRQ stack.</p>
 <p>A task can now remain paused inside its timer handler while another task runs. That other task may also receive a timer interrupt. We therefore save each interrupted task’s return state on its own kernel stack, called the SVC stack in this code.</p>
-<p>The IRQ entry in <a href="../targets/armv7/src/boot.S">boot.S</a> performs these operations:</p>
+<p>The IRQ entry in <a href="../src/arch/armv7/boot.S">boot.S</a> performs these operations:</p>
 <ol>
 <li>Adjust the IRQ return address to the instruction where execution should resume.</li>
 <li>Use <code>srsdb</code> to store that address and the saved processor status on the SVC stack.</li>

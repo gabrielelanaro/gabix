@@ -15,7 +15,7 @@ use console::{write_line, Pl011};
 use gabix_kernel::BootConsole;
 
 core::arch::global_asm!(
-    include_str!("../src/boot.S"),
+    include_str!("../../../src/arch/armv7/boot.S"),
     uart_base = const 0x3f20_1000, gpio_base = const 0x3f20_0000,
     configure_gpio = const 1, stack_top = const 0x0800_0000,
     irq_stack_top = const 0x07ff_0000, rust_entry = sym check,
