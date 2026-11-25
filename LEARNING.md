@@ -629,6 +629,10 @@ A milestone is a "demo-able" checkpoint. Worth a commit + tag + log entry.
 - A RAM-uploaded echo server exchanged 27 bytes and 290 bytes on a single TCP connection on physical Pi boot 36 (kernel CRC32 `1f560926`). The Mac checked authenticated status during a 12-second idle interval, then half-closed its socket. The ELF exited with status 0. The same port served a second run on that boot.
 - Added one passive IPv4 listener for the foreground ELF. The kernel polls Wi-Fi while a socket syscall waits. Next, verify 16 KiB framebuffer transfers with a slow reader and a dropped segment.
 
+### 2026-11-24 — Install pstack project skills
+
+- Installed 59 Cursor skills and their two helper agents. Verified the upstream file hashes before naming the pstack teaching skill `pstack-teach` to preserve the gabix `teach` command. The kernel roadmap and its next steps are unchanged.
+
 ### 2026-11-24 — Run different ARM user programs over Wi-Fi on one Pi boot
 
 - Built and installed the Wi-Fi ELF loader once. On physical Pi 2B boot 34 (kernel CRC32 `bf587896`), uploaded two executables into RAM. The UART-write fixture exited with 0. The mode-reporting fixture read CPSR and exited with 16 (ARM user mode). No reboot or kernel upload occurred between programs.

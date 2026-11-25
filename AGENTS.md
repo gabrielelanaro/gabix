@@ -2,6 +2,9 @@
 
 A bare-metal Linux-like OS written in Rust, built to learn Linux internals by re-implementing them.
 
+When the user requests a pstack skill, read `.agents/skills/<name>/SKILL.md`.
+Use `pstack-teach` for pstack's teaching workflow and `teach` for the existing gabix skill.
+
 ## Project files
 
 ### `LEARNING.md`
