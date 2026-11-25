@@ -1,0 +1,21 @@
+.parts {display:grid;grid-template-columns:repeat(auto-fit,minmax(min(10rem,100%),1fr));gap:.5rem;margin:.6rem 0}
+.component,.memory-box,.soc,.board {border:1px solid var(--border-bright);border-radius:.35rem;padding:.48rem;background:var(--surface-soft)}
+.component {display:grid;align-content:center;min-height:3.7rem;text-align:center;font: .95rem/1.25 var(--font-sans)}
+.component span,.board small {display:block;font: .83rem/1.35 var(--font-sans);margin-top:.2rem}
+.board {font-family:var(--font-sans);background:var(--bg)}.soc,.memory-box {margin-top:.4rem}.soc {background:var(--surface)}
+.lit {border:2px solid var(--accent);background:var(--accent-soft)}
+.cells {width:min(100%,19rem);display:grid;grid-template-columns:repeat(var(--cols),1fr);gap:.22rem;margin:.75rem auto}
+.cells span {border:1px solid var(--border-bright);text-align:center;padding:.32rem;font:1rem var(--font-mono)}.cells .lit {border:2px solid var(--accent)}
+.stepper svg {display:block;margin:.6rem auto;max-width:100%;height:auto}
+.stepper [data-step] p {margin:.65rem 0;font-size:1rem;line-height:1.46}
+.stepper small,.src {font-family:var(--font-sans)}.stepper-controls span {font:.82rem var(--font-sans);align-self:center}
+.v3d-page pre {padding:.6rem .8rem;white-space:pre-wrap}.v3d-page pre code {overflow-wrap:anywhere}
+.v3d-page .practice h2 {margin:.1rem 0 .5rem}.contents li {padding:.28rem 0}
+@media(prefers-reduced-motion:no-preference){[data-step]:not([hidden]) .lit {animation:vc-change .4s ease-out}@keyframes vc-change{from{outline:3px solid var(--accent)}to{outline:0 solid transparent}}}
+@media(max-width:560px){.parts {grid-template-columns:1fr}.component{display:flex;justify-content:space-between;align-items:center;min-height:2.5rem;text-align:left;gap:.5rem}.component span{text-align:right;margin:0}}
+
+.architecture-pair {display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.2fr);align-items:start;gap:1rem}
+.architecture-pair svg {width:100%;background:white}
+.architecture h3 {margin:.75rem 0 .25rem}
+.contents li p {margin:.2rem 0 .55rem}
+@media(max-width:560px){.architecture-pair{grid-template-columns:1fr;gap:.25rem}.architecture-pair>svg{width:auto;height:9rem}.architecture-pair div svg{max-height:5rem}}

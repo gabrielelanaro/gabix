@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>When can the ARM send the pixels? · Gabix</title>
+<link rel="stylesheet" href="../assets/lesson.css">
+<link rel="stylesheet" href="../assets/stepper.css">
+<link rel="stylesheet" href="../assets/v3d-lessons.css">
+<script defer src="../assets/stepper.js"></script>
+<script defer src="../assets/v3d-lessons.js"></script>
+</head><body><main class="v3d-page">
+<nav class="trail" aria-label="Course"><a href="roadmap-pi-v3d.html">All six lessons</a><span>Pi graphics · Lesson 6 of 6</span></nav>
+<h1>When can the ARM send the pixels?</h1><p class="intro">You have seen the QPU write gold. The Mac is waiting for a 16 KiB reply. Predict the earliest moment when the ARM can copy the finished pixel into that reply.</p>
+<figure class="stepper" data-stepper>
+<figcaption>When is framebuffer RAM ready to read?</figcaption>
+<div class="stepper-controls"><button type="button" data-step-previous disabled>Back</button><span class="stepper-meter">Step <span data-step-index>1</span> of 3</span><button type="button" data-step-next>Next</button></div>
+<div class="panels" aria-live="polite"><div data-step="1">
+<div class="bus" aria-hidden="true"><span class="chip" data-role="gpu">V3D tile</span><span class="wire"></span><span class="chip" data-role="ram">Frame RAM</span><span class="wire"></span><span class="chip" data-role="cpu">ARM</span></div><div class="registers"><div><span class="field-label">Tile sample</span><span class="value">gold</span></div><div><span class="field-label">Frame counter</span><span class="value">previous value</span></div></div>
+<p class="caption">The shaded color is in V3D’s on-chip tile buffer. The destination in system RAM belongs to a separate stage of the render. The ARM has saved the old completed-frame count.</p><span class="src"><a href="../targets/armv7/probes/v3d_lists.S#L68">Tile-color write</a> · <a href="../targets/armv7/probes/v3d.rs#L188">Save counter</a></span>
+</div>
+<div data-step="2" hidden>
+<div class="bus" aria-hidden="true"><span class="chip" data-role="gpu">V3D tile</span><span class="wire on"></span><span class="chip" data-role="ram">Frame RAM</span><span class="wire"></span><span class="chip" data-role="cpu">ARM</span></div><div class="registers"><div><span class="field-label">Tile-store packet</span><span class="value">25 decimal</span></div><div><span class="field-label">Frame counter</span><span class="value">advances</span></div></div>
+<p class="caption">The final render packet stores the tile into system RAM and signals end of frame. The ARM polls the render frame counter at <code>0x3fc00138</code> until it changes. A timeout follows the error path.</p><span class="src"><a href="../targets/armv7/probes/v3d_lists.S#L43">Store and signal</a> · <a href="../targets/armv7/probes/v3d.rs#L191">Poll for completion</a></span>
+</div>
+<div data-step="3" hidden>
+<div class="bus" aria-hidden="true"><span class="chip" data-role="gpu">V3D tile</span><span class="wire"></span><span class="chip" data-role="ram">Frame RAM</span><span class="wire on"></span><span class="chip" data-role="cpu">ARM</span></div><div class="registers"><div><span class="field-label">ARM cache</span><span class="value">old lines invalidated</span></div><div><span class="field-label">Result length</span><span class="value">16,384 bytes</span></div></div>
+<p class="caption">A finished GPU job can still leave the ARM holding an older cached copy. The driver invalidates the framebuffer’s ARM cache lines, completes the barrier and copies the pixels into the runner’s output buffer.</p><span class="src"><a href="../targets/armv7/probes/v3d.rs#L273">Invalidate and copy</a> · <a href="../targets/armv7/probes/v3d.rs#L69">Data synchronization barrier</a></span>
+</div></div>
+</figure>
+<p>Frame completion tells you when the GPU has finished writing. Cache maintenance determines which bytes the ARM reads afterwards. Both steps matter when two processors take turns accessing the same RAM. <a href="../targets/armv7/probes/v3d.rs#L270">Render completion followed by cache maintenance</a></p>
+<figure class="stepper" data-stepper>
+<figcaption>Where are those four bytes in the Mac’s file?</figcaption>
+<div class="stepper-controls"><button type="button" data-step-previous disabled>Back</button><span class="stepper-meter">Step <span data-step-index>1</span> of 3</span><button type="button" data-step-next>Next</button></div>
+<div class="panels" aria-live="polite"><div data-step="1">
+<div class="bus" aria-hidden="true"><span class="chip" data-role="ram">Probe output</span><span class="wire"></span><span class="chip" data-role="cpu">Wi-Fi</span><span class="wire"></span><span class="chip" data-role="ram">Mac file</span></div><div class="registers"><div><span class="field-label">Row 32 begins</span><span class="value">32 × 256 = 8192</span></div><div><span class="field-label">Column 20 adds</span><span class="value">20 × 4 = 80</span></div></div>
+<p class="caption">Each row has 64 pixels and each pixel has four bytes. Add the two offsets. Predict the file offset of (20, 32) and the color word you expect there.</p><span class="src"><a href="../tests/test_v3d_renders_triangle.py#L78">Pixel offset</a></span>
+</div>
+<div data-step="2" hidden>
+<div class="bus" aria-hidden="true"><span class="chip" data-role="ram">Probe output</span><span class="wire on"></span><span class="chip" data-role="cpu">Wi-Fi</span><span class="wire"></span><span class="chip" data-role="ram">Mac file</span></div><div class="registers"><div><span class="field-label">Mac requests</span><span class="value">offset 8192</span></div><div><span class="field-label">Bytes in reply</span><span class="value">512</span></div></div>
+<p class="caption">The Mac asks repeatedly for the next result chunk. Here it requests the 512 bytes beginning at 8192. The Pi copies them out of the probe result, including our pixel at position 80 in the chunk.</p><span class="src"><a href="../scripts/pi2-ram-probe.py#L37">Request the chunk</a> · <a href="../targets/armv7/src/ram_probe.rs#L112">Serve the result</a></span>
+</div>
+<div data-step="3" hidden>
+<div class="bus" aria-hidden="true"><span class="chip" data-role="ram">Probe output</span><span class="wire"></span><span class="chip" data-role="cpu">Wi-Fi</span><span class="wire on"></span><span class="chip" data-role="ram">Mac file</span></div><div class="memory"><span class="">8272</span><span class="selected">28</span><span class="selected">cd</span><span class="selected">ff</span><span class="selected">ff</span></div>
+<p class="caption">The Mac appends each reply, then writes the completed file. At offset 8272 the saved bytes are blue 40, green 205, red 255 and alpha 255. Use the inspector below on the model or open a local frame produced by the hardware test.</p><span class="src"><a href="../scripts/pi2-ram-probe.py#L41">Append chunk</a> · <a href="../scripts/pi2-ram-probe.py#L62">Write file</a> · <a href="../tests/test_v3d_renders_triangle.py#L80">Check pixel</a></span>
+</div></div>
+<div class="lab" data-offset-lab><label>Column <input type="number" name="pixel-x" min="0" max="63" value="20"></label>
+<label>Row <input type="number" name="pixel-y" min="0" max="63" value="32"></label>
+<label>Inspect a Pi frame (optional) <input type="file" accept=".bin,application/octet-stream"></label><output aria-live="polite"></output></div></figure>
+<h2>Run the same check on the board</h2>
+<p>The physical test saves the blue clear, the gold triangle and a second draw with changed colors. Open its <code>triangle.bin</code> in the inspector. Try column 19 and then 20 on row 32. <a href="../docs/pi2-ram-probes.md">Runner setup</a> · <a href="../tests/test_v3d_renders_triangle.py#L71">Save the returned frame</a></p>
+<pre><code>python3 tests/test_v3d_renders_triangle.py \
+  --out-dir "target/runs/$(date +%Y%m%d)-v3d"</code></pre>
+<section class="hardware"><h2>Read completion before copying</h2><figure class="tour-snippet"><figcaption><a href="../targets/armv7/probes/v3d.rs#L186">targets/armv7/probes/v3d.rs · line 186</a> · Instructions used in this draw</figcaption><pre><code>unsafe fn submit(thread: usize, start: *const u8, end: *const u8) -&gt; bool {
+    let counter = V3D + 0x134 + thread * 4;
+    let previous = read(counter);
+    write(V3D + 0x110 + thread * 4, bus(start));
+    write(V3D + 0x108 + thread * 4, bus(end));
+    wait(|| read(counter) != previous)</code></pre></figure><p>For rendering, the ARM reads <code>RFC</code> at <code>0x3fc00138</code> before submission and polls the same address afterwards. A changed count identifies a completed frame in this single-job probe. The driver then invalidates its cached framebuffer lines.</p><p class="readings"><a href="../reference/pi2-v3d-registers.html#finish">Pi 2B hardware reference</a></p></section>
+<section class="practice"><h3 style="margin:0 0 .35rem">Try explaining it</h3><p>Trace pixel (20, 32) from the vertices to byte 8272, naming the component that decides coverage, the component that supplies color, and the event the driver waits for.</p><details><summary>Check your explanation</summary><p>The binner makes the tile list. During rendering the rasterizer determines coverage, then a QPU writes the shader color to covered samples. V3D stores the tile. The ARM sees the frame count advance, invalidates its cached pixels and copies the frame. The Mac reads chunk 8192 and finds the four bytes 80 bytes into it.</p></details></section>
+<p class="readings"><a href="../tours/tour-8.06-v3d-readback.html">Read the Gabix code for this lesson</a> · <a href="https://docs.kernel.org/gpu/vc4.html#memory-management-and-3d-command-submission">Linux VC4 · command submission and completion</a></p>
+<nav class="pager" aria-label="Lesson navigation"><a href="8.05-v3d-shared-memory.html">← Addresses and DMA</a><a href="roadmap-pi-v3d.html">Back to the course</a></nav>
+</main></body></html>

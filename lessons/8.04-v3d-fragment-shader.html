@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>What does the shader do with my color? · Gabix</title>
+<link rel="stylesheet" href="../assets/lesson.css">
+<link rel="stylesheet" href="../assets/stepper.css">
+<link rel="stylesheet" href="../assets/v3d-lessons.css">
+<script defer src="../assets/stepper.js"></script>
+<script defer src="../assets/v3d-lessons.js"></script>
+</head><body><main class="v3d-page">
+<nav class="trail" aria-label="Course"><a href="roadmap-pi-v3d.html">All six lessons</a><span>Pi graphics · Lesson 4 of 6</span></nav>
+<h1>What does the shader do with my color?</h1><p class="intro">Keep the triangle’s three corners fixed. If you change its foreground color, predict what happens to the two neighbors on row 32. First watch how V3D tells the shader which samples are covered.</p>
+<figure class="stepper" data-stepper>
+<figcaption>Which samples reach the color write?</figcaption>
+<div class="stepper-controls"><button type="button" data-step-previous disabled>Back</button><span class="stepper-meter">Step <span data-step-index>1</span> of 3</span><button type="button" data-step-next>Next</button></div>
+<div class="panels" aria-live="polite"><div data-step="1">
+<div class="zoom-view"><canvas width="256" height="128" data-zoom data-x="18" data-y="32" data-fill="no" role="img" aria-label="Enlarged grid starting at column 18, row 32. The white diagonal is the left edge."></canvas></div>
+<p class="caption">This magnified patch contains two adjacent 2 × 2 groups. The columns run from 18 to 21 and the rows from 32 to 33. Count the centers on the triangle side of the white line.</p><span class="src"><a href="../tests/test_v3d_renders_triangle.py#L77">Coverage test</a> · <a href="https://docs.broadcom.com/doc/12358545">Broadcom · FEP-to-QPU interface</a></span>
+</div>
+<div data-step="2" hidden>
+<div class="zoom-view"><canvas width="256" height="128" data-zoom data-x="18" data-y="32" data-fill="yes" role="img" aria-label="Enlarged grid starting at column 18, row 32. The white diagonal is the left edge."></canvas></div>
+<p class="caption">Five centers are covered. Row 32 contributes two and row 33 contributes three. The front-end pipeline supplies coverage information to the QPU, the programmable processor that runs the fragment shader.</p><span class="src"><a href="https://docs.broadcom.com/doc/12358545">Broadcom · section 6, quad input data</a> · <a href="../tests/test_v3d_renders_triangle.py#L77">Compare both rows</a></span>
+</div>
+<div data-step="3" hidden>
+<div class="zoom-view"><canvas width="256" height="128" data-zoom data-x="18" data-y="32" data-fill="yes" role="img" aria-label="Enlarged grid starting at column 18, row 32. The white diagonal is the left edge."></canvas></div><div class="memory"><span class="">row 32</span><span class="">0</span><span class="">0</span><span class="selected">1</span><span class="selected">1</span></div>
+<p class="caption">The four digits show coverage for this row. A QPU can shade up to four 2 × 2 groups together, applying one instruction across multiple lanes. The coverage information controls which samples receive the color write.</p><span class="src"><a href="https://docs.broadcom.com/doc/12358545">Broadcom · sections 5–6, color writes and quad input</a></span>
+</div></div>
+</figure>
+<p>The fragment shader is a short GPU program. In this probe, the ARM changes a constant inside one of its instructions. You can follow exactly where your input becomes a value the QPU can write. <a href="../targets/armv7/probes/v3d.rs#L237">Patch the color constant</a></p>
+<figure class="stepper" data-stepper>
+<figcaption>How does one color word reach a covered pixel?</figcaption>
+<div class="stepper-controls"><button type="button" data-step-previous disabled>Back</button><span class="stepper-meter">Step <span data-step-index>1</span> of 3</span><button type="button" data-step-next>Next</button></div>
+<div class="panels" aria-live="polite"><div data-step="1">
+<div class="bus" aria-hidden="true"><span class="chip" data-role="ram">Shader RAM</span><span class="wire"></span><span class="chip" data-role="gpu">QPU</span><span class="wire"></span><span class="chip" data-role="ram">Tile buffer</span></div><div class="registers"><div><span class="field-label">Foreground bytes</span><span class="value">28 cd ff ff</span></div><div><span class="field-label">Packed word</span><span class="value">0xffffcd28</span></div></div>
+<p class="caption">The four bytes are blue, green, red and alpha in memory. Read as a little-endian 32-bit word, they give the immediate value embedded in the instruction. The default produces opaque gold.</p><span class="src"><a href="../targets/armv7/probes/v3d.rs#L240">Default color</a> · <a href="../targets/armv7/probes/v3d_lists.S#L66">Load immediate</a></span>
+</div>
+<div data-step="2" hidden>
+<div class="bus" aria-hidden="true"><span class="chip" data-role="ram">Shader RAM</span><span class="wire on"></span><span class="chip" data-role="gpu">QPU</span><span class="wire"></span><span class="chip" data-role="ram">Tile buffer</span></div><div class="registers"><div><span class="field-label">QPU instruction</span><span class="value">ldi r3, color</span></div><div><span class="field-label">Register r3</span><span class="value">0xffffcd28</span></div></div>
+<p class="caption">The ARM has made the shader available to V3D. The QPU fetches the instructions and loads the constant into its own register r3. This shader consumes three interpolated inputs but takes its output color from that constant.</p><span class="src"><a href="../targets/armv7/probes/v3d_lists.S#L62">Read interpolated inputs</a> · <a href="../targets/armv7/probes/v3d_lists.S#L66">Load r3</a></span>
+</div>
+<div data-step="3" hidden>
+<div class="bus" aria-hidden="true"><span class="chip" data-role="ram">Shader RAM</span><span class="wire"></span><span class="chip" data-role="gpu">QPU</span><span class="wire on"></span><span class="chip" data-role="ram">Tile buffer</span></div><div class="frame-view"><canvas width="64" height="64" data-frame="edit" data-mark="no" role="img" aria-label="Covered center (20, 32) · Outside center (19, 32)"></canvas><span class="coordinates">Covered center (20, 32)<br>Outside center (19, 32)</span></div>
+<p class="caption">The scoreboard orders access to the tile buffer. The QPU writes r3 to tile color and releases the scoreboard in its last delay slot. Try changing the foreground below.</p><span class="src"><a href="../targets/armv7/probes/v3d_lists.S#L67">Wait, write tile color, release</a></span>
+</div></div>
+<div class="lab" data-color-lab><label>Try a foreground <input type="color" value="#ffcd28"></label>
+<span>Browser model · background held blue</span><output aria-live="polite"></output></div></figure>
+<section class="hardware"><h2>Read one QPU instruction</h2><figure class="tour-snippet"><figcaption><a href="../targets/armv7/probes/v3d_lists.S#L65">targets/armv7/probes/v3d_lists.S · line 65</a> · Instructions used in this draw</figcaption><pre><code>fragment_color:
+    .word 0xffffcd28, 0xe00208e7    <span class="c">// ldi r3, packed fragment color</span>
+    .word 0x009e7000, 0x400009e7    <span class="c">// Wait for scoreboard (after instruction two, HW-2796)</span>
+    .word 0x159e76c0, 0x30020ba7    <span class="c">// mov tlbc, r3 and end thread</span></code></pre></figure><p>At physical address <code>0x00e01118</code> in the template, <code>28 cd ff ff</code> holds the gold value and <code>e7 08 02 e0</code> encodes the rest of the load-immediate instruction. A later instruction moves QPU register r3 to the tile-color write destination.</p><p class="readings"><a href="../reference/pi2-v3d-registers.html#qpu">Pi 2B hardware reference</a></p></section>
+<section class="practice"><h3 style="margin:0 0 .35rem">Try explaining it</h3><p>Why can two adjacent samples in the same row keep different colors even when the QPU runs the same color instruction?</p><details><summary>Check your explanation</summary><p>The rasterizer supplies coverage, and the QPU supplies the packed output color. The tile-color write updates the covered sample. The other sample retains the clear color.</p></details></section>
+<p class="readings"><a href="../tours/tour-8.04-v3d-fragment-shader.html">Read the Gabix code for this lesson</a> · <a href="https://docs.broadcom.com/doc/12358545">Broadcom · QPU tile-buffer access</a></p>
+<nav class="pager" aria-label="Lesson navigation"><a href="8.03-v3d-tile-lists.html">← Binning and rendering</a><a href="8.05-v3d-shared-memory.html">Addresses and DMA →</a></nav>
+</main></body></html>

@@ -60,6 +60,16 @@ Each lesson should recommend a primary source for the user to read or watch. Thi
 
 Each lesson should contain a reminder to ask followup questions to the agent. The agent is their teacher, and can assist with anything that's unclear.
 
+### Planning a visual lesson
+
+Start with one question in the learner's words. Keep a section when its answer helps the learner understand the next step. Follow one small experiment throughout. Ask for a prediction, let the learner try it or inspect a recorded result, then introduce the terms that explain what changed.
+
+For a mechanism the learner cannot see, keep the components in the same positions across steps. Animate the specific byte, signal, or buffer that changes. Give the learner **Back** and **Next** controls so they can inspect either side of the change.
+
+- Aim for **2–4 figures per lesson**. Give each figure one question. Use steps within a single figure to follow one process.
+- Put the first figure after **one or two short paragraphs**. When uninterrupted prose fills a screen, cut repetition first. Draw the layout, movement, or state change the reader would otherwise have to imagine.
+- Use the full text-column width for mechanism diagrams. Check at normal zoom on a narrow screen that labels and controls are readable together. Split a busy figure into steps before shrinking its type.
+
 ## Assets
 
 Lessons are built from reusable **components**, stored in `./assets/`: stylesheets, quiz widgets, simulators, diagram helpers — anything a second lesson could reuse.

@@ -49,6 +49,8 @@ through UART reboot/upload. Preserve the working server as the recovery image.
 
 ### Remote GUI on the Pi 2B
 
+Start with the [seven VideoCore IV architecture lessons](lessons/videocore/index.html). Use the [six triangle labs](lessons/roadmap-pi-v3d.html) to inspect one draw on the Pi.
+
 - [x] Run returning ARMv7 hardware experiments from RAM over authenticated Wi-Fi. Reuse the timer with two inputs, then replace it with the V3D probe in the same boot. [Runner commands and calling convention](docs/pi2-ram-probes.md)
 - [x] Power up V3D on the physical Pi and read back `V3D_IDENT0 = 0x02443356` over Wi-Fi with the existing `gpu_mem=16` configuration.
 - [x] Submit two V3D clears and read back every pixel of each 64 × 64 frame.
@@ -616,6 +618,66 @@ A milestone is a "demo-able" checkpoint. Worth a commit + tag + log entry.
 ### 2026-11-24 — Start shared TCP support for the GUI
 
 - Moved the existing TCP segment reader and writer into kernel-core for reuse on the Pi. The x86 socket implementation now uses the shared packet format. Next, connect a passive TCP endpoint to ARM network polling. No roadmap checkboxes changed.
+
+### 2026-11-24 — Draw the V3D concept map
+
+- Replaced the expanded map’s repeated boxes with a selectable vector diagram. Each concept has one node in the full graph. No roadmap checkboxes changed.
+
+### 2026-11-24 — Define map concepts at two levels
+
+- Added a Gabix example and a general definition to every box in the expanded V3D map. No roadmap checkboxes changed.
+
+### 2026-11-24 — Give each GPU concept its own box
+
+- Split compound nodes in the expanded map, including the vertex fetch hardware, QPU storage, arithmetic units and completion counters. No roadmap checkboxes changed.
+
+### 2026-11-24 — Expand the GPU concept map
+
+- Added an [expandable map](lessons/videocore/expanded-map.html) with definitions attached to every box. Checked coverage against the previous map. No roadmap checkboxes changed.
+
+### 2026-11-24 — Map the VideoCore IV curriculum
+
+- Added a [component and prerequisite map](lessons/videocore/concepts.html) tracing one draw and connecting each subsystem to the driver. No roadmap checkboxes changed. Use the map to choose the next lesson.
+
+### 2026-11-24 — Teach the GPU architecture from the hardware drawing
+
+- Embedded Broadcom’s system diagram and added a guided sequence with enlarged details. The course index now gives a concrete exercise for each of the seven lessons. No roadmap checkboxes changed. Start with the guided map, then trace the driver’s ID read.
+
+### 2026-11-24 — Name lesson one for the hardware interaction
+
+- Renamed the first architecture lesson and updated its introduction and index entry. No roadmap checkboxes changed.
+
+### 2026-11-24 — Build a beginner path through the V3D architecture
+
+- Added seven lessons grounded in Broadcom’s diagram and the Gabix driver, with stepped figures, source excerpts and explanation exercises. No hardware roadmap checkboxes changed. Begin with the boundary of Figure 1.
+
+### 2026-11-24 — Remove the architecture video
+
+- Removed the film and its course entry at the learner’s request. No roadmap checkboxes changed.
+
+### 2026-11-24 — Read Broadcom’s VideoCore IV architecture guide
+
+- Added the Inside VideoCore IV video, a narrated introduction to the hardware in Figure 1 of Broadcom’s guide. Eight chapters connect the command executor, vertex path, QPU slices, instruction format, texture memory and tile buffer to the relevant PDF pages. The player includes chapter seeking, English captions and a transcript. No roadmap checkboxes changed. Next reading is Figure 2 on page 17 for the QPU core or page 62 for host control.
+
+### 2026-11-24 — Explain the V3D control thread number
+
+- Added the binning and rendering constants, the Rust call that passes <code>RENDERING</code>, and the register address calculation to [lesson 8.02](lessons/8.02-v3d-submission.html). The blue clear uses thread 1. Lesson 8.03 follows the triangle through both threads. No roadmap checkboxes changed.
+
+### 2026-11-24 — Read the Rust inside the Pi graphics diagrams
+
+- Embedded the relevant Rust in every step of [lesson 8.02](lessons/8.02-v3d-submission.html). The excerpts follow the same request from the kernel call through the mailbox, the ID load and the two render-register writes. Checked each excerpt against the indicated source lines. No roadmap checkboxes changed. Continue with the tile list in lesson 8.03.
+
+### 2026-11-24 — Trace a Mac command into the Pi’s graphics hardware
+
+- Revised [lesson 8.02](lessons/8.02-v3d-submission.html) around the learner’s question about where the ID reply comes from. Three figures keep the Mac, the Pi’s ARM and VideoCore processors, V3D and shared RAM in view. The [code tour](tours/tour-8.02-v3d-submission.html) connects the Mac command to the kernel call, the optional firmware power request and the register read. Checked the ID, render-list bytes and blue frame against the saved boot 32 files. No roadmap checkboxes changed. Continue with the clear-to-triangle comparison in lesson 8.03.
+
+### 2026-11-24 — Build the Pi graphics hardware lessons
+
+- Published lessons 8.01–8.06 with 13 interactive figures, six code tours and a [Pi 2B register reference](reference/pi2-v3d-registers.html). Source excerpts connect the ARM stores, GPU packet bytes, QPU instructions and DMA register bits to the same 64 × 64 frame. The readback lesson can inspect a local frame from the hardware test. Verified the controls at 320, 390 and 1120 pixels wide, the local file inspector against the boot 32 readback, and the packet encodings against the linked probe. Start at [pixel coverage](lessons/8.01-v3d-coverage.html).
+
+### 2026-11-24 — Plan the V3D driver and hardware lessons
+
+- Built a six-lesson plan around the learner’s questions about command submission, pixel coverage and memory mapping. Its opening figure replays two pixels sampled from boot 32 before and after the triangle draw. The plan follows those same pixels through the binner, rasterizer, QPU, tile store and Wi-Fi readback. Added the requested figure and layout defaults to the teaching skill. No implementation checkboxes changed. Start with the edge prediction in lesson one.
 
 ### 2026-11-24 — Run ARM programs from RAM over Wi-Fi and draw the first V3D triangle
 

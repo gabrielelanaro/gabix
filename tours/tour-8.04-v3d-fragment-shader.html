@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The fragment shader in Gabix · Gabix</title>
+<link rel="stylesheet" href="../assets/lesson.css">
+<link rel="stylesheet" href="../assets/stepper.css">
+<link rel="stylesheet" href="../assets/v3d-lessons.css">
+<script defer src="../assets/stepper.js"></script>
+<script defer src="../assets/v3d-lessons.js"></script>
+</head><body><main class="v3d-page">
+<nav class="trail"><a href="../lessons/roadmap-pi-v3d.html">Course roadmap</a><span>Source tour · 4 of 6</span></nav>
+<h1>The fragment shader in Gabix</h1>
+<p>Track the packed foreground from the input bytes to the tile-color destination in the last few QPU instructions.</p>
+<h2>Patch one instruction</h2>
+<p>A nine-byte draw supplies four background bytes and four foreground bytes after the operation byte. With a five-byte draw, the ARM takes the default gold. It patches the low 32-bit word of the load-immediate instruction.</p>
+<figure class="tour-snippet"><figcaption><a href="../targets/armv7/probes/v3d.rs#L237">targets/armv7/probes/v3d.rs · line 237</a> · Optional foreground</figcaption><pre><code>let color = if len == 9 {
+    input.add(5).cast::&lt;u32&gt;().read_unaligned()
+} else {
+    0xffffcd28
+};
+addr_of_mut!(fragment_color).write(color);</code></pre></figure>
+<h2>Follow r3</h2>
+<p>Each QPU instruction occupies two 32-bit words here. The patched immediate is loaded into r3. The shader waits for the scoreboard, writes r3 to tile color, and releases the scoreboard in the final delay slot.</p>
+<figure class="tour-snippet"><figcaption><a href="../targets/armv7/probes/v3d_lists.S#L60">targets/armv7/probes/v3d_lists.S · line 60</a> · Fragment program</figcaption><pre><code>fragment_code:
+    <span class="c">// Consume each of the three interpolated inputs before ending the thread.</span>
+    .word 0x158e7d80, 0x10020867    <span class="c">// mov r1, vary</span>
+    .word 0x158e7d80, 0x10020867    <span class="c">// mov r1, vary</span>
+    .word 0x158e7d80, 0x10020867    <span class="c">// mov r1, vary</span>
+fragment_color:
+    .word 0xffffcd28, 0xe00208e7    <span class="c">// ldi r3, packed fragment color</span>
+    .word 0x009e7000, 0x400009e7    <span class="c">// Wait for scoreboard (after instruction two, HW-2796)</span>
+    .word 0x159e76c0, 0x30020ba7    <span class="c">// mov tlbc, r3 and end thread</span>
+    .word 0x009e7000, 0x100009e7    <span class="c">// First delay slot</span>
+    .word 0x009e7000, 0x500009e7    <span class="c">// Release scoreboard in the last delay slot</span></code></pre></figure>
+<h2>Check against the board</h2>
+<p>The hardware test submits another draw with foreground bytes <code>fc 99 29 ff</code>. In the returned file these bytes represent an opaque blue foreground with red 41, green 153 and blue 252. <a href="../tests/test_v3d_renders_triangle.py#L66">Second foreground</a> · <a href="../tests/test_v3d_renders_triangle.py#L80">Comparison</a></p>
+<p class="readings"><a href="https://docs.broadcom.com/doc/12358545">Broadcom · QPU instruction encoding and tile buffer</a></p>
+<p class="readings"><a href="../reference/pi2-v3d-registers.html#qpu">Pi 2B hardware reference</a></p><nav class="pager"><a href="../lessons/8.04-v3d-fragment-shader.html">← Back to the lesson</a><a href="../lessons/8.05-v3d-shared-memory.html">Next lesson →</a></nav>
+</main></body></html>

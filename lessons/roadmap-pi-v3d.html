@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>How did the Pi draw our triangle? · Gabix</title>
+  <link rel="stylesheet" href="../assets/lesson.css">
+  <link rel="stylesheet" href="../assets/stepper.css">
+  <script defer src="../assets/stepper.js"></script>
+  <style>
+    .pixel-plan { max-width: 44rem; padding: 2rem clamp(1rem, 4vw, 2rem) 4rem; margin: auto; }
+    .pixel-plan h1 { font: 700 clamp(1.75rem, 5vw, 2.65rem)/1.14 var(--font-sans); margin: 0; }
+    .pixel-plan .stepper { width: 100%; margin: 1.25rem 0 2rem; }
+    .pixel-plan figcaption { color: var(--text); font: 600 1rem var(--font-sans); margin-bottom: .6rem; }
+    .pixel-plan .samples { display: grid; grid-template-columns: 1fr 1fr; position: relative;
+      width: min(100%, 18rem); margin: .75rem auto; }
+    .sample { text-align: center; font: .85rem var(--font-mono); }
+    .sample .cell { display: grid; place-items: center; background: #194296; aspect-ratio: 1; border: 1px solid white; }
+    .sample .cell::after { content: ""; width: .52rem; height: .52rem; border-radius: 50%;
+      background: #111; border: 2px solid white; }
+    .samples::after { content: ""; position: absolute; inset: 0 0 auto; width: 100%; aspect-ratio: 2;
+      background: white; clip-path: polygon(49.6% 0,50.4% 0,25.4% 100%,24.6% 100%); pointer-events: none; }
+    .stepper:has([data-step="draw"]:not([hidden])) .sample:last-child .cell { background: #ffcd28; }
+    .stepper:has([data-step="draw"]:not([hidden])) .sample:last-child .cell::after { border-color: #111; }
+    .pixel-plan .stepper-stage { min-height: 3.6rem; padding: 0; }
+    .pixel-plan .stepper-controls { align-items: center; }
+    .pixel-plan .source { font: .82rem/1.5 var(--font-sans); }
+    .pixel-plan ol { padding-left: 1.6rem; }
+    .pixel-plan li { padding: .85rem 0 .85rem .2rem; border-top: 1px solid var(--border); }
+    .pixel-plan li::marker { color: var(--accent); font-family: var(--font-mono); }
+    .pixel-plan h3 { font: 650 1.12rem/1.35 var(--font-sans); margin: 0; }
+    .pixel-plan li p { margin: .4rem 0; }
+    .pixel-plan details { margin: .45rem 0 0; }
+    .pixel-plan summary { cursor: pointer; color: var(--accent); font: 600 .86rem/1.5 var(--font-sans); }
+    @media (max-width: 400px) { .pixel-plan .stepper-stage { min-height: 5rem; } }
+  </style>
+</head>
+<body>
+<main class="pixel-plan">
+  <h1>How did the Pi draw our triangle?</h1>
+  <p>New to GPUs? <a href="videocore/index.html">Start with the seven architecture lessons</a>. The labs below apply those mechanisms to one draw.</p>
+  <p>“Why would the GPU need to decide anything?” Look at two neighboring pixels in the frame your Pi returned. The ARM supplied three corners and a color. Predict which pixel will change when you run the draw.</p>
+
+  <p><a href="8.01-v3d-coverage.html">Start lesson 1 · Pixel coverage</a> &nbsp;·&nbsp; <a href="../reference/pi2-v3d-registers.html">Open the register reference</a></p>
+
+  <figure class="stepper" data-stepper>
+    <figcaption>Two pixels on row 32, enlarged</figcaption>
+    <p>The white line marks the triangle’s left edge. Each dot marks a pixel center.</p>
+    <div class="samples" aria-hidden="true">
+      <div class="sample"><span class="cell"></span>(19, 32)</div>
+      <div class="sample"><span class="cell"></span>(20, 32)</div>
+    </div>
+    <div class="stepper-stage" aria-live="polite">
+      <p data-step="clear">After the clear, both pixels are blue. The triangle extends to the right of the white line. Which center lies inside?</p>
+      <p data-step="draw" hidden>After the draw, (19, 32) is still blue. (20, 32) is gold. Its four bytes in the returned frame are <code>28 cd ff ff</code>.</p>
+    </div>
+    <div class="stepper-controls">
+      <button type="button" data-step-previous disabled>Back</button>
+      <span class="stepper-meter"><span data-step-index>1</span> / 2</span>
+      <button type="button" data-step-next>Next</button>
+    </div>
+  </figure>
+
+  <p>Those colors come from the Pi’s recorded clear and draw. The overlaid edge comes from the three vertex coordinates. The six lessons follow this pair through the hardware. Back and Next replay the draw in your browser. In the last lesson you can also inspect a frame file returned by the Pi. <a href="../tests/test_v3d_renders_triangle.py#L74">Pixel check</a> · <a href="../targets/armv7/probes/v3d_lists.S#L51">Vertices</a></p>
+
+  <h2>Six lessons, one draw</h2>
+  <ol>
+    <li><h3><a href="8.01-v3d-coverage.html">Why would the GPU need to decide anything?</a></h3>
+      <p>Predict the colors above, then inspect the captured row. Draw the three edges through the grid and test the two centers. This calculation is <em>rasterization</em>.</p>
+      <details><summary>Two figures and the hardware detail</summary>
+        <p>Where is our pair in the 64 × 64 frame? Which side of each edge does each center occupy? Zoom from the frame into the pair. On row 32 the centers are at x = 19.5 and 20.5, and the left edge crosses at 19.75. Connect those coordinates to the vertex record, which stores positions in sixteenths of a pixel.</p>
+        <p class="source"><a href="../targets/armv7/probes/v3d_lists.S#L52">Packed vertex coordinates</a> · <a href="../tests/test_v3d_renders_triangle.py#L76">Independent coverage check</a></p>
+      </details></li>
+    <li><h3><a href="8.02-v3d-submission.html">“Like instruction + input” — how does the driver start the GPU?</a></h3>
+      <p>Start at your Mac. Find the ARM CPU running Gabix, the VideoCore processor running Pi firmware, V3D and shared RAM on a map of the board. Follow one Wi-Fi request to the Rust function that reads the graphics hardware’s ID.</p>
+      <details><summary>Three figures and the hardware detail</summary>
+        <p>Where does the probe run? Who supplies the four ID bytes? Which register write starts the triangle’s blue background? Step through the upload, the optional mailbox power request and the ARM load from V3D. Then follow a color into a command list in RAM and watch V3D read it.</p>
+        <p class="source"><a href="../targets/armv7/probes/v3d.rs#L107">Firmware domain 11</a> · <a href="../targets/armv7/probes/v3d.rs#L220">Identification read</a> · <a href="../targets/armv7/probes/v3d.rs#L189">Submitting the addresses</a></p>
+      </details></li>
+    <li><h3><a href="8.03-v3d-tile-lists.html">What extra work turns the clear into a triangle?</a></h3>
+      <p>Compare the two runs with the same blue background. Pause after binning and predict what the GPU has written so far. Then follow the render command that uses that result.</p>
+      <details><summary>Two figures and the hardware detail</summary>
+        <p>What does the binning thread leave in RAM? Decode the draw packet specifying three consecutive vertices and follow the primitive into the list for tile (0, 0). What reads that list? The render thread clears its tile, follows a branch to that list, and stores the tile. This experiment fits in one tile. The clear-only run skips binning and replaces the branch with five no-operation bytes.</p>
+        <p class="source"><a href="../targets/armv7/probes/v3d_lists.S#L20">Binning packets</a> · <a href="../targets/armv7/probes/v3d_lists.S#L39">Render branch and store</a> · <a href="../targets/armv7/probes/v3d.rs#L232">Clear-only change</a> · <a href="https://docs.kernel.org/gpu/vc4.html#v3d-render-command-list-rcl-generation">Linux VC4 render lists</a></p>
+      </details></li>
+    <li><h3><a href="8.04-v3d-fragment-shader.html">If the color comes from my input, what does the shader do?</a></h3>
+      <p>Keep the vertices and background fixed. Change only the foreground input, predict which of our two pixels will change, and draw again. Follow that color into one executed instruction.</p>
+      <details><summary>Two figures and the hardware detail</summary>
+        <p>What does the rasterizer hand to the shader processor? Zoom out from our edge to a 2 × 2 group of pixels and the coverage mask. V3D can group up to four of these groups for the Quad Processing Unit (QPU). What does the QPU write? Step through the shader loading the packed color into register <code>r3</code>, waiting for tile-buffer access and writing the color.</p>
+        <p class="source"><a href="../targets/armv7/probes/v3d.rs#L237">Foreground input</a> · <a href="../targets/armv7/probes/v3d_lists.S#L65">QPU instructions</a> · <a href="https://docs.broadcom.com/doc/12358545">Broadcom architecture guide, sections 5–6</a></p>
+      </details></li>
+    <li><h3><a href="8.05-v3d-shared-memory.html">“There must be some memory mapping?” Which address does each chip use?</a></h3>
+      <p>Inspect a real symptom from bring-up. The ARM changed the shader color, yet the returned triangle kept its previous color. Predict what each processor would read, then replay the working copy.</p>
+      <details><summary>Three figures and the hardware detail</summary>
+        <p>Where do the vertices, shader and finished pixels live? Give each region a stable place on a RAM map. Which address goes into a GPU command? Trace a buffer’s ARM address and VideoCore bus address to the intended storage. How does the new shader reach the QPU? Follow DMA channel 5 copying the instruction bytes from the source to the executable copy through the VideoCore-coherent alias. Mark the two copies and their addresses separately.</p>
+        <p class="source"><a href="../targets/armv7/probes/v3d_lists.S#L79">RAM layout</a> · <a href="../targets/armv7/probes/v3d_lists.S#L49">Shader record</a> · <a href="../targets/armv7/probes/v3d.rs#L154">DMA source and destination</a> · <a href="../docs/pi2-ram-probes.md">Board observation</a></p>
+      </details></li>
+    <li><h3><a href="8.06-v3d-readback.html">When is it safe to send the finished pixels to my Mac?</a></h3>
+      <p>Predict the first step where the ARM can read the new gold pixel. Then find its four bytes in the Mac’s file. At row 32, column 20 the byte offset is <code>4 × (32 × 64 + 20) = 8272</code>.</p>
+      <details><summary>Two figures and the hardware detail</summary>
+        <p>When does the finished tile reach RAM? Step from the tile-store packet to the change in the completed-frame counter, then discard the ARM’s old cached pixels. How does byte 8272 reach the Mac? Follow it through the probe output and the 512-byte result chunk beginning at offset 8192. Finish by tracing that pixel from the three vertices to the file without the diagram.</p>
+        <p class="source"><a href="../targets/armv7/probes/v3d_lists.S#L43">Tile store</a> · <a href="../targets/armv7/probes/v3d.rs#L191">Counter check</a> · <a href="../targets/armv7/probes/v3d.rs#L273">Cache and copy</a> · <a href="../scripts/pi2-ram-probe.py#L36">Reading result chunks</a></p>
+      </details></li>
+  </ol>
+  <p class="source">To repeat the experiment on the board, use the <a href="../docs/pi2-ram-probes.md">Pi probe runbook</a>.</p>
+</main>
+</body>
+</html>

@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Why does one pixel turn gold? · Gabix</title>
+<link rel="stylesheet" href="../assets/lesson.css">
+<link rel="stylesheet" href="../assets/stepper.css">
+<link rel="stylesheet" href="../assets/v3d-lessons.css">
+<script defer src="../assets/stepper.js"></script>
+<script defer src="../assets/v3d-lessons.js"></script>
+</head><body><main class="v3d-page">
+<nav class="trail" aria-label="Course"><a href="roadmap-pi-v3d.html">All six lessons</a><span>Pi graphics · Lesson 1 of 6</span></nav>
+<h1>Why does one pixel turn gold?</h1><p class="intro">The Pi has cleared a 64 × 64 image to blue. Give it three corners and gold. On row 32, which of two neighbors changes when the triangle is drawn?</p>
+<figure class="stepper" data-stepper>
+<figcaption>Where are our two pixels in the frame?</figcaption>
+<div class="stepper-controls"><button type="button" data-step-previous disabled>Back</button><span class="stepper-meter">Step <span data-step-index>1</span> of 2</span><button type="button" data-step-next>Next</button></div>
+<div class="panels" aria-live="polite"><div data-step="1">
+<div class="frame-view"><canvas width="64" height="64" data-frame="clear" data-mark="yes" role="img" aria-label="Background only · Row 32 · x = 19, 20"></canvas><span class="coordinates">Background only<br>Row 32 · x = 19, 20</span></div>
+<p class="caption">The small white box marks the neighborhood we will magnify. Both selected pixels currently contain the blue bytes <code>96 42 19 ff</code>. Predict how the next frame will differ.</p><span class="src"><a href="../tests/test_v3d_renders_triangle.py#L63">Clear and read back</a></span>
+</div>
+<div data-step="2" hidden>
+<div class="frame-view"><canvas width="64" height="64" data-frame="draw" data-mark="yes" role="img" aria-label="Triangle drawn · Row 32 · x = 19, 20"></canvas><span class="coordinates">Triangle drawn<br>Row 32 · x = 19, 20</span></div>
+<p class="caption">The picture reconstructs the geometry checked on boot 32. Of 4,096 pixels, 1,152 turned gold. To find out why one neighbor stayed blue, zoom into the left edge below.</p><span class="src"><a href="../tests/test_v3d_renders_triangle.py#L74">How the Mac checked every pixel</a></span>
+</div></div>
+</figure>
+<p>The driver supplies screen coordinates for the top corner (32, 8), lower left (8, 56), and lower right (56, 56). Screen y increases downward. The left edge therefore moves half a pixel to the left for every row you move down. <a href="../targets/armv7/probes/v3d_lists.S#L52">Three vertex records</a></p>
+<figure class="stepper" data-stepper>
+<figcaption>Which pixel center is inside the edge?</figcaption>
+<div class="stepper-controls"><button type="button" data-step-previous disabled>Back</button><span class="stepper-meter">Step <span data-step-index>1</span> of 3</span><button type="button" data-step-next>Next</button></div>
+<div class="panels" aria-live="polite"><div data-step="1">
+<div class="zoom-view"><canvas width="128" height="64" data-zoom data-x="19" data-y="32" data-fill="no" role="img" aria-label="Enlarged grid starting at column 19, row 32. The white diagonal is the left edge."></canvas></div>
+<p class="caption">The left cell has x = 19 and the right has x = 20. The dots are their centers, the white line is the edge, and the triangle extends to the right. Pick the center you expect V3D to cover.</p><span class="src"><a href="../tests/test_v3d_renders_triangle.py#L77">Pixel-center test</a></span>
+</div>
+<div data-step="2" hidden>
+<div class="zoom-view"><canvas width="128" height="64" data-zoom data-x="19" data-y="32" data-fill="yes" role="img" aria-label="Enlarged grid starting at column 19, row 32. The white diagonal is the left edge."></canvas></div>
+<p class="caption">At y = 32.5 the edge crosses x = 19.75. The center at 19.5 is outside. The center at 20.5 is inside and its pixel turns gold.</p><span class="src"><a href="../tests/test_v3d_renders_triangle.py#L77">Pixel-center test</a></span>
+</div>
+<div data-step="3" hidden>
+<div class="zoom-view"><canvas width="128" height="64" data-zoom data-x="19" data-y="33" data-fill="yes" role="img" aria-label="Enlarged grid starting at column 19, row 33. The white diagonal is the left edge."></canvas></div>
+<p class="caption">Move the same two columns down one row. The edge now crosses x = 19.25. Both centers are inside, so both pixels are gold.</p><span class="src"><a href="../tests/test_v3d_renders_triangle.py#L77">Pixel-center test</a></span>
+</div></div>
+</figure>
+<h2>What the hardware calculates</h2>
+<p>V3D’s rasterizer takes a triangle and computes coverage at sample positions. Coverage lets the GPU apply the fragment color only where the triangle overlaps those samples. The three vertices in this draw are already in screen space. For this single-sample target, the Mac checks coverage at each pixel center. <a href="../targets/armv7/probes/v3d_lists.S#L20">Screen-space draw</a> · <a href="../tests/test_v3d_renders_triangle.py#L77">Pixel-center test</a></p>
+<section class="hardware"><h2>Read the top vertex</h2><figure class="tour-snippet"><figcaption><a href="../targets/armv7/probes/v3d_lists.S#L51">targets/armv7/probes/v3d_lists.S · line 51</a> · Instructions used in this draw</figcaption><pre><code>vertices:
+    .short 32*16, 8*16
+    .word 0x3f800000, 0x3f800000, 0x3e200000, 0x3f4e0000, 0x3f800000    <span class="c">// Z, reciprocal W, and three varying values</span></code></pre></figure><p>The first four bytes are <code>00 02 80 00</code>. Split them into two little-endian halfwords. They encode 512 and 128. Four fractional bits put the corner at (32, 8).</p><p class="readings"><a href="../reference/pi2-v3d-registers.html#vertices">Pi 2B hardware reference</a></p></section>
+<section class="practice"><h3 style="margin:0 0 .35rem">Try explaining it</h3><p>If you change gold to red and leave the three vertices alone, which centers on row 32 change from outside to inside?</p><details><summary>Check your explanation</summary><p>The covered centers stay the same. Pixel (20, 32) changes color and (19, 32) keeps its background. Moving a vertex would change the edge test.</p></details></section>
+<p class="readings"><a href="../tours/tour-8.01-v3d-coverage.html">Read the Gabix code for this lesson</a> · <a href="https://docs.broadcom.com/doc/12358545">Broadcom · system pipelines and shaded vertex format</a></p>
+<nav class="pager" aria-label="Lesson navigation"><a href="roadmap-pi-v3d.html">All six lessons</a><a href="8.02-v3d-submission.html">Starting V3D →</a></nav>
+</main></body></html>

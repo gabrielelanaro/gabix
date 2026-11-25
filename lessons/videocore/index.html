@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Inside the Pi’s VideoCore IV graphics hardware · Gabix</title>
+<link rel="stylesheet" href="../../assets/lesson.css">
+<link rel="stylesheet" href="../../assets/stepper.css">
+<link rel="stylesheet" href="../../assets/v3d-lessons.css">
+<link rel="stylesheet" href="course.css">
+<script defer src="../../assets/stepper.js"></script>
+</head>
+<body>
+<main class="v3d-page">
+<nav class="trail"><a href="../../reference/modules.html#m8">Gabix lessons</a>
+</nav>
+<h1>Inside the Pi’s VideoCore IV graphics hardware</h1>
+<p class="intro">How does a Rust driver get a separate piece of silicon to draw? Follow one triangle from the CPU’s first request to the finished image in RAM. Begin with the hardware diagram inside lesson one. Each lesson then isolates one part of that machine.</p>
+<p><a href="concepts.html">Explore the GPU concept map and curriculum</a></p>
+<p><a href="expanded-map.html">Expanded map · open each box for its definition</a></p><ol class="contents">
+<li><a href="map.html">How the Pi’s CPU talks to its GPU</a><p>Locate the CPU that runs the driver and trace one register read to the device that answers.</p></li>
+<li><a href="commands.html">How can a Rust write start hardware?</a><p>Follow a command from RAM to the executor. Predict what happens when the driver writes the end address.</p></li>
+<li><a href="tiles.html">Why divide the job into two passes?</a><p>Mark the tiles touched by one triangle and use their lists to reconstruct the work for one tile.</p></li>
+<li><a href="shaders.html">Who runs a shader, and who sets up its inputs?</a><p>Change a shader’s color. Predict which parts of the image change and which hardware determines the outline.</p></li>
+<li><a href="lanes.html">What does parallel mean inside one QPU?</a><p>Trace one instruction across sixteen input values using four physical lanes.</p></li>
+<li><a href="memory.html">Why does V3D need several kinds of memory?</a><p>Track a vertex, a shader result and a stored tile. Identify which memory the next consumer reads.</p></li>
+<li><a href="completion.html">When can the ARM use the finished image?</a><p>Trace the last tile into main memory. Explain how the CPU discovers completion and reads the new bytes.</p></li>
+</ol>
+<p>Each lesson opens with a prediction. Step through the drawing, read the code beside it, then explain a changed case before opening the answer. You can follow the diagrams offline. The hardware diagrams, Rust excerpts and exercises are included here.</p>
+<p><a href="../roadmap-pi-v3d.html">Companion labs on the Gabix triangle</a></p>
+</main>
+</body>
+</html>
