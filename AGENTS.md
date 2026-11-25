@@ -7,7 +7,7 @@ Use `pstack-teach` for pstack's teaching workflow and `teach` for the existing g
 
 ## Project files
 
-### `LEARNING.md`
+### `learn/LEARNING.md`
 
 This file is the project's spine. It serves three purposes:
 
@@ -15,10 +15,10 @@ This file is the project's spine. It serves three purposes:
 2. **Reference** — toolchain setup, books, and Linux source files to read alongside each milestone.
 3. **Progress log** — append-only session log at the bottom of the file.
 
-**Working with `LEARNING.md`:**
+**Working with `learn/LEARNING.md`:**
 
 - **At the start of a session:** read the "Roadmap" and "Progress Log" to orient on where the project is.
-- **At the end of a session:** add a new entry under "Progress Log" (most recent at top) describing what was built, which checkboxes flipped (`[ ]` → `[x]`), any blockers, and where to pick up next time. Use the template comment in the file.
+- **After a learning session:** add a new entry under "Progress Log" (most recent at top) describing what you learned or built, which checkboxes flipped (`[ ]` → `[x]`), any blockers, and where to pick up next time. Record routine repository maintenance in Git history.
 - **When completing an item:** flip its checkbox in the roadmap. Don't reorganize roadmap structure mid-milestone — that's churn.
 - **Milestones (M0–M5):** when a milestone is reached, mention it in the log entry and consider `git tag`-ing the commit.
 - **If plans change:** update the roadmap directly. The file should reflect current intent, not history — history lives in git and the progress log.
@@ -78,7 +78,7 @@ For gabix lessons, tours, and explainers, three project-specific rules apply on 
 
 - **Both architectures are first-class.** x86 and ARM are two answers to one problem; teach the problem, then both. Neither is the default with the other as a footnote.
 - **Ground every behavioral claim in gabix source.** A claim about what the code or hardware does points at the gabix file and line, or the manual section.
-- **Code blocks use the course dark theme.** Do not override the `pre` background or text color — `assets/lesson.css` paints `pre` dark with near-white text and styles `.c` comments grey. Tag every comment `<span class="c">`.
+- **Code blocks use the course dark theme.** Do not override the `pre` background or text color — `learn/assets/lesson.css` paints `pre` dark with near-white text and styles `.c` comments grey. Tag every comment `<span class="c">`.
 
 
 ## Generated output and review hygiene

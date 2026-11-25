@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Why does V3D need several kinds of memory? · Gabix</title>
+<link rel="stylesheet" href="../../assets/lesson.css">
+<link rel="stylesheet" href="../../assets/stepper.css">
+<link rel="stylesheet" href="../../assets/v3d-lessons.css">
+<link rel="stylesheet" href="course.css">
+<script defer src="../../assets/stepper.js"></script>
+</head>
+<body>
+<main class="v3d-page">
+<nav class="trail"><a href="index.html">VideoCore IV architecture</a><span>Lesson 6 of 7</span>
+</nav>
+<h1>Why does V3D need several kinds of memory?</h1>
+<p class="intro">Look at three values during a draw: a batch of vertex positions, the color a shader just computed, and the colors accumulated for the current tile. If the ARM sends the image to the Mac, which of these is ready to send?</p>
+<figure class="stepper" data-stepper>
+<figcaption>Who needs each value next?</figcaption>
+<div class="stepper-controls"><button type="button" data-step-previous disabled>Back</button><span>Step <b data-step-index>1</b> of 2</span><button type="button" data-step-next>Next</button></div>
+<div aria-live="polite">
+<div data-step="1">
+<div class="parts">
+<div class="component lit"><b>Vertex pipe memory (VPM)</b><span>batch of vertices</span></div>
+<div class="component "><b>QPU register r3</b><span>—</span></div>
+<div class="component "><b>Tile buffer</b><span>—</span></div></div>
+<p>In GL mode the vertex transfer hardware fetches a batch of attributes from main RAM into VPM. A QPU can read them, transform them and write results back there for geometry hardware.</p></div>
+<div data-step="2" hidden>
+<div class="parts">
+<div class="component "><b>Vertex pipe memory (VPM)</b><span>batch data</span></div>
+<div class="component lit"><b>QPU register r3</b><span>shader color</span></div>
+<div class="component lit"><b>Tile buffer</b><span>tile colors</span></div></div>
+<p>A QPU register holds a working value for an instruction. The tile buffer holds the current region’s image data across shader updates. The driver still needs the finished colors in main RAM.</p></div></div><small><a href="https://docs.broadcom.com/doc/12358545#page=14">Broadcom guide · p. 14</a></small>
+</figure>
+<figure class="stepper" data-stepper>
+<figcaption>If a shader wants a value from a texture, where does it go?</figcaption>
+<div class="stepper-controls"><button type="button" data-step-previous disabled>Back</button><span>Step <b data-step-index>1</b> of 2</span><button type="button" data-step-next>Next</button></div>
+<div aria-live="polite">
+<div data-step="1">
+<div class="parts">
+<div class="component lit"><b>QPU</b><span>sample coordinates →</span></div>
+<div class="component lit"><b>Texture unit (TMU)</b><span>lookup</span></div>
+<div class="component "><b>Memory</b><span>texture image</span></div></div>
+<p>A texture is an image a program can sample. The texture unit uses the coordinates and texture configuration to find and optionally filter values. A cache keeps nearby copies so repeated lookups can avoid main RAM.</p></div>
+<div data-step="2" hidden>
+<div class="parts">
+<div class="component lit"><b>QPU</b><span>result in r4</span></div>
+<div class="component lit"><b>Texture unit (TMU)</b><span>returns sample</span></div>
+<div class="component "><b>Memory</b><span>texture image</span></div></div>
+<p>The shader can receive the texture result through special register r4. For the Gabix solid-color shader the color comes directly from its instruction. Which of these two paths would you expect to see in its code?</p></div></div><small><a href="https://docs.broadcom.com/doc/12358545#page=39">Broadcom guide · p. 39</a></small>
+</figure>
+<p class="src">Rust supplies the default gold constant for the shader · <a href="../../../targets/armv7/probes/v3d.rs#L237">v3d.rs, line 237</a></p>
+<pre><code>let color = if len == 9 {
+    input.add(5).cast::&lt;u32&gt;().read_unaligned()
+} else {
+    0xffffcd28
+};
+addr_of_mut!(fragment_color).write(color);</code></pre>
+<p>The ARM pointer and a V3D bus address can refer to the same RAM. Our driver forms the bus address for its command list with the operation below. This changes the address used to reach the data. The bytes stay in place.</p>
+<p class="src">Gabix address conversion for these buffers · <a href="../../../targets/armv7/probes/v3d.rs#L45">v3d.rs, line 45</a></p>
+<pre><code>fn bus(address: *const u8) -&gt; u32 {
+    address as u32 | 0xc0000000
+}</code></pre>
+<section class="practice">
+<h2>Try it in your own words</h2>
+<p>A texture lookup hits its cache. Which trip can that save? Why would the tile buffer still be needed?</p>
+<details><summary>Compare explanations</summary>
+<p>The cached copy can save a fetch from main RAM. The texture supplies an input color. The tile buffer holds the region being rendered, including the results of work already performed there.</p></details>
+</section>
+<nav class="pager"><a href="lanes.html">← Back</a><a href="completion.html">When can the ARM use the finished image? →</a>
+</nav>
+</main>
+</body>
+</html>

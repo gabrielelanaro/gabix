@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>3.06 — Timer preemption on ARM</title><link rel="stylesheet" href="../assets/lesson.css"></head>
+<body><article class="lesson"><header class="lesson-header"><div class="lesson-eyebrow">Module 3 · Processes</div><h1 class="lesson-title">Timer preemption on ARM</h1><p class="lesson-subtitle">How a timer interrupt pauses a kernel task that has not called yield.</p></header><div class="content">
+<p><a href="3.05-arm-scheduling.html">Previous: cooperative scheduling</a> · <a href="../reference/arm-scheduling.html">Reference</a></p>
+<p><a href="3.07-arm-cpu-simulator.html">Open the CPU and stack simulator</a> to follow the register saves and restores step by step.</p>
+<h2>1. Why the timer calls the scheduler</h2>
+<p>In the previous implementation, task A had to call <code>yield_now()</code> or return before task B could run. A loop that kept doing work could prevent B from running indefinitely.</p>
+<p>The timer now interrupts A periodically. Its handler acknowledges the interrupt and calls <code>preempt_on_timer()</code>. If a scheduled task is running, that function calls <code>yield_now()</code>. The dispatcher can then select B. This is timer-driven preemption.</p>
+<p>The existing x86 kernel uses the same sequence: acknowledge the timer, then ask the scheduler to select a task. ARM needs different assembly to save the interrupted state and return to it.</p>
+<h2>2. An interrupt can arrive between any two instructions</h2>
+<p>A normal function call follows rules about which registers the called function must preserve. The compiler accounts for those rules when it generates a call to <code>yield_now()</code>.</p>
+<p>A timer interrupt can arrive while a calculation is using any general-purpose register. The interrupt wrapper therefore saves <code>r0–r12</code>, the kernel link register, the interrupted program address, and the processor status. The status includes condition flags and the interrupt-enable setting. Restoring these lets the interrupted instruction sequence continue correctly.</p>
+<p>For example, the timer could arrive between a comparison and a conditional branch. The comparison’s condition flags must survive, so the branch makes the same decision after the task resumes.</p>
+<h2>3. Each paused task keeps its interrupt state on its own stack</h2>
+<p>ARM enters IRQ mode when the interrupt arrives. IRQ mode has its own stack pointer and link register. Our old handler used one shared IRQ stack.</p>
+<p>A task can now remain paused inside its timer handler while another task runs. That other task may also receive a timer interrupt. We therefore save each interrupted task’s return state on its own kernel stack, called the SVC stack in this code.</p>
+<p>The IRQ entry in <a href="../../src/arch/armv7/boot.S">boot.S</a> performs these operations:</p>
+<ol>
+<li>Adjust the IRQ return address to the instruction where execution should resume.</li>
+<li>Use <code>srsdb</code> to store that address and the saved processor status on the SVC stack.</li>
+<li>Change to SVC mode and save the general-purpose registers. Also preserve the SVC saved-status register, which a syscall handler may be using.</li>
+<li>Align the stack for a Rust function call, then call the timer handler.</li>
+<li>When this task resumes, restore its registers and use <code>rfeia</code> to restore the interrupted address and processor status.</li>
+</ol>
+<p>Inside the handler, the existing context switch saves its function-call state on the same task stack. The stack therefore contains both the interrupted task’s state and the handler’s suspended calls. Resuming the handler eventually restores the interrupted task.</p>
+<h2>4. Scheduler updates must finish before another timer interrupt</h2>
+<p>When choosing a task, the scheduler updates the current task number, task state, and stack pointer. An interrupt halfway through those updates could observe inconsistent values.</p>
+<p><code>mask_irqs()</code> saves the previous IRQ-enable setting and disables IRQs before these updates. After a paused call resumes, <code>restore_irqs()</code> restores its previous setting. New tasks inherit the setting from the caller of <code>run_until_finished()</code>.</p>
+<p>The timer handler already runs with IRQs disabled. When it resumes after a switch, it keeps them disabled until the assembly exception return restores the interrupted task’s status.</p>
+<h2>5. A test that needs preemption to finish</h2>
+<p>Two kernel tasks each publish a round number and wait until the other task has reached that round. They repeat this eight times. Neither calls <code>yield_now()</code>.</p>
+<pre><code>for round in 1..=8 {
+    publish_my_progress(round);
+    while other_task_progress() &lt; round {
+        // Keep waiting. The timer must give the other task CPU time.
+    }
+}</code></pre>
+<p>This is a simplified version of <code>wait_for_other_task()</code> in <a href="../../targets/armv7/src/scheduler.rs">scheduler.rs</a>. The implementation uses atomic values so the tasks can observe each other’s progress.</p>
+<p>Before reading the answer: A publishes round 1 and starts waiting. What lets B publish round 1?</p>
+<details><summary>Show the sequence</summary><p>The timer interrupts A. Its handler yields to the dispatcher, which starts B. B publishes round 1 and can proceed to round 2, where it waits for A. A later timer interrupt switches back to A. Repeated timer interrupts let both tasks finish all eight rounds.</p></details>
+<p>The test checks both final progress values, both Finished states, and at least eight timer preemptions. If the timer never switches tasks, the first task waits indefinitely. QEMU has a timeout; the physical Pi has a watchdog around this boot test to return a stalled kernel to the UART loader.</p>
+<h2>6. Current scope</h2>
+<p>Preemption applies to the registered kernel tasks on one core. The UART/Ethernet server still uses its existing polling loop after the boot tests. ARM userspace processes, per-process memory isolation, and floating-point/SIMD register switching remain separate work.</p>
+<p>Ask me about any save, switch, or return step that is unclear. A useful next exercise is to follow A’s stack through one timer interrupt and its later resumption.</p>
+<p>Primary reference: Arm’s <a href="https://github.com/ARM-software/CMSIS_5/blob/develop/CMSIS/RTOS2/RTX/Source/GCC/irq_armv7a.S">ARMv7-A interrupt implementation</a> uses the same SRS/RFE instruction family for saving and restoring exception state. Our scheduler and task layout are specific to gabix.</p>
+</div></article></body></html>

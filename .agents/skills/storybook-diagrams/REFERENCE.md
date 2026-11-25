@@ -2,7 +2,7 @@
 
 Copy-adapt these. Each pattern has ready CSS (paste into the lesson's inline `<style>`, scoped with the given prefix) and an HTML skeleton. All CSS uses the lesson's variables so dark mode just works.
 
-Golden reference: `lessons/7.04-dwc2-host-controller.html` (tag `golden-704-scenes`) builds the vignette, flow-scene, and mapping-scene patterns.
+Golden reference: `learn/lessons/7.04-dwc2-host-controller.html` (tag `golden-704-scenes`) builds the vignette, flow-scene, and mapping-scene patterns.
 
 ## The one rule
 

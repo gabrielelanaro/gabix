@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Which address does each chip use? · Gabix</title>
+<link rel="stylesheet" href="../assets/lesson.css">
+<link rel="stylesheet" href="../assets/stepper.css">
+<link rel="stylesheet" href="../assets/v3d-lessons.css">
+<script defer src="../assets/stepper.js"></script>
+<script defer src="../assets/v3d-lessons.js"></script>
+</head><body><main class="v3d-page">
+<nav class="trail" aria-label="Course"><a href="roadmap-pi-v3d.html">All six lessons</a><span>Pi graphics · Lesson 5 of 6</span></nav>
+<h1>Which address does each chip use?</h1><p class="intro">During bring-up, changing the shader sometimes left the triangle its previous color. The background still changed correctly. Would you inspect the vertex positions, the output buffer, or the bytes the QPU fetched as instructions?</p>
+<figure class="stepper" data-stepper>
+<figcaption>Which RAM region would you inspect first?</figcaption>
+<div class="stepper-controls"><button type="button" data-step-previous disabled>Back</button><span class="stepper-meter">Step <span data-step-index>1</span> of 2</span><button type="button" data-step-next>Next</button></div>
+<div class="panels" aria-live="polite"><div data-step="1">
+<div class="bus" aria-hidden="true"><span class="chip" data-role="cpu">ARM</span><span class="wire"></span><span class="chip" data-role="ram">Pi RAM</span><span class="wire"></span><span class="chip" data-role="gpu">V3D</span></div><div class="registers"><div><span class="field-label">vertices</span><span class="value">0x00e01080</span></div><div><span class="field-label">pixels</span><span class="value">0x00e07000</span></div></div>
+<p class="caption">In the tested build, the vertex array holds the corners. The pixels region holds finished colors. A new background arrived. Which input could still hold an old color?</p><span class="src"><a href="../../targets/armv7/probes/v3d_lists.S#L51">Vertex array</a> · <a href="../../targets/armv7/probes/v3d_lists.S#L82">Frame storage</a></span>
+</div>
+<div data-step="2" hidden>
+<div class="bus" aria-hidden="true"><span class="chip" data-role="cpu">ARM</span><span class="wire"></span><span class="chip" data-role="ram">Pi RAM</span><span class="wire"></span><span class="chip" data-role="gpu">V3D</span></div><div class="registers"><div><span class="field-label">fragment_code</span><span class="value">0x00e01100</span></div><div><span class="field-label">shader_storage</span><span class="value">0x00e0b000</span></div></div>
+<p class="caption">These are two separate places in RAM. The ARM edits the shader template at the first address. The shader record directs the QPU to fetch the executable copy at the second. A correct edit to the first tells you only half the story.</p><span class="src"><a href="../../targets/armv7/probes/v3d_lists.S#L49">Shader code address</a> · <a href="../../targets/armv7/probes/v3d.rs#L154">Copy source and destination</a></span>
+</div></div>
+</figure>
+<p>These numeric addresses come from the linked probe used on boot 32. The linker fixes the ARM entry at <code>0x00e00000</code>. Offsets inside the image can move when you rebuild it. The names beside the addresses let you follow the next build too. <a href="../../targets/armv7/probes/probe.ld#L3">Probe linker script</a></p>
+<figure class="stepper" data-stepper>
+<figcaption>How many buffers do these two addresses describe?</figcaption>
+<div class="stepper-controls"><button type="button" data-step-previous disabled>Back</button><span class="stepper-meter">Step <span data-step-index>1</span> of 2</span><button type="button" data-step-next>Next</button></div>
+<div class="panels" aria-live="polite"><div data-step="1">
+<div class="bus" aria-hidden="true"><span class="chip" data-role="cpu">ARM</span><span class="wire"></span><span class="chip" data-role="ram">Pi RAM</span><span class="wire"></span><span class="chip" data-role="gpu">V3D</span></div><div class="registers"><div><span class="field-label">ARM address</span><span class="value">0x00e07000</span></div><div><span class="field-label">Contents</span><span class="value">pixels[0 … 16383]</span></div></div>
+<p class="caption">Start with just the framebuffer. The ARM accesses it through the Pi kernel’s identity mapping. Here the ARM virtual address and physical address have the same numeric value.</p><span class="src"><a href="../../targets/armv7/probes/v3d_lists.S#L82">Framebuffer allocation</a> · <a href="../../targets/armv7/src/memory.rs#L96">Kernel identity map</a></span>
+</div>
+<div data-step="2" hidden>
+<div class="bus" aria-hidden="true"><span class="chip" data-role="cpu">ARM</span><span class="wire"></span><span class="chip" data-role="ram">Pi RAM</span><span class="wire on reverse"></span><span class="chip" data-role="gpu">V3D</span></div><div class="registers"><div><span class="field-label">ARM address</span><span class="value">0x00e07000</span></div><div><span class="field-label">V3D bus address</span><span class="value">0xc0e07000</span></div></div>
+<p class="caption">The render packet carries the direct VideoCore bus address. OR-ing the physical address with <code>0xc0000000</code> gives V3D’s address for the same framebuffer. No pixels move in this conversion.</p><span class="src"><a href="../../targets/armv7/probes/v3d.rs#L45">Direct bus address</a> · <a href="../../targets/armv7/probes/v3d_lists.S#L34">Render target address</a></span>
+</div></div>
+</figure>
+<figure class="stepper" data-stepper>
+<figcaption>What has to happen for a modified shader to execute?</figcaption>
+<div class="stepper-controls"><button type="button" data-step-previous disabled>Back</button><span class="stepper-meter">Step <span data-step-index>1</span> of 3</span><button type="button" data-step-next>Next</button></div>
+<div class="panels" aria-live="polite"><div data-step="1">
+<div class="bus" aria-hidden="true"><span class="chip" data-role="ram">Source RAM</span><span class="wire"></span><span class="chip" data-role="cpu">DMA 5</span><span class="wire"></span><span class="chip" data-role="ram">Code RAM</span></div><div class="registers"><div><span class="field-label">Source · direct</span><span class="value">0xc0e01100</span></div><div><span class="field-label">Destination · coherent</span><span class="value">0x40e0b000</span></div></div>
+<p class="caption">The driver cleans the ARM’s dirty cache lines so devices can read the new data. It checks that firmware allows channel 5, then builds a DMA control block containing these two addresses and the shader length.</p><span class="src"><a href="../../targets/armv7/probes/v3d.rs#L249">Clean before submission</a> · <a href="../../targets/armv7/probes/v3d.rs#L137">Check channel</a> · <a href="../../targets/armv7/probes/v3d.rs#L154">DMA control block</a></span>
+</div>
+<div data-step="2" hidden>
+<div class="bus" aria-hidden="true"><span class="chip" data-role="ram">Source RAM</span><span class="wire on"></span><span class="chip" data-role="cpu">DMA 5</span><span class="wire"></span><span class="chip" data-role="ram">Code RAM</span></div><div class="registers"><div><span class="field-label">Source</span><span class="value">64 instruction bytes</span></div><div><span class="field-label">Channel 5</span><span class="value">active</span></div></div>
+<p class="caption">DMA means direct memory access. After the ARM starts the channel, this device reads the source bytes and supplies the writes. The driver waits for the active bit to clear and checks the end and error bits.</p><span class="src"><a href="../../targets/armv7/probes/v3d.rs#L166">Start and wait</a> · <a href="../../targets/armv7/probes/v3d.rs#L174">Check completion</a></span>
+</div>
+<div data-step="3" hidden>
+<div class="bus" aria-hidden="true"><span class="chip" data-role="ram">Source RAM</span><span class="wire"></span><span class="chip" data-role="cpu">DMA 5</span><span class="wire on"></span><span class="chip" data-role="ram">Code RAM</span></div><div class="registers"><div><span class="field-label">Destination</span><span class="value">0x40e0b000</span></div><div><span class="field-label">QPU fetch address</span><span class="value">0x40e0b000</span></div></div>
+<p class="caption">DMA writes the executable copy through the same VideoCore cache alias used for instruction fetch. The driver then clears V3D caches before submitting the job. On this board, successive shader edits at this address produced the new foreground colors.</p><span class="src"><a href="../../targets/armv7/probes/v3d.rs#L122">Observed stale-code behavior</a> · <a href="../../targets/armv7/probes/v3d.rs#L265">V3D cache controls</a> · <a href="https://github.com/gabrielelanaro/gabix/blob/f6816a34606a1a0b032658fa44fb5bc000d6cad7/docs/pi2-ram-probes.md#L59">Physical verification</a></span>
+</div></div>
+</figure>
+<section class="hardware"><h2>Start DMA channel 5</h2><figure class="tour-snippet"><figcaption><a href="../../targets/armv7/probes/v3d.rs#L165">targets/armv7/probes/v3d.rs · line 165</a> · Instructions used in this draw</figcaption><pre><code>cache(block as usize, block as usize + 64, false);
+write(CS + 4, bus(block.cast()));
+write(CS, WAIT_FOR_WRITES | ACTIVE);
+if !wait(|| read(CS) &amp; ACTIVE == 0) {</code></pre></figure><p>The first write puts the control block’s bus address in <code>CONBLK_AD</code> at <code>0x3f007504</code>. The second writes <code>0x10000001</code> to <code>CS</code> at <code>0x3f007500</code>. Bit 0 starts the channel. Bit 28 requests that outstanding writes complete before the transfer ends.</p><p class="readings"><a href="../reference/pi2-v3d-registers.html#dma">Pi 2B hardware reference</a></p></section>
+<section class="practice"><h3 style="margin:0 0 .35rem">Try explaining it</h3><p>How many storage regions are involved when converting the framebuffer address? How many when publishing the shader?</p><details><summary>Check your explanation</summary><p>One framebuffer has two address representations. Publishing the shader uses two distinct storage regions and an actual DMA transfer between them. An address conversion alone cannot copy a single instruction.</p></details></section>
+<p class="readings"><a href="../tours/tour-8.05-v3d-shared-memory.html">Read the Gabix code for this lesson</a> · <a href="https://pip-assets.raspberrypi.com/categories/579-raspberry-pi-zero/documents/RP-008249-DS-1-bcm2835-peripherals.pdf">Broadcom · address map and DMA</a></p>
+<nav class="pager" aria-label="Lesson navigation"><a href="8.04-v3d-fragment-shader.html">← The fragment shader</a><a href="8.06-v3d-readback.html">Frame readback →</a></nav>
+</main></body></html>

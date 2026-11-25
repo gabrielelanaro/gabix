@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pixel coverage in Gabix · Gabix</title>
+<link rel="stylesheet" href="../assets/lesson.css">
+<link rel="stylesheet" href="../assets/stepper.css">
+<link rel="stylesheet" href="../assets/v3d-lessons.css">
+<script defer src="../assets/stepper.js"></script>
+<script defer src="../assets/v3d-lessons.js"></script>
+</head><body><main class="v3d-page">
+<nav class="trail"><a href="../lessons/roadmap-pi-v3d.html">Course roadmap</a><span>Source tour · 1 of 6</span></nav>
+<h1>Pixel coverage in Gabix</h1>
+<p>Read the vertex data and the independent check on the Mac. These are the two ends of the same draw.</p>
+<h2>Decode the top corner</h2>
+<p>The assembler stores two 16-bit coordinates. Dividing by 16 gives (32, 8). The following words supply depth, reciprocal W and three varying values. Each vertex occupies 24 bytes.</p>
+<figure class="tour-snippet"><figcaption><a href="../../targets/armv7/probes/v3d_lists.S#L51">targets/armv7/probes/v3d_lists.S · line 51</a> · Coordinates and attributes</figcaption><pre><code>vertices:
+    .short 32*16, 8*16
+    .word 0x3f800000, 0x3f800000, 0x3e200000, 0x3f4e0000, 0x3f800000    <span class="c">// Z, reciprocal W, and three varying values</span>
+    .short 8*16, 56*16
+    .word 0x3f800000, 0x3f800000, 0x3e200000, 0x3f4e0000, 0x3f800000
+    .short 56*16, 56*16
+    .word 0x3f800000, 0x3f800000, 0x3e200000, 0x3f4e0000, 0x3f800000</code></pre></figure>
+<h2>Predict the second pixel</h2>
+<p>The host computes the center comparison using integers. On row 32 the right side of the inequality is 49. For column 19 the left side is 50. For column 20 it is 46. Read the next line to locate those results in the file.</p>
+<figure class="tour-snippet"><figcaption><a href="../../tests/test_v3d_renders_triangle.py#L74">tests/test_v3d_renders_triangle.py · line 74</a> · Geometry and byte comparison</figcaption><pre><code>for y in range(64):
+    for x in range(64):
+<span class="c">        # Test the pixel center against the two sloping edges and the base.</span>
+        inside = 8 &lt;= y &lt; 56 and 2 * abs(2 * x + 1 - 64) &lt; 2 * y + 1 - 16
+        offset = (y * 64 + x) * 4
+        pixel = frame[offset:offset + 4]
+        assert pixel == (foreground if inside else background), (name, x, y, pixel.hex())</code></pre></figure>
+<h2>Check against the board</h2>
+<p>In the boot 32 gold frame, columns 19 and 20 on row 32 contain <code>96 42 19 ff</code> and <code>28 cd ff ff</code>. Move to row 33 and both contain gold. <a href="../../tests/test_v3d_renders_triangle.py#L67">Frames tested</a></p>
+<p class="readings"><a href="https://docs.broadcom.com/doc/12358545">Broadcom · shaded vertex format</a></p>
+<p class="readings"><a href="../reference/pi2-v3d-registers.html#vertices">Pi 2B hardware reference</a></p><nav class="pager"><a href="../lessons/8.01-v3d-coverage.html">← Back to the lesson</a><a href="../lessons/8.02-v3d-submission.html">Next lesson →</a></nav>
+</main></body></html>

@@ -72,12 +72,16 @@ class LayoutAuditTests(unittest.TestCase):
 
     def test_scan_preserves_directory_totals(self):
         self.write("README.md", "Gabix\n")
-        self.write("learning-records/0001-first.md", "First\n")
-        self.write("learning-records/0002-second.md", "Second\n")
+        self.write("learn/learning-records/0001-first.md", "First\n")
+        self.write("learn/learning-records/0002-second.md", "Second\n")
         self.write("tests/fixtures/hello.rs", "fn main() {}\n")
         report = self.audit()
         files = report["files"]
         directories = report["directories"]
+        self.assertEqual(
+            {f["owner"] for f in files if f["path"].startswith("learn/learning-records/")},
+            {"Learning records"},
+        )
         self.assertIn(".", {d["path"] for d in directories})
         for directory in directories:
             parent = Path(directory["path"])

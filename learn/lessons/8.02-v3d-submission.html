@@ -1,0 +1,351 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>From a Mac command to the Pi’s graphics hardware · Gabix</title>
+<link rel="stylesheet" href="../assets/lesson.css">
+<link rel="stylesheet" href="../assets/stepper.css">
+<link rel="stylesheet" href="../assets/v3d-lessons.css">
+<script defer src="../assets/stepper.js"></script>
+<style>
+.system-trace .system-map { margin: .6rem 0 .8rem; font-family: var(--font-sans); }
+.system-trace .host { width: fit-content; margin: 0 auto; border: 2px solid var(--border-bright); border-radius: .3rem; padding: .2rem .7rem; font-size: .85rem; }
+.system-trace .host span { margin-left: .65rem; color: var(--text-dim); }
+.system-trace .network { position: relative; display: flex; align-items: center; justify-content: center; gap: .35rem; font-size: .78rem; line-height: 1.65; }
+.system-trace .network::before { content: ''; height: 1.3rem; border-left: 2px dotted var(--border-bright); }
+#map:has([data-step="2"]:not([hidden])) .network::after { content: '↓ v3d.img'; }
+#map:has([data-step="3"]:not([hidden])) .network::after { content: '↓ 00'; }
+#id-read:has([data-step="4"]:not([hidden])) .network::after { content: '↑ 56 33 44 02'; }
+.system-trace .network::after { position: absolute; right: calc(50% + 1.65rem); font: 600 .78rem/1 var(--font-mono); color: var(--accent); }
+#submit:has([data-step="4"]:not([hidden])) .ram { box-shadow: inset 0 -.24rem var(--pixel-blue); }
+#submit [data-step="4"] .transfer code::before { content: ''; display: inline-block; width: .8rem; height: .8rem; margin-right: .25rem; vertical-align: -.1rem; background: var(--pixel-blue); }
+.system-trace .board { border: 1px solid var(--border-bright); border-radius: .7rem; padding: .3rem .65rem .65rem; background: var(--bg); }
+.system-trace .board-name { display: block; margin-bottom: .55rem; font-size: .82rem; }
+.system-trace .board-layout { display: grid; grid-template-columns: minmax(0, 1fr) 1.2rem minmax(4.1rem, 21%); align-items: center; }
+.system-trace .package { padding: .22rem .45rem .55rem; border: 1px solid var(--border-bright); border-radius: .3rem; background: var(--surface); }
+.system-trace .package-name { display: block; margin: 0 0 .55rem; font: 600 .76rem/1.3 var(--font-sans); }
+.system-trace .parts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: .6rem .45rem; }
+.system-trace .ram-link { text-align: center; color: var(--text-dim); }
+@media(max-width: 640px) {
+  .system-trace .system-map { margin: .25rem 0 .45rem; }
+  .system-trace .board-layout { grid-template-columns: 1fr; }
+  .system-trace .board-name { margin-bottom: .2rem; }
+  .system-trace .ram-link { line-height: 1rem; transform: rotate(90deg); }
+  .system-trace .package-name { margin-bottom: .3rem; }
+  .system-trace .parts { grid-template-columns: 1fr; gap: .25rem; }
+  .system-trace .parts .chip, .system-trace .board .ram { display: flex; justify-content: space-between; align-items: center; min-height: 1.6rem; padding: .22rem .3rem; gap: .32rem; text-align: left; }
+  .system-trace .parts small, .system-trace .board .ram small { margin: 0; text-align: right; }
+  .system-trace .parts .chip::before, .system-trace .parts .chip::after { display: none; }
+  .system-trace .stepper-controls { position: sticky; top: 0; z-index: 2; gap: .25rem; background: var(--surface); }
+  .system-trace .stepper-meter { white-space: nowrap; }
+}
+.system-trace .chip { display: grid; align-content: center; min-height: 2.75rem; padding: .24rem .15rem; line-height: 1.15; }
+.system-trace .chip small { display: block; font-weight: 400; font-size: .78rem; margin-top: .15rem; }
+.system-trace:has([data-active~="host"]:not([hidden])) .host,
+.system-trace:has([data-active~="arm"]:not([hidden])) .arm,
+.system-trace:has([data-active~="vc"]:not([hidden])) .vc,
+.system-trace:has([data-active~="ram"]:not([hidden])) .ram,
+.system-trace:has([data-active~="gpu"]:not([hidden])) .gpu { background: var(--accent-soft); border-color: var(--accent); }
+.system-trace .transfer { border-left: 3px solid var(--accent); padding: .25rem .65rem; background: var(--surface-soft); font: .84rem/1.45 var(--font-sans); }
+.system-trace .source-excerpt { margin: .6rem 0 .3rem; }
+.system-trace .source-excerpt p { margin: 0 0 .15rem; font: .79rem/1.4 var(--font-sans); color: var(--text-dim); }
+.system-trace .source-excerpt pre, .hardware pre { margin: 0; padding: .6rem .75rem; white-space: pre-wrap; overflow-wrap: anywhere; }
+.system-trace .source-excerpt pre code, .hardware pre code { white-space: inherit; overflow-wrap: inherit; }
+.v3d-page .system-trace .panels > [data-step][hidden] { display: none; }
+.system-trace .transfer strong, .system-trace .transfer span { display: block; }
+.system-trace .transfer span { font-size: .8rem; }
+.system-trace .transfer code { font-size: .86rem; }
+@media (prefers-reduced-motion: no-preference) {
+  .system-trace [data-step]:not([hidden]) .transfer code { display: inline-block; animation: arrive .3s ease-out; }
+  #map:has([data-step="2"]:not([hidden])) .network::after { animation: toward-pi .55s ease-out; }
+  #map:has([data-step="3"]:not([hidden])) .network::after { animation: toward-pi .65s ease-out; }
+  #id-read:has([data-step="4"]:not([hidden])) .network::after { animation: toward-pi .55s ease-out reverse; }
+  @keyframes toward-pi { from { transform: translateY(-.4rem); } to { transform: translateY(.4rem); } }
+  @keyframes arrive { from { transform: translateX(-.45rem); opacity: .3; } to { transform: translateX(0); opacity: 1; } }
+}
+</style>
+</head>
+<body><main class="v3d-page">
+<nav class="trail" aria-label="Course"><a href="roadmap-pi-v3d.html">All six lessons</a><span>Pi graphics · Lesson 2 of 6</span></nav>
+<h1>I type a command on my Mac. Where does it actually run?</h1>
+<p class="intro">Before drawing the gold triangle from lesson 1, we asked the Pi’s graphics hardware for its name. Our Mac printed <code>56334402</code>. Where on the board did those bytes come from?</p>
+<p>Inside the Pi’s Broadcom chip, the ARM CPU runs Gabix. A second processor, VideoCore, runs Raspberry Pi’s <strong>firmware</strong>, software loaded from the SD card at boot. V3D is the part that draws. The ARM and V3D share the board’s RAM. <a href="https://www.raspberrypi.com/documentation/computers/configuration.html#boot-folder-contents">Pi boot files</a> · <a href="../../targets/armv7/probes/v3d_lists.S#L34">Shared pixel buffer</a></p>
+
+<figure id="map" class="stepper system-trace" data-stepper>
+<figcaption>Where does the Mac’s command run?</figcaption>
+<div class="stepper-controls">
+  <button type="button" data-step-previous disabled>Back</button>
+  <span class="stepper-meter">Step <span data-step-index>1</span> of 3</span>
+  <button type="button" data-step-next>Next</button>
+</div>
+<div class="system-map" role="group" aria-label="Where the hardware and software live">
+  <div class="host"><strong>Your Mac</strong><span>Python client</span></div>
+  <div class="network">Wi-Fi</div>
+  <div class="board">
+    <strong class="board-name">Raspberry Pi 2B</strong>
+    <div class="board-layout">
+      <div class="package">
+        <span class="package-name">Broadcom system chip</span>
+        <div class="parts">
+          <div class="chip arm" data-role="cpu">ARM CPU<small>Runs Gabix</small></div>
+          <div class="chip vc" data-role="cpu">VideoCore CPU<small>Runs firmware</small></div>
+          <div class="chip gpu" data-role="gpu">V3D engine<small>Renders pixels</small></div>
+        </div>
+      </div>
+      <div class="ram-link" aria-hidden="true">↔</div>
+      <div class="chip ram" data-role="ram">Shared RAM<small>Code and data</small></div>
+    </div>
+  </div>
+</div>
+<div class="panels" aria-live="polite">
+<div data-step="1" data-active="host arm">
+  <div class="transfer"><strong>Two computers, linked by Wi-Fi</strong><span>Captured Mac output <code>56334402</code></span></div>
+  <p class="caption">On the Mac, Python puts one byte, <code>00</code>, inside a <code>RUN</code> message. On the Pi, our Rust function uses <code>*input</code> to read that byte from RAM. <code>mode</code> is now zero. Which piece of hardware will supply the letters V3D?</p>
+  <div class="source-excerpt">
+    <p>Python · <a href="../../scripts/pi2-ram-probe.py#L32">pi2-ram-probe.py · run</a></p>
+    <pre><code>reply = transfer.exchange(connection, session, RUN, payload=data)</code></pre>
+  </div>
+  <div class="source-excerpt">
+    <p>Rust · <a href="../../targets/armv7/probes/v3d.rs#L211">v3d.rs · probe</a></p>
+    <pre><code>let mode = *input;</code></pre>
+  </div>
+</div>
+<div data-step="2" data-active="host arm ram" hidden>
+  <div class="transfer"><strong>Mac → Gabix → Pi RAM</strong><span>Upload <code>v3d.img</code></span></div>
+  <p class="caption">Gabix receives the compiled ARM program in chunks. <code>data</code> holds one chunk from the Mac. <code>image</code> is the reserved region of Pi RAM. With <code>offset = 0</code> and 512 bytes of data, this Rust line fills bytes 0 through 511. The uploaded program is our <strong>probe</strong>.</p>
+  <div class="source-excerpt">
+    <p>Rust · <a href="../../targets/armv7/src/ram_probe.rs#L77">ram_probe.rs · Runner::command</a></p>
+    <pre><code>image[offset..offset + data.len()].copy_from_slice(data);
+self.received += data.len();</code></pre>
+  </div>
+</div>
+<div data-step="3" data-active="host arm" hidden>
+  <div class="transfer"><strong>Mac → Gabix on the ARM</strong><span>Request <code>RUN · input 00</code></span></div>
+  <p class="caption">The Pi receives <code>RUN</code> over Wi-Fi. In the Gabix kernel, <code>entry</code> points to the uploaded <code>probe()</code>. The first two arguments tell it where to find <code>00</code> and how many input bytes to read. The last two give it a place to write the answer and the available space. The ARM executes the call.</p>
+  <div class="source-excerpt">
+    <p>Rust · <a href="../../targets/armv7/src/ram_probe.rs#L99">ram_probe.rs · Runner::command</a></p>
+    <pre><code>let count = unsafe {
+    entry(
+        data.as_ptr(), data.len(),
+        output.as_mut_ptr(), output.len()
+    )
+};</code></pre>
+  </div>
+</div>
+</div>
+</figure>
+
+<h2>What does the ARM do with <code>00</code>?</h2>
+<p>The ARM is now executing <code>probe()</code> with <code>mode = 0</code>. Follow the power check and the register read below. Which one supplies the ID?</p>
+
+<figure id="id-read" class="stepper system-trace" data-stepper>
+<figcaption>Where do the four ID bytes come from?</figcaption>
+<div class="stepper-controls">
+  <button type="button" data-step-previous disabled>Back</button>
+  <span class="stepper-meter">Step <span data-step-index>1</span> of 4</span>
+  <button type="button" data-step-next>Next</button>
+</div>
+<div class="system-map" role="group" aria-label="Where the hardware and software live">
+  <div class="host"><strong>Your Mac</strong><span>Python client</span></div>
+  <div class="network">Wi-Fi</div>
+  <div class="board">
+    <strong class="board-name">Raspberry Pi 2B</strong>
+    <div class="board-layout">
+      <div class="package">
+        <span class="package-name">Broadcom system chip</span>
+        <div class="parts">
+          <div class="chip arm" data-role="cpu">ARM CPU<small>Runs Gabix</small></div>
+          <div class="chip vc" data-role="cpu">VideoCore CPU<small>Runs firmware</small></div>
+          <div class="chip gpu" data-role="gpu">V3D engine<small>Renders pixels</small></div>
+        </div>
+      </div>
+      <div class="ram-link" aria-hidden="true">↔</div>
+      <div class="chip ram" data-role="ram">Shared RAM<small>Code and data</small></div>
+    </div>
+  </div>
+</div>
+<div class="panels" aria-live="polite">
+<div data-step="1" data-active="arm">
+  <div class="transfer"><strong>ARM checks V3D</strong><span>Function <code>set_v3d_power(true)</code></span></div>
+  <p class="caption">The ARM calls <code>v3d_ready()</code>. Each <code>read</code> loads a 32-bit hardware register. In the second line of the expression, <code>&amp; 0x80</code> picks out bit 7, the clock’s busy flag. The last two reads check the connections to the chip’s internal bus. If all four checks pass, the driver skips the firmware request and proceeds to step 3.</p>
+  <div class="source-excerpt">
+    <p>Rust · <a href="../../targets/armv7/probes/v3d.rs#L73">v3d.rs · v3d_ready</a></p>
+    <pre><code>unsafe fn v3d_ready() -&gt; bool {
+    read(0x3f10010c) &amp; 0x7f == 0x7f
+        &amp;&amp; read(0x3f101038) &amp; 0x80 != 0
+        &amp;&amp; read(0x3f00a008) &amp; 3 == 0
+        &amp;&amp; read(0x3f00a00c) &amp; 3 == 0
+}</code></pre>
+  </div>
+</div>
+<div data-step="2" data-active="arm ram vc" hidden>
+  <div class="transfer"><strong>ARM → VideoCore firmware</strong><span>Power request <code>domain 11 = on</code></span></div>
+  <p class="caption">If V3D needs power, the ARM requests a change to power domain <code>11</code>. In this call <code>on as u32</code> is <code>1</code>. Inside <code>property()</code>, the ARM puts those words in shared RAM. It writes the message’s bus address and channel <code>8</code> to the hardware mailbox. The VideoCore firmware handles that power request.</p>
+  <div class="source-excerpt">
+    <p>Rust · <a href="../../targets/armv7/probes/v3d.rs#L107">v3d.rs · set_v3d_power</a></p>
+    <pre><code>let reply = property(
+    &amp;[32, 0, 0x00038030, 8, 0, 11, on as u32, 0],
+    8
+)?;</code></pre>
+  </div>
+  <div class="source-excerpt">
+    <p>Rust · <a href="../../targets/armv7/probes/v3d.rs#L88">v3d.rs · property</a></p>
+    <pre><code>let request = bus(message.cast()) | 8;
+write(MAILBOX + 0x20, request);</code></pre>
+  </div>
+</div>
+<div data-step="3" data-active="gpu arm" hidden>
+  <div class="transfer"><strong>V3D ID register → ARM</strong><span>32-bit read <code>0x02443356</code></span></div>
+  <p class="caption"><code>V3D</code> is the base address <code>0x3fc00000</code>. <code>IDENT0</code> is at offset zero. Follow the call into <code>read()</code> below. The cast gives Rust a pointer to a 32-bit word. <code>read_volatile</code> makes the ARM issue the load. The chip routes that address to V3D’s ID register, which supplies <code>0x02443356</code>.</p>
+  <div class="source-excerpt">
+    <p>Rust · <a href="../../targets/armv7/probes/v3d.rs#L220">v3d.rs · probe</a></p>
+    <pre><code>let id = read(V3D + IDENT0);</code></pre>
+  </div>
+  <div class="source-excerpt">
+    <p>Rust · <a href="../../targets/armv7/probes/v3d.rs#L39">v3d.rs · read</a></p>
+    <pre><code>unsafe fn read(address: usize) -&gt; u32 {
+    read_volatile(address as *const u32)
+}</code></pre>
+  </div>
+</div>
+<div data-step="4" data-active="arm ram host" hidden>
+  <div class="transfer"><strong>ARM → result in Pi RAM → Mac</strong><span>Bytes on the Mac <code>56 33 44 02</code></span></div>
+  <p class="caption"><code>mode</code> is the byte the Mac supplied. For <code>00</code>, the probe writes the ID into the kernel’s output buffer. The Pi stores the low byte first, so the bytes in RAM are <code>56 33 44 02</code>. The function returns their <em>length</em>, <code>4</code>. The Mac then fetches those bytes. The first three spell V3D.</p>
+  <div class="source-excerpt">
+    <p>Rust · <a href="../../targets/armv7/probes/v3d.rs#L221">v3d.rs · probe</a></p>
+    <pre><code>if mode == 0 {
+    output.cast::&lt;u32&gt;().write_unaligned(id);
+    return 4;
+}</code></pre>
+  </div>
+  <div class="source-excerpt">
+    <p>Python · <a href="../../scripts/pi2-ram-probe.py#L38">pi2-ram-probe.py · run</a></p>
+    <pre><code>chunk = transfer.exchange(connection, session, READ_RESULT, len(result))</code></pre>
+  </div>
+</div>
+</div>
+</figure>
+
+<h2>How does the same program make pixels?</h2>
+<p>You suggested “instruction + input.” Try that idea on the triangle’s background. The Mac sends <code>01 96 42 19 ff</code> to the same loaded program. <code>01</code> selects a clear. The other four bytes specify blue. Now V3D needs commands that describe <em>what color</em>, <em>which image</em> and <em>where to store it</em>. <a href="../../tests/test_v3d_renders_triangle.py#L63">The blue clear on the Pi</a></p>
+
+<figure id="submit" class="stepper system-trace" data-stepper>
+<figcaption>Which ARM write starts the blue background?</figcaption>
+<div class="stepper-controls">
+  <button type="button" data-step-previous disabled>Back</button>
+  <span class="stepper-meter">Step <span data-step-index>1</span> of 4</span>
+  <button type="button" data-step-next>Next</button>
+</div>
+<div class="system-map" role="group" aria-label="Where the hardware and software live">
+  <div class="host"><strong>Your Mac</strong><span>Python client</span></div>
+  <div class="network">Wi-Fi</div>
+  <div class="board">
+    <strong class="board-name">Raspberry Pi 2B</strong>
+    <div class="board-layout">
+      <div class="package">
+        <span class="package-name">Broadcom system chip</span>
+        <div class="parts">
+          <div class="chip arm" data-role="cpu">ARM CPU<small>Runs Gabix</small></div>
+          <div class="chip vc" data-role="cpu">VideoCore CPU<small>Runs firmware</small></div>
+          <div class="chip gpu" data-role="gpu">V3D engine<small>Renders pixels</small></div>
+        </div>
+      </div>
+      <div class="ram-link" aria-hidden="true">↔</div>
+      <div class="chip ram" data-role="ram">Shared RAM<small>Code and data</small></div>
+    </div>
+  </div>
+</div>
+<div class="panels" aria-live="polite">
+<div data-step="1" data-active="arm ram">
+  <div class="transfer"><strong>ARM → list in RAM</strong><span>First packet <code>72 96 42 19 ff …</code></span></div>
+  <p class="caption">The input starts with <code>01 96 42 19 ff</code>. <code>input.add(1)</code> skips the operation byte, so the 32-bit load reads the four color bytes. <code>clear_color</code> names the color fields in the V3D command list in RAM. The ARM writes the same color at offsets 0 and 4 within those fields.</p>
+  <div class="source-excerpt">
+    <p>Rust · <a href="../../targets/armv7/probes/v3d.rs#L228">v3d.rs · probe</a></p>
+    <pre><code>let color = input.add(1).cast::&lt;u32&gt;()
+    .read_unaligned();
+let clear = addr_of_mut!(clear_color).cast::&lt;u8&gt;();
+clear.cast::&lt;u32&gt;().write_unaligned(color);
+clear.add(4).cast::&lt;u32&gt;().write_unaligned(color);</code></pre>
+  </div>
+</div>
+<div data-step="2" data-active="arm gpu" hidden>
+  <div class="transfer"><strong>ARM → V3D current-address register</strong><span>CT1CA receives <code>0xc0e01040</code></span></div>
+  <p class="caption">V3D has two hardware <strong>control threads</strong>. Each reads a list of commands from RAM and keeps its own position in that list. Thread 0 groups triangles by the tiles they touch. Thread 1 runs the rendering commands for each tile. A solid blue clear has no triangles to group, so the ARM calls <code>submit(RENDERING, …)</code>. That gives the Rust parameter <code>thread</code> the value <code>1</code>.</p>
+  <div class="source-excerpt">
+    <p>Rust · <a href="../../targets/armv7/probes/v3d.rs#L30">v3d.rs · hardware thread numbers</a> · <a href="https://docs.broadcom.com/doc/12358545">Broadcom guide, p. 85</a></p>
+    <pre><code>const BINNING: usize = 0;
+const RENDERING: usize = 1;</code></pre>
+  </div>
+  <p>The two current-address registers sit four bytes apart. With <code>thread = 1</code>, the ARM writes to <code>V3D + 0x114</code>, the register called <code>CT1CA</code>. The value written there is the address of the first command, <code>0xc0e01040</code> in this run.</p>
+  <div class="source-excerpt">
+    <p>Rust · <a href="../../targets/armv7/probes/v3d.rs#L189">v3d.rs · submit</a></p>
+    <pre><code>write(V3D + 0x110 + thread * 4, bus(start));</code></pre>
+  </div>
+  <div class="source-excerpt">
+    <p>Rust · <a href="../../targets/armv7/probes/v3d.rs#L45">v3d.rs · bus</a></p>
+    <pre><code>fn bus(address: *const u8) -&gt; u32 {
+    address as u32 | 0xc0000000
+}</code></pre>
+  </div>
+</div>
+<div data-step="3" data-active="arm gpu" hidden>
+  <div class="transfer"><strong>ARM → V3D end-address register</strong><span>CT1EA receives <code>0xc0e0106c</code></span></div>
+  <p class="caption">The first argument now selects the end-address register at <code>0x3fc0010c</code>. The second is <code>0xc0e0106c</code>, one byte past the 44-byte list. Follow <code>write()</code> into <code>write_volatile</code>. This ARM store starts V3D fetching commands from the start address set in step 2.</p>
+  <div class="source-excerpt">
+    <p>Rust · <a href="../../targets/armv7/probes/v3d.rs#L190">v3d.rs · submit</a></p>
+    <pre><code>write(V3D + 0x108 + thread * 4, bus(end));</code></pre>
+  </div>
+  <div class="source-excerpt">
+    <p>Rust · <a href="../../targets/armv7/probes/v3d.rs#L42">v3d.rs · write</a></p>
+    <pre><code>unsafe fn write(address: usize, value: u32) {
+    write_volatile(address as *mut u32, value);
+}</code></pre>
+  </div>
+</div>
+<div data-step="4" data-active="gpu ram arm" hidden>
+  <div class="transfer"><strong>V3D → pixel buffer in shared RAM</strong><span>Pixel (20, 32) <code>96 42 19 ff</code></span></div>
+  <p class="caption">The last packet in RAM contains byte <code>25</code> (decimal). V3D executes it, stores the blue tile and signals frame completion. On the ARM, <code>previous</code> holds the frame count from before submission. Once the count changes, the driver invalidates the ARM’s cached copy of the pixels and copies 16,384 bytes into the result for the Mac.</p>
+  <div class="source-excerpt">
+    <p>VC4 packet · <a href="../../targets/armv7/probes/v3d_lists.S#L43">v3d_lists.S · render_list</a></p>
+    <pre><code>.byte 25  <span class="c">// Store tile, signal end of frame</span></code></pre>
+  </div>
+  <div class="source-excerpt">
+    <p>Rust · <a href="../../targets/armv7/probes/v3d.rs#L191">v3d.rs · submit</a></p>
+    <pre><code>wait(|| read(counter) != previous)</code></pre>
+  </div>
+  <div class="source-excerpt">
+    <p>Rust · <a href="../../targets/armv7/probes/v3d.rs#L278">v3d.rs · probe</a></p>
+    <pre><code>core::ptr::copy_nonoverlapping(
+    addr_of!(pixels).cast::&lt;u8&gt;(),
+    output,
+    FRAME_BYTES
+);
+FRAME_BYTES as i32</code></pre>
+  </div>
+</div>
+</div>
+</figure>
+
+<section class="hardware" aria-labelledby="stores"><h2 id="stores">Read those two writes in our driver</h2>
+<p>Here is the call the ARM executes for the blue clear. Its three arguments select hardware thread 1 and give the start and end of the render command list in RAM. <a href="../../targets/armv7/probes/v3d.rs#L270">v3d.rs · probe</a></p>
+<pre><code>if !submit(RENDERING, addr_of!(render_list), addr_of!(render_end)) {
+    return stop_stalled_job(-21);
+}</code></pre>
+<p>Inside <code>submit()</code>, read each call as <code>write(where, what)</code>. Substituting <code>1</code> for <code>thread</code> selects the render thread’s register in each pair. The ARM samples the frame counter before the two writes so it can tell when V3D has finished. <a href="../../targets/armv7/probes/v3d.rs#L187">v3d.rs · submit</a></p>
+<pre><code>let counter = V3D + 0x134 + thread * 4;
+let previous = read(counter);
+write(V3D + 0x110 + thread * 4, bus(start));
+write(V3D + 0x108 + thread * 4, bus(end));
+wait(|| read(counter) != previous)</code></pre></section>
+
+<section class="practice"><h3>Try explaining it</h3>
+<p>Imagine the ARM pauses between the two calls to <code>write()</code>. Where is the blue color already stored? What is V3D still waiting for?</p>
+<details><summary>Check your explanation</summary><p>The color is in the command list in shared RAM. V3D has the list’s start address. The ARM still has to write its end address to CT1EA. That write starts V3D reading the list and, eventually, filling the image with blue.</p></details></section>
+
+<p>In lesson 3 we keep that blue background and give V3D three vertices. What extra work will put gold pixels inside their edges?</p>
+<p class="readings"><a href="../tours/tour-8.02-v3d-submission.html">Read the Gabix code for this lesson</a> · <a href="../reference/pi2-v3d-registers.html#submit">Register addresses and the compiled ARM store</a> · <a href="7.03-pi-mailboxes.html">Inside the firmware mailbox</a></p>
+<nav class="pager" aria-label="Lesson navigation"><a href="8.01-v3d-coverage.html">← Pixel coverage</a><a href="8.03-v3d-tile-lists.html">What adds the triangle? →</a></nav>
+<p class="readings">If a step loses you, tell me which arrow you’re following and what you expected to move.</p>
+</main></body>
+</html>

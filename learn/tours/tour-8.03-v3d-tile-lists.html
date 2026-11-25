@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Binning and rendering in Gabix · Gabix</title>
+<link rel="stylesheet" href="../assets/lesson.css">
+<link rel="stylesheet" href="../assets/stepper.css">
+<link rel="stylesheet" href="../assets/v3d-lessons.css">
+<script defer src="../assets/stepper.js"></script>
+<script defer src="../assets/v3d-lessons.js"></script>
+</head><body><main class="v3d-page">
+<nav class="trail"><a href="../lessons/roadmap-pi-v3d.html">Course roadmap</a><span>Source tour · 3 of 6</span></nav>
+<h1>Binning and rendering in Gabix</h1>
+<p>Trace the branch that distinguishes a clear from a draw. The same render list can perform both.</p>
+<h2>Build work for one tile</h2>
+<p>The binning configuration describes a one-by-one tile grid. The draw packet supplies a vertex count of three and starting index of zero. The flush finishes the generated lists.</p>
+<figure class="tour-snippet"><figcaption><a href="../../targets/armv7/probes/v3d_lists.S#L10">targets/armv7/probes/v3d_lists.S · line 10</a> · Tile setup</figcaption><pre><code>bin_list:
+    .byte 112                       <span class="c">// Tile binning configuration</span>
+    .word tile_pool + BUS, 16384, tile_state + BUS
+    .byte 1, 1, 4                   <span class="c">// Columns, rows, auto-initialize tile state</span>
+    .byte 6                         <span class="c">// Start tile binning</span>
+    .byte 102                       <span class="c">// Clip window</span></code></pre></figure>
+<figure class="tour-snippet"><figcaption><a href="../../targets/armv7/probes/v3d_lists.S#L20">targets/armv7/probes/v3d_lists.S · line 20</a> · Shader state, primitive and flush</figcaption><pre><code>    .byte 65                        <span class="c">// Pretransformed vertices, fragment shader only</span>
+    .word shader_record + BUS
+    .byte 33, 4                     <span class="c">// Draw triangle list from consecutive vertices</span>
+    .word 3, 0
+    .byte 4                         <span class="c">// Flush tile lists, increment BFC</span>
+bin_end:</code></pre></figure>
+<h2>Use the tile list</h2>
+<p>Opcode 17 branches to a sublist. The clear-only path replaces its five bytes with no-operations. Opcode 25 stores the tile and signals frame completion. Follow the Rust submission order to see when each list is safe to use.</p>
+<figure class="tour-snippet"><figcaption><a href="../../targets/armv7/probes/v3d_lists.S#L39">targets/armv7/probes/v3d_lists.S · line 39</a> · Branch and tile store</figcaption><pre><code>.global tile_branch
+tile_branch:
+    .byte 17                        <span class="c">// Call binner-generated tile sublist</span>
+    .word tile_pool + BUS
+    .byte 25                        <span class="c">// Store tile, signal end of frame</span>
+render_end:</code></pre></figure>
+<figure class="tour-snippet"><figcaption><a href="../../targets/armv7/probes/v3d.rs#L232">targets/armv7/probes/v3d.rs · line 232</a> · Clear-only patch</figcaption><pre><code><span class="c">// For a clear-only frame, replace the five-byte branch packet by five NOPs.</span>
+let branch = addr_of_mut!(tile_branch).cast::&lt;u8&gt;();
+if mode == 1 {
+    core::ptr::write_bytes(branch, 1, 5);</code></pre></figure>
+<figure class="tour-snippet"><figcaption><a href="../../targets/armv7/probes/v3d.rs#L267">targets/armv7/probes/v3d.rs · line 267</a> · Binning before rendering</figcaption><pre><code>if mode == 2 &amp;&amp; !submit(BINNING, addr_of!(bin_list), addr_of!(bin_end)) {
+    return stop_stalled_job(-20);
+}
+if !submit(RENDERING, addr_of!(render_list), addr_of!(render_end)) {
+    return stop_stalled_job(-21);
+}</code></pre></figure>
+<h2>Check against the board</h2>
+<p>The Mac checked all 4,096 pixels on each clear and independently checked the triangle coverage on each draw. <a href="../../tests/test_v3d_renders_triangle.py#L63">Clear</a> · <a href="../../tests/test_v3d_renders_triangle.py#L77">Draw</a></p>
+<p class="readings"><a href="https://docs.kernel.org/gpu/vc4.html#memory-management-and-3d-command-submission">Linux VC4 · tile rendering lists</a></p>
+<p class="readings"><a href="../reference/pi2-v3d-registers.html#packets">Pi 2B hardware reference</a></p><nav class="pager"><a href="../lessons/8.03-v3d-tile-lists.html">← Back to the lesson</a><a href="../lessons/8.04-v3d-fragment-shader.html">Next lesson →</a></nav>
+</main></body></html>

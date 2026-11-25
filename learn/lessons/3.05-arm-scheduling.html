@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>3.05 — Cooperative scheduling on ARM</title>
+<link rel="stylesheet" href="../assets/lesson.css">
+<link rel="stylesheet" href="../assets/scheduler-lab.css">
+<script src="../assets/scheduler-lab.js" defer></script>
+</head>
+<body><article class="lesson">
+<header class="lesson-header">
+<div class="lesson-eyebrow">Module 3 · Processes</div>
+<h1 class="lesson-title">Cooperative scheduling on ARM</h1>
+<p class="lesson-subtitle">How a kernel task pauses, how another task runs, and how the first task resumes.</p>
+</header>
+<div class="content">
+<p><a href="../reference/modules.html">Course map</a> · <a href="../reference/arm-scheduling.html">Quick reference</a></p>
+
+<p>This lesson explains cooperative scheduling in isolation. Timer preemption has since been added; <a href="3.06-arm-preemption.html">lesson 3.06</a> explains that addition. The simulations here keep preemption disabled.</p>
+<h2>1. Start with the loop already running on the Pi</h2>
+<p>The Pi checks UART input and Ethernet packets repeatedly. After checking one device, the loop checks the other. Both devices receive attention because each check returns to the loop.</p>
+<p>Suppose we want two functions to run independently. Each function has a loop and local variables. If we call the first function normally, the second function must wait until that call returns. Scheduling lets the first function pause before it returns, so the second function can run.</p>
+<p>In this implementation, a <strong>task</strong> is a function with its own stack and a record of the CPU state needed to resume it. The <strong>scheduler</strong> is kernel code that chooses which task runs. These tasks share kernel memory; they have no process memory isolation.</p>
+
+<h2>2. A task pauses by calling yield_now()</h2>
+<p>Here is the first task from our boot test. Its local variable starts at 10.</p>
+<pre><code>fn first_task() {
+    let mut local = 10;
+    for _ in 0..3 {
+        record(local);
+        local += 1;
+        yield_now();
+    }
+}</code></pre>
+<p><code>record(local)</code> appends the number to the test’s output array. The first iteration records 10, changes <code>local</code> to 11, and calls <code>yield_now()</code>.</p>
+<p>That call pauses this task and resumes the scheduler. The scheduler can then run another task. When it selects the first task again, execution continues after the call to <code>yield_now()</code>. The local variable is still 11, so the next iteration records 11.</p>
+<p>This is <strong>cooperative scheduling</strong>: a running task must call <code>yield_now()</code> or return before another task can run. A task that loops forever without yielding prevents the other tasks from running.</p>
+
+<h2>3. Follow two tasks through a few yields</h2>
+<p>The simulation below has two tasks. A starts with a counter of 10; B starts with 20. A runs first. Each card shows that task’s next counter value and its state:</p>
+<ul>
+<li><strong>Running:</strong> the CPU is executing this task.</li>
+<li><strong>Ready:</strong> the task can run when the scheduler selects it.</li>
+<li><strong>Finished:</strong> the task’s function returned; the scheduler will skip it.</li>
+</ul>
+<p>Press <strong>Record and increment</strong> once. A records 10 and its counter becomes 11. Press <strong>Yield</strong> to select B, then record once more. The output should now be <code>10 → 20</code>.</p>
+<section class="scheduler-lab" id="turn-lab" aria-label="Cooperative task simulator">
+<div class="tasks"><div class="task"><h3>Task A</h3><div class="meter"></div><p class="state"></p></div><div class="task"><h3>Task B</h3><div class="meter"></div><p class="state"></p></div></div>
+<div><button data-action="work">Record and increment</button><button data-action="yield">Yield</button><button data-action="tick">Timer interrupt</button><button data-action="finish">Return from task</button><button data-action="check">Check output</button><button data-action="reset">Reset</button></div>
+<p class="trace"></p><output aria-live="polite">A is running. Record its counter, then yield to B.</output>
+</section>
+<p>Continue alternating until the output is <code>10 → 20 → 11 → 21 → 12 → 22</code>. Before each recording, predict the next number. Then use <strong>Return from task</strong> to finish each task.</p>
+<p>For a second check, reset and press <strong>Timer interrupt</strong> while A is running. A remains selected. In this cooperative simulation, the timer handler returns to the interrupted task. Having the timer trigger a task change is called <strong>preemption</strong>; lesson 3.06 explains its implementation.</p>
+<p>The buttons let you choose the operations separately. In the actual Rust test, each task executes its own sequence of recording, incrementing, yielding, and returning.</p>
+
+<h2>4. What must be saved when a task pauses?</h2>
+<p>The CPU has registers: small storage locations used while executing instructions. A task may have values in registers as well as in its stack in memory. When another task runs, it uses those same CPU registers.</p>
+<p>To resume the paused task correctly, we save the register values required by our function-call rules and remember its stack pointer. Later we restore those values and continue at the saved return address. This save-and-restore operation is a <strong>context switch</strong>.</p>
+<p>Each task has a separate stack, so its suspended function calls remain in memory while another task runs. The compiler decides whether a particular local variable is held in a register or on the stack.</p>
+<p>The following simulation simplifies this to one CPU value and one saved value per task. With saving enabled:</p>
+<ol>
+<li>Increment A’s value from 10 to 11.</li>
+<li>Switch to B. The simulation saves 11 for A and loads B’s value, 20.</li>
+<li>Switch back to A. It loads A’s saved value, 11.</li>
+</ol>
+<section class="scheduler-lab" id="save-lab" aria-label="Saved context experiment">
+<p class="meter"></p><p class="trace"></p>
+<label><input type="checkbox" checked> Save the current value before switching</label>
+<button data-action="increment">Increment value</button><button data-action="switch">Switch task</button><button data-action="reset">Reset values</button>
+<output aria-live="polite">Increment A, then switch twice. Compare the restored value with your prediction.</output>
+</section>
+<p>Reset the values, disable saving, and repeat. A returns with 10 because its saved value was never updated to 11. This illustrates why the context switch must preserve the values a suspended function expects to keep.</p>
+
+<h2>5. Find these operations in the Rust code</h2>
+<p>Open <a href="../../targets/armv7/src/scheduler.rs">scheduler.rs</a>. Read these functions in order:</p>
+<ol>
+<li><code>spawn(entry)</code> registers a task and prepares its private stack.</li>
+<li><code>run_until_finished()</code> scans the task slots in order. It selects a Ready task, marks it Running, and switches to it. This selection loop is the <strong>dispatcher</strong>.</li>
+<li><code>yield_now()</code> marks the current task Ready and switches back to the dispatcher. The next selection resumes another ready task, if one exists.</li>
+<li><code>task_entry()</code> calls the registered task function. When that function returns, it marks the task Finished and switches back to the dispatcher.</li>
+</ol>
+<p><code>task_entry()</code> is a wrapper that runs when a task first starts. You may see such a wrapper called a <em>trampoline</em>. Its purpose here is to handle the task’s return, so every task function can return normally.</p>
+
+<h2>6. Compare ARM with x86</h2>
+<p>Both implementations choose a task and restore the state needed to continue its function call. The CPU instructions and register names differ.</p>
+<table><thead><tr><th>Saved state or operation</th><th>ARM</th><th>x86_64</th></tr></thead><tbody>
+<tr><td>Stack pointer: address of the current stack position</td><td><code>sp</code></td><td><code>rsp</code></td></tr>
+<tr><td>Integer registers preserved by the switch</td><td><code>r4–r11</code></td><td><code>rbx, rbp, r12–r15</code></td></tr>
+<tr><td>Continue at the saved return address</td><td>Restore the link register <code>lr</code>, then execute <code>bx lr</code></td><td><code>ret</code> reads the return address from the restored stack</td></tr>
+</tbody></table>
+<p>Our x86 scheduler also supports timer-driven preemption. The cooperative behavior modeled in this lesson switches at explicit yields and task returns. ARM now also supports timer preemption, described in lesson 3.06.</p>
+<details><summary>Optional: read the ARM context-switch instructions</summary>
+<p>In <a href="../../targets/armv7/src/context.rs">context.rs</a>, register <code>r0</code> points to the context being saved and <code>r1</code> points to the context being resumed.</p>
+<pre><code>push {r4-r11, lr}  <span class="c">// Copy these registers onto the current stack.</span>
+str sp, [r0]      <span class="c">// Store this stack position in the saved context.</span>
+ldr sp, [r1]      <span class="c">// Load the other context's stack position.</span>
+pop {r4-r11, lr}  <span class="c">// Load registers from that stack.</span>
+bx lr            <span class="c">// Continue at the restored return address.</span></code></pre>
+<p>The set of registers follows the function-call rules, also called the calling convention. Because yielding happens through a function call, the compiler already handles values in registers that a function call may overwrite.</p>
+<p>A new task has no suspended call to restore. <code>spawn</code> therefore prepares nine words on its stack in the layout that <code>pop</code> expects: eight register values and the address of <code>task_entry</code>. The first switch starts that wrapper. After those words are removed, the stack pointer is aligned to eight bytes as required at function entry.</p>
+<p>Compare the <a href="../../src/arch/x86_64/context.rs">x86 context switch</a>. For the ARM register and stack rules, see the <a href="https://github.com/ARM-software/abi-aa/blob/main/aapcs32/aapcs32.rst">ARM procedure-call standard</a>.</p>
+</details>
+
+<h2>7. What currently runs on the Pi</h2>
+<p>The boot test runs two tasks, checks that their recorded numbers are exactly <code>10, 20, 11, 21, 12, 22</code>, and checks that both tasks finish. This passed in QEMU and on the physical Pi after UART reboot and kernel upload.</p>
+<p>After that test, the Pi starts the existing UART/Ethernet polling loop. The device handlers have not yet been moved into separate scheduled tasks.</p>
+<p>The scheduler currently has four task slots with 16 KiB stacks. It runs on one core and supports integer register state. Floating-point register state, blocking operations, and process memory isolation remain further work.</p>
+<p>To check your understanding: if A keeps looping without yielding or returning, when can B run? Explain your answer using the scheduler operations above. Ask me about any step that is still unclear.</p>
+<p>For a later comparison with Linux, read the <a href="https://people.kernel.org/linusw/the-arm32-scheduling-and-kernelspace-userspace-boundary">ARM Linux maintainer’s explanation of task switching and exception entry</a>.</p>
+</div></article></body></html>

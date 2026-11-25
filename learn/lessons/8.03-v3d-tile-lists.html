@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>What turns a clear into a triangle? · Gabix</title>
+<link rel="stylesheet" href="../assets/lesson.css">
+<link rel="stylesheet" href="../assets/stepper.css">
+<link rel="stylesheet" href="../assets/v3d-lessons.css">
+<script defer src="../assets/stepper.js"></script>
+<script defer src="../assets/v3d-lessons.js"></script>
+</head><body><main class="v3d-page">
+<nav class="trail" aria-label="Course"><a href="roadmap-pi-v3d.html">All six lessons</a><span>Pi graphics · Lesson 3 of 6</span></nav>
+<h1>What turns a clear into a triangle?</h1><p class="intro">Start with the blue clear from lesson two. Keep the same color and draw the triangle. Before the first gold pixel exists, V3D has already written something useful to RAM. What could it be?</p>
+<figure class="stepper" data-stepper>
+<figcaption>What does binning produce?</figcaption>
+<div class="stepper-controls"><button type="button" data-step-previous disabled>Back</button><span class="stepper-meter">Step <span data-step-index>1</span> of 3</span><button type="button" data-step-next>Next</button></div>
+<div class="panels" aria-live="polite"><div data-step="1">
+<div class="bus" aria-hidden="true"><span class="chip" data-role="ram">Vertex RAM</span><span class="wire"></span><span class="chip" data-role="gpu">Binner</span><span class="wire"></span><span class="chip" data-role="ram">Tile list</span></div><div class="registers"><div><span class="field-label">Tile grid</span><span class="value">1 column × 1 row</span></div><div><span class="field-label">Pixel image</span><span class="value">64 × 64</span></div></div>
+<p class="caption">The image fits one hardware tile in this non-multisampled mode. A tile is a rectangular region that V3D can render in on-chip storage. The driver supplies scratch RAM for building a list of work for each tile.</p><span class="src"><a href="../../targets/armv7/probes/v3d_lists.S#L11">Tile pool, state and dimensions</a></span>
+</div>
+<div data-step="2" hidden>
+<div class="bus" aria-hidden="true"><span class="chip" data-role="ram">Vertex RAM</span><span class="wire on"></span><span class="chip" data-role="gpu">Binner</span><span class="wire"></span><span class="chip" data-role="ram">Tile list</span></div><div class="registers"><div><span class="field-label">Draw packet</span><span class="value">21 04 …</span></div><div><span class="field-label">Vertex count</span><span class="value">3</span></div></div>
+<p class="caption">The binning thread reads the draw packet. Byte <code>21</code> in hex selects consecutive vertices. Byte <code>04</code> asks it to interpret each group of three as a triangle. The shader record gives the vertex address and a 24-byte stride.</p><span class="src"><a href="../../targets/armv7/probes/v3d_lists.S#L22">Draw packet</a> · <a href="../../targets/armv7/probes/v3d_lists.S#L47">Shader record</a></span>
+</div>
+<div data-step="3" hidden>
+<div class="bus" aria-hidden="true"><span class="chip" data-role="ram">Vertex RAM</span><span class="wire"></span><span class="chip" data-role="gpu">Binner</span><span class="wire on"></span><span class="chip" data-role="ram">Tile list</span></div><div class="registers"><div><span class="field-label">Tile (0, 0)</span><span class="value">primitive work ready</span></div><div><span class="field-label">Binning counter</span><span class="value">advances on flush</span></div></div>
+<p class="caption">The triangle intersects tile (0, 0). The binner emits work for that tile into the pool and flushes it. The driver can now start rendering. Where would you look for the result of this stage?</p><span class="src"><a href="../../targets/armv7/probes/v3d_lists.S#L24">Binning flush</a> · <a href="../../targets/armv7/probes/v3d.rs#L267">Wait before rendering</a></span>
+</div></div>
+</figure>
+<p>Binning answers “which primitives might touch this tile?” Rasterization later answers “which samples in the tile do they cover?” On a larger image one triangle can appear in several tile lists. Our single tile keeps both stages visible with just one list to follow. <a href="https://docs.kernel.org/gpu/vc4.html#memory-management-and-3d-command-submission">Linux VC4 · rendering tile lists</a></p>
+<figure class="stepper" data-stepper>
+<figcaption>Which command makes the blue clear gain a triangle?</figcaption>
+<div class="stepper-controls"><button type="button" data-step-previous disabled>Back</button><span class="stepper-meter">Step <span data-step-index>1</span> of 3</span><button type="button" data-step-next>Next</button></div>
+<div class="panels" aria-live="polite"><div data-step="1">
+<div class="bus" aria-hidden="true"><span class="chip" data-role="ram">Tile list</span><span class="wire"></span><span class="chip" data-role="gpu">Renderer</span><span class="wire"></span><span class="chip" data-role="ram">Frame RAM</span></div><div class="registers"><div><span class="field-label">In the tile</span><span class="value">clear to blue</span></div><div><span class="field-label">Branch bytes</span><span class="value">01 01 01 01 01</span></div></div>
+<p class="caption">For a clear-only run, each of these five bytes is a no-operation packet. The render thread goes from selecting the tile to storing it. The Mac reads blue at both neighboring pixels.</p><span class="src"><a href="../../targets/armv7/probes/v3d.rs#L232">Five no-operation bytes</a> · <a href="../../tests/test_v3d_renders_triangle.py#L64">Clear result</a></span>
+</div>
+<div data-step="2" hidden>
+<div class="bus" aria-hidden="true"><span class="chip" data-role="ram">Tile list</span><span class="wire on"></span><span class="chip" data-role="gpu">Renderer</span><span class="wire"></span><span class="chip" data-role="ram">Frame RAM</span></div><div class="registers"><div><span class="field-label">In the tile</span><span class="value">render tile (0, 0)</span></div><div><span class="field-label">Branch bytes</span><span class="value">11 00 20 e0 c0</span></div></div>
+<p class="caption">For a draw, the driver restores the five-byte branch. The first byte is the branch opcode. The next four bytes point to the tile list at <code>0xc0e02000</code> in this build. V3D follows the list and renders the covered samples.</p><span class="src"><a href="../../targets/armv7/probes/v3d.rs#L243">Restore branch</a> · <a href="../../targets/armv7/probes/v3d_lists.S#L41">Call tile sublist</a></span>
+</div>
+<div data-step="3" hidden>
+<div class="bus" aria-hidden="true"><span class="chip" data-role="ram">Tile list</span><span class="wire"></span><span class="chip" data-role="gpu">Renderer</span><span class="wire on"></span><span class="chip" data-role="ram">Frame RAM</span></div><div class="registers"><div><span class="field-label">Store opcode</span><span class="value">19 hex</span></div><div><span class="field-label">Pixel (20, 32)</span><span class="value">28 cd ff ff</span></div></div>
+<p class="caption">After returning from the sublist, the render thread stores the tile into framebuffer RAM and signals the end of the frame. This is the store used by both the clear and the draw.</p><span class="src"><a href="../../targets/armv7/probes/v3d_lists.S#L43">Store tile and signal end</a> · <a href="../../tests/test_v3d_renders_triangle.py#L80">Pixel comparison</a></span>
+</div></div>
+</figure>
+<section class="hardware"><h2>Decode the draw packet</h2><figure class="tour-snippet"><figcaption><a href="../../targets/armv7/probes/v3d_lists.S#L22">targets/armv7/probes/v3d_lists.S · line 22</a> · Instructions used in this draw</figcaption><pre><code>.byte 33, 4                     <span class="c">// Draw triangle list from consecutive vertices</span>
+.word 3, 0
+.byte 4                         <span class="c">// Flush tile lists, increment BFC</span></code></pre></figure><p>The compiled bytes start <code>21 04 03 00 00 00 00 00 00 00</code>. Read them as opcode, primitive mode, a 32-bit count of three, and a 32-bit first-vertex index of zero. The next byte, <code>04</code>, is a new packet that flushes binning.</p><p class="readings"><a href="../reference/pi2-v3d-registers.html#packets">Pi 2B hardware reference</a></p></section>
+<section class="practice"><h3 style="margin:0 0 .35rem">Try explaining it</h3><p>Suppose the binning counter advances but rendering has not started. Which buffer is useful to inspect now, and when does the new triangle reach framebuffer RAM?</p><details><summary>Check your explanation</summary><p>Inspect the generated tile list in the pool. The render thread must follow it, shade the tile and execute the tile-store packet before framebuffer RAM contains this draw.</p></details></section>
+<p class="readings"><a href="../tours/tour-8.03-v3d-tile-lists.html">Read the Gabix code for this lesson</a> · <a href="https://docs.kernel.org/gpu/vc4.html#memory-management-and-3d-command-submission">Linux VC4 · command submission</a></p>
+<nav class="pager" aria-label="Lesson navigation"><a href="8.02-v3d-submission.html">← Starting V3D</a><a href="8.04-v3d-fragment-shader.html">The fragment shader →</a></nav>
+</main></body></html>

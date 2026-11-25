@@ -12,7 +12,7 @@
 /screenlog.0
 /target/pi2-uart-smoke/
 /target/pi2-uart-smoke.img
-/learning-records/
+/learn/learning-records/
 
 # Preserved Raspberry Pi images are recorded by checksum in
 # artifacts/pi2-images.json and stored outside disposable build output.
