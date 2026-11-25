@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Addresses and DMA in Gabix · Gabix</title>
+<link rel="stylesheet" href="../assets/lesson.css">
+<link rel="stylesheet" href="../assets/stepper.css">
+<link rel="stylesheet" href="../assets/v3d-lessons.css">
+<script defer src="../assets/stepper.js"></script>
+<script defer src="../assets/v3d-lessons.js"></script>
+</head><body><main class="v3d-page">
+<nav class="trail"><a href="../lessons/roadmap-pi-v3d.html">Course roadmap</a><span>Source tour · 5 of 6</span></nav>
+<h1>Addresses and DMA in Gabix</h1>
+<p>Read the shader record first. Its executable address explains why the DMA destination matters.</p>
+<h2>Find the two locations</h2>
+<p>The first pointer after the shader flags selects shader_storage through CODE_BUS. The edited template is labelled fragment_code in the data section. The executable destination reserves exactly its length.</p>
+<figure class="tour-snippet"><figcaption><a href="../../targets/armv7/probes/v3d_lists.S#L3">targets/armv7/probes/v3d_lists.S · line 3</a> · Bus aliases</figcaption><pre><code>.equ BUS, 0xc0000000                <span class="c">// Direct bus addresses for control lists and data</span>
+.equ CODE_BUS, 0x40000000           <span class="c">// QPU instruction fetch</span></code></pre></figure>
+<figure class="tour-snippet"><figcaption><a href="../../targets/armv7/probes/v3d_lists.S#L47">targets/armv7/probes/v3d_lists.S · line 47</a> · Shader record</figcaption><pre><code>shader_record:
+    .byte 1, 24, 0, 3               <span class="c">// Single threaded, vertex stride 24, RGB varyings</span>
+    .word shader_storage + CODE_BUS, 0, vertices + BUS</code></pre></figure>
+<figure class="tour-snippet"><figcaption><a href="../../targets/armv7/probes/v3d_lists.S#L79">targets/armv7/probes/v3d_lists.S · line 79</a> · Workspace and destination</figcaption><pre><code>gpu_work:
+tile_pool:  .space 16384
+tile_state: .space 4096
+pixels:     .space 16384
+shader_storage: .space fragment_end - fragment_code
+.balign 64</code></pre></figure>
+<h2>Follow one DMA transfer</h2>
+<p>The driver supplies the source bus address, the executable destination through the coherent alias, and a byte count. The block pointer goes into the DMA controller before the channel starts. The caller waits for publish_shader before clearing V3D caches and starting the GPU.</p>
+<figure class="tour-snippet"><figcaption><a href="../../targets/armv7/probes/v3d.rs#L150">targets/armv7/probes/v3d.rs · line 150</a> · DMA control block</figcaption><pre><code><span class="c">// Reuse the aligned mailbox buffer after firmware has returned ownership.</span>
+let block = addr_of_mut!(MESSAGE.0).cast::&lt;u32&gt;();
+let start = addr_of!(fragment_code);
+let size = addr_of!(fragment_end) as usize - start as usize;
+let words = [
+    COPY,
+    bus(start),
+    addr_of!(shader_storage) as u32 | 0x40000000,
+    size as u32,
+    0,
+    0,
+    0,
+    0,
+];</code></pre></figure>
+<figure class="tour-snippet"><figcaption><a href="../../targets/armv7/probes/v3d.rs#L165">targets/armv7/probes/v3d.rs · line 165</a> · Publish and start</figcaption><pre><code>cache(block as usize, block as usize + 64, false);
+write(CS + 4, bus(block.cast()));
+write(CS, WAIT_FOR_WRITES | ACTIVE);
+if !wait(|| read(CS) &amp; ACTIVE == 0) {</code></pre></figure>
+<figure class="tour-snippet"><figcaption><a href="../../targets/armv7/probes/v3d.rs#L260">targets/armv7/probes/v3d.rs · line 260</a> · Order before binning</figcaption><pre><code>if mode == 2 {
+    if let Err(error) = publish_shader() {
+        return error;
+    }
+}
+write(V3D + 0x20, 5); <span class="c">// Enable and clear GPU L2</span>
+write(V3D + 0x24, 0xffffffff); <span class="c">// Invalidate instruction, uniform and texture slice caches</span>
+if mode == 2 &amp;&amp; !submit(BINNING, addr_of!(bin_list), addr_of!(bin_end)) {</code></pre></figure>
+<h2>Check against the board</h2>
+<p>The bring-up log records the old-color symptom. The final test changed foreground and background colors on consecutive draws. The working DMA copy is specific to this Pi probe. <a href="https://github.com/gabrielelanaro/gabix/blob/f6816a34606a1a0b032658fa44fb5bc000d6cad7/docs/pi2-ram-probes.md#L59">Board finding</a></p>
+<p class="readings"><a href="https://pip-assets.raspberrypi.com/categories/579-raspberry-pi-zero/documents/RP-008249-DS-1-bcm2835-peripherals.pdf">Broadcom · DMA control blocks and bus addresses</a></p>
+<p class="readings"><a href="../reference/pi2-v3d-registers.html#dma">Pi 2B hardware reference</a></p><nav class="pager"><a href="../lessons/8.05-v3d-shared-memory.html">← Back to the lesson</a><a href="../lessons/8.06-v3d-readback.html">Next lesson →</a></nav>
+</main></body></html>

@@ -8,7 +8,7 @@ Generated output stays out of normal code reviews.
 | Compiled kernels, ELF files, disposable disk images | `target/` or the target's build directory | No |
 | UART captures, test logs, screenshots, packet captures | `target/runs/<date>-<purpose>/` | No |
 | Temporary diagnostic output | Operating-system temporary directory | No |
-| Hardware result summary | Relevant `LEARNING.md` session entry | Yes |
+| Hardware result summary | Relevant `learn/LEARNING.md` session entry | Yes |
 | Durable hardware investigation, commands and checksums | A named Markdown document under `artifacts/` | Yes, when needed |
 | Recovery SD images worth preserving | External image store recorded in `pi2-images.json` | Manifest only |
 

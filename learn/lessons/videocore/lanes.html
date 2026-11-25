@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>What does parallel mean inside one QPU? · Gabix</title>
+<link rel="stylesheet" href="../../assets/lesson.css">
+<link rel="stylesheet" href="../../assets/stepper.css">
+<link rel="stylesheet" href="../../assets/v3d-lessons.css">
+<link rel="stylesheet" href="course.css">
+<script defer src="../../assets/stepper.js"></script>
+</head>
+<body>
+<main class="v3d-page">
+<nav class="trail"><a href="index.html">VideoCore IV architecture</a><span>Lesson 5 of 7</span>
+</nav>
+<h1>What does parallel mean inside one QPU?</h1>
+<p class="intro">Imagine one instruction that adds one to each of sixteen numbers. The grid shows the programmer’s sixteen lanes. A lane is one position in that group, with its own input and result. How many physical arithmetic lanes would you need if you could reuse them?</p>
+<figure class="stepper" data-stepper>
+<figcaption>How do four physical lanes cover sixteen values?</figcaption>
+<div class="stepper-controls"><button type="button" data-step-previous disabled>Back</button><span>Step <b data-step-index>1</b> of 5</span><button type="button" data-step-next>Next</button></div>
+<div aria-live="polite">
+<div data-step="1">
+<div class="cells" style="--cols:4"><span class="">0</span><span class="">1</span><span class="">2</span><span class="">3</span><span class="">4</span><span class="">5</span><span class="">6</span><span class="">7</span><span class="">8</span><span class="">9</span><span class="">10</span><span class="">11</span><span class="">12</span><span class="">13</span><span class="">14</span><span class="">15</span></div>
+<p>Before execution, the sixteen inputs are 0 through 15. Predict the values in the first row after one clock.</p></div>
+<div data-step="2" hidden>
+<div class="cells" style="--cols:4"><span class="lit">1</span><span class="lit">2</span><span class="lit">3</span><span class="lit">4</span><span class="">4</span><span class="">5</span><span class="">6</span><span class="">7</span><span class="">8</span><span class="">9</span><span class="">10</span><span class="">11</span><span class="">12</span><span class="">13</span><span class="">14</span><span class="">15</span></div>
+<p>Clock 1. The highlighted four positions have received their results. The same four physical lanes handle each successive group. The rows show groups of values, not positions on a screen.</p></div>
+<div data-step="3" hidden>
+<div class="cells" style="--cols:4"><span class="">1</span><span class="">2</span><span class="">3</span><span class="">4</span><span class="lit">5</span><span class="lit">6</span><span class="lit">7</span><span class="lit">8</span><span class="">8</span><span class="">9</span><span class="">10</span><span class="">11</span><span class="">12</span><span class="">13</span><span class="">14</span><span class="">15</span></div>
+<p>Clock 2. The highlighted four positions have received their results. The same four physical lanes handle each successive group. The rows show groups of values, not positions on a screen.</p></div>
+<div data-step="4" hidden>
+<div class="cells" style="--cols:4"><span class="">1</span><span class="">2</span><span class="">3</span><span class="">4</span><span class="">5</span><span class="">6</span><span class="">7</span><span class="">8</span><span class="lit">9</span><span class="lit">10</span><span class="lit">11</span><span class="lit">12</span><span class="">12</span><span class="">13</span><span class="">14</span><span class="">15</span></div>
+<p>Clock 3. The highlighted four positions have received their results. The same four physical lanes handle each successive group. The rows show groups of values, not positions on a screen.</p></div>
+<div data-step="5" hidden>
+<div class="cells" style="--cols:4"><span class="">1</span><span class="">2</span><span class="">3</span><span class="">4</span><span class="">5</span><span class="">6</span><span class="">7</span><span class="">8</span><span class="">9</span><span class="">10</span><span class="">11</span><span class="">12</span><span class="lit">13</span><span class="lit">14</span><span class="lit">15</span><span class="lit">16</span></div>
+<p>Clock 4. The highlighted four positions have received their results. The same four physical lanes handle each successive group. The rows show groups of values, not positions on a screen.</p></div></div><small><a href="https://docs.broadcom.com/doc/12358545#page=16">Broadcom guide · p. 16</a></small>
+</figure>
+<figure class="stepper" data-stepper>
+<figcaption>How do the scheduler, slice and QPU fit together?</figcaption>
+<div class="stepper-controls"><button type="button" data-step-previous disabled>Back</button><span>Step <b data-step-index>1</b> of 2</span><button type="button" data-step-next>Next</button></div>
+<div aria-live="polite">
+<div data-step="1">
+<div class="parts">
+<div class="component lit"><b>QPU scheduler</b><span>ready shader job</span></div>
+<div class="component "><b>Processing slice</b><span>QPU group</span></div>
+<div class="component "><b>One QPU</b><span>available</span></div></div>
+<p>The scheduler assigns work to a processor. A slice groups up to four QPUs and provides shared resources such as an instruction cache, which keeps recently fetched code nearby.</p></div>
+<div data-step="2" hidden>
+<div class="parts">
+<div class="component "><b>QPU scheduler</b><span>job assigned</span></div>
+<div class="component lit"><b>Processing slice</b><span>supplies instructions</span></div>
+<div class="component lit"><b>One QPU</b><span>executes vector</span></div></div>
+<p>Within a QPU, register files hold operands. Its add and multiply pipelines can issue compatible arithmetic operations together. Each arithmetic pipeline can use operands held in those registers.</p></div></div><small><a href="https://docs.broadcom.com/doc/12358545#page=14">Broadcom guide · p. 14</a></small>
+</figure>
+<p class="src">One 64-bit QPU instruction stored as two 32-bit words · <a href="../../../targets/armv7/probes/v3d_lists.S#L66">v3d_lists.S, line 66</a></p>
+<pre><code>.word 0xffffcd28, 0xe00208e7    <span class="c">// ldi r3, packed fragment color</span></code></pre>
+<p>The two hexadecimal words in Gabix encode one load-immediate instruction. Its destination is r3. The first word supplies the literal value. The second encodes the operation and its destination. <a href="https://docs.broadcom.com/doc/12358545#page=26">Broadcom guide · p. 26</a></p>
+<section class="practice">
+<h2>Try it in your own words</h2>
+<p>With just one QPU, how many groups of four are needed to apply one instruction to sixteen lanes? What extra resource would a second QPU provide?</p>
+<details><summary>Compare explanations</summary>
+<p>Four groups use the same physical lanes in four successive clocks. A second QPU supplies another programmable processor to which the scheduler can assign work.</p></details>
+</section>
+<nav class="pager"><a href="shaders.html">← Back</a><a href="memory.html">Why does V3D need several kinds of memory? →</a>
+</nav>
+</main>
+</body>
+</html>

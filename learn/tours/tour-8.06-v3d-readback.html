@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Frame readback in Gabix · Gabix</title>
+<link rel="stylesheet" href="../assets/lesson.css">
+<link rel="stylesheet" href="../assets/stepper.css">
+<link rel="stylesheet" href="../assets/v3d-lessons.css">
+<script defer src="../assets/stepper.js"></script>
+<script defer src="../assets/v3d-lessons.js"></script>
+</head><body><main class="v3d-page">
+<nav class="trail"><a href="../lessons/roadmap-pi-v3d.html">Course roadmap</a><span>Source tour · 6 of 6</span></nav>
+<h1>Frame readback in Gabix</h1>
+<p>Follow one completion indication, then follow one four-byte pixel across two separate buffers and a file.</p>
+<h2>Wait and take ownership</h2>
+<p>The render counter must change. The cache helper issues an ARM data-cache invalidate by address followed by a synchronization barrier. The copy then writes the finished frame into output RAM owned by the runner.</p>
+<figure class="tour-snippet"><figcaption><a href="../../targets/armv7/probes/v3d.rs#L186">targets/armv7/probes/v3d.rs · line 186</a> · Counter polling</figcaption><pre><code>unsafe fn submit(thread: usize, start: *const u8, end: *const u8) -&gt; bool {
+    let counter = V3D + 0x134 + thread * 4;
+    let previous = read(counter);
+    write(V3D + 0x110 + thread * 4, bus(start));
+    write(V3D + 0x108 + thread * 4, bus(end));
+    wait(|| read(counter) != previous)
+}</code></pre></figure>
+<figure class="tour-snippet"><figcaption><a href="../../targets/armv7/probes/v3d.rs#L61">targets/armv7/probes/v3d.rs · line 61</a> · Cache operations and barrier</figcaption><pre><code>unsafe fn cache(start: usize, end: usize, invalidate_only: bool) {
+    for address in ((start &amp; !31)..end).step_by(32) {
+        if invalidate_only {
+            asm!(&quot;mcr p15, 0, {a}, c7, c6, 1&quot;, a=in(reg) address);
+        } else {
+            asm!(&quot;mcr p15, 0, {a}, c7, c14, 1&quot;, a=in(reg) address);
+        }
+    }
+    asm!(&quot;dsb sy&quot;);
+}</code></pre></figure>
+<figure class="tour-snippet"><figcaption><a href="../../targets/armv7/probes/v3d.rs#L270">targets/armv7/probes/v3d.rs · line 270</a> · Invalidate and copy</figcaption><pre><code>if !submit(RENDERING, addr_of!(render_list), addr_of!(render_end)) {
+    return stop_stalled_job(-21);
+}
+cache(
+    addr_of!(pixels) as usize,
+    addr_of!(pixels) as usize + FRAME_BYTES,
+    true,
+);
+core::ptr::copy_nonoverlapping(addr_of!(pixels).cast::&lt;u8&gt;(), output, FRAME_BYTES);
+FRAME_BYTES as i32</code></pre></figure>
+<h2>Reassemble the file</h2>
+<p>The caller learns the byte count from RUN, then uses the number of bytes already received as its next offset. The Pi caps each reply at the available reply space. The host checks each chunk length and appends it.</p>
+<figure class="tour-snippet"><figcaption><a href="../../targets/armv7/src/ram_probe.rs#L112">targets/armv7/src/ram_probe.rs · line 112</a> · Read a result slice</figcaption><pre><code>READ_RESULT if data.is_empty() &amp;&amp; offset &lt; self.result_len =&gt; {
+    let count = (self.result_len - offset).min(reply.len());
+    let output = unsafe { &amp;(*addr_of_mut!(OUTPUT)).0 };
+    reply[..count].copy_from_slice(&amp;output[offset..offset + count]);
+    Ok(count)</code></pre></figure>
+<figure class="tour-snippet"><figcaption><a href="../../scripts/pi2-ram-probe.py#L36">scripts/pi2-ram-probe.py · line 36</a> · Fetch and append</figcaption><pre><code>result = bytearray()
+while len(result) &lt; count:
+    chunk = transfer.exchange(connection, session, READ_RESULT, len(result))
+    if len(chunk) != min(512, count - len(result)):
+        raise RuntimeError(&quot;Unexpected probe result chunk length&quot;)
+    result.extend(chunk)
+return result</code></pre></figure>
+<h2>Check against the board</h2>
+<p>The frame is 16,384 bytes, so a complete read takes 32 result chunks of 512 bytes. Chunk 17 begins at offset 8192, counting chunks from one. Its bytes 80–83 contain pixel (20, 32). <a href="../../tests/test_v3d_renders_triangle.py#L73">Frame size</a> · <a href="../../tests/test_v3d_renders_triangle.py#L78">Pixel offset</a></p>
+<p class="readings"><a href="https://docs.kernel.org/gpu/vc4.html#memory-management-and-3d-command-submission">Linux VC4 · frame completion</a></p>
+<p class="readings"><a href="../reference/pi2-v3d-registers.html#finish">Pi 2B hardware reference</a></p><nav class="pager"><a href="../lessons/8.06-v3d-readback.html">← Back to the lesson</a><a href="../lessons/roadmap-pi-v3d.html">Back to the course</a></nav>
+</main></body></html>

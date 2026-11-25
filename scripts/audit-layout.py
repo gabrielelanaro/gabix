@@ -23,7 +23,15 @@ RULES = {
     "userspace-linker-owner": "A linker script required by a general ARM userspace build belongs with that target.",
     "generated-output": "Project build products and raw captures belong under a build directory, or in a deliberate test fixture.",
 }
-ROOT_DOCS = {"README.md", "AGENTS.md", "CLAUDE.md", "CONTEXT.md", "GLOSSARY.md", "LEARNING.md", "MISSION.md", "NOTES.md", "RESOURCES.md"}
+ROOT_DOCS = {"README.md", "AGENTS.md", "CLAUDE.md", "CONTEXT.md"}
+COURSE_OWNERS = {
+    "assets": "Course assets",
+    "learning-records": "Learning records",
+    "lessons": "Course lessons",
+    "reference": "Reference pages",
+    "tests": "Course tests",
+    "tours": "Code tours",
+}
 
 
 def placement(owner, destination, status="covered", findings=None):
@@ -73,12 +81,10 @@ def nonkernel(path, source):
             return placement("Host build and development tools", path)
     if top == "artifacts" and (ext == ".md" or path == "artifacts/pi2-images.json"):
         return placement("Hardware evidence and image registry", path)
-    if top == "learning-records" and ext == ".md":
-        return placement("Learning records", path)
-    if top in {"lessons", "reference", "tours"} and ext in {".html", ".md", ".png", ".svg", ".css", ".js"}:
-        return placement({"lessons": "Course lessons", "reference": "Reference pages", "tours": "Code tours"}[top], path)
-    if top == "assets" and ext in {".css", ".js", ".png", ".svg", ".jpg", ".webp"}:
-        return placement("Course assets", path)
+    if top == "learn" and len(p.parts) == 2 and ext == ".md":
+        return placement("Learning materials", path)
+    if top == "learn" and len(p.parts) > 2 and p.parts[1] in COURSE_OWNERS:
+        return placement(COURSE_OWNERS[p.parts[1]], path)
     return placement("Unclassified", None, "review")
 
 

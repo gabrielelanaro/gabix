@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Starting V3D in Gabix · Gabix</title>
+<link rel="stylesheet" href="../assets/lesson.css">
+<link rel="stylesheet" href="../assets/stepper.css">
+<link rel="stylesheet" href="../assets/v3d-lessons.css">
+<script defer src="../assets/stepper.js"></script>
+<script defer src="../assets/v3d-lessons.js"></script>
+</head><body><main class="v3d-page">
+<nav class="trail"><a href="../lessons/roadmap-pi-v3d.html">Course roadmap</a><span>Source tour · 2 of 6</span></nav>
+<h1>Starting V3D in Gabix</h1>
+<p>Follow one byte from the Mac’s command line to the ARM function that reads V3D. Then follow the same function when you ask it to render the triangle’s blue background.</p>
+<h2 id="client">On the Mac, build and call the probe</h2>
+<p>These are the two commands for the ID experiment. Run them from the Gabix checkout with the Pi booted into the Wi-Fi development kernel. The first compiles <code>v3d.rs</code> into ARM instructions. The second uploads that image into Pi RAM, sends a run request and prints the result. <a href="../../scripts/build-pi2-ram-probe.sh#L11">ARM build</a> · <a href="../../scripts/pi2-ram-probe.py#L56">Client entry point</a></p>
+<pre><code>sh scripts/build-pi2-ram-probe.sh \
+  targets/armv7/probes/v3d.rs target/probes/v3d.img
+python3 scripts/pi2-ram-probe.py \
+  --image target/probes/v3d.img --input-hex 00</code></pre>
+<p>The printed session number identifies the copy in Pi RAM. The next output line is <code>56334402</code>. Python converted the two hex digits <code>00</code> into one byte. Its outer message says <code>RUN</code>, which Gabix understands. The single byte inside is an argument to our Rust function. <a href="../../scripts/pi2-ram-probe.py#L51">Parse the argument</a> · <a href="../../scripts/pi2-ram-probe.py#L32">Send RUN</a></p>
+<h2 id="call">On the Pi, Gabix makes a function call</h2>
+<figure class="tour-snippet"><figcaption><a href="../../targets/armv7/src/ram_probe.rs#L99">ram_probe.rs · line 99</a> · The ARM is executing the kernel’s Wi-Fi request handler</figcaption><pre><code>let count = unsafe {
+    entry(data.as_ptr(), data.len(), output.as_mut_ptr(), output.len())
+};</code></pre></figure>
+<p><code>entry</code> points at the start of the uploaded program in RAM, <code>0x00e00000</code>. The linker placed <code>probe()</code> there. In this call the input pointer leads to <code>00</code>, the input length is one byte, and the output pointer leads to space reserved by Gabix. The ARM executes <code>probe()</code> with the kernel’s privileges. <a href="../../targets/armv7/probes/probe.ld#L9">Entry address</a> · <a href="../../targets/armv7/src/ram_probe.rs#L96">Type of the function</a></p>
+<h2 id="power">On the ARM, check power and read the ID</h2>
+<p>When V3D needs power, the ARM asks the Raspberry Pi firmware running on VideoCore to enable domain 11. The request travels through the hardware mailbox. Once V3D is ready, the ARM reads its ID register directly. <a href="../../targets/armv7/probes/v3d.rs#L88">Write the request address to the mailbox</a> · <a href="../../targets/armv7/probes/v3d.rs#L39">Read a device register</a></p>
+<figure class="tour-snippet"><figcaption><a href="../../targets/armv7/probes/v3d.rs#L102">targets/armv7/probes/v3d.rs · line 102</a> · Power-up path</figcaption><pre><code>unsafe fn set_v3d_power(on: bool) -&gt; Result&lt;(), i32&gt; {
+    if on &amp;&amp; v3d_ready() {
+        return Ok(());
+    }
+    <span class="c">// Firmware domain identifiers are one-based. Linux DT index 10 is V3D.</span>
+    let reply = property(&amp;[32, 0, 0x00038030, 8, 0, 11, on as u32, 0], 8)?;
+    if read_volatile(reply.add(6)) != on as u32</code></pre></figure>
+<figure class="tour-snippet"><figcaption><a href="../../targets/armv7/probes/v3d.rs#L217">targets/armv7/probes/v3d.rs · line 217</a> · ID read and return</figcaption><pre><code>if let Err(error) = set_v3d_power(true) {
+    return error;
+}
+let id = read(V3D + IDENT0);
+if mode == 0 {
+    output.cast::&lt;u32&gt;().write_unaligned(id);
+    return 4;
+}</code></pre></figure>
+<h2 id="clear">On a clear request, start V3D’s render list</h2>
+<p>The next call supplies <code>01 96 42 19 ff</code>. The ARM places that color in the command list, then calls <code>submit(RENDERING, …)</code>. <code>RENDERING</code> equals 1, so <code>thread * 4</code> adds four bytes. The two ARM register addresses are <code>0x3fc00114</code> for the start and <code>0x3fc0010c</code> for the end. V3D starts fetching from RAM on the end write. <a href="../../targets/armv7/probes/v3d.rs#L230">Copy the color</a> · <a href="../../targets/armv7/probes/v3d.rs#L270">Submit the render list</a></p>
+<figure class="tour-snippet"><figcaption><a href="../../targets/armv7/probes/v3d.rs#L186">targets/armv7/probes/v3d.rs · line 186</a> · Start the control thread and wait</figcaption><pre><code>unsafe fn submit(thread: usize, start: *const u8, end: *const u8) -&gt; bool {
+    let counter = V3D + 0x134 + thread * 4;
+    let previous = read(counter);
+    write(V3D + 0x110 + thread * 4, bus(start));
+    write(V3D + 0x108 + thread * 4, bus(end));
+    wait(|| read(counter) != previous)
+}</code></pre></figure>
+<h2>Check against the board</h2>
+<p>The board returned <code>56 33 44 02</code>. The Mac interprets these bytes as an unsigned little-endian word. <a href="../../tests/test_v3d_renders_triangle.py#L61">Expected V3D ID</a></p>
+<p class="readings"><a href="https://docs.broadcom.com/doc/12358545">Broadcom · control list executor registers</a></p>
+<p class="readings"><a href="../reference/pi2-v3d-registers.html#submit">Pi 2B hardware reference</a></p><nav class="pager"><a href="../lessons/8.02-v3d-submission.html">← Back to the lesson</a><a href="../lessons/8.03-v3d-tile-lists.html">Next lesson →</a></nav>
+</main></body></html>

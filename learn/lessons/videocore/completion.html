@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>When can the ARM use the finished image? · Gabix</title>
+<link rel="stylesheet" href="../../assets/lesson.css">
+<link rel="stylesheet" href="../../assets/stepper.css">
+<link rel="stylesheet" href="../../assets/v3d-lessons.css">
+<link rel="stylesheet" href="course.css">
+<script defer src="../../assets/stepper.js"></script>
+</head>
+<body>
+<main class="v3d-page">
+<nav class="trail"><a href="index.html">VideoCore IV architecture</a><span>Lesson 7 of 7</span>
+</nav>
+<h1>When can the ARM use the finished image?</h1>
+<p class="intro">The ARM has issued its last register write. Imagine reading the output buffer at that instant. What evidence would tell you whether V3D has actually finished storing this frame?</p>
+<figure class="stepper" data-stepper>
+<figcaption>What changes when the store command executes?</figcaption>
+<div class="stepper-controls"><button type="button" data-step-previous disabled>Back</button><span>Step <b data-step-index>1</b> of 2</span><button type="button" data-step-next>Next</button></div>
+<div aria-live="polite">
+<div data-step="1">
+<div class="parts">
+<div class="component lit"><b>Tile buffer</b><span>finished tile</span></div>
+<div class="component "><b>Framebuffer in RAM</b><span>awaiting store</span></div>
+<div class="component "><b>Completed-frame counter</b><span>previous value</span></div></div>
+<p>The framebuffer is the region allocated for the finished image. Submitting the list starts work. It can take time to reach its final command.</p></div>
+<div data-step="2" hidden>
+<div class="parts">
+<div class="component "><b>Tile buffer</b><span>store →</span></div>
+<div class="component lit"><b>Framebuffer in RAM</b><span>new tile colors</span></div>
+<div class="component lit"><b>Completed-frame counter</b><span>count advances</span></div></div>
+<p>For our one-tile frame, packet 25 stores the tile and signals the end of the frame. The render completion counter advances. The ARM saved its previous value before it submitted the job.</p></div></div><small><a href="https://docs.broadcom.com/doc/12358545#page=62">Broadcom guide · p. 62</a></small>
+</figure>
+<p class="src">Last record in the render list · <a href="../../../targets/armv7/probes/v3d_lists.S#L43">v3d_lists.S, line 43</a></p>
+<pre><code>.byte 25                        <span class="c">// Store tile, signal end of frame</span></code></pre>
+<p class="src">ARM reads the counter before submission and waits for a change · <a href="../../../targets/armv7/probes/v3d.rs#L187">v3d.rs, line 187</a></p>
+<pre><code>let counter = V3D + 0x134 + thread * 4;
+let previous = read(counter);
+write(V3D + 0x110 + thread * 4, bus(start));
+write(V3D + 0x108 + thread * 4, bus(end));
+wait(|| read(counter) != previous)</code></pre>
+<figure class="stepper" data-stepper>
+<figcaption>Why does the driver still do a cache operation?</figcaption>
+<div class="stepper-controls"><button type="button" data-step-previous disabled>Back</button><span>Step <b data-step-index>1</b> of 2</span><button type="button" data-step-next>Next</button></div>
+<div aria-live="polite">
+<div data-step="1">
+<div class="parts">
+<div class="component lit"><b>Main RAM</b><span>GPU output</span></div>
+<div class="component lit"><b>ARM data cache</b><span>may hold old bytes</span></div>
+<div class="component "><b>Mac result</b><span>pending</span></div></div>
+<p>Completion tells the ARM when the GPU has finished. The ARM may still have a cached copy from an earlier read.</p></div>
+<div data-step="2" hidden>
+<div class="parts">
+<div class="component "><b>Main RAM</b><span>GPU output</span></div>
+<div class="component lit"><b>ARM data cache</b><span>old copy discarded</span></div>
+<div class="component lit"><b>Mac result</b><span>new bytes → Mac</span></div></div>
+<p>Gabix invalidates the ARM cache lines for the output range, then copies the pixels into the probe result. The Mac retrieves those bytes over Wi-Fi. For 64 × 64 pixels at four bytes each, that is 16,384 bytes.</p></div></div><small><a href="https://docs.broadcom.com/doc/12358545#page=46">Broadcom guide · p. 46</a></small>
+</figure>
+<p class="src">The true argument selects invalidation in cache() · <a href="../../../targets/armv7/probes/v3d.rs#L273">v3d.rs, line 273</a></p>
+<pre><code>cache(
+    addr_of!(pixels) as usize,
+    addr_of!(pixels) as usize + FRAME_BYTES,
+    true,
+);
+core::ptr::copy_nonoverlapping(addr_of!(pixels).cast::&lt;u8&gt;(), output, FRAME_BYTES);
+FRAME_BYTES as i32</code></pre>
+<section class="practice">
+<h2>Try it in your own words</h2>
+<p>A colleague says the last ARM register write proves that the image is ready to send. Walk them from that write to the first reliable CPU read.</p>
+<details><summary>Compare explanations</summary>
+<p>The end-address write starts the executor. V3D still runs the list and stores the tile. The ARM observes the completed-frame counter change, invalidates its cached output range, and then reads the framebuffer.</p></details>
+</section>
+<nav class="pager"><a href="memory.html">← Back</a><a href="../roadmap-pi-v3d.html">Explore the triangle labs →</a>
+</nav>
+</main>
+</body>
+</html>
