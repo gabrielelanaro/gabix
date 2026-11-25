@@ -4,6 +4,10 @@ Gabix is a small Linux-like operating system written in Rust. The repository
 contains the x86-64 kernel, shared kernel services, ARMv7 adapters, QEMU
 behavioral tests, and the Raspberry Pi 2B SD-card image builder.
 
+[Repository layout and proposed package boundaries](docs/repository-layout.md) describes
+where each target lives. Run `python3 scripts/build-architecture-map.py` to explore
+the current directory tree and its placement findings in `target/architecture-map.html`.
+
 ## Build on macOS
 
 Install the host tools:

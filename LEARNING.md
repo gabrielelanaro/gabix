@@ -580,6 +580,10 @@ A milestone is a "demo-able" checkpoint. Worth a commit + tag + log entry.
 
 ## Progress Log
 
+### 2026-11-25 — Organize the Pi probes, course material and layout tools
+
+- Grouped the probe sources, VideoCore course, terminal lesson and repository audit for separate review. The hardware overview uses a Gabix drawing. The architecture map generator reads its template from `scripts/templates/`. No roadmap checkbox changed in this cleanup. The next GUI experiment is to reduce the number of bytes sent during a drag.
+
 ### 2026-11-24 — Profile VNC drag latency and V3D events on boot 39
 
 - Measured 69 rendered frames on the physical Pi with the VC4 counters. Each frame produced 312 color-writing quads and 3,024 aggregate fragment-shading cycles. Calibrated the ARM virtual counter at approximately 1 MHz against the BCM system timer.
@@ -599,6 +603,15 @@ A milestone is a "demo-able" checkpoint. Worth a commit + tag + log entry.
 
 - Uploaded the RFB server as a user ELF on physical Pi boot 37. TigerVNC on the Mac displayed the gold V3D triangle on a blue 512×512 desktop. The GPU supplies the 64×64 image; each pixel covers an 8×8 block.
 - Added an outlined hover dot. The physical test checks every scaled pixel, pointer updates, restoration after motion, a cropped RGB565 request and the cursor sprite. Marked the TigerVNC milestone complete. Next, drag the triangle.
+
+### 2026-11-24 — Audit the repository layout
+
+- Added an executable inventory and placement rules for both kernel packages, shared code, standalone probes, host tools, tests, and documentation. The directory map reports rule evidence and proposed destinations. Fixture tests exercise coverage, recursive totals, and findings that clear after relocation.
+- Documented the proposed sibling x86 and ARM package layout in [the architecture plan](docs/repository-layout.md). The first migration is the x86 package move with the existing boot entry points verified. This review adds tooling and leaves the implementation milestones open.
+
+### 2026-11-24 — Map code size and reviewed architecture findings
+
+- Added `scripts/build-architecture-map.py` and its HTML template. The offline treemap opens at `target/architecture-map.html` and drills down to source evidence. Verified recursive totals, tile area, and directory navigation. The next architecture review can extend the six recorded findings. No roadmap checkbox changed.
 
 ### 2026-11-24 — Transfer two V3D triangles over one TCP connection
 

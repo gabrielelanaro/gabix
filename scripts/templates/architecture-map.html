@@ -1,0 +1,249 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>gabix · Repository layout</title>
+<style>
+:root {color-scheme:light;--paper:#f7f8f3;--ink:#1b312b;--rule:#c4cdc3;--link:#14614e;--muted:#50635a}
+* {box-sizing:border-box}
+body {margin:0;background:var(--paper);color:var(--ink);font:16px/1.48 "DM Sans",system-ui,sans-serif}
+main {max-width:1500px;margin:auto;padding:28px clamp(16px,4vw,62px) 50px}
+header,nav,.bar,.metrics,.legend,.facts {display:flex;align-items:center;gap:12px 20px;flex-wrap:wrap}
+header,.bar {justify-content:space-between}
+header {border-bottom:1px solid var(--rule);padding-bottom:20px}
+h1,h2 {font-family:Georgia,serif;line-height:1.14;margin:0}
+h1 {font-weight:500;font-size:clamp(30px,4vw,49px);letter-spacing:-.045em}
+h2 {font-weight:500;font-size:26px;margin:0 0 10px} h3 {font-size:16px;margin:0 0 4px}
+.metrics {font-size:14px} .metrics b {font-size:19px}
+nav {gap:6px;padding:12px 0} nav a,a {color:var(--link);overflow-wrap:anywhere}
+nav a:last-child {color:var(--ink);font-weight:700;text-decoration:none}
+.bar {margin:15px 0 8px;font-size:14px}.legend {font-size:12px;gap:9px}
+.swatch {display:inline-block;width:11px;height:11px;border:1px solid #53695a;margin-right:4px;vertical-align:-1px}
+.layout {display:grid;grid-template-columns:minmax(0,1fr) minmax(240px,290px);gap:16px}
+#map {height:clamp(340px,52vh,630px);position:relative;overflow:hidden;background:#e9eee6;border:1px solid #8c9d91}
+.tile {position:absolute;display:flex;flex-direction:column;justify-content:center;align-items:flex-start;text-align:left;padding:0;border:1px solid var(--paper);overflow:hidden;text-decoration:none}
+.tile span,.tile small {padding:0 9px;max-width:100%;white-space:nowrap;text-overflow:ellipsis;overflow:hidden}
+.tile span {font-weight:650;font-size:clamp(13px,1.4vw,20px)}
+.tile:hover {box-shadow:inset 0 0 0 2px var(--ink)}
+aside {background:white;padding:12px;border:1px solid var(--rule);max-height:clamp(340px,52vh,630px);overflow:auto}
+aside h2 {font:650 16px system-ui}.row {display:flex;justify-content:space-between;gap:8px;align-items:baseline;padding:7px 1px;border-bottom:1px solid #e2e8df;color:var(--ink);font-size:13px;text-decoration:none}
+.row:hover {color:var(--link);text-decoration:underline}.row small {white-space:nowrap;color:var(--muted)}
+section {margin-top:26px}.facts {margin:2px 0 10px;gap:8px 20px;font-size:14px;color:var(--muted)}
+.facts b {color:var(--ink);font-weight:650} code,pre {font-family:"IBM Plex Mono",ui-monospace,monospace;font-size:.87em}
+details {margin:5px 0;border-top:1px solid var(--rule);padding:9px 0}
+summary {cursor:pointer;font-weight:600}
+code,td {overflow-wrap:anywhere}
+pre {white-space:pre-wrap;overflow-wrap:anywhere;background:#20362e;color:white;padding:10px}
+article {background:white;border-left:3px solid #afbbaf;padding:9px 12px;margin:7px 0}
+article p,details p {margin:5px 0}
+.table-wrap {overflow-x:auto}
+table {width:100%;border-collapse:collapse;font-size:14px}
+th,td {padding:7px 10px 7px 0;text-align:left;border-bottom:1px solid #d8e0d6}
+th {color:var(--muted)}input {font:inherit;padding:5px 8px;margin:5px 0 9px;border:1px solid #7a8e80;border-radius:3px}
+a:focus-visible,summary:focus-visible,input:focus-visible {outline:3px solid #1566ab;outline-offset:-2px;z-index:2}
+.layout.file {display:block}.layout.file #map {display:none}.layout.file aside {max-height:none}.empty {padding:16px;color:var(--muted)} .small {font-size:14px;color:var(--muted)}
+@media(max-width:740px){.layout{grid-template-columns:1fr}aside{max-height:210px}header{align-items:flex-start}.facts{display:grid;gap:3px}}
+</style>
+</head>
+<body><main>
+<header><h1>gabix / repository layout</h1><div class="metrics" id="metrics"></div></header>
+<nav aria-label="Selected path" id="crumbs"></nav>
+<div class="facts" id="facts"></div>
+<div class="bar"><span>Area · nonblank lines of code</span><div class="legend" id="legend" aria-label="Layout findings by color"></div></div>
+<div class="layout">
+<div id="map" aria-label="Repository treemap"></div>
+<aside><h2 id="entries"></h2><div id="list"></div></aside>
+</div>
+<section><h2 id="placement-title">Layout findings</h2><div id="placement"></div></section>
+<section><details id="index"><summary id="index-title">Directory index</summary>
+<label for="search">Find a directory</label> <input id="search" type="search" placeholder="Path contains…" autocomplete="off">
+<p id="match" class="small"></p><div class="table-wrap"><table><thead><tr><th>Current directory</th><th>Disposition</th><th>Proposed directory</th><th>LOC</th><th>Findings</th></tr></thead><tbody id="directory-table"></tbody></table></div>
+</details>
+<details><summary id="behavior-title">Behavioral observations</summary><div id="behavior"></div></details>
+<details><summary>Rules and counting method</summary>
+<p>Click any tile or directory entry to inspect it. The full directory index includes paths with zero counted lines. Browser Back returns to the previous selection.</p>
+<p>Tile size uses the inventory's nonblank code-line counts, including comments. The inventory covers tracked and non-ignored untracked project files. Color counts layout-rule matches across each subtree. One file can match several rules. A manual review disposition means a placement decision remains open. External files are identified separately.</p>
+<p>Behavioral observations come from the earlier filesystem, TCP and descriptor review. They have their own count. Regenerate this snapshot with <code>python3 scripts/build-architecture-map.py</code>.</p><div id="rules"></div>
+</details></section>
+</main><script id="audit" type="application/json"><!-- AUDIT_JSON --></script>
+<script>
+"use strict";
+const report = JSON.parse(document.getElementById("audit").textContent);
+const root = report.root;
+const $ = id => document.getElementById(id);
+const fmt = n => n.toLocaleString("en-US");
+const colors = ["#cddfd6", "#edda9a", "#e8ad74", "#a54a36"];
+const statusLabels = {finding:"Placement finding", review:"Needs review", covered:"Covered by policy", external:"External", mixed:"Mixed placement"};
+const index = new Map();
+const directories = [];
+function indexNode(node) {
+  index.set(node.path, node);
+  if (node.children) {
+    directories.push(node);
+    Object.values(node.children).forEach(indexNode);
+  }
+}
+indexNode(root);
+const countOf = node => node.children ? node.findings : node.findings.length;
+const childrenOf = node => Object.values(node.children || {}).sort((a,b) => b.loc-a.loc || a.name.localeCompare(b.name));
+const element = (tag, text) => { const e = document.createElement(tag); e.textContent = text; return e; };
+function pathLink(node, label) {
+  const a = element("a", label);
+  a.href = node.path === "." ? "#" : "#" + node.path.split("/").map(encodeURIComponent).join("/");
+  return a;
+}
+function selected() {
+  try {
+    const path = location.hash.slice(1).split("/").map(decodeURIComponent).join("/");
+    return index.get(path || ".") || root;
+  } catch { return root; }
+}
+function disposition(node) {
+  return statusLabels[node.status] || String(node.status);
+}
+function destination(node) {
+  if (node.destination) return node.destination;
+  if (node.status === "review") return "Pending review";
+  return node.children ? "See child destinations" : "See rule evidence";
+}
+function fact(label, value) {
+  const span = element("span", "");
+  span.append(label + " ", element("b", value)); return span;
+}
+function showHeader(node) {
+  const crumbs = $("crumbs");
+  crumbs.replaceChildren(pathLink(root,root.name));
+  if (node !== root) {
+    let path = "";
+    for (const name of node.path.split("/")) {
+      path = path ? path + "/" + name : name;
+      crumbs.append(" / ", pathLink(index.get(path), name));
+    }
+  }
+  crumbs.lastElementChild.setAttribute("aria-current","page");
+  $("metrics").replaceChildren(fact("LOC",fmt(node.loc)),fact("Layout findings",fmt(countOf(node))));
+  const facts = [fact("Disposition",disposition(node)),fact("Owner",node.owner),fact("Proposed location",destination(node))];
+  if (node.children) {
+    facts.push(fact("Files",fmt(node.files)),fact("Direct files",fmt(node.direct_files)));
+    if (node.status_counts?.review) facts.push(fact("Files needing review",fmt(node.status_counts.review)));
+  }
+  $("facts").replaceChildren(...facts);
+  for (const issue of index.get("Cargo.toml")?.findings || []) {
+    const move = issue.package_move;
+    if (!move || (node !== root && node.path !== move.from && !node.path.startsWith(move.from+"/"))) continue;
+    const note = element("p", "Proposed x86 package move: "+move.from+"/ → "+move.to+"/. ");
+    note.append(pathLink(index.get("Cargo.toml"), "See Cargo manifest evidence"));
+    $("facts").append(note);
+  }
+}
+function showEntries(node) {
+  const list = $("list"); list.replaceChildren();
+  list.closest(".layout").classList.toggle("file",!node.children);
+  const items = childrenOf(node);
+  $("entries").textContent = node.children ? "Directory entries · " + items.length : "File details";
+  for (const child of items) {
+    const row = pathLink(child, "");
+    row.className = "row";
+    row.append(element("span",child.name + (child.children?"/":"")),element("small",fmt(child.loc)+" LOC · "+countOf(child)+" ⚑"));
+    row.title = disposition(child) + " · " + destination(child);
+    list.append(row);
+  }
+  if (!node.children) list.append(element("p",node.kind+" · "+fmt(node.loc)+" nonblank code lines"));
+}
+function palette(node) {
+  const n=countOf(node);
+  if (!n && node.status==="external") return "#d5d9dc";
+  if (!n && node.status==="review") return "#dad3ec";
+  return colors[n===0?0:n===1?1:n<=3?2:3];
+}
+function draw() {
+  const node = selected(), map = $("map");
+  map.replaceChildren();
+  if (!node.children || !node.loc) {
+    const message=element("p",node.children?"Zero LOC. Open an entry in the directory list.":node.path);
+    message.className="empty";map.append(message);return;
+  }
+  function divide(items,x,y,w,h,total) {
+    if (items.length===1) {
+      const child=items[0],tile=pathLink(child,""),count=countOf(child);
+      tile.className="tile";
+      const title=child.name+" · "+fmt(child.loc)+" LOC · "+count+" layout findings";
+      tile.title=title;tile.setAttribute("aria-label",title);
+      Object.assign(tile.style,{left:x+"px",top:y+"px",width:w+"px",height:h+"px",background:palette(child),color:count>3?"white":"#172e26"});
+      if(w>45 && h>21) tile.append(element("span",child.name+(child.children?"/":"")));
+      if(w>84 && h>47) tile.append(element("small",fmt(child.loc)+" LOC · "+count+" ⚑"));
+      map.append(tile);return;
+    }
+    let cut=1,sum=items[0].loc;
+    while(cut<items.length-1 && Math.abs(total/2-sum-items[cut].loc)<Math.abs(total/2-sum)) sum+=items[cut++].loc;
+    const f=sum/total,wide=w>=h;
+    divide(items.slice(0,cut),x,y,wide?w*f:w,wide?h:h*f,sum);
+    divide(items.slice(cut),wide?x+w*f:x,wide?y:y+h*f,wide?w*(1-f):w,wide?h:h*(1-f),total-sum);
+  }
+  divide(childrenOf(node).filter(child=>child.loc>0),0,0,map.clientWidth,map.clientHeight,node.loc);
+}
+function descendants(node) {
+  if (!node.children) return [node];
+  return childrenOf(node).flatMap(descendants);
+}
+function showFindings(node) {
+  const files = descendants(node);
+  const groups = new Map();
+  for (const file of files) for (const issue of file.findings) {
+    if (!groups.has(issue.rule)) groups.set(issue.rule,[]);
+    groups.get(issue.rule).push([file,issue]);
+  }
+  const placement = $("placement");
+  placement.replaceChildren();
+  $("placement-title").textContent="Layout findings · "+fmt(countOf(node));
+  for (const [rule, matches] of [...groups].sort((a,b)=>b[1].length-a[1].length || a[0].localeCompare(b[0]))) {
+    const group = element("details","");
+    group.open=!node.children || matches.length===1;
+    group.append(element("summary",rule+" · "+fmt(matches.length)),element("p",report.rules[rule]||rule));
+    for (const [file,issue] of matches.sort(([a],[b])=>a.path.localeCompare(b.path))) {
+      const card=element("article","");
+      const sourceLabel = issue.line ? file.path + ":" + issue.line : file.path;
+      card.append(pathLink(file,sourceLabel),element("p",issue.reason),fact("Proposed location",issue.destination||destination(file)),element("pre",issue.evidence));
+      group.append(card);
+    }
+    placement.append(group);
+  }
+  if (!groups.size) placement.append(element("p","No matching layout rule violations in this selection."));
+  $("behavior-title").textContent="Behavioral observations · "+fmt(node.behavior_count);
+  const pane=$("behavior");pane.replaceChildren();
+  for (const file of files) for (const issue of file.behavior) {
+    const card=element("article","");
+    card.append(element("h3",issue.title),element("p",issue.reason),pathLink(file,file.path+":"+issue.evidence[0][0]),element("pre",issue.evidence.map(([n,s])=>n+"  "+s).join("\n")));
+    pane.append(card);
+  }
+  if(!node.behavior_count) pane.append(element("p","No recorded behavioral observations in this selection."));
+}
+function updateIndex() {
+  const query=$("search").value.trim().toLowerCase(),body=$("directory-table");
+  const matches=directories.filter(n=>n.path.toLowerCase().includes(query)).sort((a,b)=>a.path.localeCompare(b.path));
+  body.replaceChildren();
+  for(const node of matches) {
+    const row=element("tr",""),path=element("td","");
+    path.append(pathLink(node,node.path));row.append(path);
+    for (const value of [disposition(node),destination(node),fmt(node.loc),fmt(countOf(node))]) row.append(element("td",value));
+    body.append(row);
+  }
+  $("match").textContent=fmt(matches.length)+" of "+fmt(directories.length)+" directories";
+}
+function show() { const node=selected();showHeader(node);showEntries(node);draw();showFindings(node); }
+$("index-title").textContent="Full directory index · "+fmt(directories.length);
+$("index").addEventListener("toggle",()=>{if($("index").open) updateIndex()});
+$("search").addEventListener("input",updateIndex);
+$("legend").append("Layout findings");
+for (const [i,label] of ["0","1","2–3","4+","External","Review"].entries()) {
+  const item=element("span",""),swatch=element("i","");
+  swatch.className="swatch";swatch.style.background=[...colors,"#d5d9dc","#dad3ec"][i];
+  item.append(swatch,label);$("legend").append(item);
+}
+for(const [rule,description] of Object.entries(report.rules)) {
+  const p=element("p","");p.append(element("code",rule),"  ",description);$("rules").append(p);
+}
+addEventListener("hashchange",()=>{show();$("crumbs").lastElementChild.focus({preventScroll:true});window.scrollTo(0,0)});
+show();new ResizeObserver(draw).observe($("map"));
+</script></body></html>
