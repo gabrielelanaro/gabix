@@ -22,6 +22,8 @@
 # Local agent and browser test state
 /.agents/skills/lavish
 /.claude
+/.cursor/
+/.delta/
 /.lavish
 /.playwright-cli
 /.playwright-mcp

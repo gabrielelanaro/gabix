@@ -578,6 +578,10 @@ A milestone is a "demo-able" checkpoint. Worth a commit + tag + log entry.
 
 ## Progress Log
 
+### 2026-11-25 — Clean up local tool directories
+
+- Removed seven local tool directories from the Gabix checkout. Added shared ignore rules for `.cursor/` and `.delta/`. No roadmap checkbox changed. Next, isolate the Pi-specific GPIO setup.
+
 ### 2026-11-25 — Remove the docs directory
 
 - Removed the root `docs/` directory and added a path check to the test runner. Updated live references and kept historical hardware evidence accessible at the previous commit. No roadmap checkbox changed. Next, review the ARM boot assembly move.
